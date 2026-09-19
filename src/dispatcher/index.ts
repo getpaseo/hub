@@ -16,6 +16,7 @@ export interface DispatcherOptions {
   entitlements: EntitlementsService | null;
   providers?: readonly TriggerProvider[];
   dispatchLaunchMachineIntent?: (intent: LaunchMachineIntent) => Promise<unknown>;
+  canDispatchToDaemon?: DurableWorkflowEngineOptions["canDispatchToDaemon"];
   validateLaunchMachineIntent?: DurableWorkflowEngineOptions["validateLaunchMachineIntent"];
   configurationRevisionId?: string;
   leaseMs?: number;
@@ -38,6 +39,9 @@ export function createDispatcherWithEngine(options: DispatcherOptions): {
   engine: DurableWorkflowEngine;
 } {
   const engineOptions: DurableWorkflowEngineOptions = {
+    ...(options.canDispatchToDaemon === undefined
+      ? {}
+      : { canDispatchToDaemon: options.canDispatchToDaemon }),
     database: options.database,
     entitlements: options.entitlements,
     ...(options.providers === undefined ? {} : { providers: options.providers }),

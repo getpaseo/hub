@@ -9,6 +9,24 @@ import type { NormalizedDiscordMessageEvent } from "./events.js";
 import { isAcceptedTriggerProviderMatch } from "../index.js";
 
 describe("Discord Phase 1 trigger provider", () => {
+  it("shares an agent identity across a root message and its Discord thread", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    const provider = createDiscordTriggerProvider({
+      configurationStoreForProject: () => store,
+      bot: new MemoryDiscordBotClient({ selfUserId: "900" }),
+    });
+    const root = (await provider.match(external(project.id, revision.id, event())))[0];
+    const reply = (
+      await provider.match(
+        external(project.id, revision.id, event({ threadId: "300", messageId: "301" })),
+      )
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(root) || !isAcceptedTriggerProviderMatch(reply))
+      throw new Error("expected accepted matches");
+    assert.ok(root.conversation);
+    assert.equal(root.conversation.key, reply.conversation?.key);
+  });
+
   it("normalizes typed inputs identically at the provider boundary", async () => {
     const { project, revision, store } = await activeConfiguration(inputConfiguration());
     const provider = createDiscordTriggerProvider({

@@ -4,6 +4,7 @@ import { reportFailure } from "../../failures/index.js";
 import type { ProviderConnectionRegistration, ProviderRegistration } from "../registration.js";
 import {
   CONNECTION_ATTEMPT_LIFETIME_MINUTES,
+  CONNECTIONS_RETURN_ROUTE,
   callbackConnectionAccess,
   cancelledConnectionResult,
   connectionAccess,
@@ -275,14 +276,15 @@ async function completeAuthorization(
   }
   if (state === null || code === null || client === undefined) {
     return connectionCallbackFailure({
+      request,
       error: new ProviderCallbackError("invalid_callback"),
       provider: "discord",
       phase: "authorization",
       applicationBaseUrl: options.applicationBaseUrl,
-      returnRoute: "/",
+      returnRoute: CONNECTIONS_RETURN_ROUTE,
     });
   }
-  let returnRoute = "/";
+  let returnRoute: string = CONNECTIONS_RETURN_ROUTE;
   let callbackOrigin = options.applicationBaseUrl;
   try {
     const access = await callbackConnectionAccess(options.auth, request);
@@ -301,6 +303,7 @@ async function completeAuthorization(
         access,
       });
       return connectionCallbackFailure({
+        request,
         error: new ProviderCallbackError("Discord did not verify the selected server"),
         provider: "discord",
         phase: "authorization",
@@ -312,6 +315,7 @@ async function completeAuthorization(
     return connectionResult(callbackOrigin, attempt.returnRoute, "discord_connected", "discord");
   } catch (error) {
     return connectionCallbackFailure({
+      request,
       error,
       provider: "discord",
       phase: "authorization",

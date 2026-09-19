@@ -189,6 +189,7 @@ export function createGitHubTriggerProvider(options: {
         }
         if (invocation.status === "rejected") {
           matches.push({
+            conversation: githubConversation(event),
             triggerName: match.trigger.name,
             triggerContext,
             outputContext: triggerContext,
@@ -199,6 +200,7 @@ export function createGitHubTriggerProvider(options: {
           continue;
         }
         matches.push({
+          conversation: githubConversation(event),
           triggerName: match.trigger.name,
           triggerContext,
           outputContext: triggerContext,
@@ -342,4 +344,19 @@ function splitRepo(fullName: string): [owner: string, repo: string] {
   }
 
   return [owner, repo];
+}
+
+function githubConversation(
+  event: NormalizedGitHubEvent,
+): import("../continuation.js").Conversation | null {
+  const item = event.payload["pull_request"] ?? event.payload["issue"];
+  if (typeof item !== "object" || item === null) return null;
+  const number: unknown = Reflect.get(item, "number");
+  if (typeof number !== "number") return null;
+  const url: unknown = Reflect.get(item, "html_url");
+  return {
+    key: JSON.stringify(["github", event.repositoryId, number]),
+    label: `${event.repo}#${String(number)}`,
+    ...(typeof url === "string" ? { url } : {}),
+  };
 }

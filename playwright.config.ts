@@ -2,6 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
+  globalSetup: "./e2e/global-setup.ts",
   fullyParallel: true,
   // Each test owns a PostgreSQL container and a Hub process. Half of the CI runner's
   // available CPUs leaves headroom for those services; two workers was the highest

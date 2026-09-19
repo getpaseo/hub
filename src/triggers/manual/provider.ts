@@ -110,6 +110,7 @@ export function createManualRunProvider(
           return "trigger_filters_rejected";
       }
       const match: TriggerProviderMatch<ManualRunContext, ManualRunOutputContext> = {
+        conversation: null,
         triggerName: trigger.name,
         triggerContext,
         outputContext,

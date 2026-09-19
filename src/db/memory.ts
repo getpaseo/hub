@@ -111,6 +111,7 @@ import {
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
 
 export interface MemoryDatabaseOptions {
+  schedules?: import("../triggers/schedule/index.js").ScheduleStore;
   onInsertAgentExecution?: (execution: AgentExecutionRecord) => void;
   organizationIds?: readonly string[];
   memberships?: readonly {
@@ -153,6 +154,16 @@ export function createMemoryDatabase(options: MemoryDatabaseOptions = {}): Datab
 }
 
 class MemoryDatabase implements Database {
+  // This test double has no background work. Scheduling tests use the actual embedded/PG runtime.
+  get schedules(): import("../triggers/schedule/index.js").ScheduleStore {
+    return (
+      this.options.schedules ?? {
+        async tick() {
+          return 0;
+        },
+      }
+    );
+  }
   private readonly providerEventReceipts = new Map<string, ProviderEventReceiptRecord>();
   private readonly providerEventReceiptIdsByDelivery = new Map<string, string>();
   private readonly providerEventReceiptIdsBySignature = new Map<string, string>();
@@ -247,6 +258,7 @@ class MemoryDatabase implements Database {
     }
     const now = input.createdAt ?? this.options.now?.() ?? new Date();
     const run: AcceptedTriggerRunRecord = {
+      conversation: structuredClone(input.conversation ?? null),
       id: input.id ?? randomUUID(),
       organizationId: input.organizationId,
       projectId: input.projectId,
@@ -319,6 +331,7 @@ class MemoryDatabase implements Database {
     }
     const now = input.createdAt ?? this.options.now?.() ?? new Date();
     const run: RejectedTriggerRunRecord = {
+      conversation: null,
       id: input.id ?? randomUUID(),
       organizationId: input.organizationId,
       projectId: input.projectId,
@@ -396,10 +409,16 @@ class MemoryDatabase implements Database {
     );
   }
 
-  async claimWorkflowWakeup(now: Date, leaseMs: number) {
+  async releaseWorkflowWakeup(triggerRunId: string, now: Date, claimedLease: Date) {
+    const wakeup = this.workflowWakeups.get(triggerRunId);
+    if (wakeup?.leaseExpiresAt?.getTime() === claimedLease.getTime()) wakeup.leaseExpiresAt = now;
+  }
+
+  async claimWorkflowWakeup(now: Date, leaseMs: number, excludedRunIds: readonly string[] = []) {
     const candidate = Array.from(this.workflowWakeups.values())
       .filter(
         (wakeup) =>
+          !excludedRunIds.includes(wakeup.triggerRunId) &&
           wakeup.availableAt <= now &&
           (wakeup.leaseExpiresAt === null || wakeup.leaseExpiresAt <= now),
       )
@@ -1331,6 +1350,8 @@ class MemoryDatabase implements Database {
     const idleDeadlineAt = capIdleDeadline(input.idleDeadlineAt, deadlineAt);
 
     const execution: AgentExecutionRecord = {
+      agentSessionId: null,
+      agentSessionAction: null,
       id: input.id ?? randomUUID(),
       organizationId: input.organizationId,
       projectId: input.projectId,
@@ -1602,6 +1623,29 @@ class MemoryDatabase implements Database {
     const updated = { ...value, daemonId: daemonId, daemonAgentId: agentId };
     this.agentExecutions.set(executionId, updated);
     return updated;
+  }
+
+  async limitAgentExecutionDeadline(executionId: string, deadlineAt: Date) {
+    const execution = this.readAgentExecution(executionId);
+    if (isTerminalAgentExecutionStatus(execution.status)) return;
+    const boundedDeadline = new Date(
+      Math.min(deadlineAt.getTime(), execution.deadlineAt?.getTime() ?? Number.POSITIVE_INFINITY),
+    );
+    const idleDeadlineAt = capIdleDeadline(execution.idleDeadlineAt, boundedDeadline);
+    this.agentExecutions.set(executionId, {
+      ...execution,
+      deadlineAt: boundedDeadline,
+      idleDeadlineAt,
+    });
+    if (execution.workflowStepRunId !== null) {
+      const step = this.workflowStepRuns.get(execution.workflowStepRunId);
+      if (step !== undefined)
+        this.workflowStepRuns.set(step.id, {
+          ...step,
+          deadlineAt: boundedDeadline,
+          idleDeadlineAt,
+        });
+    }
   }
 
   async setAgentExecutionIdleDeadline(
@@ -2209,6 +2253,86 @@ class MemoryDatabase implements Database {
       });
     }
     return record;
+  }
+
+  private readonly authorityRecords = new Map<
+    string,
+    import("../execution-authority/index.js").ExecutionAuthorityRecord
+  >();
+  private readonly authorityLeases = new Map<
+    string,
+    import("../execution-authority/index.js").ExecutionCredentialLease
+  >();
+  readonly executionAuthority: import("../execution-authority/index.js").ExecutionAuthorityStore = {
+    executions: async () => [...this.authorityRecords.keys()],
+    read: async (id) => structuredClone(this.authorityRecords.get(id)),
+    commit: async (record) => {
+      if (!this.authorityRecords.has(record.executionId))
+        this.authorityRecords.set(record.executionId, structuredClone(record));
+      return structuredClone(this.authorityRecords.get(record.executionId)!);
+    },
+    remove: async (id) => {
+      this.authorityRecords.delete(id);
+    },
+    leases: async (executionId) =>
+      structuredClone(
+        [...this.authorityLeases.values()].filter(
+          (lease) => executionId === undefined || lease.executionId === executionId,
+        ),
+      ),
+    saveLease: async (lease) => {
+      this.authorityLeases.set(lease.id, structuredClone(lease));
+    },
+    removeLease: async (id) => {
+      this.authorityLeases.delete(id);
+    },
+  };
+
+  private readonly agentSessions = new Map<
+    string,
+    import("../agent-sessions/index.js").AgentSessionRecord
+  >();
+  async findAgentSession(id: string) {
+    return structuredClone(this.agentSessions.get(id));
+  }
+  async findAgentSessionByKey(projectId: string, key: string) {
+    return structuredClone(
+      [...this.agentSessions.values()].find(
+        (session) => session.projectId === projectId && session.continuationKey === key,
+      ),
+    );
+  }
+  async saveAgentSession(
+    session: import("../agent-sessions/index.js").AgentSessionRecord,
+  ): Promise<void> {
+    this.agentSessions.set(session.id, structuredClone(session));
+  }
+  async attachExecutionToSession(
+    executionId: string,
+    sessionId: string,
+    action?: import("../agent-sessions/index.js").AgentSessionAction,
+  ): Promise<void> {
+    const execution = this.agentExecutions.get(executionId);
+    const session = this.agentSessions.get(sessionId);
+    if (
+      !execution ||
+      !session ||
+      execution.projectId !== session.projectId ||
+      execution.organizationId !== session.organizationId ||
+      (execution.agentSessionId !== null && execution.agentSessionId !== sessionId)
+    ) {
+      throw new Error("Agent session does not belong to this execution");
+    }
+    this.agentExecutions.set(executionId, {
+      ...execution,
+      agentSessionId: sessionId,
+      agentSessionAction: execution.agentSessionAction ?? action ?? null,
+    });
+  }
+  async listAgentSessionExecutions(sessionId: string): Promise<AgentExecutionRecord[]> {
+    return [...this.agentExecutions.values()].filter(
+      (execution) => execution.agentSessionId === sessionId,
+    );
   }
 
   async withAdvisoryLock<T>(key: string, fn: () => Promise<T>): Promise<T> {

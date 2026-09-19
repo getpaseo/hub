@@ -18,10 +18,19 @@ const UNITS: readonly [Intl.RelativeTimeFormatUnit, number][] = [
 export function RelativeTime({ value }: { value: string }) {
   const date = new Date(value);
   return (
-    <time dateTime={date.toISOString()} title={ABSOLUTE_TIME.format(date)}>
+    <time dateTime={date.toISOString()} title={formatAbsolute(value)}>
       {relativeLabel(date)}
     </time>
   );
+}
+
+/**
+ * The absolute rendering of an instant, for the rare line where "3m ago" is not the answer —
+ * a billing period, an expiry the reader will write down. One formatter and one locale, so a
+ * date in a table and the same date in a tooltip are the same string.
+ */
+export function formatAbsolute(value: string): string {
+  return ABSOLUTE_TIME.format(new Date(value));
 }
 
 function relativeLabel(date: Date): string {

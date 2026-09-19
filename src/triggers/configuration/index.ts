@@ -64,6 +64,9 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
           environment: "target",
           max_runtime: authored.run.max_runtime,
           idle_timeout: authored.run.idle_timeout,
+          ...(authored.run.startup_timeout === undefined
+            ? {}
+            : { startup_timeout: authored.run.startup_timeout }),
           agent,
           prompt: [{ text: authored.run.prompt }],
           ...(authored.run.env === undefined ? {} : { env: authored.run.env }),
@@ -98,7 +101,12 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
   return {
     authored,
     environment: compiledEnvironment,
-    events: compiled.triggers.map(withAutomaticReply),
+    events: compiled.triggers.map((trigger) =>
+      withAutomaticReply({
+        ...trigger,
+        steps: trigger.steps.map((step) => ({ ...step, continuation: authored.run.continuation })),
+      }),
+    ),
     authoredHash: createHash("sha256").update(yaml).digest("hex"),
   };
 }

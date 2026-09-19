@@ -5,6 +5,7 @@ import { createMemoryDatabase } from "../db/memory.js";
 import type { Database } from "../db/types.js";
 import { normalizeStoredEntitlements } from "../entitlements/catalog.js";
 import { composeBilling, type BillingRuntime } from "./index.js";
+import type { BillingPlanPresentations } from "./plan-presentation.js";
 import type {
   StripeCatalogPrice,
   StripeCatalogProduct,
@@ -35,6 +36,17 @@ const FREE_PRICE = "price_free_monthly";
 const SOLO_PRICE = "price_solo_monthly";
 const TEAM_PRICE = "price_team_monthly";
 
+const TEST_PLAN_PRESENTATIONS: BillingPlanPresentations = Object.fromEntries(
+  ["free", "solo", "team"].map((slug) => [
+    slug,
+    {
+      name: `${slug[0]?.toUpperCase()}${slug.slice(1)}`,
+      features: [],
+      priceTooltips: { monthly: null, annual: null },
+    },
+  ]),
+);
+
 const PRODUCTS: StripeCatalogProduct[] = [
   {
     id: FREE_PRODUCT,
@@ -47,7 +59,6 @@ const PRODUCTS: StripeCatalogProduct[] = [
       ent_can_invite: "false",
       ent_executions_monthly_limit: "0",
     },
-    marketingFeatures: [],
   },
   {
     id: SOLO_PRODUCT,
@@ -60,7 +71,6 @@ const PRODUCTS: StripeCatalogProduct[] = [
       ent_can_invite: "true",
       ent_executions_monthly_limit: "2000",
     },
-    marketingFeatures: [],
   },
   {
     id: TEAM_PRODUCT,
@@ -73,7 +83,6 @@ const PRODUCTS: StripeCatalogProduct[] = [
       ent_can_invite: "true",
       ent_executions_monthly_limit: "unlimited",
     },
-    marketingFeatures: [],
   },
 ];
 
@@ -146,6 +155,9 @@ class FakeBillingClient implements StripeBillingClient {
   async createCheckoutSession(): Promise<{ url: string }> {
     throw new Error("unused");
   }
+  async createTrialSubscription(): Promise<string> {
+    throw new Error("unused");
+  }
   async changeSubscriptionPrice(input: ChangeSubscriptionPriceInput): Promise<void> {
     const state = this.subscriptions.get(input.subscriptionId);
     if (state === undefined) throw new Error("unused");
@@ -180,6 +192,7 @@ async function setup(): Promise<{
     catalogSource: new FakeCatalogSource(),
     billingClient,
     seatUsage: () => Promise.resolve(seats.count),
+    presentations: TEST_PLAN_PRESENTATIONS,
   });
   await billing.syncCatalog();
   return { database, billingClient, billing, seats };

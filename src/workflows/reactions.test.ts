@@ -336,14 +336,23 @@ async function runTwoStepWorkflow<
     createdAt: now,
   });
   const connection: DaemonConnection = {
-    on: () => () => undefined,
-    createAgent: async (agentOptions) => {
-      if (options.outcome === "prelaunch_failure") {
-        throw new Error("daemon rejected agent");
-      }
-      return { id: agentOptions.executionId };
+    agents: {
+      create: async (key) => {
+        if (options.outcome === "prelaunch_failure") throw new Error("daemon rejected agent");
+        return { id: key, workspaceId: "workspace", status: "idle" };
+      },
+      get: async (id) => ({ id, workspaceId: "workspace", status: "idle" }),
+      send: async () => {},
+      control: async () => {},
+      restore: async () => false,
+      watch: async () => () => {},
     },
-    controlExecution: async () => undefined,
+    getProviderSnapshot: async () => {
+      throw new Error("not used");
+    },
+    refreshProviderSnapshot: async () => {
+      throw new Error("not used");
+    },
   };
   const lifecycle = createDaemonDispatchLifecycle({
     database,

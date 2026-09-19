@@ -1,4 +1,7 @@
+import { RecurrenceSchema } from "../schedule/recurrence.js";
 import { z } from "zod";
+import { ContinuationSchema } from "../continuation.js";
+import { eventDefinition, isEditorEvent } from "./events.js";
 import { AuthoredGitHubAuthoritySchema } from "../../config/github-authority.js";
 
 type JsonPrimitive = string | number | boolean | null;
@@ -14,7 +17,8 @@ const WorktreeTargetSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("checkout-pr"), prNumber: z.number().int().positive() }),
 ]);
 
-const IDENTIFIER = /^[a-z][a-z0-9_-]*$/u;
+/** A trigger or choice name: the document's own alphabet, shared with the form that writes one. */
+export const IDENTIFIER = /^[a-z][a-z0-9_-]*$/u;
 const EVENT_NAME = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$/u;
 const CONNECTION_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const InputValueSchema = z.union([z.string(), z.number().finite(), z.boolean()]);
@@ -49,6 +53,7 @@ export const TriggerFilterSchema = z
 
 export const TriggerEventSchema = z
   .object({
+    recurrence: RecurrenceSchema.optional(),
     connection: z.string().regex(CONNECTION_SLUG).optional(),
     filters: TriggerFilterSchema.optional(),
   })
@@ -93,9 +98,11 @@ export const TriggerRunSchema = z
   .object({
     target: TriggerTargetSchema,
     agent: TriggerAgentSelectionSchema,
+    continuation: ContinuationSchema.default({ mode: "conversation" }),
     prompt: z.string().min(1),
     max_runtime: z.string().min(1).default("2h"),
     idle_timeout: z.string().min(1).default("10m"),
+    startup_timeout: z.string().min(1).optional(),
     env: z.record(z.string().min(1), z.string()).optional(),
     github: AuthoredGitHubAuthoritySchema.optional(),
     output: z
@@ -119,6 +126,45 @@ export const TriggerDocumentSchema = z
   })
   .strict()
   .superRefine((trigger, context) => {
+    for (const [event, definition] of Object.entries(trigger.on)) {
+      if (event === "schedule.tick") {
+        if (
+          definition.recurrence === undefined ||
+          definition.connection !== undefined ||
+          definition.filters !== undefined
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["on", event],
+            message: "Schedule requires recurrence and does not accept connection or filters.",
+          });
+        }
+        if (Object.keys(trigger.on).length !== 1 || trigger.inputs !== undefined) {
+          context.addIssue({
+            code: "custom",
+            path: ["on", event],
+            message: "A schedule must be the only event and cannot require invocation inputs.",
+          });
+        }
+      } else if (definition.recurrence !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["on", event, "recurrence"],
+          message: "Recurrence is only supported for schedule.tick.",
+        });
+      }
+      if (!isEditorEvent(event)) continue;
+      for (const qualifier of eventDefinition(event).qualifiers) {
+        const value = definition.filters?.[qualifier.key];
+        if (qualifier.required && (value === undefined || value.trim().length === 0)) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["on", event, "filters", qualifier.key],
+            message: `${qualifier.label} is required.`,
+          });
+        }
+      }
+    }
     if (Object.keys(trigger.on).length === 0) {
       context.addIssue({
         code: z.ZodIssueCode.custom,

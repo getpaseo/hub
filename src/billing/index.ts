@@ -11,6 +11,7 @@ import {
   type EntitlementTemplate,
 } from "../entitlements/catalog.js";
 import type { ProvisioningEntitlement } from "../organizations/provisioning.js";
+import type { OrganizationCreatedEvent } from "../organizations/signup-intent.js";
 import { reportFailure } from "../failures/index.js";
 import { logger } from "../logger.js";
 import { syncBillingCatalog } from "./catalog-sync.js";
@@ -20,6 +21,8 @@ import type { BillingPlanPriceInterval } from "../db/types.js";
 import type { StripeBillingClient, StripeSubscriptionState } from "./stripe-billing-client.js";
 import { selectActivePlanPrice } from "./plan-prices.js";
 import { publicBillingPlans, type PublicBillingPlan } from "./public-catalog.js";
+import { HUB_PLAN_PRESENTATIONS, type BillingPlanPresentations } from "./plan-presentation.js";
+import { trialDaysRemaining } from "./trial-policy.js";
 
 /** The organization's live seat count (members + pending invitations). Injected by the
  * composition root — the count reads Better Auth tables the `Database` interface does not model,
@@ -36,7 +39,11 @@ export type {
 } from "./stripe-catalog-source.js";
 export type { StripeBillingClient, StripeSubscriptionState } from "./stripe-billing-client.js";
 export { selectActivePlanPrice, AmbiguousPlanPriceError } from "./plan-prices.js";
-export type { PublicBillingPlan, PublicBillingPlanPrice } from "./public-catalog.js";
+export type {
+  PublicBillingPlan,
+  PublicBillingPlanFeature,
+  PublicBillingPlanPrice,
+} from "./public-catalog.js";
 
 /**
  * The four Stripe events that mean "the plan catalog may have changed" — see the plan's
@@ -82,8 +89,9 @@ function billingLockKey(organizationId: string): string {
 }
 
 /**
- * The internal entitlement record a hosted organization is stamped with before it pays and again
- * after it cancels. Identified by its `paseo_plan_slug` metadata, mirrored as `billing_plans.slug`
+ * The internal entitlement record a hosted organization is stamped with before its creation-time
+ * trial is reconciled, when that trial cannot be started, and after cancellation. Identified by
+ * its `paseo_plan_slug` metadata, mirrored as `billing_plans.slug`
  * — so which product carries the floor is set in the Stripe dashboard, not hardcoded here (the
  * plan's "Stripe is the source of truth" rule).
  *
@@ -98,9 +106,10 @@ const FREE_PLAN_SLUG = "free";
  * The conservative floor used only when billing is configured but the mirror has no active Free
  * plan — a first boot before the sync lands, or a Stripe account with no Free product. Not a
  * mirror of any Stripe plan: it fails closed (one seat, no invites, a small execution cap) so a
- * new organization can never get everything for free, while `provisioningEntitlement` logs loudly
+ * new organization cannot fail open to unlimited, while `provisioningEntitlement` logs loudly
  * so an operator notices and fixes the catalog. A misconfigured Stripe is recoverable — every
- * organization stamped from this floor re-stamps to the real Free plan the moment it subscribes.
+ * organization stamped from this floor re-stamps to the offered plan when its trial or fallback
+ * Checkout succeeds.
  */
 const FREE_TIER_FALLBACK: EntitlementTemplate = {
   seats: { max: 1 },
@@ -117,6 +126,8 @@ export interface ComposeBillingOptions {
   billingClient: StripeBillingClient;
   /** Reads an organization's live seat count for post-paid quantity reporting. */
   seatUsage: SeatUsageReader;
+  /** Hub-owned customer-facing plan copy. Production uses the built-in catalog. */
+  presentations?: BillingPlanPresentations;
 }
 
 export interface CreateCheckoutInput {
@@ -128,6 +139,14 @@ export interface CreateCheckoutInput {
   accountEmail: string | null;
   accountName: string | null;
 }
+
+export interface StartTrialInput {
+  organizationId: string;
+  accountEmail: string | null;
+  accountName: string | null;
+}
+
+export type StartSignupInput = OrganizationCreatedEvent;
 
 export interface CreatePortalInput {
   organizationId: string;
@@ -184,12 +203,13 @@ export class BillingRuntime {
     private readonly catalogSource: StripeCatalogSource,
     private readonly billingClient: StripeBillingClient,
     private readonly seatUsage: SeatUsageReader,
+    private readonly presentations: BillingPlanPresentations,
   ) {
     this.stripe = new StripeSDK(config.stripeSecretKey);
   }
 
   async syncCatalog(): Promise<void> {
-    await syncBillingCatalog(this.catalogSource, this.database);
+    await syncBillingCatalog(this.catalogSource, this.database, this.presentations);
   }
 
   /**
@@ -211,6 +231,56 @@ export class BillingRuntime {
    */
   async provisioningEntitlement(): Promise<ProvisioningEntitlement> {
     return this.freeEntitlement();
+  }
+
+  /** Dispatch the validated marketing/signup intent. Keeping this decision inside billing means
+   * a future hosted-free offer adds an intent branch here without changing organization creation. */
+  async startSignup(input: StartSignupInput): Promise<void> {
+    const intent = input.intent;
+    switch (intent) {
+      case "trial":
+        await this.startTrial(input);
+        return;
+    }
+    return assertNeverSignupIntent(intent);
+  }
+
+  /**
+   * Start a new hosted organization on Stripe's cardless trial and reconcile it before returning.
+   * Provisioning has already stamped the Free floor, so every failure is fail-closed. This method
+   * owns and reports every failure rather than allowing billing to fail organization creation.
+   */
+  async startTrial(input: StartTrialInput): Promise<void> {
+    try {
+      const catalog = await this.publicCatalog();
+      if (catalog.length !== 1) {
+        throw trialStartError(`expected one public plan, found ${catalog.length}`);
+      }
+      const plan = catalog[0];
+      if (plan === undefined) throw trialStartError("public trial plan is unavailable");
+      const price = await this.resolvePlanPrice(plan.slug, "monthly");
+      const customerId = await this.resolveCustomer(input);
+      if (!this.trialEligible(await this.customerSubscriptions(customerId))) return;
+      const subscriptionId = await this.billingClient.createTrialSubscription({
+        organizationId: input.organizationId,
+        customerId,
+        priceId: price.priceId,
+        quantity: await this.seatUsage(input.organizationId),
+      });
+      this.invalidateSubscriptions(customerId);
+      const outcome = await this.database.withAdvisoryLock(
+        billingLockKey(input.organizationId),
+        () => this.reconcileSubscriptionUnderLock(subscriptionId),
+      );
+      if (outcome === "retry") throw trialStartError("created trial could not be reconciled");
+    } catch (error) {
+      reportFailure(withTrialStartCode(error), {
+        operation: "billing.trial.start",
+        component: "billing",
+        provider: "stripe",
+        organizationId: input.organizationId,
+      });
+    }
   }
 
   /**
@@ -267,7 +337,7 @@ export class BillingRuntime {
       quantity: await this.seatUsage(input.organizationId),
       successUrl: input.successUrl,
       cancelUrl: input.cancelUrl,
-      trial: subscriptions.length === 0,
+      trial: this.trialEligible(subscriptions),
     });
     this.invalidateSubscriptions(customerId);
     return checkout;
@@ -346,9 +416,23 @@ export class BillingRuntime {
       cancelAtPeriodEnd: live ? subscription.cancelAtPeriodEnd : false,
       currentPeriodEnd: live ? (subscription.currentPeriodEnd?.toISOString() ?? null) : null,
       trialEnd: live ? (subscription.trialEnd?.toISOString() ?? null) : null,
-      trialEligible: subscriptions.length === 0,
+      trialEligible: this.trialEligible(subscriptions),
       manageable: live,
     };
+  }
+
+  /** An organization may use the cardless trial only if it has never had a Stripe subscription. */
+  private trialEligible(subscriptions: readonly StripeSubscriptionState[]): boolean {
+    return subscriptions.length === 0;
+  }
+
+  /**
+   * Days left in this organization's trial, or null when it is not on one. The whole answer for
+   * an ambient countdown: a caller receives a number and never learns that a subscription, a
+   * status vocabulary, or Stripe are involved.
+   */
+  async trialRemaining(organizationId: string): Promise<number | null> {
+    return trialDaysRemaining(await this.subscriptionSnapshot(organizationId));
   }
 
   async handleWebhook(request: Request): Promise<Response> {
@@ -501,7 +585,7 @@ export class BillingRuntime {
     return planStamp(entitlementsSchema.parse(plan.template), plan.id);
   }
 
-  private async resolveCustomer(input: CreateCheckoutInput): Promise<string> {
+  private async resolveCustomer(input: StartTrialInput): Promise<string> {
     const existing = await this.database.getOrganizationBillingCustomer(input.organizationId);
     if (existing !== undefined) return existing.stripeCustomerId;
     return this.billingClient.ensureCustomer({
@@ -556,6 +640,21 @@ export class BillingRuntime {
   }
 }
 
+function trialStartError(message: string): Error {
+  return Object.assign(new Error(message), { code: "billing_trial_start_failed" });
+}
+
+function assertNeverSignupIntent(value: never): never {
+  throw new Error(`Unhandled signup intent: ${String(value)}`);
+}
+
+function withTrialStartCode(error: unknown): Error {
+  if (error instanceof Error) {
+    return Object.assign(error, { code: "billing_trial_start_failed" });
+  }
+  return trialStartError("non-Error failure while starting trial");
+}
+
 /** The `plan_stamp` reconciliation writes onto an organization; `plan_version` is the template
  * hash so a replay with an unchanged template is a no-op. */
 function planStamp(granted: Entitlements, planId: string | null): SubscriptionStamp {
@@ -596,5 +695,6 @@ export function composeBilling(options: ComposeBillingOptions): BillingRuntime {
     options.catalogSource,
     options.billingClient,
     options.seatUsage,
+    options.presentations ?? HUB_PLAN_PRESENTATIONS,
   );
 }

@@ -18,6 +18,9 @@ export interface StripeBillingClient {
    * Only ever called when the organization has no subscription yet — a plan change goes through
    * `changeSubscriptionPrice`, never a second checkout. Returns its redirect URL. */
   createCheckoutSession(input: CreateCheckoutSessionInput): Promise<{ url: string }>;
+  /** Start the organization's cardless trial directly, without sending the owner through
+   * Checkout. Returns the subscription id so Hub can reconcile it before creation responds. */
+  createTrialSubscription(input: CreateTrialSubscriptionInput): Promise<string>;
   /** Move the organization's existing subscription onto `priceId` by updating its single item in
    * place. Stripe models a plan change as an update to the existing subscription, not a second
    * one, so this is the only path a change ever takes. */
@@ -50,6 +53,13 @@ export interface CreateCheckoutSessionInput {
   successUrl: string;
   cancelUrl: string;
   trial: boolean;
+}
+
+export interface CreateTrialSubscriptionInput {
+  organizationId: string;
+  customerId: string;
+  priceId: string;
+  quantity: number;
 }
 
 export interface ChangeSubscriptionPriceInput {

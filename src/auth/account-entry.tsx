@@ -1,20 +1,18 @@
 import { ChevronRight, Plus } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { AuthCard, AuthLayout } from "../components/app/auth-layout.js";
+import { AuthForm } from "../components/app/auth-form.js";
+import { failureMessage } from "../components/app/failure-alert.js";
+import { FormActions } from "../components/app/form-actions.js";
+import { FormDialog } from "../components/app/form-dialog.js";
+import { TwoLine } from "../components/app/two-line.js";
 import { Button } from "../components/ui/button.js";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "../components/ui/dialog.js";
 import { Input } from "../components/ui/input.js";
 import { formValue } from "./account-actions.js";
 import { ErrorSummary } from "./account-states.js";
-import { FormField } from "./form-field.js";
+import { FormField } from "../components/app/form-field.js";
 import {
   acceptInvitation,
   createOrganization,
@@ -27,8 +25,10 @@ import { LoginForm } from "./login-form.js";
 import type { AccountState } from "./organization-contract.js";
 import type { Result } from "../contract/respond.js";
 import { ACCOUNT_MUTATION_KEY, useAccountMutationError } from "./account-mutation.js";
+import { ForgotPasswordEntry, VerificationPendingEntry } from "./account-recovery.js";
 
 type EmptyResult = Result<Record<string, never>>;
+type AuthenticationResult = Result<{ state: "complete" | "verificationRequired" }>;
 type AccountCommandResult = Result<{
   state: "sessionExpired" | "organizationRequired" | "complete";
 }>;
@@ -44,6 +44,8 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
   const invitationId = account.invitation?.id;
   const invitationSignInRequested = readInvitationSignInRequest();
   const [mode, setMode] = useState<"signIn" | "signUp">(invitationContext ? "signUp" : "signIn");
+  const [forgotPassword, setForgotPassword] = useState(false);
+  const [verificationEmail, setVerificationEmail] = useState<string>();
   useEffect(() => {
     if (invitationContext && invitationId !== undefined) {
       setMode(invitationSignInRequested ? "signIn" : "signUp");
@@ -54,22 +56,38 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
   const signInMutation = useMutation({
     mutationFn: useServerFn(signIn) as (
       input: Parameters<typeof signIn>[0],
-    ) => Promise<EmptyResult>,
-    onSuccess: async (result) => {
-      if (result.status === "ok") await queryClient.invalidateQueries({ queryKey: ["account"] });
+    ) => Promise<AuthenticationResult>,
+    onSuccess: async (result, input) => {
+      if (result.status !== "ok") return;
+      if (result.data.state === "verificationRequired") {
+        setVerificationEmail(input.data.email);
+        return;
+      }
+      await queryClient.invalidateQueries({ queryKey: ["account"] });
     },
   });
   const signUpMutation = useMutation({
     mutationFn: useServerFn(signUp) as (
       input: Parameters<typeof signUp>[0],
-    ) => Promise<EmptyResult>,
-    onSuccess: async (result) => {
-      if (result.status === "ok") await queryClient.invalidateQueries({ queryKey: ["account"] });
+    ) => Promise<AuthenticationResult>,
+    onSuccess: async (result, input) => {
+      if (result.status !== "ok") return;
+      if (result.data.state === "verificationRequired") {
+        setVerificationEmail(input.data.email);
+        return;
+      }
+      await queryClient.invalidateQueries({ queryKey: ["account"] });
     },
   });
   const busy = signInMutation.isPending || signUpMutation.isPending;
   const toggle = useCallback(() => {
     setMode((current) => (current === "signIn" ? "signUp" : "signIn"));
+  }, []);
+  const showForgotPassword = useCallback(() => setForgotPassword(true), []);
+  const showSignIn = useCallback(() => {
+    setForgotPassword(false);
+    setVerificationEmail(undefined);
+    setMode("signIn");
   }, []);
   const submit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
@@ -93,24 +111,26 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
     [account.invitation, mode, signInMutation, signUpMutation],
   );
   const mutation = mode === "signIn" ? signInMutation : signUpMutation;
-  let message: string | undefined;
-  if (mutation.data?.status === "error") message = mutation.data.error.message;
-  if (mutation.isError) {
-    if (mode === "signIn") {
-      message = "Hub did not receive the sign-in result. Check your connection and submit again.";
-    } else {
-      message =
-        "Hub did not receive the account-creation result. Check your connection and invitation before submitting again.";
-    }
-  }
-  let title = "Create an account";
-  let description = "Get your agent operations in one place.";
-  if (invitationSignup) {
-    title = `Join ${account.invitation?.organization.name}`;
-    description = `${account.invitation?.inviterName} invited you as ${account.invitation?.role}.`;
-  } else if (mode === "signIn") {
-    title = "Sign in to Paseo Hub";
-    description = "Your agent operations, in one place.";
+  const message =
+    mutation.isError || mutation.data?.status === "error"
+      ? failureMessage(
+          mutation.data,
+          mode === "signIn"
+            ? "Hub did not receive the sign-in result. Check your connection and submit again."
+            : "Hub did not receive the account-creation result. Check your connection and invitation before submitting again.",
+        )
+      : undefined;
+  const { title, description } = accountEntryPresentation(account, mode, invitationSignup);
+
+  if (forgotPassword) return <ForgotPasswordEntry onBack={showSignIn} />;
+  if (verificationEmail !== undefined) {
+    return (
+      <VerificationPendingEntry
+        email={verificationEmail}
+        {...(account.invitation?.id === undefined ? {} : { invitation: account.invitation.id })}
+        onBack={showSignIn}
+      />
+    );
   }
 
   return (
@@ -136,10 +156,28 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
           mode={mode}
           busy={busy}
           onToggle={toggle}
+          onForgotPassword={showForgotPassword}
         />
       </AuthCard>
     </AuthLayout>
   );
+}
+
+function accountEntryPresentation(
+  account: AccountState & { status: "signedOut" },
+  mode: "signIn" | "signUp",
+  invitationSignup: boolean,
+): { title: string; description: string } {
+  if (invitationSignup) {
+    return {
+      title: `Join ${account.invitation?.organization.name}`,
+      description: `${account.invitation?.inviterName} invited you as ${account.invitation?.role}.`,
+    };
+  }
+  if (mode === "signIn") {
+    return { title: "Sign in to Paseo Hub", description: "Your agent operations, in one place." };
+  }
+  return { title: "Create an account", description: "Get your agent operations in one place." };
 }
 
 function readInvitationSignInRequest(): boolean {
@@ -158,53 +196,64 @@ function SignedOutFooter({
   mode,
   busy,
   onToggle,
+  onForgotPassword,
 }: {
   registration: Extract<AccountState, { status: "signedOut" }>["registration"];
   invitationContext: boolean;
   mode: "signIn" | "signUp";
   busy: boolean;
   onToggle: () => void;
+  onForgotPassword: () => void;
 }) {
   if (invitationContext) {
     return (
-      <p className="text-center text-sm text-muted-foreground">
-        This invitation is bound to the invited email address.{" "}
-        {mode === "signIn" ? "Need an account?" : "Already have an account?"}{" "}
-        <Button
-          type="button"
-          variant="link"
-          size="sm"
-          className="h-auto p-0"
-          disabled={busy}
-          onClick={onToggle}
-        >
-          {mode === "signIn" ? "Create an account" : "Sign in"}
-        </Button>
-      </p>
+      <div className="grid gap-2 text-center text-sm text-muted-foreground">
+        <p>
+          This invitation is bound to the invited email address.{" "}
+          {mode === "signIn" ? "Need an account?" : "Already have an account?"}{" "}
+          <Button type="button" variant="link" disabled={busy} onClick={onToggle}>
+            {mode === "signIn" ? "Create an account" : "Sign in"}
+          </Button>
+        </p>
+        {mode === "signIn" && (
+          <Button type="button" variant="link" disabled={busy} onClick={onForgotPassword}>
+            Forgot password?
+          </Button>
+        )}
+      </div>
     );
   }
   if (registration === "open") {
     return (
-      <p className="text-center text-sm text-muted-foreground">
-        {mode === "signIn" ? "No account yet?" : "Already have an account?"}{" "}
-        <Button
-          type="button"
-          variant="link"
-          size="sm"
-          className="h-auto p-0"
-          disabled={busy}
-          onClick={onToggle}
-        >
-          {mode === "signIn" ? "Create an account" : "Sign in"}
-        </Button>
-      </p>
+      <div className="grid gap-2 text-center text-sm text-muted-foreground">
+        <p>
+          {mode === "signIn" ? "No account yet?" : "Already have an account?"}{" "}
+          <Button type="button" variant="link" disabled={busy} onClick={onToggle}>
+            {mode === "signIn" ? "Create an account" : "Sign in"}
+          </Button>
+        </p>
+        {mode === "signIn" && (
+          <Button type="button" variant="link" disabled={busy} onClick={onForgotPassword}>
+            Forgot password?
+          </Button>
+        )}
+      </div>
     );
   }
   const message =
     registration === "invite_only"
       ? "Accounts are created by invitation. Ask an organization owner to invite you."
       : "Paseo Hub isn't accepting new accounts.";
-  return <p className="text-center text-sm text-muted-foreground">{message}</p>;
+  return (
+    <div className="grid gap-2 text-center text-sm text-muted-foreground">
+      <p>{message}</p>
+      {mode === "signIn" && (
+        <Button type="button" variant="link" disabled={busy} onClick={onForgotPassword}>
+          Forgot password?
+        </Button>
+      )}
+    </div>
+  );
 }
 
 export function InvitationEntry({
@@ -252,17 +301,16 @@ export function InvitationEntry({
         description={`${invitation.inviterName} invited you as ${invitation.role}.`}
       >
         <ErrorSummary message={message} />
-        <div className="grid gap-2">
-          <form method="post" onSubmit={submit}>
-            <Input type="hidden" name="invitationId" value={invitation.id} />
-            <Button className="w-full" type="submit" disabled={busy}>
-              Accept invitation
-            </Button>
-          </form>
-          <Button type="button" variant="ghost" disabled={busy} onClick={signOutAccount}>
-            Sign out
-          </Button>
-        </div>
+        <AuthForm
+          label="Accept invitation"
+          busy={busy}
+          submitLabel="Accept invitation"
+          onSubmit={submit}
+          secondaryLabel="Sign out"
+          onSecondary={signOutAccount}
+        >
+          <Input type="hidden" name="invitationId" value={invitation.id} />
+        </AuthForm>
       </AuthCard>
     </AuthLayout>
   );
@@ -318,6 +366,7 @@ export function OrganizationGate({
       createOrganizationMutation.mutate({
         data: { name: formValue(new FormData(event.currentTarget), "name") },
       });
+      setCreating(false);
     },
     [createOrganizationMutation],
   );
@@ -341,13 +390,10 @@ export function OrganizationGate({
                   <button
                     type="submit"
                     disabled={busy}
-                    className="flex w-full items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none disabled:opacity-50"
+                    className="flex w-full items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors duration-150 hover:bg-accent disabled:opacity-50"
                   >
-                    <span className="grid min-w-0 flex-1 gap-0.5">
-                      <span className="truncate text-sm">{membership.name}</span>
-                      <span className="truncate text-xs text-muted-foreground">
-                        {membership.role}
-                      </span>
+                    <span className="min-w-0 flex-1">
+                      <TwoLine primary={membership.name} secondary={membership.role} />
                     </span>
                     <ChevronRight
                       aria-hidden="true"
@@ -360,33 +406,38 @@ export function OrganizationGate({
             ))}
           </ul>
         )}
-        <div className="grid gap-2">
+        {account.canCreateOrganization ? null : (
+          <p className="text-sm text-muted-foreground">Ask an organization owner to invite you.</p>
+        )}
+        <FormActions>
+          <Button type="button" variant="ghost" disabled={busy} onClick={signOutAccount}>
+            Sign out
+          </Button>
           {account.canCreateOrganization ? (
             <Button type="button" variant="outline" onClick={create} disabled={busy}>
               <Plus aria-hidden="true" />
               Create an organization
             </Button>
-          ) : (
-            <p className="text-center text-sm text-muted-foreground">
-              Ask an organization owner to invite you.
-            </p>
-          )}
-          <Button type="button" variant="ghost" disabled={busy} onClick={signOutAccount}>
-            Sign out
-          </Button>
-        </div>
+          ) : null}
+        </FormActions>
       </AuthCard>
-      <OrganizationDialog
+      <FormDialog
         open={creating}
         onOpenChange={setCreating}
         busy={busy}
         title="Create an organization"
         label="Create organization"
+        submitLabel="Create organization"
         onSubmit={createSubmit}
-        confirmLabel="Create organization"
       >
-        <FormField label="Organization name" name="name" id="organization-name" />
-      </OrganizationDialog>
+        <FormField
+          kind="text"
+          label="Organization name"
+          name="name"
+          id="organization-name"
+          required
+        />
+      </FormDialog>
     </AuthLayout>
   );
 }
@@ -415,51 +466,5 @@ function useAccountCommandResult(
       await queryClient.invalidateQueries({ queryKey: ["account"] });
     },
     [clearInvitation, queryClient],
-  );
-}
-
-function OrganizationDialog({
-  open,
-  onOpenChange,
-  busy,
-  title,
-  label,
-  confirmLabel,
-  onSubmit,
-  children,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  busy: boolean;
-  title: string;
-  label: string;
-  confirmLabel: string;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
-  children: ReactNode;
-}) {
-  const submit = useCallback(
-    (event: FormEvent<HTMLFormElement>) => {
-      onSubmit(event);
-      onOpenChange(false);
-    },
-    [onOpenChange, onSubmit],
-  );
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-        </DialogHeader>
-        <form method="post" onSubmit={submit} aria-label={label} className="grid gap-6">
-          {children}
-          <DialogFooter>
-            <Button type="submit" disabled={busy}>
-              {confirmLabel}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
   );
 }

@@ -161,6 +161,15 @@ export function createSlackTriggerProvider(options: {
         }
         if (invocation.status === "rejected") {
           matches.push({
+            conversation: {
+              key: JSON.stringify([
+                "slack",
+                rawEvent.teamId,
+                rawEvent.channelId,
+                rawEvent.threadTs ?? rawEvent.messageTs,
+              ]),
+              label: "Slack thread",
+            },
             triggerName: match.trigger.name,
             triggerContext,
             outputContext,
@@ -171,6 +180,15 @@ export function createSlackTriggerProvider(options: {
           continue;
         }
         matches.push({
+          conversation: {
+            key: JSON.stringify([
+              "slack",
+              rawEvent.teamId,
+              rawEvent.channelId,
+              rawEvent.threadTs ?? rawEvent.messageTs,
+            ]),
+            label: "Slack thread",
+          },
           triggerName: match.trigger.name,
           triggerContext,
           outputContext,

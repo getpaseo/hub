@@ -8,7 +8,7 @@ runbooks for privately operated instances must not live here.
 
 The optional billing integration in `src/billing/` is inert without `STRIPE_SECRET_KEY`; instances without billing configuration expose no billing surface. See `docs/entitlements.md` and `docs/billing.md`.
 
-The public docs (served at https://paseo.sh/docs/hub) live in the main Paseo repository under `public-docs/`, keep it up to date with any relevant externallly observable changes. Update via PR.
+Public docs live in `getpaseo/paseo` under `public-docs/`. Follow the documentation criteria in `MAINTAINERS.md` before opening a companion PR.
 
 Repository verification, release, cross-repository compatibility, and documentation procedures
 live in `MAINTAINERS.md`.
@@ -28,3 +28,9 @@ The goal is to make sophisticated agent workflows easy to assemble while keeping
 # Project Status
 
 This is a project in early-development, take advantage of not needing to implement back compat shims, do clear cuts and hard refactors.
+
+# UI work
+
+`docs/design.md` is the visual contract for every `.tsx` file, `src/styles.css`, and everything under
+`src/components`. It is loaded with this file. Follow it; `src/typography-policy.test.ts` enforces the
+mechanical parts.

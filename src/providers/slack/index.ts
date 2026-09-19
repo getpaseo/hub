@@ -1,6 +1,7 @@
 import type { AuthServer } from "../../auth/server.js";
 import {
   CONNECTION_ATTEMPT_LIFETIME_MINUTES,
+  CONNECTIONS_RETURN_ROUTE,
   callbackConnectionAccess,
   cancelledConnectionResult,
   connectionAccess,
@@ -339,14 +340,15 @@ async function completeAuthorization(
   }
   if (state === null || code === null || client === undefined) {
     return connectionCallbackFailure({
+      request,
       error: new SlackCallbackError(),
       provider: "slack",
       phase: "authorization",
       applicationBaseUrl: options.applicationBaseUrl,
-      returnRoute: "/",
+      returnRoute: CONNECTIONS_RETURN_ROUTE,
     });
   }
-  let returnRoute = "/";
+  let returnRoute: string = CONNECTIONS_RETURN_ROUTE;
   let callbackOrigin = options.applicationBaseUrl;
   try {
     const access = await callbackConnectionAccess(options.auth, request);
@@ -391,6 +393,7 @@ async function completeAuthorization(
       return connectionResult(callbackOrigin, returnRoute, "slack_bot_failed", "slack");
     }
     return connectionCallbackFailure({
+      request,
       error,
       provider: "slack",
       phase: "authorization",

@@ -61,6 +61,10 @@ Later changes to the current changelog section update the existing release notes
 
 ## Update public documentation
 
-Public Hub documentation lives in `getpaseo/paseo` under `public-docs/`. Externally visible Hub
-changes require a companion Paseo pull request. Keep task guides progressive and examples
-complete; keep exhaustive field documentation in reference pages.
+Public Hub documentation lives in `getpaseo/paseo` under `public-docs/`. Open a companion PR
+when an API, interface, or user-facing workflow change affects what users need to know or do.
+Internal changes and fixes that restore expected behavior do not require new public docs.
+If existing documentation becomes inaccurate, correct it with the smallest necessary edit.
+
+Document the intended public experience, not internal architecture or maintainer process.
+Keep each addition tied to a reader’s task; omit details that do not help them complete it.

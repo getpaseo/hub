@@ -148,6 +148,10 @@ export function createDiscordTriggerProvider(options: {
         }
         if (invocation.status === "rejected") {
           matches.push({
+            conversation: {
+              key: JSON.stringify(["discord", event.guildId, event.threadId ?? event.messageId]),
+              label: "Discord thread",
+            },
             triggerName: match.trigger.name,
             triggerContext,
             outputContext,
@@ -158,6 +162,10 @@ export function createDiscordTriggerProvider(options: {
           continue;
         }
         matches.push({
+          conversation: {
+            key: JSON.stringify(["discord", event.guildId, event.threadId ?? event.messageId]),
+            label: "Discord thread",
+          },
           triggerName: match.trigger.name,
           triggerContext,
           outputContext,

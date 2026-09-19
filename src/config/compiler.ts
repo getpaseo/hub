@@ -1,3 +1,5 @@
+import { eventDefinition, isEditorEvent } from "../triggers/configuration/events.js";
+import { ContinuationSchema } from "../triggers/continuation.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
@@ -170,6 +172,7 @@ const StepSchema = z
     environment: z.string().min(1),
     max_runtime: z.string().min(1),
     idle_timeout: z.string().min(1),
+    startup_timeout: z.string().min(1).optional(),
     agent: AuthoredAgentSelectionSchema,
     prompt: z.array(PromptBlockSchema).min(1),
     env: z.record(z.string().min(1), z.string()).optional(),
@@ -240,10 +243,12 @@ export interface CompiledInput {
 }
 
 export interface CompiledStep {
+  continuation?: import("../triggers/continuation.js").Continuation | undefined;
   id: string;
   environment: string;
   maxRuntimeMs: number;
   idleTimeoutMs: number;
+  startupTimeoutMs?: number | undefined;
   agent: CompiledAgentSelection;
   prompt: readonly CompiledPromptBlock[];
   env?: Readonly<Record<string, string>> | undefined;
@@ -388,10 +393,12 @@ const CompiledJsonSchemaSchema = z.custom<JsonValue>(
 
 const CompiledStepSchema: z.ZodType<CompiledStep> = z
   .object({
+    continuation: ContinuationSchema.optional(),
     id: z.string().regex(IDENTIFIER),
     environment: z.string().min(1),
     maxRuntimeMs: z.number().int().positive().max(MAX_DURATION_MS),
     idleTimeoutMs: z.number().int().positive().max(MAX_DURATION_MS),
+    startupTimeoutMs: z.number().int().positive().max(MAX_DURATION_MS).optional(),
     agent: CompiledAgentSelectionSchema,
     prompt: z.array(CompiledPromptBlockSchema).min(1),
     env: z.record(z.string(), z.string()).optional(),
@@ -592,6 +599,16 @@ function compileStep(
     environment: step.environment,
     maxRuntimeMs,
     idleTimeoutMs,
+    ...(step.startup_timeout === undefined
+      ? {}
+      : {
+          startupTimeoutMs: compileAt([...stepPath, "startup_timeout"], () =>
+            parseDurationMs(
+              step.startup_timeout!,
+              `trigger ${trigger.name} step ${step.id} startup_timeout`,
+            ),
+          ),
+        }),
     agent,
     prompt: compilePromptBlocks(trigger.name, step.id, step.prompt, resolvedPromptPartials),
     ...(env === undefined ? {} : { env }),
@@ -1338,7 +1355,7 @@ function validateTriggerLaunchSecurity(trigger: CompiledTrigger): void {
   if (fromTeams.length > 0 && !trigger.on.startsWith("github.")) {
     throw new Error(`trigger ${trigger.name} may use filters.from_teams only for GitHub events`);
   }
-  if (trigger.on === "manual.run") return;
+  if (isEditorEvent(trigger.on) && eventDefinition(trigger.on).origin === "hub") return;
   // A project scout is an intentionally autonomous, project-scoped policy. Every other
   // externally-originated Linear action remains actor-allowlisted below.
   if (trigger.on === "linear.issue_entered_scope") {

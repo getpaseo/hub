@@ -14,7 +14,7 @@ export type WorkflowDeadlineKind = "step_hard" | "step_idle" | "whole_run";
 export interface ProviderEventReceiptRecord {
   id: string;
   organizationId: string;
-  provider: "github" | "slack" | "discord" | "linear" | "manual";
+  provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule";
   connectionId: string | null;
   resourceId: string | null;
   deliveryId: string;
@@ -92,6 +92,8 @@ export interface MachineRecord {
 }
 
 export interface AgentExecutionRecord {
+  agentSessionId: string | null;
+  agentSessionAction: import("../agent-sessions/index.js").AgentSessionAction | null;
   id: string;
   organizationId: string;
   projectId: string;
@@ -687,6 +689,7 @@ export interface InsertAgentExecutionInput {
 }
 
 interface TriggerRunEvidence {
+  conversation: import("../triggers/continuation.js").Conversation | null;
   id: string;
   organizationId: string;
   projectId: string;
@@ -759,6 +762,7 @@ export interface WorkflowWakeupRecord {
 }
 
 export interface CreateAcceptedTriggerRunInput {
+  conversation?: import("../triggers/continuation.js").Conversation | null;
   id?: string;
   organizationId: string;
   projectId: string;
@@ -938,8 +942,15 @@ export interface ConsumeOrganizationUsageInput {
 
 export type BillingPlanPriceInterval = "monthly" | "annual";
 
+export interface BillingPlanMarketingFeature {
+  key: string;
+  label: string;
+  tooltip: string | null;
+}
+
 export interface BillingPlanMarketing {
-  features: readonly string[];
+  features: readonly BillingPlanMarketingFeature[];
+  priceTooltips: Record<BillingPlanPriceInterval, string | null>;
 }
 
 export interface BillingPlanPriceRecord {
@@ -956,7 +967,7 @@ export interface BillingPlanPriceRecord {
  * `template` and `marketing` are `unknown` at the storage boundary, matching
  * `OrganizationEntitlementsRecord` above — both were validated once by `src/billing/` before
  * `syncBillingPlan` was called. The public plans projection re-parses `marketing`
- * (`application-runtime.ts`) and never reads `template` at all; the (future) stamping path
+ * (`src/billing/public-catalog.ts`) and never reads `template` at all; entitlement stamping
  * re-parses `template`.
  */
 export interface BillingPlanRecord {
@@ -1061,6 +1072,7 @@ export interface MigrateProjectTriggersInput {
 }
 
 export interface SaveOrganizationTriggerInput {
+  recurrence?: import("../triggers/schedule/recurrence.js").Recurrence;
   organizationId: string;
   triggerId?: string;
   name: string;
@@ -1138,6 +1150,23 @@ export interface TerminateMachineFields {
 }
 
 export interface Database {
+  readonly executionAuthority: import("../execution-authority/index.js").ExecutionAuthorityStore;
+  readonly schedules: import("../triggers/schedule/index.js").ScheduleStore;
+  findAgentSessionByKey(
+    projectId: string,
+    key: string,
+  ): Promise<import("../agent-sessions/index.js").AgentSessionRecord | undefined>;
+  findAgentSession(
+    id: string,
+  ): Promise<import("../agent-sessions/index.js").AgentSessionRecord | undefined>;
+  saveAgentSession(session: import("../agent-sessions/index.js").AgentSessionRecord): Promise<void>;
+  attachExecutionToSession(
+    executionId: string,
+    sessionId: string,
+    action?: import("../agent-sessions/index.js").AgentSessionAction,
+  ): Promise<void>;
+  listAgentSessionExecutions(sessionId: string): Promise<AgentExecutionRecord[]>;
+
   createAcceptedTriggerRun(
     input: CreateAcceptedTriggerRunInput,
   ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }>;
@@ -1164,7 +1193,12 @@ export interface Database {
   findAgentExecutionByWorkflowStepRunId(
     stepRunId: string,
   ): Promise<AgentExecutionRecord | undefined>;
-  claimWorkflowWakeup(now: Date, leaseMs: number): Promise<WorkflowWakeupRecord | undefined>;
+  releaseWorkflowWakeup(triggerRunId: string, now: Date, claimedLease: Date): Promise<void>;
+  claimWorkflowWakeup(
+    now: Date,
+    leaseMs: number,
+    excludedRunIds?: readonly string[],
+  ): Promise<WorkflowWakeupRecord | undefined>;
   wakeWorkflowRun(triggerRunId: string, availableAt: Date): Promise<void>;
   deleteWorkflowWakeup(triggerRunId: string): Promise<void>;
   createWorkflowStepExecution(input: WorkflowStepExecutionInput): Promise<{
@@ -1304,6 +1338,7 @@ export interface Database {
     observedAt: Date,
     processedAt: Date,
   ): Promise<AgentExecutionRecord>;
+  limitAgentExecutionDeadline(executionId: string, deadlineAt: Date): Promise<void>;
   prepareAgentExecutionForDispatch(
     executionId: string,
     daemonId: string,

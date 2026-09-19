@@ -3,22 +3,26 @@ import { useCallback, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { Check } from "lucide-react";
+import { Card, CardSkeleton } from "../../components/app/card.js";
+import { FailureAlert } from "../../components/app/failure-alert.js";
 import { PageHeader } from "../../components/app/page.js";
 import { Section } from "../../components/app/section.js";
 import { StatusPill } from "../../components/app/status-pill.js";
-import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
-import { Skeleton } from "../../components/ui/skeleton.js";
 import { useRouteTenant } from "../../projects/context.js";
 import type { BillingOverviewView, PublicBillingPlan } from "../../server/runtime.js";
 import { billingOverview, billingPortal } from "./functions.js";
 import { PlanDialog } from "./plan-dialog.js";
-import { NO_SUBSCRIPTION, subscriptionSummary, type SubscriptionSummary } from "./presentation.js";
+import {
+  FeatureList,
+  NO_SUBSCRIPTION,
+  subscriptionSummary,
+  type SubscriptionSummary,
+} from "./presentation.js";
 
 type PortalResult = Awaited<ReturnType<typeof billingPortal>>;
 
-export function BillingPanel() {
+export function BillingPanel({ openPlans }: { openPlans: boolean }) {
   const tenant = useRouteTenant();
   const load = useServerFn(billingOverview);
   const query = useQuery({
@@ -26,30 +30,45 @@ export function BillingPanel() {
     queryFn: () => load({ data: { organizationSlug: tenant.organization.slug } }),
   });
 
-  if (query.isPending) return <BillingLoading />;
+  if (query.isPending) return <BillingLoading name={tenant.organization.name} />;
   if (query.isError || query.data.status === "error") {
     return (
-      <Alert variant="destructive">
-        <AlertTitle>Billing unavailable</AlertTitle>
-        <AlertDescription>
-          {query.data?.status === "error"
-            ? query.data.error.message
-            : "Hub did not receive the billing state. Check your connection and reload the page."}
-        </AlertDescription>
-      </Alert>
+      <FailureAlert
+        title="Billing unavailable"
+        error={query.data}
+        fallback="Hub did not receive the billing state. Check your connection and reload the page."
+      />
     );
   }
-  return <BillingContent overview={query.data.data} slug={tenant.organization.slug} />;
+  return (
+    <BillingContent
+      overview={query.data.data}
+      slug={tenant.organization.slug}
+      openPlans={openPlans}
+    />
+  );
 }
 
 /**
- * One card, banded top to bottom: who you are on this plan, what the plan includes, and the way
- * out to Stripe. The bands share a card so the page reads as a single object rather than a stack
- * of unrelated boxes, and each band owns its own padding so nothing collides.
+ * One card, read top to bottom: who you are on this plan, what the plan includes, and the way out
+ * to Stripe. The three read as one object because they are one card, not three — a subscription is
+ * a single fact with a single set of consequences.
  */
-function BillingContent({ overview, slug }: { overview: BillingOverviewView; slug: string }) {
+function BillingContent({
+  overview,
+  slug,
+  openPlans,
+}: {
+  overview: BillingOverviewView;
+  slug: string;
+  openPlans: boolean;
+}) {
   const { subscription, plans, canManage } = overview;
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const action = planPickerAction({ canManage, subscription, plans });
+  // The picker only opens on arrival when there is one to open: a member who follows the link
+  // from a locked control lands on the page and reads it, rather than facing a dialog offering
+  // a purchase they cannot make.
+  const [dialogOpen, setDialogOpen] = useState(openPlans && action !== null);
   const openDialog = useCallback(() => setDialogOpen(true), []);
   const closeDialog = useCallback(() => setDialogOpen(false), []);
   const summary = subscriptionSummary(subscription);
@@ -66,15 +85,11 @@ function BillingContent({ overview, slug }: { overview: BillingOverviewView; slu
         </Button>
       </PageHeader>
       <Section title="Plan">
-        <div className="overflow-hidden rounded-xl border bg-card text-card-foreground">
-          <PlanIdentity
-            summary={summary}
-            action={planPickerAction({ canManage, subscription, plans })}
-            onOpenPicker={openDialog}
-          />
+        <Card>
+          <PlanIdentity summary={summary} action={action} onOpenPicker={openDialog} />
           {currentPlan !== undefined && <PlanIncludes plan={currentPlan} />}
           {canManage && subscription.manageable && <PortalBand slug={slug} />}
-        </div>
+        </Card>
       </Section>
       {dialogOpen && (
         <PlanDialog
@@ -119,7 +134,7 @@ function PlanIdentity({
   onOpenPicker: () => void;
 }) {
   return (
-    <div className="flex flex-wrap items-start justify-between gap-4 p-5 sm:p-6">
+    <div className="flex flex-wrap items-start justify-between gap-4">
       <div className="grid min-w-0 gap-2">
         {/* The pill is wrapped because a bare inline-flex stretches to the full grid track. */}
         {summary.status !== null && (
@@ -127,9 +142,7 @@ function PlanIdentity({
             <StatusPill tone={summary.status.tone}>{summary.status.label}</StatusPill>
           </div>
         )}
-        <p className="text-2xl leading-tight tracking-tight">
-          {summary.planName ?? NO_SUBSCRIPTION}
-        </p>
+        <p className="text-2xl">{summary.planName ?? NO_SUBSCRIPTION}</p>
         {summary.detail !== null && (
           <p className="text-sm text-muted-foreground">{summary.detail}</p>
         )}
@@ -145,19 +158,8 @@ function PlanIdentity({
 
 /** What the organization is actually entitled to right now, in the plan author's own words. */
 function PlanIncludes({ plan }: { plan: PublicBillingPlan }) {
-  if (plan.marketingFeatures.length === 0) return null;
-  return (
-    <div className="border-t bg-muted/20 p-5 sm:p-6">
-      <ul className="grid gap-2 text-sm sm:grid-cols-2 sm:gap-x-6">
-        {plan.marketingFeatures.map((feature) => (
-          <li key={feature} className="flex items-start gap-2">
-            <Check aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />
-            <span>{feature}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
+  if (plan.features.length === 0) return null;
+  return <FeatureList features={plan.features} className="sm:grid-cols-2 sm:gap-x-6" />;
 }
 
 function PortalBand({ slug }: { slug: string }) {
@@ -169,18 +171,20 @@ function PortalBand({ slug }: { slug: string }) {
       if (result.status === "ok" && result.data.url !== null) redirectTo(result.data.url);
     },
   });
-  const error = open.data?.status === "error" ? open.data.error.message : undefined;
+  const failed = open.data?.status === "error";
   const start = useCallback(() => open.mutate({ data: { organizationSlug: slug } }), [open, slug]);
 
   return (
-    <div className="grid justify-items-start gap-3 border-t p-5 sm:p-6">
+    <div className="grid justify-items-start gap-3">
       <Button type="button" variant="outline" size="sm" onClick={start} disabled={open.isPending}>
         Manage billing
       </Button>
-      {error !== undefined && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
+      {failed && (
+        <FailureAlert
+          title="Billing portal unavailable"
+          error={open.data}
+          fallback="Hub could not open the billing portal. Try again in a moment."
+        />
       )}
     </div>
   );
@@ -191,11 +195,13 @@ function redirectTo(url: string): void {
   window.location.assign(url);
 }
 
-function BillingLoading() {
+function BillingLoading({ name }: { name: string }) {
   return (
-    <section aria-label="Loading billing" aria-busy="true" className="grid gap-6">
-      <Skeleton className="h-12 w-64" />
-      <Skeleton className="h-48 w-full" />
-    </section>
+    <>
+      <PageHeader title="Billing" description={`Plan and billing for ${name}.`} />
+      <Section title="Plan">
+        <CardSkeleton lines={4} />
+      </Section>
+    </>
   );
 }

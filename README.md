@@ -90,8 +90,10 @@ Hub generates and stores its authentication secret in the database. Advanced dep
 
 Billing is optional: leave `STRIPE_SECRET_KEY` unset and Hub runs with no billing surface at all. See [docs/billing.md](docs/billing.md).
 
-Invitation email is optional too: set `RESEND_API_KEY` and `RESEND_FROM` to email organization
-invites through Resend. Without them, managers can still copy and share invitation links.
+Email delivery is optional too: set `RESEND_API_KEY` and `RESEND_FROM` to email organization
+invitations, signup verification links, and password-reset links through Resend. Configured
+instances require new password accounts to verify their email before sign-in. Without delivery
+configuration, managers retain the existing copy-and-share invitation workflow.
 
 Then start Hub and PostgreSQL:
 
@@ -134,6 +136,12 @@ the execution-scoped `finish_execution` tool. Conversational triggers also recei
 event-native `reply` tool for progress and final responses. Provider or machine policy still
 controls every unrelated tool. A read-only provider configuration is defense in depth; Hub output
 authorization remains enforced by the execution MCP server.
+
+## Scheduled triggers
+
+Choose Schedule in the trigger editor to run agents daily or on selected weekdays, at one or more
+local times. See [scheduled triggers](docs/scheduled-triggers.md) for setup, YAML, timezone rules,
+and recovery behavior.
 
 ## Public API
 

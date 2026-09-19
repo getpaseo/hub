@@ -1,20 +1,21 @@
+import {
+  recurrenceSummary,
+  RecurrenceSchema,
+  DEFAULT_RECURRENCE,
+  type Recurrence,
+} from "../schedule/recurrence.js";
+import { ContinuationSchema } from "../continuation.js";
 import { parseDocument, stringify, type Document } from "yaml";
 import { z } from "zod";
-import { TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
+import { IDENTIFIER, TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
 
-export const EDITOR_EVENTS = [
-  "slack.mention",
-  "discord.mention",
-  "github.issue_comment",
-  "linear.issue_created",
-  "manual.run",
-] as const;
-
-export type EditorEvent = (typeof EDITOR_EVENTS)[number];
-
-export function parseEditorEvent(value: string): EditorEvent {
-  return isEditorEvent(value) ? value : "manual.run";
-}
+import {
+  eventDefinition,
+  isEditorEvent,
+  type EditorEvent,
+  type QualifierValues,
+  type QualifierKey,
+} from "./events.js";
 
 export interface TriggerFormValue {
   name: string;
@@ -22,12 +23,16 @@ export interface TriggerFormValue {
   event: EditorEvent;
   connection: string;
   allowedUsers: string;
+  qualifiers: QualifierValues;
+  recurrence?: Recurrence;
   daemon: string;
   cwd: string;
   agent: string;
   mode: string;
   thinkingOptionId: string;
   providerOptions: string;
+  continuationMode: string;
+  continuationKey: string;
   maxRuntime: string;
   idleTimeout: string;
   githubConnection: string;
@@ -78,12 +83,16 @@ function toFormValue(
     event,
     connection: definition.connection ?? "",
     allowedUsers: definition.filters?.from_users?.join(", ") ?? "*",
+    qualifiers: readQualifiers(event, definition.filters),
+    recurrence: definition.recurrence ?? DEFAULT_RECURRENCE,
     daemon: trigger.run.target.daemon,
     cwd: trigger.run.target.cwd,
     agent: joinAgentId(agent.provider, agent.model),
     mode: agent.mode ?? "",
     thinkingOptionId: agent.thinkingOptionId ?? "",
     providerOptions: agent.options === undefined ? "" : JSON.stringify(agent.options, null, 2),
+    continuationMode: trigger.run.continuation.mode,
+    continuationKey: trigger.run.continuation.mode === "key" ? trigger.run.continuation.key : "",
     maxRuntime: trigger.run.max_runtime,
     idleTimeout: trigger.run.idle_timeout,
     githubConnection: trigger.run.github?.connection ?? "",
@@ -104,7 +113,7 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   if (sameFormValue(projection.value, value)) return yaml;
   validateFormValue(value);
 
-  const document = parseDocument(yaml);
+  const document = parseDocument(yaml, { compat: ["timestamp"] });
   assertDocument(document);
   setIfChanged(document, ["name"], value.name);
   setIfChanged(document, ["enabled"], value.enabled);
@@ -115,12 +124,28 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
     document.deleteIn(["on", previousEvent]);
     document.setIn(["on", value.event], definition ?? {});
   }
-  if (value.event === "manual.run") {
+  if (eventDefinition(value.event).origin === "hub") {
     deleteIfPresent(document, ["on", value.event, "connection"]);
     deleteIfPresent(document, ["on", value.event, "filters", "from_users"]);
   } else {
     setIfChanged(document, ["on", value.event, "connection"], value.connection);
     setIfChanged(document, ["on", value.event, "filters", "from_users"], users(value.allowedUsers));
+  }
+
+  setOptional(
+    document,
+    ["on", value.event, "recurrence"],
+    value.event === "schedule.tick" ? (value.recurrence ?? DEFAULT_RECURRENCE) : undefined,
+  );
+  if (value.event === "schedule.tick") deleteIfPresent(document, ["on", value.event, "filters"]);
+  const qualifiers = authoredQualifiers(value);
+  const ownedKeys = new Set(
+    [...eventDefinition(previousEvent).qualifiers, ...eventDefinition(value.event).qualifiers].map(
+      (qualifier) => qualifier.key,
+    ),
+  );
+  for (const key of ownedKeys) {
+    setOptional(document, ["on", value.event, "filters", key], qualifiers[key]);
   }
 
   setIfChanged(document, ["run", "target", "daemon"], value.daemon);
@@ -135,6 +160,7 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
     blankToUndefined(value.thinkingOptionId),
   );
   setOptional(document, ["run", "agent", "options"], parseProviderOptions(value.providerOptions));
+  setIfChanged(document, ["run", "continuation"], formContinuation(value));
   setIfChanged(document, ["run", "max_runtime"], value.maxRuntime.trim());
   setIfChanged(document, ["run", "idle_timeout"], value.idleTimeout.trim());
   setOptional(document, ["run", "github"], githubAuthority(value));
@@ -142,11 +168,37 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   return document.toString({ lineWidth: 0 });
 }
 
-/** Create from an invalid/empty draft, otherwise retain the canonical document while patching it. */
-export function mergeTriggerForm(yaml: string, value: TriggerFormValue): string {
-  return projectTriggerForm(yaml).status === "editable"
-    ? patchTriggerYaml(yaml, value)
-    : createTriggerYaml(value);
+export type TriggerYamlResult =
+  | { status: "ok"; yaml: string }
+  | { status: "incomplete"; reason: string };
+
+/**
+ * The YAML a form amounts to: the canonical document patched where one exists, a fresh document
+ * where it does not.
+ *
+ * A half-filled trigger has no document at all — `run.target.daemon` and `run.agent.provider` have
+ * no empty representation — so the caller is told which field is still missing. Handing back a
+ * reason rather than throwing is what lets a screen disable the YAML view and say why beside the
+ * control, instead of surfacing a stray exception somewhere far from the field that caused it.
+ */
+export function mergeTriggerForm(yaml: string, value: TriggerFormValue): TriggerYamlResult {
+  try {
+    return {
+      status: "ok",
+      yaml:
+        projectTriggerForm(yaml).status === "editable"
+          ? patchTriggerYaml(yaml, value)
+          : createTriggerYaml(value),
+    };
+  } catch (cause) {
+    return { status: "incomplete", reason: incompleteReason(cause) };
+  }
+}
+
+function incompleteReason(cause: unknown): string {
+  return cause instanceof Error && cause.message.trim() !== ""
+    ? cause.message
+    : "The trigger is invalid.";
 }
 
 export function createTriggerYaml(value: TriggerFormValue): string {
@@ -154,10 +206,7 @@ export function createTriggerYaml(value: TriggerFormValue): string {
   const agent = splitAgentId(value.agent);
   const providerOptions = parseProviderOptions(value.providerOptions);
   const github = githubAuthority(value);
-  const definition =
-    value.event === "manual.run"
-      ? {}
-      : { connection: value.connection, filters: { from_users: users(value.allowedUsers) } };
+  const definition = formEventDefinition(value);
   return stringify(
     {
       name: value.name,
@@ -174,14 +223,31 @@ export function createTriggerYaml(value: TriggerFormValue): string {
             : { thinkingOptionId: value.thinkingOptionId.trim() }),
           ...(providerOptions === undefined ? {} : { options: providerOptions }),
         },
+        continuation: formContinuation(value),
         max_runtime: value.maxRuntime.trim(),
         idle_timeout: value.idleTimeout.trim(),
         ...(github === undefined ? {} : { github }),
         prompt: value.prompt,
       },
     },
-    { lineWidth: 0 },
+    { lineWidth: 0, compat: ["timestamp"] },
   );
+}
+
+function formEventDefinition(value: TriggerFormValue): TriggerDocument["on"][string] {
+  if (value.event === "schedule.tick")
+    return { recurrence: value.recurrence ?? DEFAULT_RECURRENCE };
+  if (eventDefinition(value.event).origin === "hub") return {};
+  return {
+    connection: value.connection,
+    filters: { from_users: users(value.allowedUsers), ...authoredQualifiers(value) },
+  };
+}
+
+function recurrenceErrors(value: TriggerFormValue): TriggerFieldErrors {
+  if (value.event !== "schedule.tick") return {};
+  const parsed = RecurrenceSchema.safeParse(value.recurrence ?? DEFAULT_RECURRENCE);
+  return parsed.success ? {} : { recurrence: parsed.error.issues[0]!.message };
 }
 
 function githubAuthority(value: TriggerFormValue) {
@@ -199,18 +265,86 @@ function githubAuthority(value: TriggerFormValue) {
 }
 
 function parsePermissions(value: string): Record<string, "read" | "write" | "admin"> | undefined {
-  const parsed = parseProviderOptions(value);
-  if (parsed === undefined) return undefined;
-  return GitHubPermissionsSchema.parse(parsed);
+  if (value.trim().length === 0) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("GitHub permissions must be valid JSON.");
+  }
+  const permissions = GitHubPermissionsSchema.safeParse(parsed);
+  if (!permissions.success) {
+    throw new Error('GitHub permissions map a scope to "read", "write", or "admin".');
+  }
+  return permissions.data;
+}
+
+/** What is wrong with each field, keyed by the field that has to change. */
+export type TriggerFieldErrors = Partial<
+  Record<keyof TriggerFormValue | `qualifiers.${QualifierKey}`, string>
+>;
+
+/**
+ * Every reason this form cannot become a trigger document, addressed to the field that owns it.
+ *
+ * One list, because a form that refuses to submit and a form that marks its fields have to agree
+ * about why: the same call feeds the errors drawn beside each control and the single sentence
+ * `mergeTriggerForm` reports when the document cannot be written at all. Insertion order is the
+ * order the fields appear on screen, so "the first problem" is the topmost one.
+ */
+export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
+  const errors: TriggerFieldErrors = {};
+  const name = value.name.trim();
+  if (name.length === 0) errors.name = "Trigger name is required.";
+  else if (!IDENTIFIER.test(name)) {
+    errors.name = "Use lowercase letters, digits, and hyphens, starting with a letter.";
+  }
+  if (eventDefinition(value.event).origin === "provider") {
+    if (value.connection.trim().length === 0) errors.connection = "Connection is required.";
+    if (value.allowedUsers.trim().length === 0) {
+      errors.allowedUsers = "Name at least one user ID, or let everyone trigger it.";
+    }
+  }
+  for (const qualifier of eventDefinition(value.event).qualifiers) {
+    const selection = value.qualifiers[qualifier.key];
+    if (qualifier.required && (selection === undefined || selection.trim().length === 0)) {
+      errors[`qualifiers.${qualifier.key}`] = `${qualifier.label} is required.`;
+    }
+  }
+  Object.assign(errors, recurrenceErrors(value));
+  if (value.daemon.trim().length === 0) errors.daemon = "Daemon is required.";
+  if (!value.cwd.trim().startsWith("/")) {
+    errors.cwd = "Working directory must be an absolute path.";
+  }
+  if (value.maxRuntime.trim().length === 0) errors.maxRuntime = "Maximum runtime is required.";
+  if (value.idleTimeout.trim().length === 0) errors.idleTimeout = "Idle timeout is required.";
+  const agent = refused(() => splitAgentId(value.agent));
+  if (agent !== undefined) errors.agent = agent;
+  if (value.mode.trim().length === 0) errors.mode = "Execution mode is required.";
+  const options = refused(() => parseProviderOptions(value.providerOptions));
+  if (options !== undefined) errors.providerOptions = options;
+  if (value.githubConnection.trim().length !== 0) {
+    const permissions = refused(() => parsePermissions(value.githubPermissions));
+    if (permissions !== undefined) errors.githubPermissions = permissions;
+  }
+  Object.assign(errors, continuationErrors(value));
+  if (value.prompt.trim().length === 0) errors.prompt = "Instructions are required.";
+  return errors;
+}
+
+/** The message a parse refused with, or `undefined` when it accepted the value. */
+function refused(parse: () => unknown): string | undefined {
+  try {
+    parse();
+    return undefined;
+  } catch (cause) {
+    return incompleteReason(cause);
+  }
 }
 
 function validateFormValue(value: TriggerFormValue): void {
-  if (!value.cwd.trim().startsWith("/")) {
-    throw new Error("Working directory must be an absolute path.");
-  }
-  if (value.mode.trim().length === 0) throw new Error("Execution mode is required.");
-  if (value.maxRuntime.trim().length === 0) throw new Error("Maximum runtime is required.");
-  if (value.idleTimeout.trim().length === 0) throw new Error("Idle timeout is required.");
+  const [message] = Object.values(triggerFormErrors(value));
+  if (message !== undefined) throw new Error(message);
 }
 
 export function parseProviderOptions(value: string): Record<string, unknown> | undefined {
@@ -249,7 +383,7 @@ export function splitAgentId(value: string): { provider: string; model?: string 
 function parseEditorDocument(
   yaml: string,
 ): { success: true; data: TriggerDocument } | { success: false; error: string } {
-  const document = parseDocument(yaml);
+  const document = parseDocument(yaml, { compat: ["timestamp"] });
   if (document.errors.length > 0) return { success: false, error: document.errors[0]!.message };
   const parsed = TriggerDocumentSchema.safeParse(document.toJS());
   if (!parsed.success) {
@@ -297,6 +431,64 @@ function blankToUndefined(value: string): string | undefined {
   return normalized.length === 0 ? undefined : normalized;
 }
 
-function isEditorEvent(value: string): value is EditorEvent {
-  return EDITOR_EVENTS.some((event) => event === value);
+/** Provider-bound state and qualifier compatibility belong to the form model. */
+export function changeTriggerEvent(value: TriggerFormValue, event: EditorEvent): TriggerFormValue {
+  const previous = eventDefinition(value.event);
+  const next = eventDefinition(event);
+  const sameProvider = previous.provider === next.provider;
+  const qualifiers: QualifierValues = {};
+  if (sameProvider) {
+    for (const qualifier of next.qualifiers) {
+      if (
+        previous.qualifiers.some(
+          (candidate) => candidate.key === qualifier.key && candidate.kind === qualifier.kind,
+        )
+      ) {
+        const selection = value.qualifiers[qualifier.key];
+        if (selection !== undefined) qualifiers[qualifier.key] = selection;
+      }
+    }
+  }
+  return { ...value, event, qualifiers, connection: sameProvider ? value.connection : "" };
+}
+
+function readQualifiers(
+  event: EditorEvent,
+  filters: TriggerDocument["on"][string]["filters"],
+): QualifierValues {
+  const values: QualifierValues = {};
+  for (const qualifier of eventDefinition(event).qualifiers) {
+    const value = filters?.[qualifier.key];
+    if (value !== undefined) values[qualifier.key] = value;
+  }
+  return values;
+}
+
+function authoredQualifiers(value: TriggerFormValue): QualifierValues {
+  const filters: QualifierValues = {};
+  for (const qualifier of eventDefinition(value.event).qualifiers) {
+    const selection = value.qualifiers[qualifier.key];
+    if (selection !== undefined) filters[qualifier.key] = selection.trim();
+  }
+  return filters;
+}
+
+function formContinuation(value: TriggerFormValue) {
+  return ContinuationSchema.parse(
+    value.continuationMode === "key"
+      ? { mode: "key", key: value.continuationKey }
+      : { mode: value.continuationMode },
+  );
+}
+
+function continuationErrors(value: TriggerFormValue): TriggerFieldErrors {
+  return refused(() => formContinuation(value)) === undefined
+    ? {}
+    : { continuationKey: "Enter a continuation key or expression." };
+}
+
+export function summarizeTriggerEvent(value: TriggerFormValue | null, event: string): string {
+  if (value?.event === "schedule.tick")
+    return recurrenceSummary(value.recurrence ?? DEFAULT_RECURRENCE);
+  return isEditorEvent(event) ? eventDefinition(event).label : event;
 }

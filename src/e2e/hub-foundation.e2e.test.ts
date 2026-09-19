@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
-import { afterEach, beforeEach, describe, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, it } from "vitest";
 import { HubE2E } from "./harness/index.js";
+import { prebuildPaseoArtifacts, resolvePaseoWorktree } from "./harness/source-paseo.js";
 import { currentProjectConfigurationFiles } from "../test-utils/current-project-configuration.js";
 
 const describeHubE2E = process.env["RUN_HUB_E2E"] === "1" ? describe : describe.skip;
 
 describeHubE2E("Paseo Hub cross-repository contract", () => {
   let hub: HubE2E;
+
+  beforeAll(async () => {
+    await prebuildPaseoArtifacts(resolvePaseoWorktree());
+  }, 600_000);
 
   beforeEach(async () => {
     hub = await HubE2E.start();
@@ -18,16 +23,61 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     assert.deepEqual(shutdown?.leakedProcesses ?? [], []);
   }, 120_000);
 
+  it("continues a conversation through session tools and restores its archived workspace", async () => {
+    await hub.connect();
+    await hub.daemonIsConnected();
+    await hub.enableAgentContinuation();
+    const first = await hub.runCapabilityTrigger("continuation-first", "one-thread");
+    const firstResult = await hub.completedCapabilityRun(first.executionId);
+    assert.equal(firstResult.replySucceeded, true);
+    assert.equal(firstResult.duplicateRejected, true);
+    await hub.sessionIsArchived(first.executionId);
+    const session = await hub.sessionEvidence(first.executionId);
+    const second = await hub.runCapabilityTrigger("continuation-second", "one-thread");
+    assert.equal(second.agentId, first.agentId);
+    assert.deepEqual(await hub.sessionEvidence(second.executionId), session);
+    const secondResult = await hub.completedCapabilityRun(second.executionId);
+    assert.equal(secondResult.replySucceeded, true);
+    assert.deepEqual(secondResult.outputContext, {
+      provider: "discord",
+      guildId: "guild-original",
+      channelId: "channel-original",
+      threadId: "one-thread",
+      messageId: "continuation-second",
+    });
+    const separate = await hub.runCapabilityTrigger("continuation-separate", "another-thread");
+    assert.notEqual(separate.agentId, first.agentId);
+    await hub.completedCapabilityRun(separate.executionId);
+  }, 120_000);
+
   it("connects the source-built daemon through an enrollment token", async () => {
     const enrollment = await hub.connect();
     await hub.daemonIsConnected();
+    const providers = await hub.requestProviderSnapshot();
 
     assert.equal((await hub.status()).state, "connected");
+    assert.ok(Array.isArray(providers["entries"]));
     assert.match(
       enrollment.daemonId,
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
     );
     await hub.disconnect();
+  }, 120_000);
+
+  it("delivers a long prompt through ordinary agent creation without enabling continuation", async () => {
+    await hub.connect();
+    await hub.daemonIsConnected();
+    const prompt =
+      "Deploy requested for phase-five-operator\n" +
+      "Full request context. ".repeat(1_000) +
+      "End.";
+    await hub.installProductionConfiguration(prompt);
+    const run = await hub.runManual("long-prompt", "requested");
+    const completed = await hub.completedRun(run.executionId);
+    assert.equal(completed.prompt, prompt);
+    assert.equal(completed.status, "succeeded");
+    const session = await hub.sessionEvidence(run.executionId);
+    assert.equal(session.agentId, run.agentId);
   }, 120_000);
 
   it("validates and installs the exact authored bundle through the source-built CLI", async () => {
@@ -98,7 +148,6 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     const capabilityRun = await hub.runCapabilityTrigger("capability-delivery");
     const capability = await hub.completedCapabilityRun(capabilityRun.executionId);
     const denial = await hub.requestForbiddenOperation();
-    const steerDenial = await hub.requestForbiddenSteer(unrelatedAgent);
 
     assert.equal(connected.state, "connected");
     assert.deepEqual(completed, {
@@ -127,11 +176,6 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
       requestType: "daemon.get_status.request",
       code: "access_denied",
     });
-    assert.deepEqual(steerDenial, {
-      type: "rpc_error",
-      requestType: "send_agent_message_request",
-      code: "access_denied",
-    });
     assert.deepEqual(hub.relayEvidence(), {
       enabled: false,
       configuredOptions: [],
@@ -151,21 +195,21 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     assert.deepEqual(run.beforeRestart, {
       receipts: 1,
       executions: 1,
-      status: "running",
+      status: "spawning",
       daemonId: enrollment.daemonId,
       agentId: null,
     });
 
     await hub.recoverAmbiguousManualRun(run.executionId);
     const recovery = await hub.replayEvidence(run.executionId, run.providerEventReceiptId);
-    assert.equal(recovery.executionAgentId, recovery.ownerMatchingAgentId);
+    assert.equal(recovery.executionAgentId, recovery.persistedAgentId);
     assert.deepEqual(recovery, {
       deliveryReceipts: 1,
       executions: 1,
       persistedDaemonAgents: 1,
-      ownerMatchingAgentId: recovery.executionAgentId,
-      ownerDaemonId: enrollment.daemonId,
-      ownerMatchesAssociation: true,
+      persistedAgentId: recovery.executionAgentId,
+      sessionDaemonId: enrollment.daemonId,
+      sessionMatchesAssociation: true,
       executionAgentId: recovery.executionAgentId,
       persistedAssociations: 1,
       createAttempts: 2,
@@ -181,11 +225,38 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
       output: "phase-five:requested",
       status: "succeeded",
       daemonId: enrollment.daemonId,
-      agentId: recovery.ownerMatchingAgentId,
+      agentId: recovery.persistedAgentId,
     });
   }, 120_000);
 
-  it("fails the same owned running agent when a real daemon restart interrupts it", async () => {
+  it.each([false, true])(
+    "preserves a credentialed execution across a real Hub restart (crash=%s)",
+    async (crash) => {
+      await hub.connect();
+      await hub.daemonIsConnected();
+      await hub.installProductionConfiguration();
+      const run = await hub.beginCredentialRun();
+      const before = await hub.sessionEvidence(run.executionId);
+      const issued = await hub.credentialEvents();
+      assert.equal(issued.length, 1);
+      assert.equal(issued[0]?.["action"], "mint");
+      const after = await hub.restartHubWithRunningAgent(run.executionId, crash);
+      assert.deepEqual(after, before);
+      assert.deepEqual(await hub.credentialEvents(), issued);
+      await hub.allowRecoveredCompletion();
+      const completed = await hub.completedRun(run.executionId);
+      assert.equal(completed.status, "succeeded");
+      assert.equal(completed.agentId, run.agentId);
+      await hub.credentialIsRevoked();
+      assert.deepEqual(await hub.credentialEvents(), [
+        ...issued,
+        { action: "revoke", token: issued[0]?.["token"] },
+      ]);
+    },
+    120_000,
+  );
+
+  it("fails the same running agent when a real daemon restart interrupts it", async () => {
     const enrollment = await hub.connect();
     await hub.daemonIsConnected();
     await hub.installProductionConfiguration();
@@ -195,12 +266,12 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     assert.deepEqual(recovery, {
       persistedDaemonAgents: 1,
       executionAgentId: run.agentId,
-      ownerAgentId: run.agentId,
-      ownerDaemonId: enrollment.daemonId,
+      persistedAgentId: run.agentId,
+      sessionDaemonId: enrollment.daemonId,
       associationDaemonId: enrollment.daemonId,
-      createAttempts: 2,
+      createAttempts: 1,
       promptAttempts: 1,
-      recoveryCreateAttempts: 1,
+      recoveryCreateAttempts: 0,
       statusImmediatelyBeforeRestart: "running",
       recoveredStatusAfterRestart: "closed",
       executionStatus: "failed",

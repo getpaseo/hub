@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { createExecutionAuthority } from "../../execution-authority/index.js";
+import { z } from "zod";
 import { appendFile, writeFile } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
@@ -143,8 +146,35 @@ async function main(): Promise<void> {
   });
   await configuration.activate(config.id);
   const resources = new OrganizationResources(database);
+  const executionAuthority = createExecutionAuthority({
+    database,
+    connectionsForProject: () => async () => {
+      throw new Error("Unexpected E2E connection value");
+    },
+    isExecutionActive: async (id) => {
+      const execution = await database.findAgentExecutionById(id);
+      return execution?.status === "running" || execution?.status === "spawning";
+    },
+    githubAuthority: {
+      mint: async () => {
+        const token = randomUUID();
+        await appendFile(
+          `${outputFile}.authority`,
+          `${JSON.stringify({ action: "mint", token })}\n`,
+        );
+        return { token, expiresAt: Date.now() + 3600_000, botUserId: 123, botLogin: "paseo[bot]" };
+      },
+      revoke: async (token) => {
+        await appendFile(
+          `${outputFile}.authority`,
+          `${JSON.stringify({ action: "revoke", token })}\n`,
+        );
+      },
+    },
+  });
   const application = createHubApplication({
     database,
+    executionAuthority,
     entitlements: entitlements.service,
     publicApi:
       auth.publicCredentials === undefined
@@ -156,6 +186,7 @@ async function main(): Promise<void> {
         name: "discord",
         eventNames: ["e2e.discord"],
         async match(trigger) {
+          const payload = z.object({ conversation: z.string().optional() }).parse(trigger.payload);
           const activeConfiguration = await database.findActiveProjectConfiguration(E2E_PROJECT_ID);
           const compiledConfiguration =
             activeConfiguration === undefined
@@ -178,12 +209,17 @@ async function main(): Promise<void> {
                 provider: "discord",
                 guildId: "guild-original",
                 channelId: "channel-original",
-                threadId: "thread-original",
-                messageId: "message-original",
+                threadId: payload.conversation ?? "thread-original",
+                messageId:
+                  payload.conversation === undefined ? "message-original" : trigger.deliveryId,
               },
               configurationRevisionId: activeConfiguration.id,
               projectId: E2E_PROJECT_ID,
               hubConfig: compiledConfiguration,
+              conversation:
+                payload.conversation === undefined
+                  ? null
+                  : { key: `e2e:${payload.conversation}`, label: payload.conversation },
               invocation: {
                 status: "accepted",
                 prompt: "Deploy mcp-capability for phase-five-operator",
@@ -229,6 +265,7 @@ async function main(): Promise<void> {
     billingOverview: () => Promise.reject(new Error("billing is not configured")),
     billingCheckout: () => Promise.reject(new Error("billing is not configured")),
     billingPortal: () => Promise.reject(new Error("billing is not configured")),
+    organizationTrial: () => Promise.resolve({ daysLeft: null }),
     providerRequest: () => Promise.resolve(new Response("Not Found", { status: 404 })),
     async stop() {
       await hub?.stop();

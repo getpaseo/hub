@@ -14,9 +14,7 @@ import { createHubApplication, type HubRuntime } from "../../app.js";
 import { createFetchServer } from "../../http/node-server.js";
 import { startApplication, stopApplication } from "../../server/runtime.js";
 import {
-  HubExecutionAgentCreateRequestSchema,
   HubExecutionAgentValidateRequestSchema,
-  HubExecutionControlRequestSchema,
   type HubExecutionControlAction,
   type HubExecutionAgentSnapshot,
 } from "../../hub/protocol.js";
@@ -109,9 +107,46 @@ const LegacyEnrollmentSchema = z.object({
 const ExecutionSessionRequestSchema = z.object({
   type: z.literal("session"),
   message: z.discriminatedUnion("type", [
-    HubExecutionAgentCreateRequestSchema,
     HubExecutionAgentValidateRequestSchema,
-    HubExecutionControlRequestSchema,
+    z.object({
+      type: z.literal("create_agent_request"),
+      requestId: z.string(),
+      idempotencyKey: z.string(),
+      config: z
+        .object({
+          provider: z.string(),
+          cwd: z.string(),
+          mcpServers: z.record(z.string(), z.object({ url: z.string() }).passthrough()),
+        })
+        .passthrough(),
+      env: z.record(z.string(), z.string()).optional(),
+      worktree: z.unknown().optional(),
+    }),
+    z.object({
+      type: z.literal("fetch_agent_request"),
+      requestId: z.string(),
+      agentId: z.string(),
+    }),
+    z.object({ type: z.literal("fetch_agents_request"), requestId: z.string() }),
+    z.object({ type: z.literal("agent.timeline.set_subscription.request"), requestId: z.string() }),
+    z.object({
+      type: z.literal("send_agent_message_request"),
+      requestId: z.string(),
+      agentId: z.string(),
+      messageId: z.string(),
+      text: z.string(),
+      activeTurnBehavior: z.literal("steer"),
+    }),
+    z.object({
+      type: z.literal("cancel_agent_request"),
+      requestId: z.string(),
+      agentId: z.string(),
+    }),
+    z.object({
+      type: z.literal("archive_workspace_request"),
+      requestId: z.string(),
+      workspaceId: z.string(),
+    }),
   ]),
 });
 
@@ -714,9 +749,27 @@ export class HubHarness {
   async pendingExecutionCount(): Promise<number> {
     return (await this.requireDatabase().findPendingAgentExecutions()).length;
   }
-  async waitForRecoveredExecution(id: string): Promise<AgentExecutionRecord> {
-    await waitFor(async () => (await this.execution(id)).daemonAgentId !== null);
-    return this.execution(id);
+  /**
+   * Recovery lands in two writes: the daemon agent is attached, then the execution moves on from
+   * `spawning`. Waiting only for the agent, then reading the row again, returns whatever the
+   * second write happened to have done by then — so a caller asserting the settled status was
+   * racing it. Name the status you are waiting for, and the record you get is the one that
+   * satisfied the wait rather than a later re-read.
+   */
+  async waitForRecoveredExecution(
+    id: string,
+    status?: AgentExecutionRecord["status"],
+  ): Promise<AgentExecutionRecord> {
+    let recovered: AgentExecutionRecord | undefined;
+    await waitFor(async () => {
+      const execution = await this.execution(id);
+      if (execution.daemonAgentId === null) return false;
+      if (status !== undefined && execution.status !== status) return false;
+      recovered = execution;
+      return true;
+    });
+    if (recovered === undefined) throw new Error(`Execution ${id} did not recover`);
+    return recovered;
   }
   async waitForExecutionForTriggerRun(triggerRunId: string): Promise<AgentExecutionRecord> {
     let execution: AgentExecutionRecord | undefined;
@@ -736,7 +789,7 @@ export class HubHarness {
     await waitFor(async () => (await this.execution(id)).status === status);
     return this.execution(id);
   }
-  rejectNextCreate(error: HubCreateError): void {
+  rejectNextCreate(error: string): void {
     this.requireDaemon().rejectNextCreate(error);
   }
   advanceDispatchTime(ms: number): Promise<void> {
@@ -769,8 +822,11 @@ export class HubHarness {
     };
   }
   async waitForCreatedAgentLaunch() {
-    await waitFor(async () => this.requireDaemon().createdAgentCount() > 0);
+    await waitFor(async () => this.requireDaemon().deliveredPromptCount() > 0);
     return this.createdAgentLaunch();
+  }
+  async waitForDeliveredPrompts(count: number): Promise<void> {
+    await waitFor(async () => this.requireDaemon().deliveredPromptCount() >= count);
   }
   async waitForCreatedAgentRequests(count: number): Promise<void> {
     await waitFor(async () => this.requireDaemon().createdAgentRequestCount() >= count);
@@ -780,6 +836,9 @@ export class HubHarness {
   }
   controlActions(): readonly HubExecutionControlAction[] {
     return this.requireDaemon().controlActions();
+  }
+  async waitForControlAction(action: HubExecutionControlAction): Promise<void> {
+    await waitFor(async () => this.controlActions().includes(action));
   }
   originUrl(): string {
     return this.origin;
@@ -961,7 +1020,7 @@ export class HubHarness {
   createdAgentRequestCount(): number {
     return this.requireDaemon().createdAgentRequestCount();
   }
-  async runtimeResources(expected?: { recoveredExecutionSubscriptions: number }) {
+  async runtimeResources(expected?: { executionSubscriptions: number }) {
     if (expected !== undefined) {
       try {
         await waitFor(async () => deepEqual(this.requireHub().resourceCounts(), expected));
@@ -1105,6 +1164,36 @@ export class HubHarness {
         id: 1,
         method: "tools/call",
         params: { name, arguments: args },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body: unknown = await response.json();
+    assert.ok(isRecord(body));
+    return body;
+  }
+
+  async callSessionTool(
+    executionId: string,
+    name: "finish_execution" | "reply",
+    args: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>> {
+    const execution = await this.execution(executionId);
+    assert.ok(execution.agentSessionId);
+    const session = await this.requireDatabase().findAgentSession(execution.agentSessionId);
+    const mcp = session?.creationOptions.mcpServers?.["hub"];
+    assert.ok(mcp);
+    const response = await fetch(new URL(new URL(mcp.url).pathname, this.origin), {
+      method: "POST",
+      headers: {
+        ...mcp.headers,
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: { ...args, executionId } },
       }),
     });
     assert.equal(response.status, 200);
@@ -1692,6 +1781,7 @@ export class HubHarness {
       billingOverview: () => Promise.reject(new Error("billing is not configured")),
       billingCheckout: () => Promise.reject(new Error("billing is not configured")),
       billingPortal: () => Promise.reject(new Error("billing is not configured")),
+      organizationTrial: () => Promise.resolve({ daysLeft: null }),
       providerRequest: () => Promise.resolve(new Response("Not Found", { status: 404 })),
       stop: () => hub.stop(),
     }));
@@ -1709,13 +1799,16 @@ export class HubHarness {
 
   private createExecutionAuthority(): ExecutionAuthority {
     return createExecutionAuthority({
+      database: this.requireDatabase(),
       connectionsForProject: () => async (connectionSlug, value, context) => {
         if (connectionSlug !== "some-connection" || value !== "token") {
           throw new Error(`unexpected test connection: ${connectionSlug}.${value}`);
         }
         if (this.issueAuthorityConnectionLease) {
-          await context?.registerToken?.("durable-connection-token", async () => {
-            this.authorityRevocations.push("durable-connection-token");
+          await context?.registerToken?.({
+            provider: "github",
+            token: "durable-connection-token",
+            expiresAt: Date.now() + 60 * 60_000,
           });
         }
         return "resolved-secret";
@@ -2071,7 +2164,7 @@ class TestDaemon {
   private holdControlAck = false;
   private materializeSpawn = true;
   private omitSnapshotOnReconnect = false;
-  private nextCreateError: HubCreateError | undefined;
+  private nextCreateError: string | undefined;
   private resolveSpawn!: () => void;
   private readonly spawnObserved = new Promise<void>((resolve) => {
     this.resolveSpawn = resolve;
@@ -2177,6 +2270,7 @@ class TestDaemon {
       headers: {
         authorization: `Bearer ${this.credential}`,
         "x-paseo-daemon-id": this.daemonId,
+        "x-paseo-session-protocol": "1",
       },
     });
     socket.on("message", (data) => this.receive(data));
@@ -2228,7 +2322,7 @@ class TestDaemon {
   omitAgentSnapshotOnReconnect(): void {
     this.omitSnapshotOnReconnect = true;
   }
-  rejectNextCreate(error: HubCreateError): void {
+  rejectNextCreate(error: string): void {
     this.nextCreateError = error;
   }
   holdSpawnAcknowledgement(): void {
@@ -2280,8 +2374,9 @@ class TestDaemon {
   async emitEarlyActivity(): Promise<void> {
     if (!this.pendingCreate) throw new Error("No pending create request");
     this.send({
-      type: "hub.execution.agent.stream",
+      type: "agent_stream",
       payload: {
+        timestamp: new Date().toISOString(),
         executionId: this.pendingCreate.executionId,
         agentId: `agent-${this.pendingCreate.executionId}`,
         event: {
@@ -2303,6 +2398,9 @@ class TestDaemon {
   }
   createdAgentCount(): number {
     return this.agents.size;
+  }
+  deliveredPromptCount(): number {
+    return [...this.agents.values()].filter((agent) => typeof agent["prompt"] === "string").length;
   }
   createdAgentRequestCount(): number {
     return this.createRequests;
@@ -2328,11 +2426,12 @@ class TestDaemon {
     if (!agent) throw new Error("Unknown agent");
     agent["status"] = status;
     this.send({
-      type: "hub.execution.agent.update",
+      type: "agent_update",
       payload: {
         executionId: this.executionId(agentId),
         agentId,
-        agent: agentSnapshot(agentId, status),
+        kind: "upsert",
+        agent: { ...agentSnapshot(agentId, status), workspaceId: `workspace-${agentId}` },
       },
     });
   }
@@ -2347,8 +2446,9 @@ class TestDaemon {
   }
   async starts(agentId: string): Promise<void> {
     this.send({
-      type: "hub.execution.agent.stream",
+      type: "agent_stream",
       payload: {
+        timestamp: new Date().toISOString(),
         executionId: this.executionId(agentId),
         agentId,
         event: {
@@ -2361,8 +2461,9 @@ class TestDaemon {
   }
   async outputs(agentId: string, content: string): Promise<void> {
     this.send({
-      type: "hub.execution.agent.stream",
+      type: "agent_stream",
       payload: {
+        timestamp: new Date().toISOString(),
         executionId: this.executionId(agentId),
         agentId,
         event: {
@@ -2381,8 +2482,9 @@ class TestDaemon {
   }
   async startsTurn(agentId: string): Promise<void> {
     this.send({
-      type: "hub.execution.agent.stream",
+      type: "agent_stream",
       payload: {
+        timestamp: new Date().toISOString(),
         executionId: this.executionId(agentId),
         agentId,
         event: { type: "turn_started", provider: "opencode" },
@@ -2392,8 +2494,9 @@ class TestDaemon {
   }
   async failsTurn(agentId: string): Promise<void> {
     this.send({
-      type: "hub.execution.agent.stream",
+      type: "agent_stream",
       payload: {
+        timestamp: new Date().toISOString(),
         executionId: this.executionId(agentId),
         agentId,
         event: {
@@ -2406,8 +2509,9 @@ class TestDaemon {
   }
   async completesTurn(agentId: string): Promise<void> {
     this.send({
-      type: "hub.execution.agent.stream",
+      type: "agent_stream",
       payload: {
+        timestamp: new Date().toISOString(),
         executionId: this.executionId(agentId),
         agentId,
         event: {
@@ -2423,8 +2527,9 @@ class TestDaemon {
       },
     });
     this.send({
-      type: "hub.execution.agent.stream",
+      type: "agent_stream",
       payload: {
+        timestamp: new Date().toISOString(),
         executionId: this.executionId(agentId),
         agentId,
         event: { type: "turn_completed", provider: "opencode" },
@@ -2434,8 +2539,9 @@ class TestDaemon {
   }
   async completesTurnWithoutFinishTimeline(agentId: string): Promise<void> {
     this.send({
-      type: "hub.execution.agent.stream",
+      type: "agent_stream",
       payload: {
+        timestamp: new Date().toISOString(),
         executionId: this.executionId(agentId),
         agentId,
         event: { type: "turn_completed", provider: "opencode" },
@@ -2477,7 +2583,7 @@ class TestDaemon {
           status: "server_info",
           serverId: this.daemonId,
           permissions: this.permissions,
-          features: {},
+          features: { hubAgentRpc: true, agentRequestReceipts: true },
         },
       });
       return;
@@ -2492,30 +2598,73 @@ class TestDaemon {
       });
       return;
     }
-    if (request.type === "hub.execution.control.request") {
-      this.controls.push(request.action);
-      this.controlActionsByExecution.set(request.executionId, request.action);
-      const pending = this.pendingControlActions.get(request.executionId);
-      this.pendingControlActions.delete(request.executionId);
-      pending?.(request.action);
-      if (this.holdControlAck) {
-        this.heldControls.set(request.executionId, request);
-      } else {
-        this.acknowledgeControl(request);
-      }
+    if (request.type === "fetch_agent_request") {
+      const agent = this.agents.get(request.agentId);
+      this.send({
+        type: "fetch_agent_response",
+        payload: {
+          requestId: request.requestId,
+          agent: agent
+            ? {
+                ...agentSnapshot(request.agentId, readAgentStatus(agent["status"])),
+                workspaceId: `workspace-${request.agentId}`,
+              }
+            : null,
+        },
+      });
+      return;
+    }
+    if (
+      request.type === "fetch_agents_request" ||
+      request.type === "agent.timeline.set_subscription.request"
+    ) {
+      this.send({
+        type:
+          request.type === "fetch_agents_request"
+            ? "fetch_agents_response"
+            : "agent.timeline.set_subscription.response",
+        payload: { requestId: request.requestId },
+      });
+      return;
+    }
+    if (request.type === "send_agent_message_request") {
+      const agent = this.agents.get(request.agentId);
+      if (!agent) throw new Error("Unknown agent");
+      agent["prompt"] = request.text;
+      this.send({
+        type: "send_agent_message_response",
+        payload: { requestId: request.requestId, accepted: true },
+      });
+      return;
+    }
+    if (request.type === "cancel_agent_request" || request.type === "archive_workspace_request") {
+      const agentId =
+        request.type === "cancel_agent_request"
+          ? request.agentId
+          : request.workspaceId.slice("workspace-".length);
+      const executionId = this.executionId(agentId);
+      const action = request.type === "cancel_agent_request" ? "interrupt" : "archive";
+      const control = { requestId: request.requestId, executionId, action } as const;
+      this.controls.push(action);
+      this.controlActionsByExecution.set(executionId, action);
+      const pending = this.pendingControlActions.get(executionId);
+      this.pendingControlActions.delete(executionId);
+      pending?.(action);
+      if (this.holdControlAck) this.heldControls.set(executionId, control);
+      else this.acknowledgeControl(control);
       return;
     }
     this.createRequests += 1;
-    const pending = {
-      requestId: request.requestId,
-      executionId: request.executionId,
-    };
-    const agentId = `agent-${request.executionId}`;
+    const executionId = new URL(request.config.mcpServers["hub"]!.url).pathname.split("/")[2]!;
+    const pending = { requestId: request.requestId, executionId };
+    const agentId = `agent-${executionId}`;
     if (this.materializeSpawn && !this.agents.has(agentId)) {
       this.agents.set(agentId, {
-        ...request,
+        ...request.config,
+        modeId: request.config["modeId"],
         env: request.env,
-        executionId: request.executionId,
+        worktree: request.worktree,
+        executionId,
         status: "running",
       });
     }
@@ -2523,18 +2672,16 @@ class TestDaemon {
     if (this.holdAck) this.pendingCreate = pending;
     else this.acknowledge(pending);
   }
+
   private acknowledge(pending: { requestId: string; executionId: string }): void {
     const error = this.nextCreateError;
     this.nextCreateError = undefined;
     if (error !== undefined) {
       this.send({
-        type: "hub.execution.agent.create.response",
+        type: "status",
         payload: {
+          status: "agent_create_failed",
           requestId: pending.requestId,
-          executionId: pending.executionId,
-          agentId: null,
-          agent: null,
-          success: false,
           error,
         },
       });
@@ -2544,15 +2691,12 @@ class TestDaemon {
     const agentId = `agent-${pending.executionId}`;
     const status = readAgentStatus(this.agents.get(agentId)?.["status"]);
     this.send({
-      type: "hub.execution.agent.create.response",
+      type: "status",
       payload: {
+        status: "agent_created",
         requestId: pending.requestId,
-        executionId: pending.executionId,
         agentId,
-        agent: this.omitSnapshotOnReconnect ? null : agentSnapshot(agentId, status),
-        success: true,
-        toolPolicyApplied: true,
-        error: null,
+        agent: { ...agentSnapshot(agentId, status), workspaceId: `workspace-${agentId}` },
       },
     });
     this.pendingCreate = undefined;
@@ -2563,14 +2707,8 @@ class TestDaemon {
     action: HubExecutionControlAction;
   }): void {
     this.send({
-      type: "hub.execution.control.response",
-      payload: {
-        requestId: request.requestId,
-        executionId: request.executionId,
-        action: request.action,
-        success: true,
-        error: null,
-      },
+      type: request.action === "archive" ? "archive_workspace_response" : "cancel_agent_response",
+      payload: { requestId: request.requestId, error: null },
     });
   }
   private executionId(agentId: string): string {
@@ -2586,16 +2724,6 @@ class TestDaemon {
 function isHubHello(value: unknown): boolean {
   return typeof value === "object" && value !== null && "type" in value && value.type === "hello";
 }
-
-type HubCreateError =
-  | {
-      code: "provider_options_invalid";
-      provider: string;
-      issues: readonly { path: readonly (string | number)[]; message: string }[];
-      message: string;
-    }
-  | { code: "tool_policy_unsupported"; provider: string; message: string }
-  | { code: "create_failed"; message: string };
 
 function agentSnapshot(
   agentId: string,

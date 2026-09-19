@@ -42,5 +42,7 @@ function isMissingFile(error: unknown): boolean {
 function contentType(name: string): string {
   if (name.endsWith(".css")) return "text/css; charset=utf-8";
   if (name.endsWith(".js")) return "text/javascript; charset=utf-8";
+  if (name.endsWith(".woff2")) return "font/woff2";
+  if (name.endsWith(".woff")) return "font/woff";
   return "application/octet-stream";
 }

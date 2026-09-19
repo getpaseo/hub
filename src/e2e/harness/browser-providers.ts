@@ -72,7 +72,10 @@ export class BrowserGitHubAuth implements GitHubAuth {
   }
 
   mintInstallationToken(installationId: number) {
-    return Promise.resolve(`installation-token-${installationId}`);
+    return Promise.resolve({
+      token: `installation-token-${installationId}`,
+      expiresAt: Date.now() + 3600_000,
+    });
   }
 
   mintInstallationAccessToken(input: {

@@ -185,6 +185,7 @@ function executionSemantics(
     environment: { ...environment, name: undefined },
     step: {
       ...step,
+      continuation: step.continuation ?? { mode: "new" },
       id: undefined,
       environment: undefined,
       prompt: step.prompt

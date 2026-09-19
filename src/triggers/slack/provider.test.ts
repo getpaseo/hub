@@ -227,6 +227,13 @@ describe("Slack Phase 1 trigger provider", () => {
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.equal(match.triggerContext.event.slack.trigger_message.thread, null);
     assert.equal(match.outputContext.threadTs, match.outputContext.messageTs);
+    const reply = (
+      await provider.match(external(project.id, revision.id, { messageTs: "1700000000.000002" }))
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(reply)) throw new Error("expected accepted reply");
+    assert.ok(match.conversation);
+    assert.equal(reply.conversation?.key, match.conversation.key);
+
     assert.equal(
       match.triggerContext.event.slack.trigger_message.created_at,
       "2023-11-14T22:13:20.000Z",

@@ -9,9 +9,15 @@ import AxeBuilder from "@axe-core/playwright";
 export class DaemonHandoffSurface {
   constructor(private readonly page: Page) {}
 
+  /**
+   * The copy control announces itself through a live region of its own, so the poll is named by
+   * what it is polling for rather than by being the only status on the card.
+   */
   async expectWaiting(): Promise<void> {
     await expect(this.page.getByRole("heading", { name: "Connect a daemon" })).toBeVisible();
-    await expect(this.page.getByRole("status")).toContainText("Waiting for a daemon to connect");
+    await expect(this.page.getByRole("status").filter({ hasText: /daemon/u })).toContainText(
+      "Waiting for a daemon to connect",
+    );
   }
 
   /** The exact command the operator is told to paste, as it is rendered. */

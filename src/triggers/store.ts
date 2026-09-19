@@ -41,9 +41,11 @@ export class OrganizationTriggerStore {
   async save(input: SaveTriggerInput): Promise<OrganizationTriggerRecord> {
     const unchangedLegacyAuthoring = await this.isUnchangedExistingYaml(input);
     const prepared = await this.validate(input.yaml, !unchangedLegacyAuthoring);
+    const recurrence = prepared.compiled.authored.on["schedule.tick"]?.recurrence;
     return this.database.saveOrganizationTrigger({
       organizationId: this.organizationId,
       ...(input.triggerId === undefined ? {} : { triggerId: input.triggerId }),
+      ...(recurrence === undefined ? {} : { recurrence }),
       name: prepared.compiled.authored.name,
       enabled: prepared.compiled.authored.enabled,
       format: "single_run",

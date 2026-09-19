@@ -1,6 +1,12 @@
+export interface ConnectionTokenLease {
+  provider: "github";
+  token: string;
+  expiresAt: number;
+}
+
 export interface ConnectionResolutionContext {
   executionId?: string;
-  registerToken?: (token: string, revoke?: () => Promise<void> | void) => Promise<void> | void;
+  registerToken?: (lease: ConnectionTokenLease) => Promise<void> | void;
 }
 
 export type ConnectionResolver = (

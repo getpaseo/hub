@@ -89,6 +89,14 @@ test("fails closed for forged, expired, and replayed connection state", async ({
   });
 });
 
+test("returns a callback without a session to Connections", async ({ hub }) => {
+  await hub.proveSignedOutConnectionReturn({
+    name: "Signed-out Alice",
+    email: "signed-out-alice@example.com",
+    password: "signed-out-return-phase-three-password",
+  });
+});
+
 test("keeps provider installation and guild conflicts unavailable", async ({ hub }) => {
   await hub.proveProviderConnectionConflicts({
     name: "Conflict Alice",

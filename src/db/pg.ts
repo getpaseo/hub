@@ -1,3 +1,6 @@
+import { ExecutionAuthorityRepository } from "../execution-authority/index.js";
+import { ScheduleRepository } from "../triggers/schedule/index.js";
+import { acceptWorkflowRun } from "./workflow-intake.js";
 import { randomUUID } from "node:crypto";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { parseCompiledHubConfig, type JsonValue } from "../config/compiler.js";
@@ -131,6 +134,8 @@ export function createDatabase(runtime: DatabaseRuntime, locks: Locks): Database
 }
 
 class PgDatabase implements Database {
+  readonly schedules;
+  readonly executionAuthority;
   private readonly connections;
   private readonly triggerAcceptance;
 
@@ -138,6 +143,8 @@ class PgDatabase implements Database {
     private readonly pool: DatabaseRuntime,
     private readonly locks: Locks,
   ) {
+    this.schedules = new ScheduleRepository(this.pool);
+    this.executionAuthority = new ExecutionAuthorityRepository(this.pool);
     const database = this.pool.drizzle();
     this.connections = new ConnectionRepository(this.pool, locks);
     this.triggerAcceptance = new ProviderEventAcceptanceRepository(database, this.connections);
@@ -478,57 +485,12 @@ class PgDatabase implements Database {
   ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }> {
     try {
       return await this.pool.transaction(async (client) => {
-        const inserted = await client.query<TriggerRunRow>(
-          `insert into trigger_runs
-           (id, organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
-           configured_trigger_name, outcome, status,
-            prompt, inputs, values, trigger_context, output_context, deadline_at, deadline_kind, rejection, created_at)
-         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'accepted', 'running', $7, $8, '{}'::jsonb, $9, $10, $11, null, null, $12)
-         on conflict (provider_event_receipt_id, project_id, configured_trigger_name) do nothing
-         returning *`,
-          [
-            input.id ?? null,
-            input.organizationId,
-            input.projectId,
-            input.configurationRevisionId,
-            input.providerEventReceiptId,
-            input.configuredTriggerName,
-            input.prompt,
-            input.inputs,
-            input.triggerContext,
-            input.outputContext,
-            input.deadlineAt,
-            input.createdAt ?? new Date(),
-          ],
+        const { id, created } = await acceptWorkflowRun(client, input);
+        const selected = await client.query<TriggerRunRow>(
+          "select * from trigger_runs where id = $1",
+          [id],
         );
-        let run = inserted.rows[0];
-        const created = run !== undefined;
-        if (run === undefined) {
-          const existing = await client.query<TriggerRunRow>(
-            `select * from trigger_runs
-           where provider_event_receipt_id = $1 and project_id = $2 and configured_trigger_name = $3
-           for update`,
-            [input.providerEventReceiptId, input.projectId, input.configuredTriggerName],
-          );
-          run = existing.rows[0];
-        }
-        if (run === undefined) throw new Error("trigger run insert returned no row");
-        if (run.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
-        for (const [ordinal, stepId] of input.stepIds.entries()) {
-          await client.query(
-            `insert into workflow_step_runs
-             (trigger_run_id, step_id, ordinal, status, deadline_kind, deadline_at, idle_deadline_at)
-           values ($1, $2, $3, 'pending', null, null, null)
-           on conflict (trigger_run_id, ordinal) do nothing`,
-            [run.id, stepId, ordinal],
-          );
-        }
-        await client.query(
-          `insert into workflow_wakeups (trigger_run_id, available_at, lease_expires_at)
-         values ($1, $2, null)
-         on conflict (trigger_run_id) do nothing`,
-          [run.id, input.createdAt ?? new Date()],
-        );
+        const run = selected.rows[0]!;
         const record = toTriggerRunRecord(run);
         if (record.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
         return { run: record, created };
@@ -656,16 +618,24 @@ class PgDatabase implements Database {
     return rows.rows[0] === undefined ? undefined : toAgentExecutionRecord(rows.rows[0]);
   }
 
-  async claimWorkflowWakeup(now: Date, leaseMs: number) {
+  async releaseWorkflowWakeup(triggerRunId: string, now: Date, claimedLease: Date) {
+    await query(
+      this.pool,
+      "update workflow_wakeups set lease_expires_at = $2 where trigger_run_id = $1 and lease_expires_at = $3",
+      [triggerRunId, now, claimedLease],
+    );
+  }
+
+  async claimWorkflowWakeup(now: Date, leaseMs: number, excludedRunIds: readonly string[] = []) {
     try {
       return await this.pool.transaction(async (client) => {
         const selected = await client.query<WorkflowWakeupRow>(
           `select * from workflow_wakeups
-         where available_at <= $1
+         where available_at <= $1 and not (trigger_run_id = any($2::uuid[]))
            and (lease_expires_at is null or lease_expires_at <= $1)
          order by available_at, trigger_run_id
          for update skip locked limit 1`,
-          [now],
+          [now, excludedRunIds],
         );
         const wakeup = selected.rows[0];
         if (wakeup === undefined) {
@@ -1771,6 +1741,38 @@ class PgDatabase implements Database {
     return toAgentExecutionRecord(rows.rows[0]);
   }
 
+  async limitAgentExecutionDeadline(executionId: string, deadlineAt: Date): Promise<void> {
+    await this.pool.transaction(async (client) => {
+      // Match completion and deadline recovery: lock the run, then step, then execution.
+      const association = await client.query<{ id: string; trigger_run_id: string }>(
+        `select s.id, s.trigger_run_id from workflow_step_runs s
+         join agent_executions e on e.workflow_step_run_id = s.id where e.id = $1`,
+        [executionId],
+      );
+      const step = association.rows[0];
+      if (step) {
+        await client.query("select id from trigger_runs where id = $1 for update", [
+          step.trigger_run_id,
+        ]);
+        await client.query("select id from workflow_step_runs where id = $1 for update", [step.id]);
+      }
+      await client.query(
+        `with bounded as (
+         update agent_executions
+         set deadline_at = least(deadline_at, $2::timestamptz),
+             idle_deadline_at = case when idle_deadline_at is null then null
+               else least(idle_deadline_at, deadline_at, $2::timestamptz) end
+         where id = $1 and status in ('spawning', 'running')
+         returning workflow_step_run_id, deadline_at, idle_deadline_at
+       )
+       update workflow_step_runs s
+       set deadline_at = bounded.deadline_at, idle_deadline_at = bounded.idle_deadline_at
+       from bounded where s.id = bounded.workflow_step_run_id`,
+        [executionId, deadlineAt],
+      );
+    });
+  }
+
   async setAgentExecutionIdleDeadline(
     executionId: string,
     idleDeadlineAt: Date | null,
@@ -2187,7 +2189,7 @@ class PgDatabase implements Database {
           set
             status = $2,
             completed_at = case
-              when $2 = any($3::agent_execution_status[]) then now()
+              when $3::boolean then now()
               else completed_at
             end,
             result = case when $4::boolean then $5 else result end,
@@ -2196,7 +2198,7 @@ class PgDatabase implements Database {
               else completed_by_agent_at
             end,
             idle_deadline_at = case
-              when $2 = any($3::agent_execution_status[]) then null
+              when $3::boolean then null
               else idle_deadline_at
             end,
             hub_action = case when $10::boolean then $11 else hub_action end,
@@ -2217,7 +2219,7 @@ class PgDatabase implements Database {
         [
           id,
           toStatus,
-          TERMINAL_AGENT_EXECUTION_STATUSES,
+          isTerminalAgentExecutionStatus(toStatus),
           fields.result !== undefined,
           fields.result ?? null,
           fields.completedByAgent === true,
@@ -2738,6 +2740,56 @@ class PgDatabase implements Database {
     }
   }
 
+  async findAgentSession(id: string) {
+    const result = await this.pool.query<{
+      data: import("../agent-sessions/index.js").AgentSessionRecord;
+    }>("select data from agent_sessions where id = $1", [id]);
+    return result.rows[0]?.data;
+  }
+
+  async saveAgentSession(
+    session: import("../agent-sessions/index.js").AgentSessionRecord,
+  ): Promise<void> {
+    await this.pool.query(
+      `insert into agent_sessions (id, organization_id, project_id, continuation_key, data)
+       values ($1, $2, $3, $4, $5) on conflict (id) do update set data = excluded.data, continuation_key = excluded.continuation_key`,
+      [session.id, session.organizationId, session.projectId, session.continuationKey, session],
+    );
+  }
+
+  async findAgentSessionByKey(projectId: string, key: string) {
+    const result = await this.pool.query<{
+      data: import("../agent-sessions/index.js").AgentSessionRecord;
+    }>("select data from agent_sessions where project_id = $1 and continuation_key = $2", [
+      projectId,
+      key,
+    ]);
+    return result.rows[0]?.data;
+  }
+
+  async attachExecutionToSession(
+    executionId: string,
+    sessionId: string,
+    action?: import("../agent-sessions/index.js").AgentSessionAction,
+  ): Promise<void> {
+    const result = await this.pool.query(
+      `update agent_executions e set agent_session_id = s.id, agent_session_action = coalesce(e.agent_session_action, $3) from agent_sessions s
+       where e.id = $1 and s.id = $2 and e.project_id = s.project_id
+       and e.organization_id = s.organization_id
+       and (e.agent_session_id is null or e.agent_session_id = s.id)`,
+      [executionId, sessionId, action ?? null],
+    );
+    if (result.rowCount !== 1) throw new Error("Agent session does not belong to this execution");
+  }
+
+  async listAgentSessionExecutions(sessionId: string): Promise<AgentExecutionRecord[]> {
+    const result = await this.pool.query<AgentExecutionRow>(
+      "select * from agent_executions where agent_session_id = $1",
+      [sessionId],
+    );
+    return result.rows.map(toAgentExecutionRecord);
+  }
+
   async withAdvisoryLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     return this.locks.withLock(key, fn);
   }
@@ -3181,6 +3233,8 @@ class PgDatabase implements Database {
          where id = $1 returning *`,
         [trigger.id, revision.id],
       );
+      const recurrence = input.enabled ? input.recurrence : undefined;
+      await ScheduleRepository.synchronize(client, trigger.id, recurrence, new Date());
       return toOrganizationTriggerRecord(activated.rows[0]!);
     });
   }
@@ -4362,7 +4416,9 @@ async function insertAgentExecutionOnClient(
   return execution;
 }
 
-const TERMINAL_AGENT_EXECUTION_STATUSES = ["succeeded", "failed"] satisfies AgentExecutionStatus[];
+function isTerminalAgentExecutionStatus(status: AgentExecutionStatus): boolean {
+  return status === "succeeded" || status === "failed";
+}
 
 export interface ProviderEventReceiptRow extends QueryRow {
   id: string;
@@ -4383,6 +4439,7 @@ export interface ProviderEventReceiptRow extends QueryRow {
 }
 
 interface TriggerRunRow extends QueryRow {
+  conversation: import("../triggers/continuation.js").Conversation | null;
   id: string;
   organization_id: string;
   project_id: string;
@@ -4461,6 +4518,7 @@ interface WorkflowWakeupRow extends QueryRow {
 
 function toTriggerRunRecord(row: TriggerRunRow): TriggerRunRecord {
   const evidence = {
+    conversation: row.conversation,
     id: row.id,
     organizationId: row.organization_id,
     projectId: row.project_id,
@@ -4552,6 +4610,8 @@ export interface MachineRow extends QueryRow {
 }
 
 export interface AgentExecutionRow extends QueryRow {
+  agent_session_id: string | null;
+  agent_session_action: import("../agent-sessions/index.js").AgentSessionAction | null;
   id: string;
   organization_id: string;
   project_id: string;
