@@ -1,6 +1,12 @@
 import { expect, type Page } from "@playwright/test";
 
-export type OrganizationSection = "Triggers" | "Activity" | "Daemons" | "Connections" | "Settings";
+export type OrganizationSection =
+  | "Home"
+  | "Triggers"
+  | "Activity"
+  | "Daemons"
+  | "Connections"
+  | "Settings";
 export type OrganizationSettingsSection = "Team" | "API keys" | "Usage" | "Billing";
 export type ProjectSection = "Overview" | "Configuration" | "Activity" | "Settings";
 export type InstanceSection = "Apps" | "Operator";
@@ -18,10 +24,13 @@ export class ProjectNavigation {
   }
 
   async openOrganizationSection(name: OrganizationSection) {
-    await this.page
+    const link = this.page
       .getByRole("navigation", { name: "Organization", exact: true })
-      .getByRole("link", { name })
-      .click();
+      .getByRole("link", { name });
+    const href = await link.getAttribute("href");
+    if (href === null) throw new Error(`Organization navigation link ${name} has no destination`);
+    const destination = new URL(href, this.page.url()).toString();
+    await Promise.all([this.page.waitForURL(destination), link.click()]);
   }
 
   /** Administration is two hops now: the Settings entry, then the section's tab. */

@@ -1,6 +1,7 @@
 import type { AuthServer } from "../../auth/server.js";
 import {
   CONNECTION_ATTEMPT_LIFETIME_MINUTES,
+  CONNECTIONS_RETURN_ROUTE,
   callbackConnectionAccess,
   cancelledConnectionResult,
   connectionAccess,
@@ -17,6 +18,7 @@ import type { BindSlackConnectionInput, Database, SlackConnectionRecord } from "
 import { reportFailure } from "../../failures/index.js";
 import { createSlackBotClient, type SlackBotClient } from "../../triggers/slack/client.js";
 import { createSlackTriggerProvider } from "../../triggers/slack/provider.js";
+import { organizationBillingUrl } from "../../triggers/failure-notice.js";
 import { createSlackAttachmentResolver } from "../../triggers/slack/attachments.js";
 import { createSlackReplyExecutor } from "../../triggers/slack/reply.js";
 import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
@@ -165,6 +167,8 @@ export function createSlackRegistration(
       ({ configurationStoreForProject, attachments }) =>
         createSlackTriggerProvider({
           configurationStoreForProject,
+          billingUrlForOrganization: (organizationId) =>
+            organizationBillingUrl(database, options.publicBaseUrl!, organizationId),
           ...(attachments === undefined ? {} : { attachments }),
           botUserIdForWorkspace: async (organizationId, teamId) =>
             (await findSlackBindingForOrganization(database, organizationId, teamId))?.botUserId,
@@ -339,14 +343,15 @@ async function completeAuthorization(
   }
   if (state === null || code === null || client === undefined) {
     return connectionCallbackFailure({
+      request,
       error: new SlackCallbackError(),
       provider: "slack",
       phase: "authorization",
       applicationBaseUrl: options.applicationBaseUrl,
-      returnRoute: "/",
+      returnRoute: CONNECTIONS_RETURN_ROUTE,
     });
   }
-  let returnRoute = "/";
+  let returnRoute: string = CONNECTIONS_RETURN_ROUTE;
   let callbackOrigin = options.applicationBaseUrl;
   try {
     const access = await callbackConnectionAccess(options.auth, request);
@@ -391,6 +396,7 @@ async function completeAuthorization(
       return connectionResult(callbackOrigin, returnRoute, "slack_bot_failed", "slack");
     }
     return connectionCallbackFailure({
+      request,
       error,
       provider: "slack",
       phase: "authorization",

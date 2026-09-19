@@ -4,6 +4,7 @@ import type {
   AttachmentDescriptor,
 } from "../../attachments/capabilities.js";
 import { reportFailure } from "../../failures/index.js";
+import { agentFailureNotice, missingBillingUrl } from "../failure-notice.js";
 import {
   type TriggerProvider,
   type TriggerProviderMatch,
@@ -74,6 +75,7 @@ export interface DiscordMergeData {
 
 export interface DiscordTriggerContext {
   provider: "discord";
+  organizationId: string;
   target: DiscordOutputContext;
   event: DiscordMergeData;
 }
@@ -92,6 +94,7 @@ export function createDiscordTriggerProvider(options: {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
   bot: DiscordBotClient;
   attachments?: AttachmentCapabilityRegistry;
+  billingUrlForOrganization?: (organizationId: string) => Promise<string>;
 }): TriggerProvider<
   "discord",
   DiscordTriggerContext,
@@ -134,6 +137,7 @@ export function createDiscordTriggerProvider(options: {
         };
         const triggerContext: DiscordTriggerContext = {
           provider: "discord",
+          organizationId: externalTrigger.organizationId,
           target: outputContext,
           event: buildDiscordMergeData(event, botClientId, externalTrigger.connectionId),
         };
@@ -148,6 +152,10 @@ export function createDiscordTriggerProvider(options: {
         }
         if (invocation.status === "rejected") {
           matches.push({
+            conversation: {
+              key: JSON.stringify(["discord", event.guildId, event.threadId ?? event.messageId]),
+              label: "Discord thread",
+            },
             triggerName: match.trigger.name,
             triggerContext,
             outputContext,
@@ -158,6 +166,10 @@ export function createDiscordTriggerProvider(options: {
           continue;
         }
         matches.push({
+          conversation: {
+            key: JSON.stringify(["discord", event.guildId, event.threadId ?? event.messageId]),
+            label: "Discord thread",
+          },
           triggerName: match.trigger.name,
           triggerContext,
           outputContext,
@@ -228,7 +240,15 @@ export function createDiscordTriggerProvider(options: {
     async onAgentExecutionFailed(triggerContext, _outputContext, reason, reactionState) {
       await deleteReactionForPhase(options.bot, triggerContext.target, reactionState);
       await react(options.bot, triggerContext.target, "x");
-      await postThreadNotice(options.bot, triggerContext.target, `Paseo agent failed: ${reason}`);
+      await postThreadNotice(
+        options.bot,
+        triggerContext.target,
+        await agentFailureNotice(
+          reason,
+          triggerContext.organizationId,
+          options.billingUrlForOrganization ?? missingBillingUrl,
+        ),
+      );
       return null;
     },
     async onMachineTerminated(triggerContext, reason, reactionState) {

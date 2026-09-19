@@ -16,11 +16,8 @@ export interface StripeCatalogProduct {
   id: string;
   name: string;
   active: boolean;
-  /** Flat scalar keys, e.g. `ent_seats_max`. See the plan's "Stripe is the plan catalog's
-   * source of truth" section for why this is not one JSON blob. */
+  /** Flat scalar entitlement keys, e.g. `ent_seats_max`. */
   metadata: Record<string, string>;
-  /** Pricing-page bullet copy, from Stripe's own `marketing_features` product field (max 15). */
-  marketingFeatures: readonly string[];
 }
 
 export interface StripeCatalogPrice {

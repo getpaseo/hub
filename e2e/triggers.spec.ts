@@ -1,3 +1,4 @@
+import { expect } from "@playwright/test";
 import { test } from "./app.js";
 import { OrganizationTriggers } from "./helpers/triggers.js";
 
@@ -8,13 +9,39 @@ const owner = {
   password: "trigger-owner-password",
 };
 
+test("requires daemon setup before trigger configuration", async ({ hub, page }) => {
+  await hub.signUpAs("owner", owner);
+  await hub.createOrganization("owner", "Acme");
+  const triggers = new OrganizationTriggers(page);
+
+  await triggers.open();
+  await expect(page.getByRole("alert")).toContainText("Add a daemon first");
+  await expect(page.getByRole("link", { name: "Go to Daemons" })).toHaveAttribute(
+    "href",
+    /\/o\/[^/]+\/daemons$/u,
+  );
+  await page.screenshot({ path: `${SHOTS}/00-no-daemon-callout.png`, fullPage: true });
+  await triggers.startNew();
+  await triggers.expectWaitingForDaemon();
+  await triggers.exploreEventQualifiers();
+  await expect(
+    page.getByText("No daemon is connected to this organization yet", { exact: false }),
+  ).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Run on daemon" })).toBeHidden();
+  await expect(page.getByText("Choose a daemon first", { exact: false })).toBeVisible();
+  await page.screenshot({ path: `${SHOTS}/00-no-daemons.png`, fullPage: true });
+  await page.getByRole("link", { name: "Go to Daemons" }).click();
+  await expect(page).toHaveURL(/\/daemons$/u);
+  await expect(page.getByRole("heading", { name: "Daemons", level: 1 })).toBeVisible();
+});
+
 test("creates a trigger visually, preserves advanced YAML through the form, and explains legacy workflows", async ({
   hub,
   page,
 }) => {
   await hub.signUpAs("owner", owner);
   await hub.createOrganization("owner", "Acme");
-  await hub.seedDaemonSlug("owner", "devbox");
+  const daemon = await hub.connectProviderDaemon("owner", "Acme");
   await hub.seedSlackConnection("owner", "company-slack", "Acme Slack");
   const triggers = new OrganizationTriggers(page);
 
@@ -26,35 +53,64 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
 
   await test.step("the common setup stays in one small form", async () => {
     await triggers.startNew();
+    await triggers.expectDaemonPreselected(daemon);
+    await page.screenshot({ path: `${SHOTS}/01b-daemon-required.png`, fullPage: true });
+    await triggers.expectRefusedOnSubmit("Working directory is required.");
     await triggers.configureSlackMention({
       name: "slack-help",
       connection: "company-slack",
-      daemon: "devbox",
+      daemon,
       cwd: "/workspace/acme",
       users: "U123, U456",
-      agent: "pi/gateway/vendor/model-v1",
+      agent: "opencode/gateway/vendor/model-v1",
       mode: "full-access",
+      thinking: "high",
       providerOptions: '{"sandbox_mode":"workspace-write"}',
       prompt: "Handle the Slack request.",
     });
+    await triggers.exerciseContinuity();
     await triggers.expectMergeTagsAndAutosizing();
+    await triggers.expectAgentSearch();
+    await triggers.expectComboboxes();
     await triggers.changePrompt("Handle the Slack request.");
+    await triggers.expectDisclosureRailsAtPhoneWidth();
     await page.evaluate(() => window.scrollTo({ top: 0 }));
     await triggers.capture(`${SHOTS}/02-configured-form.png`);
     await triggers.captureInstructions(`${SHOTS}/02b-agent-instructions.png`);
+    await triggers.captureExpandedAgent(`${SHOTS}/02c-expanded-model-combobox.png`);
   });
 
   await test.step("YAML mirrors the form and remains the canonical editable document", async () => {
     await triggers.switchToYaml();
     await page.waitForFunction(() => window.scrollY === 0);
     await triggers.expectYamlContains(
-      "provider: pi",
+      "provider: opencode",
       "model: gateway/vendor/model-v1",
       "mode: full-access",
       "sandbox_mode: workspace-write",
+      "mode: conversation",
     );
     await triggers.capture(`${SHOTS}/03-generated-yaml.png`);
-    await triggers.replaceYaml(advancedTriggerYaml);
+  });
+
+  await test.step("a mode the daemon does not offer is refused at save, not at the first run", async () => {
+    // `Invalid mode 'default' for provider 'opencode'. Available modes: build, plan` was a
+    // production run failure. The daemon's catalog answers before anything is stored.
+    await triggers.replaceYaml(
+      advancedTriggerYaml(daemon).replace("mode: full-access", "mode: default"),
+    );
+    await triggers.expectRefusedOnSubmit(
+      "run.agent.mode: Mode 'default' is not available for provider 'opencode'",
+    );
+    await triggers.replaceYaml(
+      advancedTriggerYaml(daemon).replace("provider: opencode", "provider: omp"),
+    );
+    await triggers.expectRefusedOnSubmit("Provider 'omp' cannot run unattended Hub automations");
+    await triggers.capture(`${SHOTS}/03b-refused-mode.png`);
+  });
+
+  await test.step("valid YAML saves and lists", async () => {
+    await triggers.replaceYaml(advancedTriggerYaml(daemon));
     await triggers.save("slack-help");
     await triggers.expectOperationalList("slack-help");
     await triggers.capture(`${SHOTS}/04-saved-trigger-list.png`);
@@ -63,7 +119,7 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
   await test.step("the form projects advanced YAML without hiding or deleting it", async () => {
     await triggers.openTrigger("slack-help");
     await triggers.expectFormAgent({
-      agent: "pi/gateway/vendor/model-v1",
+      agent: "opencode/gateway/vendor/model-v1",
       mode: "full-access",
       providerOptions: '{\n  "sandbox_mode": "workspace-write",\n  "approval_policy": "never"\n}',
       prompt: "Handle the Slack request.",
@@ -98,7 +154,52 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
   });
 });
 
-const advancedTriggerYaml = `# survives form edits
+for (const scenario of [
+  { event: "github.issue_label_added", name: "issue-label" },
+  { event: "github.pull_request_label_added", name: "pr-label" },
+]) {
+  test(`saves, reloads, and requires a label for ${scenario.event}`, async ({ hub, page }) => {
+    await hub.signUpAs("owner", owner);
+    await hub.createOrganization("owner", "Acme");
+    const daemon = await hub.connectProviderDaemon("owner", "Acme");
+    await hub.connectGitHub("owner");
+    const triggers = new OrganizationTriggers(page);
+
+    await test.step("reject an otherwise complete form with an empty or blank label", async () => {
+      await triggers.open();
+      await triggers.startNew();
+      await triggers.configureLabelAdded({ ...scenario, daemon });
+      await triggers.expectLabelRequiredOnSubmit();
+      await triggers.changeAddedLabel("   ");
+      await triggers.expectLabelRequiredOnSubmit();
+      await triggers.capture(`${SHOTS}/${scenario.name}-required.png`);
+    });
+
+    await test.step("save through the form and verify persisted YAML after reload", async () => {
+      await triggers.changeAddedLabel("ready-for-review");
+      await triggers.save(scenario.name);
+      await triggers.openTrigger(scenario.name);
+      await triggers.expectPersistedLabel(scenario.event, "ready-for-review");
+    });
+
+    await test.step("reject clearing a saved label without changing the saved trigger", async () => {
+      await triggers.changeAddedLabel("");
+      await triggers.expectLabelRequiredOnSubmit();
+      await triggers.expectPersistedLabel(scenario.event, "ready-for-review");
+    });
+
+    await test.step("edit the label and verify the new value survives another reload", async () => {
+      await triggers.changeAddedLabel("ready-to-ship");
+      await triggers.save(scenario.name);
+      await triggers.openTrigger(scenario.name);
+      await triggers.expectPersistedLabel(scenario.event, "ready-to-ship");
+      await triggers.capture(`${SHOTS}/${scenario.name}-persisted.png`);
+    });
+  });
+}
+
+function advancedTriggerYaml(daemon: string) {
+  return `# survives form edits
 name: slack-help
 enabled: true
 on:
@@ -109,13 +210,13 @@ on:
       channels: [engineering]
 run:
   target:
-    daemon: devbox
+    daemon: ${daemon}
     cwd: /workspace/acme
     worktree:
       mode: branch-off
       newBranch: trigger-work
   agent:
-    provider: pi
+    provider: opencode
     model: gateway/vendor/model-v1
     mode: full-access
     thinkingOptionId: high
@@ -130,6 +231,7 @@ run:
       max: 5
   auto_archive: false
 `;
+}
 
 const legacyWorkflowYaml = `name: legacy-review
 on: slack.mention

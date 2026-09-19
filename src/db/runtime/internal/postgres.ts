@@ -119,6 +119,16 @@ class PostgresQueryHandle implements TransactionHandle {
 class PostgresTransactionHandle extends PostgresQueryHandle {}
 
 async function ensureDatabaseExists(connectionString: string): Promise<void> {
+  const targetPool = createPool(connectionString);
+  try {
+    await query(targetPool, "select 1", []);
+    return;
+  } catch (error) {
+    if (!isMissingDatabaseError(error)) throw toDatabaseError(error);
+  } finally {
+    await targetPool.end();
+  }
+
   const targetUrl = new URL(connectionString);
   const databaseName = basename(targetUrl.pathname);
   const postgresUrl = new URL(connectionString);
@@ -135,6 +145,10 @@ async function ensureDatabaseExists(connectionString: string): Promise<void> {
   } finally {
     await pool.end();
   }
+}
+
+function isMissingDatabaseError(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "3D000";
 }
 
 /** @package */

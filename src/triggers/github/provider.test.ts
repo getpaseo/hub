@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import { Octokit } from "octokit";
 import { createMemoryDatabase } from "../../db/memory.js";
 import type { DurableProviderEvent } from "../../db/types.js";
@@ -14,6 +14,81 @@ import { isAcceptedTriggerProviderMatch } from "../index.js";
 import { createUnlimitedEntitlementsService } from "../../entitlements/test-utils.js";
 
 describe("GitHub Phase 1 trigger provider", () => {
+  it("comments with the monthly execution denial on the issue", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-28T23:00:00Z"));
+    try {
+      const { project, revision, store } = await activeConfiguration();
+      const reactions = new TestReactions();
+      const comments: Array<{
+        installationId: number;
+        owner: string;
+        repo: string;
+        issueNumber: number;
+        body: string;
+      }> = [];
+      const provider = createGitHubTriggerProvider({
+        configurationStoreForProject: () => store,
+        reactions,
+        billingUrlForOrganization: async () => "https://hub.paseo.sh/o/acme/settings/billing",
+        comments: {
+          createIssueComment: async (input) => {
+            comments.push(input);
+          },
+        },
+      });
+      const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
+      if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+      const reactionState =
+        (await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext)) ?? null;
+      await provider.onAgentExecutionFailed?.(
+        match.triggerContext,
+        match.outputContext,
+        JSON.stringify({
+          error: "entitlement_denied",
+          entitlement: "executions.monthly",
+          kind: "meter",
+          limit: 50,
+          current: 236,
+        }),
+        reactionState,
+      );
+      assert.deepEqual(comments, [
+        {
+          installationId: 42,
+          owner: "boudra",
+          repo: "faro",
+          issueNumber: 211,
+          body: "This org has used its 50 free runs for September. Runs reset on October 1, or upgrade to Pro under Billing: https://hub.paseo.sh/o/acme/settings/billing",
+        },
+      ]);
+      assert.deepEqual(
+        reactions.created.map((call) => call.content),
+        ["eyes"],
+      );
+      assert.deepEqual(
+        reactions.deleted.map((call) => call.reactionId),
+        [1],
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("keeps the issue conversation identity stable across comments", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    const provider = createProvider(store, new TestReactions());
+    const first = (await provider.match(external(project.id, revision.id, createEvent())))[0];
+    const next = (
+      await provider.match(
+        external(project.id, revision.id, createEvent({ body: "another @paseo request" })),
+      )
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(first) || !isAcceptedTriggerProviderMatch(next))
+      throw new Error("expected accepted matches");
+    assert.equal(first.conversation?.key, JSON.stringify(["github", 7, 211]));
+    assert.equal(next.conversation?.key, first.conversation?.key);
+  });
+
   it("normalizes typed inputs identically at the provider boundary", async () => {
     const { project, revision, store } = await activeConfiguration(inputConfiguration());
     const provider = createProvider(store, new TestReactions());

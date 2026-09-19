@@ -1,15 +1,16 @@
 import { z } from "zod";
-import { WorktreeTargetSchema } from "../config/index.js";
 
 const AgentStatusSchema = z.enum(["error", "initializing", "idle", "running", "closed"]);
 
-const McpHttpServerConfigSchema = z.object({
-  type: z.literal("http"),
-  url: z.string(),
-  headers: z.record(z.string(), z.string()).optional(),
-});
+type WireJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | WireJsonValue[]
+  | { [key: string]: WireJsonValue };
 
-const JsonValueSchema: z.ZodType = z.lazy(() =>
+const JsonValueSchema: z.ZodType<WireJsonValue> = z.lazy(() =>
   z.union([
     z.string(),
     z.number().finite(),
@@ -20,13 +21,49 @@ const JsonValueSchema: z.ZodType = z.lazy(() =>
   ]),
 );
 
-const McpToolRefSchema = z
-  .object({
-    kind: z.literal("mcp"),
-    server: z.literal("hub"),
-    tool: z.string(),
-  })
-  .strict();
+const ProviderSelectOptionSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  description: z.string().optional(),
+  isDefault: z.boolean().optional(),
+  metadata: z.record(z.string(), JsonValueSchema).optional(),
+});
+
+const ProviderModelSchema = z.object({
+  provider: z.string(),
+  id: z.string(),
+  aliases: z.array(z.string()).optional(),
+  isSelectable: z.boolean().optional(),
+  label: z.string(),
+  description: z.string().optional(),
+  isDefault: z.boolean().optional(),
+  metadata: z.record(z.string(), JsonValueSchema).optional(),
+  contextWindowMaxTokens: z.number().optional(),
+  thinkingOptions: z.array(ProviderSelectOptionSchema).optional(),
+  defaultThinkingOptionId: z.string().optional(),
+});
+
+const ProviderModeSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  description: z.string().optional(),
+  icon: z.string().optional(),
+  colorTier: z.string().optional(),
+});
+
+const ProviderSnapshotEntrySchema = z.object({
+  provider: z.string(),
+  status: z.enum(["ready", "loading", "error", "unavailable"]),
+  enabled: z.boolean().optional().default(true),
+  source: z.enum(["builtin", "custom"]).optional(),
+  error: z.string().optional(),
+  models: z.array(ProviderModelSchema).optional(),
+  modes: z.array(ProviderModeSchema).optional(),
+  fetchedAt: z.string().optional(),
+  label: z.string().optional(),
+  description: z.string().optional(),
+  defaultModeId: z.string().nullable().optional(),
+});
 
 export const HubExecutionAgentSnapshotSchema = z
   .object({
@@ -54,6 +91,7 @@ export const HubDaemonHelloSchema = z.object({
   type: z.literal("hello"),
   clientId: z.string(),
   clientType: z.literal("hub"),
+  capabilities: z.record(z.string(), z.boolean()).optional(),
   protocolVersion: z.literal(1),
 });
 
@@ -65,6 +103,7 @@ export const HubDaemonServerInfoEnvelopeSchema = z.object({
       .object({
         status: z.literal("server_info"),
         permissions: z.array(z.string()),
+        features: z.object({ providersSnapshot: z.boolean().optional() }).optional(),
       })
       .passthrough(),
   }),
@@ -127,25 +166,6 @@ export const HubExecutionAgentStreamEventSchema = z.discriminatedUnion("type", [
     .passthrough(),
 ]);
 
-export const HubExecutionAgentCreateRequestSchema = z.object({
-  type: z.literal("hub.execution.agent.create.request"),
-  requestId: z.string(),
-  executionId: z.string(),
-  provider: z.string(),
-  cwd: z.string(),
-  prompt: z.string(),
-  workspaceId: z.string().optional(),
-  model: z.string().optional(),
-  modeId: z.string().optional(),
-  thinkingOptionId: z.string().optional(),
-  providerOptions: z.record(z.string(), JsonValueSchema).optional(),
-  toolPolicy: z.object({ preapproved: z.array(McpToolRefSchema) }).strict(),
-  featureValues: z.record(z.string(), z.unknown()).optional(),
-  env: z.record(z.string(), z.string()).optional(),
-  mcpServers: z.record(z.string(), McpHttpServerConfigSchema).optional(),
-  worktree: WorktreeTargetSchema.optional(),
-});
-
 export const HubExecutionAgentValidateRequestSchema = z.object({
   type: z.literal("hub.execution.agent.validate.request"),
   requestId: z.string(),
@@ -171,79 +191,38 @@ export const HubExecutionAgentValidateResponseSchema = z.object({
   }),
 });
 
-export const HubExecutionAgentCreateResponseSchema = z.object({
-  type: z.literal("hub.execution.agent.create.response"),
+export const GetProvidersSnapshotRequestSchema = z.object({
+  type: z.literal("get_providers_snapshot_request"),
+  requestId: z.string(),
+  cwd: z.string().optional(),
+});
+
+export const GetProvidersSnapshotResponseSchema = z.object({
+  type: z.literal("get_providers_snapshot_response"),
   payload: z.object({
     requestId: z.string(),
-    executionId: z.string(),
-    agentId: z.string().nullable(),
-    agent: HubExecutionAgentSnapshotSchema.nullable(),
-    success: z.boolean(),
-    toolPolicyApplied: z.literal(true).optional(),
-    error: z
-      .union([
-        z.string(),
-        z.discriminatedUnion("code", [
-          z.object({
-            code: z.literal("provider_options_invalid"),
-            provider: z.string(),
-            issues: z.array(
-              z.object({
-                path: z.array(z.union([z.string(), z.number()])),
-                message: z.string(),
-              }),
-            ),
-            message: z.string(),
-          }),
-          z.object({
-            code: z.literal("tool_policy_unsupported"),
-            provider: z.string(),
-            message: z.string(),
-          }),
-          z.object({ code: z.literal("create_failed"), message: z.string() }),
-        ]),
-      ])
-      .nullable(),
+    cwd: z.string().optional(),
+    entries: z.array(ProviderSnapshotEntrySchema),
+    generatedAt: z.string(),
   }),
 });
 
-export const HubExecutionAgentUpdateSchema = z.object({
-  type: z.literal("hub.execution.agent.update"),
-  payload: z.object({
-    executionId: z.string(),
-    agentId: z.string(),
-    agent: HubExecutionAgentSnapshotSchema,
-  }),
+export const RefreshProvidersSnapshotRequestSchema = z.object({
+  type: z.literal("refresh_providers_snapshot_request"),
+  requestId: z.string(),
+  cwd: z.string().optional(),
+  providers: z.array(z.string()).optional(),
 });
 
-export const HubExecutionAgentStreamSchema = z.object({
-  type: z.literal("hub.execution.agent.stream"),
+export const RefreshProvidersSnapshotResponseSchema = z.object({
+  type: z.literal("refresh_providers_snapshot_response"),
   payload: z.object({
-    executionId: z.string(),
-    agentId: z.string(),
-    event: HubExecutionAgentStreamEventSchema,
+    requestId: z.string(),
+    acknowledged: z.boolean(),
   }),
 });
 
 export const HubExecutionControlActionSchema = z.enum(["interrupt", "archive"]);
-
-export const HubExecutionControlRequestSchema = z.object({
-  type: z.literal("hub.execution.control.request"),
-  requestId: z.string(),
-  executionId: z.string(),
-  action: HubExecutionControlActionSchema,
-});
-
-export const HubExecutionControlResponseSchema = z.object({
-  type: z.literal("hub.execution.control.response"),
-  payload: z.object({
-    requestId: z.string(),
-    executionId: z.string(),
-    action: HubExecutionControlActionSchema,
-    success: z.boolean(),
-    error: z.string().nullable(),
-  }),
-});
 
 const RpcErrorSchema = z.object({
   type: z.literal("rpc_error"),
@@ -258,11 +237,9 @@ const RpcErrorSchema = z.object({
 export const HubExecutionOutboundSchema = z.object({
   type: z.literal("session"),
   message: z.discriminatedUnion("type", [
-    HubExecutionAgentCreateResponseSchema,
-    HubExecutionAgentUpdateSchema,
-    HubExecutionAgentStreamSchema,
-    HubExecutionControlResponseSchema,
     HubExecutionAgentValidateResponseSchema,
+    GetProvidersSnapshotResponseSchema,
+    RefreshProvidersSnapshotResponseSchema,
     RpcErrorSchema,
   ]),
 });
@@ -270,3 +247,5 @@ export const HubExecutionOutboundSchema = z.object({
 export type HubExecutionAgentSnapshot = z.infer<typeof HubExecutionAgentSnapshotSchema>;
 export type HubExecutionAgentStreamEvent = z.infer<typeof HubExecutionAgentStreamEventSchema>;
 export type HubExecutionControlAction = z.infer<typeof HubExecutionControlActionSchema>;
+export type HubProviderSnapshot = z.infer<typeof GetProvidersSnapshotResponseSchema>["payload"];
+export type HubProviderSnapshotEntry = z.infer<typeof ProviderSnapshotEntrySchema>;

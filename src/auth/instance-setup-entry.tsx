@@ -2,11 +2,13 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useCallback, useState, type FormEvent } from "react";
 import { AuthCard, AuthLayout } from "../components/app/auth-layout.js";
+import { AuthForm } from "../components/app/auth-form.js";
+import { failureMessage } from "../components/app/failure-alert.js";
+import { AuthActions } from "../components/app/auth-form.js";
 import { Button } from "../components/ui/button.js";
-import { Field, FieldSet } from "../components/ui/field.js";
 import { formValue } from "./account-actions.js";
 import { ErrorSummary } from "./account-states.js";
-import { FormField } from "./form-field.js";
+import { FormField } from "../components/app/form-field.js";
 import { setUpInstance } from "./functions.js";
 import type { Result } from "../contract/respond.js";
 
@@ -51,11 +53,13 @@ export function InstanceSetupEntry() {
   );
 
   if (!accountRequested) return <Welcome onBegin={requestAccount} />;
-  let message: string | undefined;
-  if (claim.data?.status === "error") message = claim.data.error.message;
-  if (claim.isError)
-    message =
-      "Hub did not receive the account setup result. Check your connection and reload to confirm whether setup completed.";
+  const message =
+    claim.isError || claim.data?.status === "error"
+      ? failureMessage(
+          claim.data,
+          "Hub did not receive the account setup result. Check your connection and reload to confirm whether setup completed.",
+        )
+      : undefined;
   return (
     <AccountSetupForm
       // Stay busy through the account refetch, so the form cannot be resubmitted in the moment
@@ -76,9 +80,11 @@ function Welcome({ onBegin }: { onBegin: () => void }) {
         title="Welcome to Paseo Hub"
         description="Set up an account to start operating Paseo Hub."
       >
-        <Button type="button" onClick={onBegin}>
-          Set up Paseo Hub
-        </Button>
+        <AuthActions>
+          <Button type="button" size="lg" onClick={onBegin}>
+            Set up Paseo Hub
+          </Button>
+        </AuthActions>
       </AuthCard>
     </AuthLayout>
   );
@@ -99,33 +105,32 @@ function AccountSetupForm({
     <AuthLayout>
       <AuthCard titleId="account-setup-heading" title="Create your account">
         <ErrorSummary message={message} />
-        <form method="post" onSubmit={onSubmit} aria-label="Create your account" aria-busy={busy}>
-          <FieldSet className="gap-4" disabled={busy}>
-            <FormField
-              label="Email"
-              name="email"
-              id="operator-email"
-              type="email"
-              autoComplete="email"
-            />
-            <FormField
-              label="Password"
-              name="password"
-              id="operator-password"
-              type="password"
-              autoComplete="new-password"
-              minLength={12}
-            />
-            <Field>
-              <Button type="submit" disabled={busy}>
-                Create account
-              </Button>
-            </Field>
-          </FieldSet>
-        </form>
-        <Button type="button" variant="ghost" disabled={busy} onClick={onBack}>
-          Back
-        </Button>
+        <AuthForm
+          label="Create your account"
+          busy={busy}
+          submitLabel="Create account"
+          onSubmit={onSubmit}
+          secondaryLabel="Back"
+          onSecondary={onBack}
+        >
+          <FormField
+            label="Email"
+            name="email"
+            id="operator-email"
+            kind="email"
+            autoComplete="email"
+            required
+          />
+          <FormField
+            label="Password"
+            name="password"
+            id="operator-password"
+            kind="password"
+            autoComplete="new-password"
+            minLength={12}
+            required
+          />
+        </AuthForm>
       </AuthCard>
     </AuthLayout>
   );

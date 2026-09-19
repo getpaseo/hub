@@ -4,6 +4,8 @@ import type { WorktreeTarget } from "../config/index.js";
 import type { JsonValue } from "../config/compiler.js";
 import type { CompiledGitHubAuthority } from "../config/github-authority.js";
 
+export const DEFAULT_STARTUP_TIMEOUT_MS = 120_000;
+
 export interface DaemonEnvironmentTarget {
   kind: "daemon";
   daemonId: string;
@@ -14,6 +16,7 @@ export interface DaemonEnvironmentTarget {
 }
 
 export interface LaunchMachineIntent {
+  continuation?: { key: string | null; compatibility: unknown };
   kind: "launch_machine";
   organizationId: string;
   projectId: string;
@@ -24,10 +27,13 @@ export interface LaunchMachineIntent {
   environment: DaemonEnvironmentTarget;
   env?: Readonly<Record<string, string>>;
   github?: CompiledGitHubAuthority;
+  /** Authored workspace title, already rendered; absent means Hub's default workspace title. */
+  title?: string;
   prompt: string;
   agent: TriggerAgentConfig;
   allowOutputs: readonly AllowedOutput[];
   timeoutMs?: number;
+  startupTimeoutMs?: number;
   idleTimeoutMs?: number;
   autoArchive: boolean;
   triggerContext: unknown;
@@ -48,10 +54,12 @@ export function buildLaunchMachineIntent(input: {
   environment: DaemonEnvironmentTarget;
   env?: Readonly<Record<string, string>>;
   github?: CompiledGitHubAuthority;
+  title?: string;
   prompt: string;
   agent: TriggerAgentConfig;
   allowOutputs: readonly AllowedOutput[];
   timeoutMs?: number;
+  startupTimeoutMs?: number;
   idleTimeoutMs?: number;
   autoArchive: boolean;
   triggerContext: unknown;
@@ -68,10 +76,12 @@ export function buildLaunchMachineIntent(input: {
     environment: input.environment,
     ...(input.env === undefined ? {} : { env: input.env }),
     ...(input.github === undefined ? {} : { github: input.github }),
+    ...(input.title === undefined ? {} : { title: input.title }),
     prompt: input.prompt,
     agent: input.agent,
     allowOutputs: input.allowOutputs,
     ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+    ...(input.startupTimeoutMs === undefined ? {} : { startupTimeoutMs: input.startupTimeoutMs }),
     ...(input.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: input.idleTimeoutMs }),
     autoArchive: input.autoArchive,
     triggerContext: input.triggerContext,

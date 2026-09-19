@@ -3,10 +3,12 @@ import { Writable } from "node:stream";
 import { describe, it } from "vitest";
 import { z } from "zod";
 import { createMemoryDatabase } from "../db/memory.js";
+import type { Database } from "../db/types.js";
 import { hashTemplate } from "../entitlements/catalog.js";
 import { runWithFailureTracking } from "../failures/index.js";
 import { createLogger } from "../logger.js";
-import { syncBillingCatalog } from "./catalog-sync.js";
+import { syncBillingCatalog as syncBillingCatalogWithPresentations } from "./catalog-sync.js";
+import type { BillingPlanPresentations } from "./plan-presentation.js";
 import type {
   StripeCatalogPrice,
   StripeCatalogProduct,
@@ -44,7 +46,6 @@ function soloProduct(overrides: Partial<StripeCatalogProduct> = {}): StripeCatal
       ent_can_invite: "true",
       ent_executions_monthly_limit: "2000",
     },
-    marketingFeatures: ["5 seats", "2000 executions / month"],
     ...overrides,
   };
 }
@@ -70,6 +71,24 @@ function soloPrices(): StripeCatalogPrice[] {
       interval: "year",
     },
   ];
+}
+
+const TEST_PLAN_PRESENTATIONS: BillingPlanPresentations = {
+  solo: {
+    name: "Solo",
+    features: [
+      {
+        key: "feature-1",
+        label: "Daemons run on your machines",
+        tooltip: "Connect any number of development machines.",
+      },
+    ],
+    priceTooltips: { monthly: "Billed monthly for each seat.", annual: null },
+  },
+};
+
+function syncBillingCatalog(source: StripeCatalogSource, database: Database): Promise<void> {
+  return syncBillingCatalogWithPresentations(source, database, TEST_PLAN_PRESENTATIONS);
 }
 
 describe("syncBillingCatalog", () => {
@@ -108,7 +127,19 @@ describe("syncBillingCatalog", () => {
     assert.equal(plan.slug, "solo");
     assert.equal(plan.name, "Solo");
     assert.equal(plan.active, true);
-    assert.deepEqual(plan.marketing, { features: ["5 seats", "2000 executions / month"] });
+    // The plan's figures are flattened out of the validated template once, here, so the public
+    // catalog can state them without ever reading the template.
+    assert.deepEqual(plan.marketing, {
+      included: { seats: 5, executionsPerMonth: 2000 },
+      features: [
+        {
+          key: "feature-1",
+          label: "Daemons run on your machines",
+          tooltip: "Connect any number of development machines.",
+        },
+      ],
+      priceTooltips: { monthly: "Billed monthly for each seat.", annual: null },
+    });
     assert.equal(
       plan.templateHash,
       hashTemplate({
@@ -198,6 +229,116 @@ describe("syncBillingCatalog", () => {
 
     // Ambiguous identity: neither product is synced rather than an arbitrary winner.
     assert.equal((await database.listBillingPlans()).length, 0);
+  });
+
+  it("re-stamps every organization on a plan whose template changed, and leaves overrides alone", async () => {
+    const database = createMemoryDatabase();
+    const source = new FakeCatalogSource([soloProduct()], soloPrices());
+    await syncBillingCatalog(source, database);
+    const [plan] = await database.listBillingPlans();
+    assert.ok(plan);
+    // Two organizations stamped from the plan as it stood, one of them with a hand-set override.
+    for (const organizationId of ["org-1", "org-2"]) {
+      await database.stampOrganizationEntitlements({
+        organizationId,
+        granted: plan.template,
+        planId: plan.id,
+        planVersion: plan.templateHash,
+        source: "provisioning",
+        actor: null,
+        reason: null,
+      });
+    }
+    await database.overrideOrganizationEntitlements({
+      organizationId: "org-2",
+      patch: { meters: { "executions.monthly": { limit: 9000 } } },
+      actor: "operator-1",
+      reason: "Pilot allowance",
+    });
+
+    // The dashboard edit: the same product, a larger monthly allowance.
+    source.setProducts([
+      soloProduct({
+        metadata: { ...soloProduct().metadata, ent_executions_monthly_limit: "3000" },
+      }),
+    ]);
+    await syncBillingCatalog(source, database);
+
+    const raised = hashTemplate({
+      seats: { max: 5 },
+      canInviteMembers: true,
+      meters: { "executions.monthly": { limit: 3000 } },
+    });
+    for (const organizationId of ["org-1", "org-2"]) {
+      const row = await database.getOrganizationEntitlements(organizationId);
+      assert.equal(row?.planVersion, raised);
+      assert.deepEqual(row?.granted, {
+        seats: { max: 5 },
+        canInviteMembers: true,
+        meters: { "executions.monthly": { limit: 3000 } },
+      });
+    }
+    // The hand-set deal survives the re-stamp untouched.
+    assert.deepEqual(
+      await database.getOrganizationEntitlements("org-2").then((row) => row?.overrides),
+      {
+        meters: { "executions.monthly": { limit: 9000 } },
+      },
+    );
+  });
+
+  it("leaves an organization on another plan alone when a template changes", async () => {
+    const database = createMemoryDatabase();
+    const source = new FakeCatalogSource([soloProduct()], soloPrices());
+    await syncBillingCatalog(source, database);
+    const [plan] = await database.listBillingPlans();
+    assert.ok(plan);
+    await database.stampOrganizationEntitlements({
+      organizationId: "org-elsewhere",
+      granted: {
+        seats: { max: 1 },
+        canInviteMembers: false,
+        meters: { "executions.monthly": { limit: 50 } },
+      },
+      planId: "prod_other",
+      planVersion: "hash-other",
+      source: "plan_stamp",
+      actor: null,
+      reason: null,
+    });
+
+    source.setProducts([
+      soloProduct({
+        metadata: { ...soloProduct().metadata, ent_executions_monthly_limit: "3000" },
+      }),
+    ]);
+    await syncBillingCatalog(source, database);
+
+    const row = await database.getOrganizationEntitlements("org-elsewhere");
+    assert.equal(row?.planVersion, "hash-other");
+    assert.equal((await database.listEntitlementChanges("org-elsewhere", 10)).length, 1);
+  });
+
+  it("re-stamps once: a resync with an unchanged template writes no second audit row", async () => {
+    const database = createMemoryDatabase();
+    const source = new FakeCatalogSource([soloProduct()], soloPrices());
+    await syncBillingCatalog(source, database);
+    const [plan] = await database.listBillingPlans();
+    assert.ok(plan);
+    await database.stampOrganizationEntitlements({
+      organizationId: "org-1",
+      granted: plan.template,
+      planId: plan.id,
+      planVersion: plan.templateHash,
+      source: "provisioning",
+      actor: null,
+      reason: null,
+    });
+
+    await syncBillingCatalog(source, database);
+    await syncBillingCatalog(source, database);
+
+    assert.equal((await database.listEntitlementChanges("org-1", 10)).length, 1);
   });
 
   it("keeps the last known good row when a later sync introduces a duplicate slug", async () => {

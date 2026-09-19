@@ -5,6 +5,7 @@ import type {
   AttachmentDescriptor,
 } from "../../attachments/capabilities.js";
 import { reportFailure } from "../../failures/index.js";
+import { agentFailureNotice, missingBillingUrl } from "../failure-notice.js";
 import {
   type TriggerProvider,
   type TriggerProviderMatch,
@@ -102,6 +103,7 @@ export function createSlackTriggerProvider(options: {
   botUserIdForWorkspace(organizationId: string, teamId: string): Promise<string | undefined>;
   client: SlackBotClient;
   attachments?: AttachmentCapabilityRegistry;
+  billingUrlForOrganization?: (organizationId: string) => Promise<string>;
 }): TriggerProvider<"slack", SlackTriggerContext, SlackOutputContext, SlackMaterializedContext> {
   return {
     name: "slack",
@@ -161,6 +163,15 @@ export function createSlackTriggerProvider(options: {
         }
         if (invocation.status === "rejected") {
           matches.push({
+            conversation: {
+              key: JSON.stringify([
+                "slack",
+                rawEvent.teamId,
+                rawEvent.channelId,
+                rawEvent.threadTs ?? rawEvent.messageTs,
+              ]),
+              label: "Slack thread",
+            },
             triggerName: match.trigger.name,
             triggerContext,
             outputContext,
@@ -171,6 +182,15 @@ export function createSlackTriggerProvider(options: {
           continue;
         }
         matches.push({
+          conversation: {
+            key: JSON.stringify([
+              "slack",
+              rawEvent.teamId,
+              rawEvent.channelId,
+              rawEvent.threadTs ?? rawEvent.messageTs,
+            ]),
+            label: "Slack thread",
+          },
           triggerName: match.trigger.name,
           triggerContext,
           outputContext,
@@ -253,12 +273,26 @@ export function createSlackTriggerProvider(options: {
       return null;
     },
     async onAgentExecutionFailed(context, _output, reason, reactionState) {
-      await failWithNotice(options.client, context.target, reason, reactionState);
+      await failWithNotice(
+        options.client,
+        context.target,
+        await agentFailureNotice(
+          reason,
+          context.target.organizationId,
+          options.billingUrlForOrganization ?? missingBillingUrl,
+        ),
+        reactionState,
+      );
       return null;
     },
     async onMachineTerminated(context, reason, reactionState) {
       if (reason === "launch_failed" || reason === "daemon_disconnected") {
-        await failWithNotice(options.client, context.target, reason, reactionState);
+        await failWithNotice(
+          options.client,
+          context.target,
+          `Paseo agent failed: ${reason}`,
+          reactionState,
+        );
         return null;
       }
       return reactionState;
@@ -428,7 +462,7 @@ async function failWithNotice(
     teamId: event.teamId,
     channelId: event.channelId,
     threadTs: event.threadTs,
-    content: `Paseo agent failed: ${reason}`,
+    content: reason,
   });
 }
 

@@ -34,7 +34,7 @@ const GitHubAppBotIdentitySchema = z.object({ id: z.number().int().positive(), l
 export interface GitHubAuth {
   getInstallation(installationId: number): Promise<GitHubInstallation | undefined>;
   getInstallationToken(installationId: number): Promise<string>;
-  mintInstallationToken(installationId: number): Promise<string>;
+  mintInstallationToken(installationId: number): Promise<GitHubInstallationAccessToken>;
   mintInstallationAccessToken(input: {
     installationId: number;
     accountLogin: string;
@@ -91,10 +91,12 @@ export function createGitHubAuth(options: CreateGitHubAuthOptions): GitHubAuth {
     return data.token;
   }
 
-  async function mintInstallationToken(installationId: number): Promise<string> {
+  async function mintInstallationToken(
+    installationId: number,
+  ): Promise<GitHubInstallationAccessToken> {
     const data = await requestInstallationToken(installationId);
     logger.debug({ installationId, expiresAt: data.expires_at }, "minted installation token");
-    return data.token;
+    return { token: data.token, expiresAt: new Date(data.expires_at).getTime() };
   }
 
   async function mintInstallationAccessToken(input: {

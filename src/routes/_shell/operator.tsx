@@ -7,5 +7,6 @@ import { OperatorEntitlementsPage } from "../../operator/panel.js";
 // route sees only "You don't have operator access." The nav entry is gated separately as
 // presentation.
 export const Route = createFileRoute("/_shell/operator")({
+  staticData: { breadcrumb: "Operator", instance: true },
   component: OperatorEntitlementsPage,
 });

@@ -1,26 +1,23 @@
 import type { WorktreeTarget } from "../config/index.js";
-import type { JsonValue } from "../config/compiler.js";
+import type { CompiledAgent, JsonValue } from "../config/compiler.js";
 import type {
   HubExecutionAgentSnapshot,
   HubExecutionAgentStreamEvent,
-  HubExecutionControlAction,
+  HubProviderSnapshot,
 } from "../hub/protocol.js";
 
-export interface DaemonAgentSnapshot {
-  id: string;
-  state?: HubExecutionAgentSnapshot;
-}
-
 export interface DaemonCreateAgentOptions {
-  executionId: string;
   provider: string;
+  /** Explicit agent title, shown beside the workspace title in Paseo. */
+  title?: string;
+  /** Title for the workspace the daemon creates for the agent, set once the agent exists. */
+  workspaceTitle?: string;
   mode?: string;
   model?: string;
   thinkingOptionId?: string;
   providerOptions?: Readonly<Record<string, JsonValue>>;
   toolPolicy: ToolPolicy;
   cwd: string;
-  prompt: string;
   env: Record<string, string>;
   mcpServers?: Record<string, McpHttpServerConfig>;
   worktree?: WorktreeTarget;
@@ -40,11 +37,6 @@ export interface McpHttpServerConfig {
   type: "http";
   url: string;
   headers?: Record<string, string>;
-}
-
-export interface DaemonExecutionControlOptions {
-  executionId: string;
-  action: HubExecutionControlAction;
 }
 
 export type DaemonTimelineItem = Extract<
@@ -72,33 +64,27 @@ export interface DaemonAgentUpdateEvent {
 
 export type DaemonEvent = DaemonAgentStreamDaemonEvent | DaemonAgentUpdateEvent;
 
-export type DaemonEventHandler = (event: DaemonEvent) => void | Promise<void>;
+export interface AgentValidationIssue {
+  path: readonly (string | number)[];
+  message: string;
+}
+
+export type AgentValidationVerdict =
+  | { valid: true }
+  | { valid: false; issues: readonly AgentValidationIssue[] };
 
 export interface DaemonConnection {
-  createAgent(options: DaemonCreateAgentOptions): Promise<DaemonAgentSnapshot>;
-  controlExecution(options: DaemonExecutionControlOptions): Promise<void>;
-  on(handler: DaemonEventHandler): () => void;
+  agents: import("./agents/index.js").AgentConnection;
+  getProviderSnapshot(options: { cwd?: string }): Promise<HubProviderSnapshot>;
+  refreshProviderSnapshot(options: { cwd?: string; providers?: string[] }): Promise<void>;
+  /** The daemon's own answer about whether it can run this agent as configured. */
+  validateAgentConfiguration(agent: CompiledAgent): Promise<AgentValidationVerdict>;
 }
 
-/** The daemon may have durably created the agent before its acknowledgement was lost. */
-export class DaemonCreateResponseLostError extends Error {
+/** A durable daemon request may have succeeded before its acknowledgement was lost. */
+export class DaemonResponseLostError extends Error {
   constructor() {
-    super("daemon create response was lost");
-    this.name = "DaemonCreateResponseLostError";
-  }
-}
-
-export class DaemonCreateRejectedError extends Error {
-  constructor(
-    message: string,
-    readonly code?: string,
-    readonly provider?: string,
-    readonly issues?: readonly {
-      path: readonly (string | number)[];
-      message: string;
-    }[],
-  ) {
-    super(message);
-    this.name = "DaemonCreateRejectedError";
+    super("daemon response was lost");
+    this.name = "DaemonResponseLostError";
   }
 }

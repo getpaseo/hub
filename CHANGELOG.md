@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.9.0 - 2026-09-04
+
+### Added
+
+- Linear connections and signed issue, assignment, and comment triggers, with scoped context and workflow replies.
+- Optional invitation email delivery, account email verification, and password recovery for configured deployments.
+- Cardless seven-day Hosted trials, live plan presentation, open signup, and initial organization creation.
+- Daemon-backed model, execution mode, and thinking-option selection in trigger setup.
+- Dashboard help links, trial countdowns, and guided daemon setup from empty states.
+
+### Changed
+
+- Hosted configuration now centers on organization-level, single-agent triggers with an equivalent visual editor and YAML document. Existing project workflows migrate at startup, while advanced multi-step workflows remain runnable as YAML.
+- Trigger setup requires explicit daemon, agent, model, execution mode, and thinking choices when those capabilities are available.
+- Daemon enrollment separates presence from workflow execution through explicit permissions while remaining compatible with legacy scope-based daemons.
+- Dashboard navigation, copy hierarchy, and loading states now preserve the current scope and page shape.
+
+### Fixed
+
+- Self-hosted Hub login and browser mutations honor the configured public origin behind TLS-terminating proxies.
+- Discord and Slack thread context retains the conversation's root message after pagination and truncation.
+- Daemon event-processing failures no longer escape their observer boundary and terminate Hub.
+- Project-to-organization trigger migration preserves provider routing and repairs previously omitted implicit routes.
+- Existing managed PostgreSQL databases start without requiring access to the `postgres` maintenance database.
+- Failed provider connections return to Connections with the relevant recovery guidance.
+
 ## 0.8.0 - 2026-08-25
 
 ### Added

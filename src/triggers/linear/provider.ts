@@ -132,6 +132,10 @@ export function createLinearTriggerProvider(options: {
         if (invocation.status === "accepted") {
           if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;
           matches.push({
+            conversation: {
+              key: JSON.stringify(["linear", event.organizationId, issue.id]),
+              label: "Linear issue",
+            },
             triggerName: candidate.trigger.name,
             triggerContext,
             outputContext,
@@ -141,6 +145,10 @@ export function createLinearTriggerProvider(options: {
           });
         } else {
           matches.push({
+            conversation: {
+              key: JSON.stringify(["linear", event.organizationId, issue.id]),
+              label: "Linear issue",
+            },
             triggerName: candidate.trigger.name,
             triggerContext,
             outputContext,

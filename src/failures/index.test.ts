@@ -32,6 +32,13 @@ describe("failure boundary", () => {
       "rateLimited",
     );
     assert.equal(classifyFailure(new Error("boom"), 503), "internal");
+    assert.equal(
+      classifyFailure(
+        Object.assign(new Error("unauthenticated"), { status: 401, code: "unauthenticated" }),
+      ),
+      "authentication",
+    );
+    assert.equal(classifyFailure(Object.assign(new Error("missing"), { status: 404 })), "notFound");
   });
 
   it("tracks whether the active HTTP request already reported a failure", () => {

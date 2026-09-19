@@ -31,7 +31,8 @@ describe("production Hub runtime", () => {
     assert.equal(run.status, 200);
     const execution = await hub.waitForPendingExecution();
     await hub.waitForRecoveredExecution(execution.id);
-    assert.equal(hub.createdAgentLaunch().prompt, "Deploy the requested service");
+    const launch = await hub.waitForCreatedAgentLaunch();
+    assert.equal(launch.prompt, "Deploy the requested service");
   });
 });
 

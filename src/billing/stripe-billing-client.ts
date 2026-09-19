@@ -49,7 +49,6 @@ export interface CreateCheckoutSessionInput {
   quantity: number;
   successUrl: string;
   cancelUrl: string;
-  trial: boolean;
 }
 
 export interface ChangeSubscriptionPriceInput {
@@ -79,6 +78,5 @@ export interface StripeSubscriptionState {
   /** Stripe's own status vocabulary, verbatim (`active`, `trialing`, `canceled`, …). */
   status: string;
   currentPeriodEnd: Date | null;
-  trialEnd: Date | null;
   cancelAtPeriodEnd: boolean;
 }

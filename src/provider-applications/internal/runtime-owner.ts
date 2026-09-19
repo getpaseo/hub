@@ -2,7 +2,7 @@ import type { AuthServer } from "../../auth/server.js";
 import { createHash } from "node:crypto";
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import type { Database } from "../../db/types.js";
-import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
+import { replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { logger } from "../../logger.js";
 import { reportFailure } from "../../failures/index.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
@@ -399,26 +399,28 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         },
       ],
       sources: [source],
-      outputs:
-        provider === "github"
-          ? []
-          : [
-              {
-                type: `${provider}.reply`,
-                tool: replyOutputTool,
-                available: outputContextProvider(provider),
-                execute: (input) => {
-                  const active = slot.active;
-                  const output = active?.registration.outputs.find(
-                    (candidate) => candidate.type === `${provider}.reply`,
-                  );
-                  if (active === undefined || output === undefined) {
-                    throw unavailable(`${provider}_output_unavailable`);
-                  }
-                  return this.withLease(active, () => output.execute(input));
-                },
-              },
-            ],
+      outputs: [
+        {
+          type: `${provider}.reply`,
+          tool: replyOutputTool,
+          available: (context) => {
+            const output = slot.active?.registration.outputs.find(
+              (candidate) => candidate.type === `${provider}.reply`,
+            );
+            return output !== undefined && (output.available?.(context) ?? true);
+          },
+          execute: (input) => {
+            const active = slot.active;
+            const output = active?.registration.outputs.find(
+              (candidate) => candidate.type === `${provider}.reply`,
+            );
+            if (active === undefined || output === undefined) {
+              throw unavailable(`${provider}_output_unavailable`);
+            }
+            return this.withLease(active, () => output.execute(input));
+          },
+        },
+      ],
       requests:
         provider === "discord"
           ? []

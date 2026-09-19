@@ -5,7 +5,7 @@ import {
   daemonLink,
   daemonLoginCommand,
   DaemonHandoffView,
-  organizationTriggersRoute,
+  organizationHomeRoute,
   type DaemonLink,
 } from "./handoff.js";
 import type { BrowserDaemon, BrowserDaemonList } from "./functions.js";
@@ -60,7 +60,7 @@ describe("the daemon login command", () => {
 
 describe("where onboarding ends", () => {
   it("opens the organization's trigger list", () => {
-    assert.equal(organizationTriggersRoute("paseo-hub-1a2b3c4d"), "/o/paseo-hub-1a2b3c4d/triggers");
+    assert.equal(organizationHomeRoute("paseo-hub-1a2b3c4d"), "/o/paseo-hub-1a2b3c4d/home");
   });
 });
 
@@ -142,7 +142,7 @@ describe("the daemon handoff screen", () => {
 
     assert.match(screen, /Hub couldn&#x27;t check for daemons/u);
     assert.match(screen, /Hub did not answer\./u);
-    assert.match(screen, /Check again/u);
+    assert.match(screen, /Try again/u);
     assert.ok(screen.includes("paseo hub login http://localhost:4173"));
     // A failed check is not a reason to strand the operator here.
     assert.match(screen, /Do this later/u);

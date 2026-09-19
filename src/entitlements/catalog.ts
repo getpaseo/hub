@@ -256,7 +256,24 @@ export function effectiveEntitlements(
   };
 }
 
-/** Stripe has no version counter, so `plan_version` is a content hash of the template. */
+/**
+ * Stripe has no version counter, so `plan_version` is a content hash of the template.
+ *
+ * The hash is canonical: keys are sorted before serialising, so two templates that mean the same
+ * thing hash the same whichever order they were built in. It has to be, because the hash is what
+ * "this organization is behind its plan" means — a plan and an organization that agree on every
+ * value but were serialised in different key orders would re-stamp each other on every sync.
+ */
 export function hashTemplate(template: EntitlementTemplate): string {
-  return createHash("sha256").update(JSON.stringify(template)).digest("hex");
+  return createHash("sha256").update(canonicalJson(template)).digest("hex");
+}
+
+/** `JSON.stringify` with object keys in sorted order, at every depth. Arrays keep their order. */
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, nested: unknown) => {
+    if (nested === null || typeof nested !== "object" || Array.isArray(nested)) return nested;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(nested).sort()) sorted[key] = Reflect.get(nested, key);
+    return sorted;
+  });
 }

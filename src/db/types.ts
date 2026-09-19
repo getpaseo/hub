@@ -14,7 +14,7 @@ export type WorkflowDeadlineKind = "step_hard" | "step_idle" | "whole_run";
 export interface ProviderEventReceiptRecord {
   id: string;
   organizationId: string;
-  provider: "github" | "slack" | "discord" | "linear" | "manual";
+  provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule";
   connectionId: string | null;
   resourceId: string | null;
   deliveryId: string;
@@ -41,6 +41,24 @@ export interface ProviderEventReceiptSummary {
   repo: string | null;
   receivedAt: Date;
   droppedReason: string | null;
+}
+
+/** One run as an organization overview reads it: what fired, what happened, and which agent ran. */
+export interface OrganizationRunRecord {
+  id: string;
+  triggerName: string;
+  provider: ProviderEventReceiptRecord["provider"];
+  source: string;
+  status: TriggerRunRecord["status"];
+  receivedAt: Date;
+  /** The agent the dispatched launch intent named; null before dispatch or when nothing launched. */
+  agent: { provider: string; model: string | null } | null;
+}
+
+/** How many events a provider delivered that no trigger was listening for. */
+export interface UnroutedProviderEventCount {
+  provider: ProviderEventReceiptRecord["provider"];
+  count: number;
 }
 
 export interface ProviderEventRouteSnapshot {
@@ -92,6 +110,8 @@ export interface MachineRecord {
 }
 
 export interface AgentExecutionRecord {
+  agentSessionId: string | null;
+  agentSessionAction: import("../agent-sessions/index.js").AgentSessionAction | null;
   id: string;
   organizationId: string;
   projectId: string;
@@ -687,6 +707,7 @@ export interface InsertAgentExecutionInput {
 }
 
 interface TriggerRunEvidence {
+  conversation: import("../triggers/continuation.js").Conversation | null;
   id: string;
   organizationId: string;
   projectId: string;
@@ -759,6 +780,7 @@ export interface WorkflowWakeupRecord {
 }
 
 export interface CreateAcceptedTriggerRunInput {
+  conversation?: import("../triggers/continuation.js").Conversation | null;
   id?: string;
   organizationId: string;
   projectId: string;
@@ -938,8 +960,27 @@ export interface ConsumeOrganizationUsageInput {
 
 export type BillingPlanPriceInterval = "monthly" | "annual";
 
+export interface BillingPlanMarketingFeature {
+  key: string;
+  label: string;
+  tooltip: string | null;
+}
+
+/**
+ * The plan's own numbers, as scalars. Derived once by the catalog sync from the validated
+ * entitlement template (`src/billing/catalog-sync.ts`) so the public catalog can state what a
+ * plan includes without the template document itself ever reaching the projection. null is
+ * unlimited, matching the catalog's convention everywhere else.
+ */
+export interface BillingPlanIncluded {
+  seats: number | null;
+  executionsPerMonth: number | null;
+}
+
 export interface BillingPlanMarketing {
-  features: readonly string[];
+  included: BillingPlanIncluded;
+  features: readonly BillingPlanMarketingFeature[];
+  priceTooltips: Record<BillingPlanPriceInterval, string | null>;
 }
 
 export interface BillingPlanPriceRecord {
@@ -956,7 +997,7 @@ export interface BillingPlanPriceRecord {
  * `template` and `marketing` are `unknown` at the storage boundary, matching
  * `OrganizationEntitlementsRecord` above — both were validated once by `src/billing/` before
  * `syncBillingPlan` was called. The public plans projection re-parses `marketing`
- * (`application-runtime.ts`) and never reads `template` at all; the (future) stamping path
+ * (`src/billing/public-catalog.ts`) and never reads `template` at all; entitlement stamping
  * re-parses `template`.
  */
 export interface BillingPlanRecord {
@@ -1061,6 +1102,7 @@ export interface MigrateProjectTriggersInput {
 }
 
 export interface SaveOrganizationTriggerInput {
+  recurrence?: import("../triggers/schedule/recurrence.js").Recurrence;
   organizationId: string;
   triggerId?: string;
   name: string;
@@ -1138,6 +1180,23 @@ export interface TerminateMachineFields {
 }
 
 export interface Database {
+  readonly executionAuthority: import("../execution-authority/index.js").ExecutionAuthorityStore;
+  readonly schedules: import("../triggers/schedule/index.js").ScheduleStore;
+  findAgentSessionByKey(
+    projectId: string,
+    key: string,
+  ): Promise<import("../agent-sessions/index.js").AgentSessionRecord | undefined>;
+  findAgentSession(
+    id: string,
+  ): Promise<import("../agent-sessions/index.js").AgentSessionRecord | undefined>;
+  saveAgentSession(session: import("../agent-sessions/index.js").AgentSessionRecord): Promise<void>;
+  attachExecutionToSession(
+    executionId: string,
+    sessionId: string,
+    action?: import("../agent-sessions/index.js").AgentSessionAction,
+  ): Promise<void>;
+  listAgentSessionExecutions(sessionId: string): Promise<AgentExecutionRecord[]>;
+
   createAcceptedTriggerRun(
     input: CreateAcceptedTriggerRunInput,
   ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }>;
@@ -1164,7 +1223,12 @@ export interface Database {
   findAgentExecutionByWorkflowStepRunId(
     stepRunId: string,
   ): Promise<AgentExecutionRecord | undefined>;
-  claimWorkflowWakeup(now: Date, leaseMs: number): Promise<WorkflowWakeupRecord | undefined>;
+  releaseWorkflowWakeup(triggerRunId: string, now: Date, claimedLease: Date): Promise<void>;
+  claimWorkflowWakeup(
+    now: Date,
+    leaseMs: number,
+    excludedRunIds?: readonly string[],
+  ): Promise<WorkflowWakeupRecord | undefined>;
   wakeWorkflowRun(triggerRunId: string, availableAt: Date): Promise<void>;
   deleteWorkflowWakeup(triggerRunId: string): Promise<void>;
   createWorkflowStepExecution(input: WorkflowStepExecutionInput): Promise<{
@@ -1304,6 +1368,7 @@ export interface Database {
     observedAt: Date,
     processedAt: Date,
   ): Promise<AgentExecutionRecord>;
+  limitAgentExecutionDeadline(executionId: string, deadlineAt: Date): Promise<void>;
   prepareAgentExecutionForDispatch(
     executionId: string,
     daemonId: string,
@@ -1373,6 +1438,12 @@ export interface Database {
   ): Promise<OrganizationEntitlementsRecord>;
   listEntitlementChanges(organizationId: string, limit: number): Promise<EntitlementChangeRecord[]>;
   /**
+   * The organizations stamped from `planId` whose stamp predates the plan's current template —
+   * `plan_version` differs from `templateHash`. Stripe carries no version counter, so a content
+   * hash mismatch is what "off template" means. The catalog sync re-stamps exactly this list.
+   */
+  listOrganizationsOffPlanTemplate(planId: string, templateHash: string): Promise<string[]>;
+  /**
    * Every organization, for the instance-operator picker. Not a membership read — the operator
    * acts on organizations it does not belong to, so the caller must gate this on the operator
    * flag before invoking it.
@@ -1383,6 +1454,7 @@ export interface Database {
    * the operator flag at the caller. Undefined when no organization has that slug.
    */
   findOrganizationForOperator(slug: string): Promise<OperatorOrganizationRecord | undefined>;
+  findOrganizationSlugById(organizationId: string): Promise<string | undefined>;
   /**
    * Single atomic conditional upsert: increments `used` by `amount` and returns the new
    * row, unless doing so would exceed `limit` (when non-null), in which case it returns
@@ -1515,6 +1587,21 @@ export interface Database {
   listUnroutedProviderEventsForOrganization(
     organizationId: string,
   ): Promise<ProviderEventReceiptSummary[]>;
+  /** Newest first, every run the organization's triggers started at or after `since`. */
+  listOrganizationRunsSince(
+    organizationId: string,
+    since: Date,
+    limit: number,
+  ): Promise<OrganizationRunRecord[]>;
+  /**
+   * Events received at or after `since` that were dropped because no trigger listens for them
+   * (`no_project_route`, `no_trigger_for_source`), counted per provider. A filter that declined
+   * an event is a trigger listening, so those drops are not counted.
+   */
+  countUnroutedProviderEventsSince(
+    organizationId: string,
+    since: Date,
+  ): Promise<UnroutedProviderEventCount[]>;
   isOrganizationMember(userId: string, organizationId: string): Promise<boolean>;
   startConnectionAttempt(input: StartConnectionAttemptInput): Promise<void>;
   findConnectionAttemptConfiguration(

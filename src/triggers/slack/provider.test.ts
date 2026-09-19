@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import { createMemoryDatabase } from "../../db/memory.js";
 import { createAttachmentCapabilityRegistry } from "../../attachments/capabilities.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
@@ -13,6 +13,45 @@ import { createSlackTriggerProvider } from "./provider.js";
 import { isAcceptedTriggerProviderMatch } from "../index.js";
 
 describe("Slack Phase 1 trigger provider", () => {
+  it("explains a monthly execution denial in the originating thread", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-28T23:00:00Z"));
+    try {
+      const database = createMemoryDatabase();
+      const { project, revision, store } = await createActiveProjectConfiguration(
+        database,
+        configuration(),
+        { organizationId: "org-1" },
+      );
+      const client = new RecordingSlackClient();
+      const provider = createSlackTriggerProvider({
+        configurationStoreForProject: () => store,
+        botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+        client,
+        billingUrlForOrganization: async () => "https://hub.paseo.sh/o/acme/settings/billing",
+      });
+      const match = (await provider.match(external(project.id, revision.id)))[0];
+      if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+      await provider.onAgentExecutionFailed?.(
+        match.triggerContext,
+        match.outputContext,
+        JSON.stringify({
+          error: "entitlement_denied",
+          entitlement: "executions.monthly",
+          kind: "meter",
+          limit: 50,
+          current: 236,
+        }),
+      );
+      assert.equal(
+        client.messages[0]?.content,
+        "This org has used its 50 free runs for September. Runs reset on October 1, or upgrade to Pro under Billing: https://hub.paseo.sh/o/acme/settings/billing",
+      );
+      assert.equal(client.messages[0]?.threadTs, "1700000000.000001");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("accepts the explicit wildcard without a pointless username lookup", async () => {
     const database = createMemoryDatabase();
     const wildcard = configuration();
@@ -227,6 +266,13 @@ describe("Slack Phase 1 trigger provider", () => {
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
     assert.equal(match.triggerContext.event.slack.trigger_message.thread, null);
     assert.equal(match.outputContext.threadTs, match.outputContext.messageTs);
+    const reply = (
+      await provider.match(external(project.id, revision.id, { messageTs: "1700000000.000002" }))
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(reply)) throw new Error("expected accepted reply");
+    assert.ok(match.conversation);
+    assert.equal(reply.conversation?.key, match.conversation.key);
+
     assert.equal(
       match.triggerContext.event.slack.trigger_message.created_at,
       "2023-11-14T22:13:20.000Z",

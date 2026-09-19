@@ -136,6 +136,14 @@ class BuiltApplications {
       cancelSubscription: (organizationId: string) =>
         deliverCommand(server, { type: "billing-cancel-subscription", organizationId }),
       failNextAccountSetup: () => deliverCommand(server, { type: "fail-next-account-setup" }),
+      accountEmailLink: async (email, kind) => {
+        const link = await deliverCommandForData(server, {
+          type: "account-email-link",
+          email,
+          kind,
+        });
+        return z.string().url().parse(link);
+      },
       issueDaemonEnrollment: (verifier: string) =>
         deliverCommand(server, { type: "daemon-enrollment-token", verifier }),
       failNextProjectRead: () => deliverCommand(server, { type: "fail-next-project-read" }),

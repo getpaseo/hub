@@ -6,19 +6,13 @@ import { ConfirmMenuItem } from "../components/app/confirm-action.js";
 import { DataCell, DataRow, DataTable, type DataColumn } from "../components/app/data-table.js";
 import { PageHeader } from "../components/app/page.js";
 import { RowActions } from "../components/app/row-actions.js";
+import { FailureAlert } from "../components/app/failure-alert.js";
+import { FormDialog } from "../components/app/form-dialog.js";
 import { Section } from "../components/app/section.js";
+import { StatusLine } from "../components/app/status-line.js";
 import { StatusPill } from "../components/app/status-pill.js";
-import { Button } from "../components/ui/button.js";
+import { TwoLine } from "../components/app/two-line.js";
 import { DropdownMenuItem } from "../components/ui/dropdown-menu.js";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "../components/ui/dialog.js";
-import { Field, FieldLabel } from "../components/ui/field.js";
 import {
   Select,
   SelectContent,
@@ -28,11 +22,14 @@ import {
 } from "../components/ui/select.js";
 import type { ActiveAccountState, TeamMember } from "./organization-contract.js";
 import { formValue, invitationRole } from "./account-actions.js";
-import { FormField } from "./form-field.js";
+import { FormField, type FieldControl } from "../components/app/form-field.js";
 import { useActiveAccount } from "./active-account.js";
 import { cancelInvitation, changeMemberRole, createInvitation, removeMember } from "./functions.js";
 import type { Result } from "../contract/respond.js";
 import { ACCOUNT_MUTATION_KEY, useAccountMutationPending } from "./account-mutation.js";
+import { INVITATION_MUTATION_KEY } from "./tenant-mutation.js";
+import type { UsageLimitsView } from "../usage/dashboard.js";
+import { atLimit, LockedAction, useOrganizationLimits } from "../entitlements/ui/index.js";
 
 type AccountCommandResult = Result<{
   state: "sessionExpired" | "organizationRequired" | "complete";
@@ -45,6 +42,9 @@ import {
   type InvitationRole,
   type OrganizationRole,
 } from "./organization-contract.js";
+
+const INVITE_FAILURE =
+  "Hub did not create the invitation. Check your connection and submit it again.";
 
 const EMPTY_INVITATIONS: NonNullable<ActiveAccountState["team"]["invitations"]> = [];
 const INVITATION_ROLE_LABELS = {
@@ -82,6 +82,8 @@ export function Team() {
   const [inviting, setInviting] = useState(false);
   const invite = useCallback(() => setInviting(true), []);
   const busy = useAccountMutationPending();
+  const limits = useOrganizationLimits(account.capabilities.manageMembers);
+  const limit = limits === undefined ? null : inviteLimit(limits);
   const activeAccount = useMemo(() => ({ ...account, busy }), [account, busy]);
 
   return (
@@ -92,10 +94,13 @@ export function Team() {
         description={`People with access to ${account.organization.name}.`}
       >
         {account.capabilities.manageMembers && (
-          <Button type="button" onClick={invite} disabled={busy}>
-            <Plus aria-hidden="true" />
-            Invite member
-          </Button>
+          <LockedAction
+            limit={limit}
+            label="Invite member"
+            icon={Plus}
+            onPress={invite}
+            busy={busy}
+          />
         )}
       </PageHeader>
       <Section title="Members">
@@ -117,6 +122,18 @@ export function Team() {
   );
 }
 
+/**
+ * The limit the organization has run into, or null while it may still invite. The flag is
+ * reported ahead of the seat cap: an organization with invitations turned off is not short of
+ * seats.
+ */
+function inviteLimit(limits: UsageLimitsView): string | null {
+  if (!limits.canInviteMembers) return "Inviting members isn't enabled for this organization.";
+  const { seats } = limits;
+  if (!atLimit(seats)) return null;
+  return `Seat limit reached — ${seats.used} of ${seats.limit} seats are in use.`;
+}
+
 function InvitationDialog({
   open,
   onOpenChange,
@@ -128,13 +145,19 @@ function InvitationDialog({
 }) {
   const [role, setRole] = useState<InvitationRole>(INVITATION_ROLES[1]);
   const queryClient = useQueryClient();
+  // The dialog owns this request. It stays open until the invitation exists, so a refusal — a
+  // duplicate address, a seat that just went — is answered where the address was typed, with the
+  // address still in the field, instead of closing and reporting itself at the top of the page.
   const create = useMutation({
-    mutationKey: ACCOUNT_MUTATION_KEY,
+    mutationKey: INVITATION_MUTATION_KEY,
     mutationFn: useServerFn(createInvitation) as (
       input: Parameters<typeof createInvitation>[0],
     ) => Promise<AccountCommandResult>,
     onSuccess: async (result) => {
-      if (result.status === "ok") await queryClient.invalidateQueries({ queryKey: ["account"] });
+      if (result.status !== "ok") return;
+      await queryClient.invalidateQueries({ queryKey: ["account"] });
+      setRole(INVITATION_ROLES[1]);
+      onOpenChange(false);
     },
   });
 
@@ -145,48 +168,60 @@ function InvitationDialog({
       create.mutate({
         data: { email: formValue(data, "email"), role: invitationRole(data) },
       });
-      setRole(INVITATION_ROLES[1]);
-      onOpenChange(false);
     },
-    [create, onOpenChange],
+    [create],
   );
 
   const selectRole = useCallback((value: string): void => {
     setRole(invitationRoleSchema.parse(value));
   }, []);
 
+  // A transport failure has no words of its own worth showing; the fallback names what did not
+  // happen instead of reporting the browser's own network wording to the reader.
+  const failed = create.isError || create.data?.status === "error";
+
+  const roleControl = useCallback(
+    (control: FieldControl) => (
+      <Select name="role" value={role} onValueChange={selectRole} required>
+        <SelectTrigger {...control} className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {INVITATION_ROLES.map((roleValue) => (
+            <SelectItem value={roleValue} key={roleValue}>
+              {INVITATION_ROLE_LABELS[roleValue]}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    ),
+    [role, selectRole],
+  );
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Invite a team member</DialogTitle>
-          <DialogDescription>Create a role-bound invitation link for a teammate.</DialogDescription>
-        </DialogHeader>
-        <form onSubmit={submit} aria-label="Invite team member" className="grid gap-6">
-          <FormField label="Invitee email" name="email" id="invite-email" type="email" />
-          <Field>
-            <FieldLabel htmlFor="invite-role">Role</FieldLabel>
-            <Select name="role" value={role} onValueChange={selectRole} required>
-              <SelectTrigger id="invite-role" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {INVITATION_ROLES.map((roleValue) => (
-                  <SelectItem value={roleValue} key={roleValue}>
-                    {INVITATION_ROLE_LABELS[roleValue]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
-          <DialogFooter>
-            <Button type="submit" disabled={busy}>
-              Create invitation
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+    <FormDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Invite a team member"
+      description="Create a role-bound invitation link for a teammate."
+      label="Invite team member"
+      submitLabel="Create invitation"
+      busy={busy || create.isPending}
+      onSubmit={submit}
+    >
+      <FormField label="Invitee email" name="email" id="invite-email" kind="email" required />
+      <FormField id="invite-role" label="Role">
+        {roleControl}
+      </FormField>
+      {failed ? (
+        <FailureAlert
+          title="Invitation not sent"
+          error={create.isError ? null : create.data}
+          fallback={INVITE_FAILURE}
+          focusOnArrival
+        />
+      ) : null}
+    </FormDialog>
   );
 }
 
@@ -243,8 +278,7 @@ function MemberRow({ account, member }: { account: ActiveAccount; member: TeamMe
   return (
     <DataRow>
       <DataCell className="min-w-0">
-        <span className="block truncate">{member.name}</span>
-        <span className="block truncate text-xs text-muted-foreground">{member.email}</span>
+        <TwoLine primary={member.name} secondary={member.email} />
       </DataCell>
       <DataCell>
         {canManage ? (
@@ -305,7 +339,7 @@ function InvitationList({
   const [copyStatus, setCopyStatus] = useState<string>();
 
   return (
-    <div className="grid gap-3">
+    <>
       <DataTable
         label="Pending invitations"
         columns={INVITATION_COLUMNS}
@@ -315,7 +349,7 @@ function InvitationList({
         {invitations.map((invitation) => (
           <DataRow key={invitation.id}>
             <DataCell className="min-w-0">
-              <span className="block truncate">{invitation.email}</span>
+              <TwoLine primary={invitation.email} />
             </DataCell>
             <DataCell>
               <StatusPill tone="neutral" dot={false}>
@@ -335,10 +369,8 @@ function InvitationList({
           </DataRow>
         ))}
       </DataTable>
-      <p className="min-h-5 text-sm text-muted-foreground" role="status" aria-live="polite">
-        {copyStatus}
-      </p>
-    </div>
+      <StatusLine>{copyStatus}</StatusLine>
+    </>
   );
 }
 

@@ -16,6 +16,10 @@ export type CodeLanguage = "yaml" | "markdown";
  * place afterwards — remounting it would drop the cursor on every keystroke.
  * `value` is pushed into the document only when it differs from what the editor
  * already holds, so typing does not fight the parent's state.
+ *
+ * The editor fills the box it is given and scrolls inside it: type size, mono stack and every
+ * colour come from the theme tokens, and the height is the caller's pane, not a viewport guess
+ * made in here.
  */
 export function CodeEditor({
   value,
@@ -121,7 +125,8 @@ const paseoHighlight = HighlightStyle.define([
 const editorTheme = EditorView.theme({
   "&": { height: "100%", backgroundColor: "transparent", color: "var(--foreground)" },
   "&.cm-focused": { outline: "none" },
-  ".cm-scroller": { fontFamily: "var(--font-mono, ui-monospace, monospace)", lineHeight: "1.6" },
+  // The size comes from the host's `text-sm`; only the family is set here.
+  ".cm-scroller": { fontFamily: "var(--font-mono)", lineHeight: "1.6" },
   ".cm-content": { caretColor: "var(--link)", padding: "0.5rem 0" },
   ".cm-line": { padding: "0 0.875rem" },
   ".cm-gutters": {

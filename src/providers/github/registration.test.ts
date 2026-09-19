@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../../auth/server.js";
-import type { OrganizationAccessValue } from "../../auth/organization-access.js";
+import {
+  ProductRequestError,
+  type OrganizationAccessValue,
+} from "../../auth/organization-access.js";
 import { createMemoryDatabase } from "../../db/memory.js";
 import {
   createActiveProjectConfiguration,
@@ -158,7 +161,8 @@ describe("GitHub registration", () => {
       appAuth: {
         getInstallation: () => Promise.resolve(undefined),
         getInstallationToken: () => Promise.resolve("token"),
-        mintInstallationToken: () => Promise.resolve("token"),
+        mintInstallationToken: () =>
+          Promise.resolve({ token: "token", expiresAt: Date.now() + 3600_000 }),
         mintInstallationAccessToken: () =>
           Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 }),
         getAppBotIdentity: () => Promise.resolve({ id: 123, login: "paseo[bot]" }),
@@ -248,7 +252,10 @@ describe("GitHub registration", () => {
         getInstallationToken: () => Promise.reject(new Error("unused")),
         mintInstallationToken: (installationId) => {
           installations.push(installationId);
-          return Promise.resolve("test-installation-token");
+          return Promise.resolve({
+            token: "test-installation-token",
+            expiresAt: Date.now() + 3600_000,
+          });
         },
         mintInstallationAccessToken: () =>
           Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 }),
@@ -310,7 +317,8 @@ describe("GitHub registration", () => {
       appAuth: {
         getInstallation: () => Promise.resolve(undefined),
         getInstallationToken: () => Promise.resolve("token"),
-        mintInstallationToken: () => Promise.resolve("token"),
+        mintInstallationToken: () =>
+          Promise.resolve({ token: "token", expiresAt: Date.now() + 3600_000 }),
         mintInstallationAccessToken: (input) => {
           requests.push(input);
           return Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 });
@@ -413,6 +421,34 @@ describe("GitHub registration", () => {
     );
   });
 
+  it("returns a setup callback that carries no session to the connections landing", async () => {
+    const registration = createGitHubRegistration({
+      database: createMemoryDatabase(),
+      auth: new SignedOutAuth(),
+      applicationBaseUrl: "https://hub.test",
+      publicBaseUrl: "https://hub.test",
+      configuration: githubConfiguration(),
+      appAuth: githubAuth(),
+      connectionClient: new GitHubClientFake(),
+      reactionClient: {
+        createReaction: () => Promise.resolve({ id: 1 }),
+        deleteReaction: () => Promise.resolve(),
+      },
+    });
+
+    const response = await registration.connection.actions["setup"]!(
+      new Request(
+        "https://hub.test/api/integrations/github/setup?state=s&setup_action=install&installation_id=42",
+      ),
+    );
+
+    assert.equal(response.status, 303);
+    assert.equal(
+      response.headers.get("location"),
+      "https://hub.test/connections?app=github&result=connection_unauthenticated",
+    );
+  });
+
   it("keeps provider runtime active without browser authentication", async () => {
     const registration = createGitHubRegistration({
       database: createMemoryDatabase(),
@@ -499,7 +535,8 @@ describe("GitHub registration", () => {
       appAuth: {
         getInstallation: () => Promise.resolve(undefined),
         getInstallationToken: () => Promise.resolve("token"),
-        mintInstallationToken: () => Promise.resolve("token"),
+        mintInstallationToken: () =>
+          Promise.resolve({ token: "token", expiresAt: Date.now() + 3600_000 }),
         mintInstallationAccessToken: () =>
           Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 }),
         getAppBotIdentity: () => Promise.resolve({ id: 123, login: "paseo[bot]" }),
@@ -645,6 +682,13 @@ class RegistrationAuth implements AuthServer {
   }
 }
 
+/** The browser that came back from GitHub carries no Hub session at all. */
+class SignedOutAuth extends RegistrationAuth {
+  override resolveAccount(): Promise<never> {
+    return Promise.reject(new ProductRequestError(401, "unauthenticated"));
+  }
+}
+
 function githubConfiguration() {
   return {
     appId: "42",
@@ -676,7 +720,8 @@ function githubAuth() {
   return {
     getInstallation: () => Promise.resolve(undefined),
     getInstallationToken: () => Promise.resolve("token"),
-    mintInstallationToken: () => Promise.resolve("token"),
+    mintInstallationToken: () =>
+      Promise.resolve({ token: "token", expiresAt: Date.now() + 3600_000 }),
     mintInstallationAccessToken: () =>
       Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 }),
     getAppBotIdentity: () => Promise.resolve({ id: 123, login: "paseo[bot]" }),

@@ -5,5 +5,6 @@ import { OrganizationSettingsLayout } from "../../../../auth/organization-settin
 // occasionally, so they sit under one sidebar entry instead of competing with Projects, Daemons,
 // and Connections for attention.
 export const Route = createFileRoute("/_shell/o/$organizationSlug/settings")({
+  staticData: { breadcrumb: "Settings", tabs: true },
   component: OrganizationSettingsLayout,
 });

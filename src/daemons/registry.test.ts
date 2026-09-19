@@ -1,13 +1,14 @@
+import { z } from "zod";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { WebSocket, type RawData } from "ws";
 import type { DaemonRecord } from "../db/types.js";
 import { HubDaemonHelloSchema } from "../hub/protocol.js";
 import { createLogger } from "../logger.js";
 import { assertOneFailure, FailureLogStream } from "../test-utils/failure-logs.js";
-import { DaemonCreateRejectedError, DaemonCreateResponseLostError } from "./protocol.js";
+import { DaemonResponseLostError } from "./protocol.js";
 import { ActiveDaemonRegistry, createDaemonUpgradeHandler } from "./registry.js";
 import { DaemonRegistryHarness } from "./test-utils/daemon-registry-harness.js";
 
@@ -147,23 +148,31 @@ describe("daemon socket generations", () => {
 
     assert.equal(replacement.supersededClosed, false);
     await assert.rejects(oldCreate.promise, {
-      name: DaemonCreateResponseLostError.name,
-      message: "daemon create response was lost",
+      name: DaemonResponseLostError.name,
+      message: "daemon response was lost",
     });
     assert.deepEqual(await daemon.completeCreate("new-create", "agent-new"), {
       id: "agent-new",
+      workspaceId: "workspace-agent-new",
+      status: "idle",
     });
   });
 
   it("forwards only structured MCP grants with opaque provider options", async () => {
     const pending = await daemon.pendingCreate("contract-create");
 
-    assert.deepEqual(pending.request["providerOptions"], {
-      permission: { edit: "ask", bash: "deny" },
-    });
-    assert.deepEqual(pending.request["toolPolicy"], {
-      preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
-    });
+    assert.deepEqual(
+      z.record(z.string(), z.unknown()).parse(pending.request["config"])["providerOptions"],
+      {
+        permission: { edit: "ask", bash: "deny" },
+      },
+    );
+    assert.deepEqual(
+      z.record(z.string(), z.unknown()).parse(pending.request["config"])["toolPolicy"],
+      {
+        preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
+      },
+    );
   });
 
   it("delegates provider, model, mode, and structured option validation to the daemon", async () => {
@@ -187,6 +196,36 @@ describe("daemon socket generations", () => {
     });
   });
 
+  it("reads and refreshes provider capabilities through the Hub execution session", async () => {
+    const refresh = await daemon.pendingProviderRefresh();
+    assert.deepEqual(
+      { cwd: refresh.request["cwd"], providers: refresh.request["providers"] },
+      { cwd: "/workspace", providers: ["codex"] },
+    );
+    daemon.respondProviderRefresh(refresh);
+    await refresh.promise;
+
+    const snapshot = await daemon.pendingProviderSnapshot();
+    daemon.respondProviderSnapshot(snapshot);
+
+    assert.deepEqual((await snapshot.promise).entries, [
+      {
+        provider: "codex",
+        status: "ready",
+        enabled: true,
+        models: [
+          {
+            provider: "codex",
+            id: "gpt-5.4",
+            label: "GPT-5.4",
+            thinkingOptions: [{ id: "xhigh", label: "Extra high" }],
+          },
+        ],
+        modes: [{ id: "full-access", label: "Full access" }],
+      },
+    ]);
+  });
+
   it("waits for offline presence before shutdown completes", async () => {
     daemon.holdOfflinePresence();
 
@@ -196,22 +235,6 @@ describe("daemon socket generations", () => {
     assert.equal(await daemon.shutdownCompleted(), false);
     daemon.persistOfflinePresence();
     await daemon.shutdownCompletes();
-  });
-
-  it("fails closed when a daemon does not acknowledge the Hub execution contract", async () => {
-    await assert.rejects(daemon.completeCreateWithoutContract("legacy-create"), {
-      name: DaemonCreateRejectedError.name,
-      message:
-        "The connected Paseo daemon did not confirm Hub MCP preapproval; update Paseo before running this workflow",
-    });
-  });
-
-  it("forwards agent status updates to the execution subscriber", async () => {
-    const event = await daemon.reportAgentStatus("execution-1", "idle");
-
-    assert.equal(event.type, "agent_update");
-    assert.equal(event.executionId, "execution-1");
-    if (event.type === "agent_update") assert.equal(event.agent.status, "idle");
   });
 
   it("logs an offline-presence storage rejection exactly once", async () => {
@@ -261,30 +284,10 @@ describe("daemon socket generations", () => {
     });
   });
 
-  it("logs a rejecting subscriber exactly once and still calls its peers", async () => {
-    const canary = "subscriber-secret-b21c";
-    let peerCalls = 0;
-    daemon.subscribe(() => Promise.reject(new Error(canary)));
-    daemon.subscribe(() => {
-      peerCalls += 1;
-    });
-    await daemon.reportAgentStatus("execution-subscriber", "idle");
-    await new Promise((resolve) => setImmediate(resolve));
-
-    expect(peerCalls).toBe(1);
-    assertOneFailure(stream, {
-      operation: "daemon.event.subscriber",
-      component: "daemons",
-      canary,
-    });
-  });
-
-  it("pairs execution-control acknowledgements by request, execution, and action", async () => {
+  it("pairs ordinary control acknowledgements by request", async () => {
     const pending = await daemon.pendingControl("execution-1", "archive");
 
-    daemon.respondControl(pending, { executionId: "execution-stale" });
-    assert.equal(await daemon.requestSettled(pending.promise), false);
-    daemon.respondControl(pending, { action: "interrupt" });
+    daemon.respondControl(pending, { requestId: "request-stale" });
     assert.equal(await daemon.requestSettled(pending.promise), false);
     daemon.respondControl(pending);
 
@@ -296,6 +299,25 @@ describe("daemon socket generations", () => {
 
     await daemon.replaceConnection();
 
-    await assert.rejects(pending.promise, /daemon disconnected/u);
+    await assert.rejects(pending.promise, DaemonResponseLostError);
+  });
+
+  it("survives an invalid WebSocket close code instead of crashing the process", async () => {
+    // Real production crash: a peer sending a close frame with a code the
+    // protocol forbids on the wire (1006 is reserved and must never be
+    // sent) makes `ws`'s Receiver emit `error` on the server socket. With
+    // no `error` listener, Node rethrows it as an uncaught exception and
+    // kills the whole Hub process. If `accept()` regresses, this test
+    // crashes the worker instead of merely failing an assertion.
+    daemon.sendInvalidClose(1006);
+    await daemon.waitUntilCurrentClosed();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assertOneFailure(stream, {
+      operation: "daemon.socket.error",
+      component: "daemons",
+      failureKind: "network",
+      canary: "invalid-close-code-1006-never-logged",
+    });
   });
 });

@@ -82,6 +82,10 @@ describe("durable multi-step workflow engine", () => {
         );
         assert.ok(execution);
         assert.equal(
+          intent.title,
+          intent.triggerName === "first" ? `Intake · ${execution.id}` : undefined,
+        );
+        assert.equal(
           execution.launchIntent?.environment.worktree?.mode === "branch-off"
             ? execution.launchIntent.environment.worktree.newBranch
             : undefined,
@@ -164,7 +168,7 @@ describe("durable multi-step workflow engine", () => {
     assert.equal(steps[0]?.failureReason, "trigger_context_materializer_unavailable");
   });
 
-  it("carries provider options unchanged into persisted and dispatched launch intent", async () => {
+  it("carries provider options and startup timeout into persisted and dispatched launch intent", async () => {
     const rawConfiguration = deadlineConfiguration();
     const options = {
       sandbox_workspace_write: {
@@ -183,6 +187,7 @@ describe("durable multi-step workflow engine", () => {
     const agent = authoredStep["agent"];
     if (!isRecord(agent)) throw new Error("test agent unavailable");
     Reflect.set(agent, "options", options);
+    Reflect.set(authoredStep, "startup_timeout", "3m");
     const fixture = await workflowFixture({ rawConfiguration });
     let dispatched: LaunchMachineIntent | undefined;
     const { handler, engine } = engineFor(fixture, [], async (intent) => {
@@ -193,11 +198,13 @@ describe("durable multi-step workflow engine", () => {
     await engine.processAvailable();
 
     assert.deepEqual(dispatched?.agent, { provider: "codex", options });
+    assert.equal(dispatched?.startupTimeoutMs, 180_000);
     const run = (
       await fixture.database.findTriggerRunsByProviderEventReceiptId(fixture.providerEventReceiptId)
     )[0]!;
     const persistedStep = (await fixture.database.listWorkflowStepRunsForTriggerRun(run.id))[0]!;
     assert.deepEqual(persistedStep.dispatchIntent?.agent, { provider: "codex", options });
+    assert.equal(persistedStep.dispatchIntent?.startupTimeoutMs, 180_000);
   });
 
   it("logs an initial recovery rejection and retries on the next interval", async () => {
@@ -1909,6 +1916,7 @@ function providerMatch(configuration: CompiledHubConfig, revisionId: string) {
           outputContext: { provider: "manual" },
           configurationRevisionId: revisionId,
           hubConfig: configuration,
+          conversation: null,
           invocation,
         },
       ];
@@ -2007,12 +2015,13 @@ function terminalRecoveryConfiguration(): Record<string, unknown> {
 }
 
 function executionWorktreeConfiguration(): Record<string, unknown> {
-  const step = (id: string) => ({
+  const step = (id: string, title?: string) => ({
     id,
     environment: "runner",
     max_runtime: "10m",
     idle_timeout: "1m",
     agent: { provider: "codex" },
+    ...(title === undefined ? {} : { title }),
     prompt: [{ text: "Do the work." }],
   });
   return {
@@ -2029,7 +2038,9 @@ function executionWorktreeConfiguration(): Record<string, unknown> {
       name,
       on: "manual.run",
       max_runtime: "1h",
-      steps: [step(`work-${name}`)],
+      steps: [
+        step(`work-${name}`, name === "first" ? "Intake · ${{ paseo.execution.id }}" : undefined),
+      ],
     })),
   };
 }

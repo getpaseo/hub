@@ -15,7 +15,7 @@ import { NormalizedLinearEventSchema } from "../triggers/linear/events.js";
 import { classifyGitHubEvent } from "../triggers/github/classification.js";
 
 export interface TriggerSummary {
-  provider: "github" | "slack" | "discord" | "linear" | "manual";
+  provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule";
   headline: string;
   actor: string | null;
   externalUrl: string | null;
@@ -36,6 +36,9 @@ export function summarizeTrigger(source: string, payload: unknown): TriggerSumma
   if (provider === "slack") return summarizeSlack(payload);
   if (provider === "discord") return summarizeDiscord(payload);
   if (provider === "linear") return summarizeLinear(payload);
+  if (provider === "schedule") {
+    return { provider, headline: "Scheduled run", actor: null, externalUrl: null };
+  }
   return summarizeManual(payload);
 }
 

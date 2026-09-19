@@ -1,14 +1,23 @@
-import type { Database, SyncBillingPlanInput, SyncBillingPlanPriceInput } from "../db/types.js";
-import { hashTemplate } from "../entitlements/catalog.js";
+import type {
+  BillingPlanRecord,
+  Database,
+  SyncBillingPlanInput,
+  SyncBillingPlanPriceInput,
+} from "../db/types.js";
+import { hashTemplate, type EntitlementTemplate } from "../entitlements/catalog.js";
 import { reportFailure } from "../failures/index.js";
+import { logger } from "../logger.js";
 import { parsePlanMetadata, type ParsedPlanTemplate } from "./plan-template.js";
+import {
+  HUB_PLAN_PRESENTATIONS,
+  type BillingPlanPresentation,
+  type BillingPlanPresentations,
+} from "./plan-presentation.js";
 import type {
   StripeCatalogPrice,
   StripeCatalogProduct,
   StripeCatalogSource,
 } from "./stripe-catalog-source.js";
-
-const MAX_MARKETING_FEATURES = 15;
 
 /**
  * Mirrors the Stripe plan catalog into `billing_plans`/`billing_plan_prices` as one reconciled
@@ -24,10 +33,15 @@ const MAX_MARKETING_FEATURES = 15;
  * After upserting the valid, unambiguous products, every plan absent from the snapshot (a product
  * that lost its `paseo_plan` tag or was deleted) is deactivated, so it stops being selectable
  * rather than lingering active in the mirror.
+ *
+ * Each upserted plan also carries its organizations forward onto the new template — see
+ * `restampOrganizationsOnPlan`. That is what makes editing a plan in the Stripe dashboard the
+ * whole migration: nothing else has to be run.
  */
 export async function syncBillingCatalog(
   source: StripeCatalogSource,
   database: Database,
+  presentations: BillingPlanPresentations = HUB_PLAN_PRESENTATIONS,
 ): Promise<void> {
   const [products, prices] = await Promise.all([source.listProducts(), source.listPrices()]);
   const pricesByProduct = groupPricesByProduct(prices);
@@ -61,11 +75,57 @@ export async function syncBillingCatalog(
       );
       continue;
     }
-    await database.syncBillingPlan(
-      planInput(product, result.data, pricesByProduct.get(product.id) ?? []),
+    const presentation = presentations[result.data.slug];
+    if (presentation === undefined) {
+      reportFailure(
+        Object.assign(new Error("Billing plan has no Hub presentation"), {
+          code: "missing_plan_presentation",
+        }),
+        { operation: "billing.catalog.product.validate", component: "billing" },
+        { kind: "validation", diagnostic: { productId: product.id } },
+      );
+      continue;
+    }
+    const plan = await database.syncBillingPlan(
+      planInput(product, result.data, pricesByProduct.get(product.id) ?? [], presentation),
     );
+    await restampOrganizationsOnPlan(database, plan, result.data.template);
   }
   await database.deactivateBillingPlansExcept(products.map((product) => product.id));
+}
+
+/**
+ * Carry every organization on this plan onto its current template. "On this plan, but behind" is a
+ * `plan_version` mismatch, since Stripe has no version counter of its own (docs/billing.md). Only
+ * `granted` moves: an operator's hand-set overrides are a separate document and survive untouched
+ * (docs/entitlements.md), and the stamp is idempotent, so a resync with an unchanged template
+ * writes nothing.
+ *
+ * A stamp that throws aborts the sync, which turns a product webhook into a 503 Stripe redelivers,
+ * rather than leaving half a catalog's organizations behind quietly.
+ */
+async function restampOrganizationsOnPlan(
+  database: Database,
+  plan: BillingPlanRecord,
+  template: EntitlementTemplate,
+): Promise<void> {
+  const organizations = await database.listOrganizationsOffPlanTemplate(plan.id, plan.templateHash);
+  if (organizations.length === 0) return;
+  for (const organizationId of organizations) {
+    await database.stampOrganizationEntitlements({
+      organizationId,
+      granted: template,
+      planId: plan.id,
+      planVersion: plan.templateHash,
+      source: "plan_stamp",
+      actor: null,
+      reason: null,
+    });
+  }
+  logger.info(
+    { provider: "stripe", planSlug: plan.slug, organizations: organizations.length },
+    "billing plan template re-stamped",
+  );
 }
 
 /** The plan slugs that more than one valid product claims — rejected as ambiguous identity. */
@@ -83,14 +143,24 @@ function planInput(
   product: StripeCatalogProduct,
   parsed: ParsedPlanTemplate,
   productPrices: readonly StripeCatalogPrice[],
+  presentation: BillingPlanPresentation,
 ): SyncBillingPlanInput {
   return {
     id: product.id,
     slug: parsed.slug,
-    name: product.name,
+    name: presentation.name,
     template: parsed.template,
     templateHash: hashTemplate(parsed.template),
-    marketing: { features: product.marketingFeatures.slice(0, MAX_MARKETING_FEATURES) },
+    marketing: {
+      // The plan's numbers, flattened out of the validated template once, here. Everything
+      // downstream reads these scalars, so the template never has to leave the mirror.
+      included: {
+        seats: parsed.template.seats.max,
+        executionsPerMonth: parsed.template.meters["executions.monthly"].limit,
+      },
+      features: presentation.features.map((feature) => ({ ...feature })),
+      priceTooltips: { ...presentation.priceTooltips },
+    },
     active: product.active,
     prices: syncablePrices(product.id, productPrices),
   };

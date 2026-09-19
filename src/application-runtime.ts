@@ -27,6 +27,9 @@ import { ProjectDashboard } from "./projects/dashboard.js";
 import { CompositionResources } from "./composition-resources.js";
 import { TriggerDashboard } from "./triggers/dashboard.js";
 import type { ProviderApplications } from "./provider-applications/index.js";
+import { DaemonProviderCatalog } from "./daemons/provider-catalog.js";
+import { HomeDashboard } from "./home/dashboard.js";
+import type { ProviderConnectionRegistration } from "./providers/registration.js";
 
 export interface ApplicationCompositionOptions {
   database: Database | null;
@@ -145,7 +148,9 @@ async function createOwnedApplicationRuntime(
             githubConfigurations[0],
             (projectId) => application.configurationForProject(projectId),
           ),
-    triggerDashboard: triggerDashboardFor(options),
+    triggerDashboard: triggerDashboardFor(options, application.hub),
+    daemonProviderCatalog: daemonProviderCatalogFor(options, application.hub),
+    homeDashboard: homeDashboardFor(options, connections),
     ...entitlementSurfaces(options),
     testTriggerRoutes: options.testTriggerRoutes ?? false,
     auth: (request) => {
@@ -173,6 +178,24 @@ async function createOwnedApplicationRuntime(
         return Promise.reject(new Error("auth unavailable"));
       }
       return options.auth.signUpEmail(data, headers, invitationId);
+    },
+    sendVerificationEmail(email, headers, invitationId) {
+      if (options.database === null || options.auth?.sendVerificationEmail === undefined) {
+        return Promise.reject(new Error("auth unavailable"));
+      }
+      return options.auth.sendVerificationEmail(email, headers, invitationId);
+    },
+    requestPasswordReset(email, headers) {
+      if (options.database === null || options.auth?.requestPasswordReset === undefined) {
+        return Promise.reject(new Error("auth unavailable"));
+      }
+      return options.auth.requestPasswordReset(email, headers);
+    },
+    resetPassword(data, headers) {
+      if (options.database === null || options.auth?.resetPassword === undefined) {
+        return Promise.reject(new Error("auth unavailable"));
+      }
+      return options.auth.resetPassword(data, headers);
     },
     claimInstance(operator, headers) {
       if (options.database === null || options.auth?.claimInstance === undefined) {
@@ -326,10 +349,43 @@ async function createOwnedApplicationRuntime(
   };
 }
 
-function triggerDashboardFor(options: ApplicationCompositionOptions): TriggerDashboard | null {
-  return options.database === null || options.auth === null
+function triggerDashboardFor(
+  options: ApplicationCompositionOptions,
+  hub: import("./app.js").HubRuntime,
+): TriggerDashboard | null {
+  return options.database === null || options.auth === null || hub.agentValidator === null
     ? null
-    : new TriggerDashboard(options.database, options.auth);
+    : new TriggerDashboard(options.database, options.auth, hub.agentValidator);
+}
+
+function homeDashboardFor(
+  options: ApplicationCompositionOptions,
+  connections: ReadonlyMap<string, ProviderConnectionRegistration>,
+): HomeDashboard | null {
+  if (options.database === null || options.auth === null) return null;
+  // The same registrations `connectionStatus` answers from: a provider whose status is anything
+  // but "not configured" has an app behind it.
+  return new HomeDashboard(options.database, options.auth, (bindings) =>
+    [...connections.values()].some((connection) => isConfigured(connection.status(bindings))),
+  );
+}
+
+function isConfigured(status: unknown): boolean {
+  return (
+    typeof status === "object" &&
+    status !== null &&
+    Reflect.get(status, "status") !== "notConfigured"
+  );
+}
+
+function daemonProviderCatalogFor(
+  options: ApplicationCompositionOptions,
+  hub: import("./app.js").HubRuntime,
+): DaemonProviderCatalog | null {
+  if (options.database === null || options.auth === null) return null;
+  return new DaemonProviderCatalog(options.database, options.auth, (daemonId) =>
+    hub.connectionForDaemon(daemonId),
+  );
 }
 
 function providerApplicationsFor(
@@ -379,6 +435,7 @@ function createRuntimeExecutionAuthority(
     (integration) => integration.githubAuthority !== undefined,
   )?.githubAuthority;
   return createExecutionAuthority({
+    database,
     connectionsForProject,
     ...(githubAuthority === undefined ? {} : { githubAuthority }),
     isExecutionActive: async (executionId) => {

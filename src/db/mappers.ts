@@ -16,7 +16,17 @@ import type {
   ProjectRecord,
   ProviderEventReceiptSummary,
   ProviderEventReceiptRecord,
+  OrganizationRunRecord,
 } from "./types.js";
+
+/** The `agent` object of a stored launch intent, read back as the overview needs it. */
+export function launchedAgent(value: unknown): OrganizationRunRecord["agent"] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const provider: unknown = Reflect.get(value, "provider");
+  const model: unknown = Reflect.get(value, "model");
+  if (typeof provider !== "string") return null;
+  return { provider, model: typeof model === "string" ? model : null };
+}
 
 type ProviderEventReceiptSummaryRow = Pick<
   ProviderEventReceiptRow,
@@ -133,6 +143,8 @@ export function toMachineRecord(row: MachineRow): MachineRecord {
 
 export function toAgentExecutionRecord(row: AgentExecutionRow): AgentExecutionRecord {
   return {
+    agentSessionId: row.agent_session_id,
+    agentSessionAction: row.agent_session_action,
     id: row.id,
     organizationId: row.organization_id,
     projectId: row.project_id,

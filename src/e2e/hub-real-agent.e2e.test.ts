@@ -16,6 +16,22 @@ describeRealAgent("Hub execution MCP real-agent smoke", () => {
     assert.deepEqual(shutdown?.leakedProcesses ?? [], []);
   }, 120_000);
 
+  it("continues a real Codex session after workspace archival", async () => {
+    await hub.connect();
+    await hub.daemonIsConnected();
+    await hub.enableAgentContinuation(true);
+    const first = await hub.runRealAgentManual("real-continuation-first");
+    const firstEvidence = await hub.realAgentCompletionEvidence(first, "codex");
+    assert.equal(firstEvidence.completedByAgent, true);
+    await hub.sessionIsArchived(first.executionId);
+    const second = await hub.runRealAgentManual("real-continuation-second");
+    assert.equal(second.agentId, first.agentId);
+    const secondEvidence = await hub.realAgentCompletionEvidence(second, "codex");
+    assert.equal(secondEvidence.status, "succeeded");
+    assert.equal(secondEvidence.completedByAgent, true);
+    assert.equal(secondEvidence.completedToolCall, true);
+  }, 300_000);
+
   it("lets a real Codex agent finalize a production manual run through MCP", async () => {
     await hub.connect();
     await hub.daemonIsConnected();

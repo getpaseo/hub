@@ -12,6 +12,14 @@ import type {
 import { logger } from "../logger.js";
 import { classifyFailure, reportFailure, type FailureKind } from "../failures/index.js";
 import { resolveRouteTenant } from "../projects/access.js";
+import {
+  CONNECTIONS_RETURN_ROUTE,
+  connectionReturnUrl,
+  type ConnectionProvider,
+  type ConnectionResult,
+} from "./result-contract.js";
+
+export { CONNECTIONS_RETURN_ROUTE } from "./result-contract.js";
 
 export const CONNECTION_ATTEMPT_LIFETIME_MINUTES = 10;
 
@@ -78,20 +86,25 @@ export function stateHash(state: string): string {
 export function connectionResult(
   publicBaseUrl: string,
   returnRoute: string,
-  result: string,
-  provider?: "github" | "discord" | "slack" | "linear",
+  result: ConnectionResult,
+  provider: ConnectionProvider,
+  reference?: string,
 ): Response {
-  const url = new URL(returnRoute, publicBaseUrl);
-  if (provider !== undefined) url.searchParams.set("app", provider);
-  url.searchParams.set("result", result);
-  return Response.redirect(url, 303);
+  return Response.redirect(
+    connectionReturnUrl(publicBaseUrl, returnRoute, {
+      provider,
+      result,
+      ...(reference === undefined ? {} : { reference }),
+    }),
+    303,
+  );
 }
 
 export async function cancelledConnectionResult(input: {
   auth: AuthServer;
   database: Database;
   request: Request;
-  provider: "github" | "discord" | "slack" | "linear";
+  provider: ConnectionProvider;
   phase:
     | "github_user_authorization"
     | "discord_authorization"
@@ -101,7 +114,7 @@ export async function cancelledConnectionResult(input: {
   applicationBaseUrl: string;
 }): Promise<Response> {
   let callbackOrigin = input.applicationBaseUrl;
-  let returnRoute = "/";
+  let returnRoute: string = CONNECTIONS_RETURN_ROUTE;
   try {
     const access = await callbackConnectionAccess(input.auth, input.request);
     const attempt = await input.database.readConnectionAttempt({
@@ -127,6 +140,7 @@ export async function cancelledConnectionResult(input: {
       error,
       provider: input.provider,
       phase: `${input.phase}_cancelled`,
+      request: input.request,
       applicationBaseUrl: callbackOrigin,
       returnRoute,
     });
@@ -135,34 +149,41 @@ export async function cancelledConnectionResult(input: {
 
 export function connectionCallbackFailure(input: {
   error: unknown;
-  provider: "github" | "discord" | "slack" | "linear";
+  provider: ConnectionProvider;
   phase: string;
+  /**
+   * The provider's redirect as it arrived. Which host it reached and whether it carried a
+   * session are the two facts that explain a return Hub could not tie to its attempt.
+   */
+  request: Request;
   applicationBaseUrl: string;
   returnRoute: string;
   log?: Pick<Logger, "warn" | "error">;
 }): Response {
   const log = input.log ?? logger;
   const kind = classifyFailure(input.error);
-  reportFailure(
+  const report = reportFailure(
     input.error,
     {
       operation: `connection.callback.${input.phase}`,
       component: "connections",
       provider: input.provider,
     },
-    { logger: log, kind },
+    { logger: log, kind, diagnostic: callbackEvidence(input.request) },
   );
+  const result = connectionCallbackResult(kind);
   return connectionResult(
     input.applicationBaseUrl,
     input.returnRoute,
-    connectionCallbackResult(kind),
+    result,
     input.provider,
+    result === "connection_unavailable" ? report.requestId : undefined,
   );
 }
 
 export function connectionActionFailure(
   error: unknown,
-  provider: "github" | "discord" | "slack" | "linear",
+  provider: ConnectionProvider,
   action: "start" | "disconnect",
 ): Response {
   const accessDenied =
@@ -186,10 +207,16 @@ export function connectionActionFailure(
   return Response.json({ error: "connection_unavailable" }, { status: 503 });
 }
 
-function connectionCallbackResult(kind: FailureKind): string {
-  if (kind === "validation" || kind === "authentication" || kind === "forbidden") {
-    return "connection_invalid";
-  }
+function callbackEvidence(request: Request): Record<string, unknown> {
+  return {
+    host: request.headers.get("host") ?? new URL(request.url).host,
+    sessionCookiePresent: request.headers.has("cookie"),
+  };
+}
+
+function connectionCallbackResult(kind: FailureKind): ConnectionResult {
+  if (kind === "authentication") return "connection_unauthenticated";
+  if (kind === "validation" || kind === "forbidden") return "connection_invalid";
   if (kind === "conflict") return "connection_conflict";
   return "connection_unavailable";
 }

@@ -7,6 +7,7 @@ import { logger } from "../../logger.js";
 import type { ProviderConnectionRegistration, ProviderRegistration } from "../registration.js";
 import {
   CONNECTION_ATTEMPT_LIFETIME_MINUTES,
+  CONNECTIONS_RETURN_ROUTE,
   callbackConnectionAccess,
   cancelledConnectionResult,
   connectionAccess,
@@ -25,6 +26,7 @@ import {
   type GitHubReactionClient,
 } from "../../triggers/github/provider.js";
 import { createGitHubTeamMembershipClient } from "../../triggers/github/team-membership.js";
+import { organizationBillingUrl } from "../../triggers/failure-notice.js";
 import { createWebhookSource } from "../../triggers/github/webhook.js";
 import {
   createGitHubConnectionClient,
@@ -157,6 +159,23 @@ export function createGitHubRegistration(
   const githubConfiguration =
     options.configurationProvider ?? createGitHubConfigurationProvider(appAuth);
   const reactions = options.reactionClient ?? createGitHubReactionClient(appAuth);
+  const comments = {
+    async createIssueComment(input: {
+      installationId: number;
+      owner: string;
+      repo: string;
+      issueNumber: number;
+      body: string;
+    }) {
+      const octokit = await appAuth.createInstallationOctokit(input.installationId);
+      await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
+        owner: input.owner,
+        repo: input.repo,
+        issue_number: input.issueNumber,
+        body: input.body,
+      });
+    },
+  };
   logger.info("using webhook event source");
   return {
     configurationSnapshot: {
@@ -182,8 +201,12 @@ export function createGitHubRegistration(
           throw new Error(`github connection is unavailable: ${connectionSlug}`);
         }
         const token = await appAuth.mintInstallationToken(selectedConnection.installationId);
-        await context?.registerToken?.(token, () => appAuth.revokeInstallationToken(token));
-        return token;
+        await context?.registerToken?.({
+          provider: "github",
+          token: token.token,
+          expiresAt: token.expiresAt,
+        });
+        return token.token;
       },
       githubAuthority: {
         async mint(input) {
@@ -229,6 +252,9 @@ export function createGitHubRegistration(
           configurationStoreForProject,
           reactions,
           teamMemberships,
+          comments,
+          billingUrlForOrganization: (organizationId) =>
+            organizationBillingUrl(database, options.publicBaseUrl!, organizationId),
         });
       },
     ],
@@ -238,19 +264,7 @@ export function createGitHubRegistration(
         type: "github.reply",
         tool: replyOutputTool,
         available: githubReplyAvailable,
-        execute: createGitHubReplyExecutor({
-          client: {
-            async createIssueComment(input) {
-              const octokit = await appAuth.createInstallationOctokit(input.installationId);
-              await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
-                owner: input.owner,
-                repo: input.repo,
-                issue_number: input.issueNumber,
-                body: input.body,
-              });
-            },
-          },
-        }),
+        execute: createGitHubReplyExecutor({ client: comments }),
       },
     ],
     requests: [{ name: "webhook", handle: (request) => webhook.handle(request) }],
@@ -386,13 +400,14 @@ async function completeSetup(
   const action = url.searchParams.get("setup_action");
   if (state === null || client === undefined)
     return connectionCallbackFailure({
+      request,
       error: new GitHubCallbackError("invalid setup callback"),
       provider: "github",
       phase: "setup",
       applicationBaseUrl: options.applicationBaseUrl,
-      returnRoute: "/",
+      returnRoute: CONNECTIONS_RETURN_ROUTE,
     });
-  let returnRoute = "/";
+  let returnRoute: string = CONNECTIONS_RETURN_ROUTE;
   let callbackOrigin = options.applicationBaseUrl;
   try {
     const access = await callbackConnectionAccess(options.auth, request);
@@ -418,6 +433,7 @@ async function completeSetup(
     }
     if ((action !== "install" && action !== "update") || installationId === undefined) {
       return connectionCallbackFailure({
+        request,
         error: new GitHubCallbackError("invalid setup result"),
         provider: "github",
         phase: "setup",
@@ -444,6 +460,7 @@ async function completeSetup(
     );
   } catch (error) {
     return connectionCallbackFailure({
+      request,
       error,
       provider: "github",
       phase: "setup",
@@ -474,14 +491,15 @@ async function completeAuthorization(
   }
   if (state === null || code === null || client === undefined) {
     return connectionCallbackFailure({
+      request,
       error: new GitHubCallbackError("invalid authorization callback"),
       provider: "github",
       phase: "authorization",
       applicationBaseUrl: options.applicationBaseUrl,
-      returnRoute: "/",
+      returnRoute: CONNECTIONS_RETURN_ROUTE,
     });
   }
-  let returnRoute = "/";
+  let returnRoute: string = CONNECTIONS_RETURN_ROUTE;
   let callbackOrigin = options.applicationBaseUrl;
   try {
     const access = await callbackConnectionAccess(options.auth, request);
@@ -507,6 +525,7 @@ async function completeAuthorization(
         access,
       });
       return connectionCallbackFailure({
+        request,
         error: new GitHubCallbackError("installation verification rejected"),
         provider: "github",
         phase: "authorization",
@@ -518,6 +537,7 @@ async function completeAuthorization(
     return connectionResult(callbackOrigin, attempt.returnRoute, "github_connected", "github");
   } catch (error) {
     return connectionCallbackFailure({
+      request,
       error,
       provider: "github",
       phase: "authorization",

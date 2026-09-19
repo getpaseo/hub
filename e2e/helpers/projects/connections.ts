@@ -6,6 +6,8 @@ export class ProjectConnections {
   async connectGitHub() {
     await this.page.getByRole("button", { name: "Connect GitHub" }).click();
     await expect(this.page.getByRole("heading", { name: "Connections", level: 1 })).toBeVisible();
-    await expect(this.page.getByRole("cell", { name: /acme-inc.*installation/u })).toBeVisible();
+    await expect(
+      this.page.getByRole("list", { name: "GitHub connections" }).getByRole("listitem"),
+    ).toContainText(/acme-inc.*installation/u);
   }
 }

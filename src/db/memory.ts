@@ -3,6 +3,7 @@ import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
 import { parseCompiledHubConfig, type JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
+import { launchedAgent } from "./mappers.js";
 import type {
   AgentExecutionRecord,
   AgentExecutionOutputAttempt,
@@ -63,6 +64,8 @@ import type {
   LinearConnectionRecord,
   GitHubRepositoryRecord,
   OrganizationConnectionUsage,
+  OrganizationRunRecord,
+  UnroutedProviderEventCount,
   ProjectTriggerRoute,
   MigrateProjectTriggersInput,
   OrganizationTriggerRecord,
@@ -111,6 +114,7 @@ import {
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
 
 export interface MemoryDatabaseOptions {
+  schedules?: import("../triggers/schedule/index.js").ScheduleStore;
   onInsertAgentExecution?: (execution: AgentExecutionRecord) => void;
   organizationIds?: readonly string[];
   memberships?: readonly {
@@ -153,6 +157,16 @@ export function createMemoryDatabase(options: MemoryDatabaseOptions = {}): Datab
 }
 
 class MemoryDatabase implements Database {
+  // This test double has no background work. Scheduling tests use the actual embedded/PG runtime.
+  get schedules(): import("../triggers/schedule/index.js").ScheduleStore {
+    return (
+      this.options.schedules ?? {
+        async tick() {
+          return 0;
+        },
+      }
+    );
+  }
   private readonly providerEventReceipts = new Map<string, ProviderEventReceiptRecord>();
   private readonly providerEventReceiptIdsByDelivery = new Map<string, string>();
   private readonly providerEventReceiptIdsBySignature = new Map<string, string>();
@@ -247,6 +261,7 @@ class MemoryDatabase implements Database {
     }
     const now = input.createdAt ?? this.options.now?.() ?? new Date();
     const run: AcceptedTriggerRunRecord = {
+      conversation: structuredClone(input.conversation ?? null),
       id: input.id ?? randomUUID(),
       organizationId: input.organizationId,
       projectId: input.projectId,
@@ -319,6 +334,7 @@ class MemoryDatabase implements Database {
     }
     const now = input.createdAt ?? this.options.now?.() ?? new Date();
     const run: RejectedTriggerRunRecord = {
+      conversation: null,
       id: input.id ?? randomUUID(),
       organizationId: input.organizationId,
       projectId: input.projectId,
@@ -396,10 +412,16 @@ class MemoryDatabase implements Database {
     );
   }
 
-  async claimWorkflowWakeup(now: Date, leaseMs: number) {
+  async releaseWorkflowWakeup(triggerRunId: string, now: Date, claimedLease: Date) {
+    const wakeup = this.workflowWakeups.get(triggerRunId);
+    if (wakeup?.leaseExpiresAt?.getTime() === claimedLease.getTime()) wakeup.leaseExpiresAt = now;
+  }
+
+  async claimWorkflowWakeup(now: Date, leaseMs: number, excludedRunIds: readonly string[] = []) {
     const candidate = Array.from(this.workflowWakeups.values())
       .filter(
         (wakeup) =>
+          !excludedRunIds.includes(wakeup.triggerRunId) &&
           wakeup.availableAt <= now &&
           (wakeup.leaseExpiresAt === null || wakeup.leaseExpiresAt <= now),
       )
@@ -1331,6 +1353,8 @@ class MemoryDatabase implements Database {
     const idleDeadlineAt = capIdleDeadline(input.idleDeadlineAt, deadlineAt);
 
     const execution: AgentExecutionRecord = {
+      agentSessionId: null,
+      agentSessionAction: null,
       id: input.id ?? randomUUID(),
       organizationId: input.organizationId,
       projectId: input.projectId,
@@ -1602,6 +1626,29 @@ class MemoryDatabase implements Database {
     const updated = { ...value, daemonId: daemonId, daemonAgentId: agentId };
     this.agentExecutions.set(executionId, updated);
     return updated;
+  }
+
+  async limitAgentExecutionDeadline(executionId: string, deadlineAt: Date) {
+    const execution = this.readAgentExecution(executionId);
+    if (isTerminalAgentExecutionStatus(execution.status)) return;
+    const boundedDeadline = new Date(
+      Math.min(deadlineAt.getTime(), execution.deadlineAt?.getTime() ?? Number.POSITIVE_INFINITY),
+    );
+    const idleDeadlineAt = capIdleDeadline(execution.idleDeadlineAt, boundedDeadline);
+    this.agentExecutions.set(executionId, {
+      ...execution,
+      deadlineAt: boundedDeadline,
+      idleDeadlineAt,
+    });
+    if (execution.workflowStepRunId !== null) {
+      const step = this.workflowStepRuns.get(execution.workflowStepRunId);
+      if (step !== undefined)
+        this.workflowStepRuns.set(step.id, {
+          ...step,
+          deadlineAt: boundedDeadline,
+          idleDeadlineAt,
+        });
+    }
   }
 
   async setAgentExecutionIdleDeadline(
@@ -2211,6 +2258,86 @@ class MemoryDatabase implements Database {
     return record;
   }
 
+  private readonly authorityRecords = new Map<
+    string,
+    import("../execution-authority/index.js").ExecutionAuthorityRecord
+  >();
+  private readonly authorityLeases = new Map<
+    string,
+    import("../execution-authority/index.js").ExecutionCredentialLease
+  >();
+  readonly executionAuthority: import("../execution-authority/index.js").ExecutionAuthorityStore = {
+    executions: async () => [...this.authorityRecords.keys()],
+    read: async (id) => structuredClone(this.authorityRecords.get(id)),
+    commit: async (record) => {
+      if (!this.authorityRecords.has(record.executionId))
+        this.authorityRecords.set(record.executionId, structuredClone(record));
+      return structuredClone(this.authorityRecords.get(record.executionId)!);
+    },
+    remove: async (id) => {
+      this.authorityRecords.delete(id);
+    },
+    leases: async (executionId) =>
+      structuredClone(
+        [...this.authorityLeases.values()].filter(
+          (lease) => executionId === undefined || lease.executionId === executionId,
+        ),
+      ),
+    saveLease: async (lease) => {
+      this.authorityLeases.set(lease.id, structuredClone(lease));
+    },
+    removeLease: async (id) => {
+      this.authorityLeases.delete(id);
+    },
+  };
+
+  private readonly agentSessions = new Map<
+    string,
+    import("../agent-sessions/index.js").AgentSessionRecord
+  >();
+  async findAgentSession(id: string) {
+    return structuredClone(this.agentSessions.get(id));
+  }
+  async findAgentSessionByKey(projectId: string, key: string) {
+    return structuredClone(
+      [...this.agentSessions.values()].find(
+        (session) => session.projectId === projectId && session.continuationKey === key,
+      ),
+    );
+  }
+  async saveAgentSession(
+    session: import("../agent-sessions/index.js").AgentSessionRecord,
+  ): Promise<void> {
+    this.agentSessions.set(session.id, structuredClone(session));
+  }
+  async attachExecutionToSession(
+    executionId: string,
+    sessionId: string,
+    action?: import("../agent-sessions/index.js").AgentSessionAction,
+  ): Promise<void> {
+    const execution = this.agentExecutions.get(executionId);
+    const session = this.agentSessions.get(sessionId);
+    if (
+      !execution ||
+      !session ||
+      execution.projectId !== session.projectId ||
+      execution.organizationId !== session.organizationId ||
+      (execution.agentSessionId !== null && execution.agentSessionId !== sessionId)
+    ) {
+      throw new Error("Agent session does not belong to this execution");
+    }
+    this.agentExecutions.set(executionId, {
+      ...execution,
+      agentSessionId: sessionId,
+      agentSessionAction: execution.agentSessionAction ?? action ?? null,
+    });
+  }
+  async listAgentSessionExecutions(sessionId: string): Promise<AgentExecutionRecord[]> {
+    return [...this.agentExecutions.values()].filter(
+      (execution) => execution.agentSessionId === sessionId,
+    );
+  }
+
   async withAdvisoryLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     // Node runs one callback at a time, so a per-key promise chain is a faithful in-memory
     // stand-in for the Postgres advisory lock: same-key sections run strictly in sequence.
@@ -2560,12 +2687,23 @@ class MemoryDatabase implements Database {
     );
   }
 
+  async listOrganizationsOffPlanTemplate(planId: string, templateHash: string): Promise<string[]> {
+    return [...this.organizationEntitlements.values()]
+      .filter((row) => row.planId === planId && row.planVersion !== templateHash)
+      .map((row) => row.organizationId);
+  }
+
   async listOrganizationsForOperator(): Promise<OperatorOrganizationRecord[]> {
     return this.operatorOrganizations();
   }
 
   async findOrganizationForOperator(slug: string): Promise<OperatorOrganizationRecord | undefined> {
     return this.operatorOrganizations().find((organization) => organization.slug === slug);
+  }
+
+  async findOrganizationSlugById(organizationId: string): Promise<string | undefined> {
+    return this.operatorOrganizations().find((organization) => organization.id === organizationId)
+      ?.slug;
   }
 
   /** Distinct organizations derived from the membership fixtures — the in-memory store models
@@ -2945,6 +3083,69 @@ class MemoryDatabase implements Database {
       )
       .slice(0, 50)
       .map(toProviderEventReceiptRecordSummary);
+  }
+
+  async listOrganizationRunsSince(
+    organizationId: string,
+    since: Date,
+    limit: number,
+  ): Promise<OrganizationRunRecord[]> {
+    return [...this.triggerRuns.values()]
+      .filter((run) => run.organizationId === organizationId && run.createdAt >= since)
+      .sort(
+        (left, right) =>
+          right.createdAt.getTime() - left.createdAt.getTime() || right.id.localeCompare(left.id),
+      )
+      .slice(0, limit)
+      .flatMap((run) => {
+        const receipt = this.providerEventReceipts.get(run.providerEventReceiptId);
+        if (receipt === undefined) return [];
+        const step = this.listSteps(run.id).find(
+          (candidate) => candidate.agentExecutionId !== null,
+        );
+        const execution =
+          step?.agentExecutionId == null
+            ? undefined
+            : this.agentExecutions.get(step.agentExecutionId);
+        return [
+          {
+            id: run.id,
+            triggerName: run.configuredTriggerName,
+            provider: receipt.provider,
+            source: receipt.source,
+            status: run.status,
+            receivedAt: receipt.receivedAt,
+            agent: launchedAgent(execution?.launchIntent?.agent),
+          },
+        ];
+      });
+  }
+
+  async countUnroutedProviderEventsSince(
+    organizationId: string,
+    since: Date,
+  ): Promise<UnroutedProviderEventCount[]> {
+    const routedReceiptIds = new Set(
+      [...this.triggerRuns.values()].map((run) => run.providerEventReceiptId),
+    );
+    const counts = new Map<ProviderEventReceiptRecord["provider"], number>();
+    for (const receipt of this.providerEventReceipts.values()) {
+      if (
+        receipt.organizationId !== organizationId ||
+        receipt.receivedAt < since ||
+        routedReceiptIds.has(receipt.id) ||
+        (receipt.droppedReason !== "no_project_route" &&
+          receipt.droppedReason !== "no_trigger_for_source")
+      ) {
+        continue;
+      }
+      counts.set(receipt.provider, (counts.get(receipt.provider) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([provider, count]) => ({ provider, count }))
+      .sort(
+        (left, right) => right.count - left.count || left.provider.localeCompare(right.provider),
+      );
   }
 
   async isOrganizationMember(): Promise<boolean> {

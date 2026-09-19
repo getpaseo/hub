@@ -190,7 +190,7 @@ test("mobile evidence covers skipping and later environment-managed apps", async
     await managed.openManagement();
     await managed.surface.github.expand();
     await expect(managed.surface.github.form()).toHaveCount(0);
-    await expect(managed.surface.github.body().getByRole("alert")).toContainText(
+    await expect(managed.surface.github.environmentNotice()).toContainText(
       "GITHUB_APP_PRIVATE_KEY",
     );
     await managed.surface.expectNothingClipped();

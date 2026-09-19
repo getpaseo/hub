@@ -20,6 +20,8 @@ export class HubFaultProxy {
     this.createResponseDropped = resolve;
   });
   private denial: ((value: Denial) => void) | undefined;
+  private providerSnapshot: ((value: Record<string, unknown>) => void) | undefined;
+  private readonly creationExecutions = new Map<string, string>();
   private readonly createsByExecution = new Map<string, number>();
   private readonly agentIdsByExecution = new Map<string, Set<string>>();
   private readonly createdAgentsByExecution = new Map<
@@ -35,6 +37,11 @@ export class HubFaultProxy {
   ) {
     this.server = createServer((request, response) => {
       void this.forwardHttp(request, response);
+    });
+    this.sockets.on("headers", (headers, request) => {
+      if (request.headers["x-paseo-session-protocol"] === "1") {
+        headers.push("x-paseo-session-protocol: 1");
+      }
     });
     this.server.on("upgrade", (request, socket, head) => this.upgrade(request, socket, head));
   }
@@ -70,6 +77,29 @@ export class HubFaultProxy {
       agentId,
       text: "outside Hub scope",
     });
+  }
+
+  async requestProviderSnapshot(cwd: string): Promise<Record<string, unknown>> {
+    const socket = this.daemonSocket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("Daemon is not connected");
+    const requestId = `hub-e2e-providers-${Date.now()}`;
+    const observed = new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error(`Provider snapshot was not observed\n${this.evidence()}`)),
+        10_000,
+      );
+      this.providerSnapshot = (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      };
+    });
+    socket.send(
+      JSON.stringify({
+        type: "session",
+        message: { type: "get_providers_snapshot_request", requestId, cwd },
+      }),
+    );
+    return observed;
   }
 
   private async requestDenied(message: Record<string, unknown>): Promise<Denial> {
@@ -224,11 +254,18 @@ export class HubFaultProxy {
 
   private observeHubMessage(raw: string): void {
     const message = sessionMessage(parseRecord(raw));
-    const executionId = message && readString(message, "executionId");
-    if (!executionId) return;
-    if (message["type"] === "hub.execution.agent.create.request") {
-      this.createsByExecution.set(executionId, (this.createsByExecution.get(executionId) ?? 0) + 1);
-    }
+    if (message?.["type"] !== "create_agent_request") return;
+    const config = recordAt(message, "config");
+    const servers = config && recordAt(config, "mcpServers");
+    const hub = servers && recordAt(servers, "hub");
+    const url = hub && readString(hub, "url");
+    const requestId = readString(message, "requestId");
+    if (!url || !requestId) return;
+    const path = new URL(url).pathname.split("/");
+    if (path[1] !== "agent-executions" || !path[2]) return;
+    const executionId = path[2];
+    this.creationExecutions.set(requestId, executionId);
+    this.createsByExecution.set(executionId, (this.createsByExecution.get(executionId) ?? 0) + 1);
   }
 
   private observeDaemonMessage(data: RawData): boolean {
@@ -236,7 +273,16 @@ export class HubFaultProxy {
     const message = sessionMessage(parseRecord(raw));
     this.recordDaemonEvidence(message);
     this.observeDenial(message);
+    this.observeProviderSnapshot(message);
     return this.observeCreateResponse(message);
+  }
+
+  private observeProviderSnapshot(message: Record<string, unknown> | undefined): void {
+    if (message?.["type"] !== "get_providers_snapshot_response") return;
+    const payload = recordAt(message, "payload");
+    if (payload === undefined) return;
+    this.providerSnapshot?.(payload);
+    this.providerSnapshot = undefined;
   }
 
   private recordDaemonEvidence(message: Record<string, unknown> | undefined): void {
@@ -272,9 +318,11 @@ export class HubFaultProxy {
   }
 
   private observeCreateResponse(message: Record<string, unknown> | undefined): boolean {
-    if (message?.["type"] !== "hub.execution.agent.create.response") return false;
+    if (message?.["type"] !== "status") return false;
     const payload = recordAt(message, "payload");
-    const executionId = payload && readString(payload, "executionId");
+    if (payload?.["status"] !== "agent_created") return false;
+    const requestId = readString(payload, "requestId");
+    const executionId = requestId && this.creationExecutions.get(requestId);
     const agentId = payload && readString(payload, "agentId");
     if (executionId && agentId) {
       const ids = this.agentIdsByExecution.get(executionId) ?? new Set<string>();

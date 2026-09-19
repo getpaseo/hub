@@ -20,6 +20,7 @@ test("shows the flat organization product in the mobile drawer", async ({ hub, p
   await toggle.click();
   const navigation = drawer.getByRole("navigation", { name: "Organization", exact: true });
   await expect(navigation.getByRole("link")).toHaveText([
+    "Home",
     "Triggers",
     "Activity",
     "Daemons",
@@ -54,6 +55,6 @@ test.describe("instance scope", () => {
 
     await app.navigation.leaveInstance();
     await expect(drawer).toBeHidden();
-    await expect(page.getByRole("heading", { name: "Triggers" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Home" })).toBeVisible();
   });
 });

@@ -2,11 +2,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { TriangleAlert } from "lucide-react";
 import { useCallback } from "react";
 import { AuthCard, AuthLayout } from "../components/app/auth-layout.js";
 import { CopyField } from "../components/app/copy-field.js";
-import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
+import { FailureAlert } from "../components/app/failure-alert.js";
+import { LoadingLine } from "../components/app/loading.js";
 import { Button } from "../components/ui/button.js";
 import type { Result } from "../contract/respond.js";
 import { daemonList, type BrowserDaemonList } from "./functions.js";
@@ -21,17 +21,23 @@ const POLL_INTERVAL_MS = 2_000;
  */
 const HOSTED_HUB_ORIGIN = "https://hub.paseo.sh";
 
+/**
+ * What a daemon enrolled without `hub.execute` needs run on it before Hub can launch anything.
+ * The CLI's login asks for that permission with a default of No, so this is the common case.
+ */
+export const GRANT_EXECUTE_COMMAND = "paseo hub permissions grant hub.execute";
+
 /** The exact command to paste into a terminal on the machine that will run the agents. */
 export function daemonLoginCommand(origin: string): string {
   return origin === HOSTED_HUB_ORIGIN ? "paseo hub login" : `paseo hub login ${origin}`;
 }
 
 /**
- * Where both ways out of the handoff land: the organization's trigger list, where connecting a
- * daemon becomes useful. Projects are a legacy runtime detail and are not part of onboarding.
+ * Where both ways out of the handoff land: the organization's Home, whose checklist carries on
+ * from here. Projects are a legacy runtime detail and are not part of onboarding.
  */
-export function organizationTriggersRoute(organizationSlug: string): string {
-  return `/o/${organizationSlug}/triggers`;
+export function organizationHomeRoute(organizationSlug: string): string {
+  return `/o/${organizationSlug}/home`;
 }
 
 /**
@@ -96,13 +102,13 @@ export function DaemonHandoffEntry({
   const retry = useCallback(() => void refetch(), [refetch]);
   const navigate = useNavigate();
   /**
-   * Connecting and skipping end the same way: at organization triggers. The route has to be
+   * Connecting and skipping end the same way: at organization Home. The route has to be
    * committed before the phase is dropped — dropping it first would render the dashboard at
    * whatever URL onboarding happens to be standing on, and flash the project list on the way.
    */
   const leave = useCallback(() => {
     void (async () => {
-      await navigate({ to: organizationTriggersRoute(organizationSlug) as never });
+      await navigate({ to: organizationHomeRoute(organizationSlug) as never });
       onContinue();
     })();
   }, [navigate, onContinue, organizationSlug]);
@@ -169,21 +175,17 @@ export function DaemonHandoffView({
 function LinkProgress({ link, onRetry }: { link: DaemonLink; onRetry: () => void }) {
   if (link.state === "failed") {
     return (
-      <Alert variant="destructive">
-        <TriangleAlert />
-        <AlertTitle>Hub couldn't check for daemons</AlertTitle>
-        <AlertDescription>
-          <p>{link.message}</p>
-          <Button type="button" size="sm" variant="outline" onClick={onRetry}>
-            Check again
-          </Button>
-        </AlertDescription>
-      </Alert>
+      <FailureAlert
+        title="Hub couldn't check for daemons"
+        error={link.message}
+        fallback="Hub didn't answer. Check your connection, then check again."
+        onRetry={onRetry}
+      />
     );
   }
   return (
-    <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
+    <LoadingLine>
       {link.state === "checking" ? "Checking for daemons…" : "Waiting for a daemon to connect…"}
-    </p>
+    </LoadingLine>
   );
 }
