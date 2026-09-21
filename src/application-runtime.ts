@@ -28,6 +28,7 @@ import { CompositionResources } from "./composition-resources.js";
 import { TriggerDashboard } from "./triggers/dashboard.js";
 import type { ProviderApplications } from "./provider-applications/index.js";
 import { DaemonProviderCatalog } from "./daemons/provider-catalog.js";
+import { HomeDashboard } from "./home/dashboard.js";
 
 export interface ApplicationCompositionOptions {
   database: Database | null;
@@ -146,8 +147,9 @@ async function createOwnedApplicationRuntime(
             githubConfigurations[0],
             (projectId) => application.configurationForProject(projectId),
           ),
-    triggerDashboard: triggerDashboardFor(options),
+    triggerDashboard: triggerDashboardFor(options, application.hub),
     daemonProviderCatalog: daemonProviderCatalogFor(options, application.hub),
+    homeDashboard: homeDashboardFor(options),
     ...entitlementSurfaces(options),
     testTriggerRoutes: options.testTriggerRoutes ?? false,
     auth: (request) => {
@@ -357,10 +359,19 @@ async function createOwnedApplicationRuntime(
   };
 }
 
-function triggerDashboardFor(options: ApplicationCompositionOptions): TriggerDashboard | null {
+function triggerDashboardFor(
+  options: ApplicationCompositionOptions,
+  hub: import("./app.js").HubRuntime,
+): TriggerDashboard | null {
+  return options.database === null || options.auth === null || hub.agentValidator === null
+    ? null
+    : new TriggerDashboard(options.database, options.auth, hub.agentValidator);
+}
+
+function homeDashboardFor(options: ApplicationCompositionOptions): HomeDashboard | null {
   return options.database === null || options.auth === null
     ? null
-    : new TriggerDashboard(options.database, options.auth);
+    : new HomeDashboard(options.database, options.auth);
 }
 
 function daemonProviderCatalogFor(

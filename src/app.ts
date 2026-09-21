@@ -9,6 +9,7 @@ import {
 } from "./attachments/capabilities.js";
 import {
   ProjectConfigurationStore,
+  type DaemonAgentConfigurationValidator,
   validateHubBundleForOrganization,
 } from "./configuration/store.js";
 import type {
@@ -75,6 +76,8 @@ export interface HubRuntimeOptions {
 export interface HubRuntime {
   daemonModule: DaemonModule | null;
   connectionForDaemon(daemonId: string): import("./daemons/index.js").DaemonConnection | undefined;
+  /** The daemons' own answer about an agent configuration; null without a database. */
+  agentValidator: DaemonAgentConfigurationValidator | null;
   resourceCounts(): {
     executionSubscriptions: number;
   };
@@ -232,6 +235,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
     daemonModule,
     connectionForDaemon: (daemonId) =>
       options.daemonConnectionForId?.(daemonId) ?? daemons?.connection(daemonId),
+    agentValidator: daemons,
     resourceCounts: () => ({
       executionSubscriptions: daemonModule?.lifecycle.activeExecutionObservationCount() ?? 0,
     }),
@@ -322,13 +326,15 @@ function createAppPublicOperations(
   configurationForProject: (projectId: string) => ProjectConfigurationStore,
   daemonAgentValidator: ActiveDaemonRegistry | null,
 ) {
-  if (options.database === null || manualSource === undefined) return null;
+  if (options.database === null || manualSource === undefined || daemonAgentValidator === null) {
+    return null;
+  }
   const database = options.database;
   return createPublicOperations(
     createDatabasePublicOperationRepository(database),
     {
       triggerForOrganization: (organizationId) => {
-        const store = new OrganizationTriggerStore(database, organizationId);
+        const store = new OrganizationTriggerStore(database, organizationId, daemonAgentValidator);
         return {
           async list() {
             return Promise.all(

@@ -47,12 +47,12 @@ export class DaemonHandoffSurface {
   }
 
   /**
-   * Both ways out land in the project instance setup already provisioned. Onboarding never hands
-   * the operator a list with one entry on it and asks them to pick.
+   * Both ways out land on the organization's Home, whose checklist carries on from here.
+   * Onboarding never hands the operator a list with one entry on it and asks them to pick.
    */
   async leave(label: "Continue" | "Do this later"): Promise<void> {
     await this.page.getByRole("button", { name: label, exact: true }).click();
-    await expect(this.page).toHaveURL(/\/o\/[^/]+\/triggers$/u);
-    await expect(this.page.getByRole("heading", { name: "Triggers", level: 1 })).toBeVisible();
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/home$/u);
+    await expect(this.page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
   }
 }

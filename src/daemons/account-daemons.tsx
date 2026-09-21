@@ -30,7 +30,7 @@ import {
 } from "./functions.js";
 import type { Result } from "../contract/respond.js";
 import { DAEMON_MUTATION_KEY } from "../auth/tenant-mutation.js";
-import { daemonLoginCommand } from "./handoff.js";
+import { daemonLoginCommand, GRANT_EXECUTE_COMMAND } from "./handoff.js";
 import { daemonsQueryKey, refreshDaemons } from "./status.js";
 
 const DAEMON_COLUMNS: readonly DataColumn[] = [
@@ -218,7 +218,11 @@ function DaemonRow({
         <DaemonStatus daemon={daemon} />
       </DataCell>
       <DataCell muted>
-        {daemon.permissions.includes("hub.execute") ? "Hub automations" : "Connected only"}
+        {daemon.permissions.includes("hub.execute") ? (
+          "Hub automations"
+        ) : (
+          <TwoLine primary="Connected only" secondary={GRANT_EXECUTE_COMMAND} mono />
+        )}
       </DataCell>
       <DataCell muted>
         <RelativeTime value={daemon.lastSeenAt} />

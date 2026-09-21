@@ -120,6 +120,7 @@ const INTERACTIVE_ORGANIZATION_NAME = "Paseo Hub";
 
 /** The flat organization sidebar entries, in rendered order. */
 const ORGANIZATION_DESTINATIONS = [
+  "Home",
   "Triggers",
   "Activity",
   "Daemons",
@@ -1902,6 +1903,26 @@ export class PaseoHub {
     return this.seedDaemon(alias, slug);
   }
 
+  /** A daemon enrolled the way the CLI's default answer enrolls it: connected, no `hub.execute`. */
+  async seedConnectedOnlyDaemon(alias: string, slug: string): Promise<string> {
+    const daemonId = await this.seedDaemon(alias, slug);
+    await this.queryDatabase(
+      this.primary,
+      "update daemons set scopes = '[]'::jsonb where id = $1",
+      [daemonId],
+    );
+    return daemonId;
+  }
+
+  /**
+   * A real signed GitHub delivery for the connected installation, with no trigger to route it.
+   * The delivery id doubles as the actor so two deliveries are two events, not one replayed:
+   * intake deduplicates on the payload's signature as well as on the delivery id.
+   */
+  async deliverUnroutedGitHubEvent(deliveryId: string): Promise<void> {
+    await this.deliverGitHub(deliveryId, 42, "acme-inc/widgets", deliveryId);
+  }
+
   /** A connected session-v1 daemon that serves the trigger editor's provider catalog. */
   async connectProviderDaemon(alias: string, organizationName: string): Promise<string> {
     const daemon = await this.connectBrowserDaemon(alias, organizationName, "devbox");
@@ -2699,10 +2720,10 @@ class HubUser {
     await expect(this.page.getByRole("heading", { name: "Set up your apps" })).toBeVisible();
     await this.page.getByRole("button", { name: "Do this later", exact: true }).click();
     // Apps are followed by the daemon handoff. A journey that is not about either walks through
-    // both, exactly as the operator can, and lands on organization triggers.
+    // both, exactly as the operator can, and lands on organization Home.
     await expect(this.page.getByRole("heading", { name: "Connect a daemon" })).toBeVisible();
     await this.page.getByRole("button", { name: "Do this later", exact: true }).click();
-    await expect(this.page.getByRole("heading", { name: "Triggers", exact: true })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
   }
 
   async completeFirstRunJourney(
@@ -2728,8 +2749,8 @@ class HubUser {
       this.page.getByRole("main").getByRole("button", { name: "Toggle Sidebar" }),
     ).toBeFocused();
 
-    // Setup provisioned a working organization, not just a row: organization triggers render.
-    await this.navigation.expectBreadcrumb(INTERACTIVE_ORGANIZATION_NAME, "Triggers");
+    // Setup provisioned a working organization, not just a row: organization Home renders.
+    await this.navigation.expectBreadcrumb(INTERACTIVE_ORGANIZATION_NAME, "Home");
     await this.returnToProjects();
     // The instance operator surface is the proof that this account owns the instance, not just
     // its organization: the console refuses anyone without the flag, server-side.
@@ -2747,7 +2768,7 @@ class HubUser {
     await signIn.getByLabel("Email").fill(account.email);
     await signIn.getByLabel("Password").fill(account.password);
     await signIn.getByRole("button", { name: "Sign in" }).click();
-    await expect(this.page.getByRole("heading", { name: "Triggers", exact: true })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
     await this.expectActiveOrganization(INTERACTIVE_ORGANIZATION_NAME);
   }
 
@@ -2802,7 +2823,7 @@ class HubUser {
   private async expectFirstRunPasswordRefused(account: Account): Promise<void> {
     await this.fillFirstRunSetupForm({ ...account, password: "short" });
     await expect(this.page.getByRole("form", { name: "Create your account" })).toBeVisible();
-    await expect(this.page.getByRole("heading", { name: "Triggers", exact: true })).toHaveCount(0);
+    await expect(this.page.getByRole("heading", { name: "Home", exact: true })).toHaveCount(0);
   }
 
   async completeFirstRunClaim(account: Account): Promise<void> {
@@ -3165,8 +3186,8 @@ class HubUser {
     await this.submitOrganization(name);
     // The sidebar can show the new account before its landing redirect finishes.
     // A following navigation must start from the settled organization page.
-    await expect(this.page).toHaveURL(/\/o\/[^/]+\/triggers$/u);
-    await expect(this.page.getByRole("heading", { name: "Triggers", level: 1 })).toBeVisible();
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/home$/u);
+    await expect(this.page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
     await this.expectActiveOrganization(name);
   }
 
@@ -3265,13 +3286,13 @@ class HubUser {
     await menu.getByRole("menuitem", { name, exact: true }).click();
     await expect(menu).toBeHidden();
     await expect(switcher).toContainText(name);
-    await expect(this.page).toHaveURL(/\/o\/[^/]+\/triggers$/u);
-    await expect(this.page.getByRole("heading", { name: "Triggers", exact: true })).toBeVisible();
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/home$/u);
+    await expect(this.page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
   }
 
   async returnToProjects(): Promise<void> {
     await this.page.goto(this.origin);
-    await expect(this.page.getByRole("heading", { name: "Triggers", exact: true })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
   }
 
   async rejectOrganizationSwitchAndInvitation(
@@ -3447,8 +3468,8 @@ class HubUser {
       releaseRefetch();
     }
     await expect(switcher).toContainText(destinationOrganization);
-    await expect(this.page).toHaveURL(/\/o\/[^/]+\/triggers$/u);
-    await expect(this.page.getByRole("heading", { name: "Triggers", exact: true })).toBeVisible();
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/home$/u);
+    await expect(this.page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
     await expect(this.page.getByText(oldDaemonName, { exact: true })).toHaveCount(0);
     await this.page.unroute(serverFunctions);
   }
@@ -3834,7 +3855,7 @@ class HubUser {
 
   async acceptInvitation(): Promise<void> {
     await this.page.getByRole("button", { name: "Accept invitation" }).click();
-    await expect(this.page.getByRole("heading", { name: "Triggers" })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Home" })).toBeVisible();
   }
 
   async acceptInvitationWithSignOutLocked(): Promise<void> {
@@ -3878,7 +3899,7 @@ class HubUser {
       await delivered;
       await this.page.unroute(serverFunctions);
     }
-    await expect(this.page.getByRole("heading", { name: "Triggers" })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Home" })).toBeVisible();
   }
 
   async acceptInvitationAfterSessionExpiry(
@@ -3996,7 +4017,7 @@ class HubUser {
 
   async navigateToTeamFromMobileSidebar(): Promise<void> {
     await this.page.goto(this.origin);
-    await expect(this.page.getByRole("heading", { name: "Triggers" })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Home" })).toBeVisible();
     const trigger = this.page.getByRole("button", { name: "Toggle Sidebar" });
     await this.page.keyboard.press("Tab");
     await expect(trigger).toBeFocused();
@@ -5195,7 +5216,7 @@ class HubUser {
     if (await mobileSidebar.isVisible().catch(() => false)) await mobileSidebar.click();
     if (instance) await this.navigation.leaveInstance();
     else await this.navigation.leaveProject();
-    await expect(this.page.getByRole("heading", { name: "Triggers" })).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Home" })).toBeVisible();
   }
 
   private async refreshOrganizationSection(name: "Daemons" | "Connections" | "Team") {
@@ -5416,7 +5437,13 @@ class ContractDaemon {
 
   private acceptExecution(data: RawData): void {
     const value: unknown = JSON.parse(readSocketData(data));
-    if (this.acceptHello(value) || this.acceptProviderRequest(value)) return;
+    if (
+      this.acceptHello(value) ||
+      this.acceptProviderRequest(value) ||
+      this.acceptAgentValidation(value)
+    ) {
+      return;
+    }
     const envelope = ExecutionRequestSchema.safeParse(value);
     if (!envelope.success) return;
     const request = envelope.data.message;
@@ -5486,6 +5513,78 @@ class ContractDaemon {
     return true;
   }
 
+  /**
+   * What the daemon says about an agent before Hub stores a trigger for it: the same catalog the
+   * editor's comboboxes were filled from, answered the way a real daemon answers
+   * (`agent-configuration-validator.ts` in getpaseo/paseo).
+   */
+  private acceptAgentValidation(value: unknown): boolean {
+    const envelope = z
+      .object({
+        type: z.literal("session"),
+        message: z.object({
+          type: z.literal("hub.execution.agent.validate.request"),
+          requestId: z.string(),
+          provider: z.string(),
+          model: z.string().optional(),
+          modeId: z.string().optional(),
+          thinkingOptionId: z.string().optional(),
+        }),
+      })
+      .safeParse(value);
+    if (!envelope.success) return false;
+    const request = envelope.data.message;
+    const provider = browserProviderSnapshot.find((entry) => entry.provider === request.provider);
+    const issues: { path: string[]; message: string }[] = [];
+    if (provider === undefined) {
+      issues.push({ path: ["provider"], message: `Provider '${request.provider}' is unavailable` });
+    } else {
+      const model =
+        request.model === undefined
+          ? provider.models.find((candidate) => "isDefault" in candidate && candidate.isDefault)
+          : provider.models.find((candidate) => candidate.id === request.model);
+      if (request.model !== undefined && model === undefined) {
+        issues.push({
+          path: ["model"],
+          message: `Model '${request.model}' is not available for provider '${request.provider}'`,
+        });
+      }
+      if (
+        request.modeId !== undefined &&
+        !provider.modes.some((candidate) => candidate.id === request.modeId)
+      ) {
+        issues.push({
+          path: ["modeId"],
+          message: `Mode '${request.modeId}' is not available for provider '${request.provider}'`,
+        });
+      }
+      if (
+        request.thinkingOptionId !== undefined &&
+        !model?.thinkingOptions.some((candidate) => candidate.id === request.thinkingOptionId)
+      ) {
+        issues.push({
+          path: ["thinkingOptionId"],
+          message: `Thinking option '${request.thinkingOptionId}' is not available for provider '${request.provider}'`,
+        });
+      }
+    }
+    this.socket?.send(
+      JSON.stringify({
+        type: "session",
+        message: {
+          type: "hub.execution.agent.validate.response",
+          payload: {
+            requestId: request.requestId,
+            valid: issues.length === 0,
+            issues,
+            error: null,
+          },
+        },
+      }),
+    );
+    return true;
+  }
+
   private acceptProviderRequest(value: unknown): boolean {
     const envelope = z
       .object({
@@ -5525,15 +5624,17 @@ class ContractDaemon {
   }
 }
 
+// Only providers a daemon runs unattended (`src/triggers/configuration/unattended.ts`); the
+// editor offers nothing else, and the store would refuse it.
 const browserProviderSnapshot = [
   {
-    provider: "pi",
+    provider: "opencode",
     status: "ready",
     enabled: true,
-    label: "Pi",
+    label: "OpenCode",
     models: [
       {
-        provider: "pi",
+        provider: "opencode",
         id: "gateway/vendor/model-v1",
         label: "Gateway Model v1",
         isDefault: true,
@@ -5544,7 +5645,7 @@ const browserProviderSnapshot = [
         defaultThinkingOptionId: "high",
       },
       {
-        provider: "pi",
+        provider: "opencode",
         id: "gateway/vendor/model-v2",
         label: "Gateway Model v2",
         thinkingOptions: [{ id: "high", label: "High" }],

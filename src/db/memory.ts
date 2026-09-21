@@ -3,6 +3,7 @@ import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
 import { parseCompiledHubConfig, type JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
+import { launchedAgent } from "./mappers.js";
 import type {
   AgentExecutionRecord,
   AgentExecutionOutputAttempt,
@@ -63,6 +64,8 @@ import type {
   LinearConnectionRecord,
   GitHubRepositoryRecord,
   OrganizationConnectionUsage,
+  OrganizationRunRecord,
+  UnroutedProviderEventCount,
   ProjectTriggerRoute,
   MigrateProjectTriggersInput,
   OrganizationTriggerRecord,
@@ -3069,6 +3072,69 @@ class MemoryDatabase implements Database {
       )
       .slice(0, 50)
       .map(toProviderEventReceiptRecordSummary);
+  }
+
+  async listOrganizationRunsSince(
+    organizationId: string,
+    since: Date,
+    limit: number,
+  ): Promise<OrganizationRunRecord[]> {
+    return [...this.triggerRuns.values()]
+      .filter((run) => run.organizationId === organizationId && run.createdAt >= since)
+      .sort(
+        (left, right) =>
+          right.createdAt.getTime() - left.createdAt.getTime() || right.id.localeCompare(left.id),
+      )
+      .slice(0, limit)
+      .flatMap((run) => {
+        const receipt = this.providerEventReceipts.get(run.providerEventReceiptId);
+        if (receipt === undefined) return [];
+        const step = this.listSteps(run.id).find(
+          (candidate) => candidate.agentExecutionId !== null,
+        );
+        const execution =
+          step?.agentExecutionId == null
+            ? undefined
+            : this.agentExecutions.get(step.agentExecutionId);
+        return [
+          {
+            id: run.id,
+            triggerName: run.configuredTriggerName,
+            provider: receipt.provider,
+            source: receipt.source,
+            status: run.status,
+            receivedAt: receipt.receivedAt,
+            agent: launchedAgent(execution?.launchIntent?.agent),
+          },
+        ];
+      });
+  }
+
+  async countUnroutedProviderEventsSince(
+    organizationId: string,
+    since: Date,
+  ): Promise<UnroutedProviderEventCount[]> {
+    const routedReceiptIds = new Set(
+      [...this.triggerRuns.values()].map((run) => run.providerEventReceiptId),
+    );
+    const counts = new Map<ProviderEventReceiptRecord["provider"], number>();
+    for (const receipt of this.providerEventReceipts.values()) {
+      if (
+        receipt.organizationId !== organizationId ||
+        receipt.receivedAt < since ||
+        routedReceiptIds.has(receipt.id) ||
+        (receipt.droppedReason !== "no_project_route" &&
+          receipt.droppedReason !== "no_trigger_for_source")
+      ) {
+        continue;
+      }
+      counts.set(receipt.provider, (counts.get(receipt.provider) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([provider, count]) => ({ provider, count }))
+      .sort(
+        (left, right) => right.count - left.count || left.provider.localeCompare(right.provider),
+      );
   }
 
   async isOrganizationMember(): Promise<boolean> {

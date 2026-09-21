@@ -20,10 +20,10 @@ test("keeps shell and body together through a slow download and cached navigatio
   try {
     await projectApp(page).navigation.openOrganizationSection("Daemons");
     await download.requested;
-    await expectOrganizationPage(page, "Triggers");
+    await expectOrganizationPage(page, "Home");
     await download.showPendingPage();
     await expectOrganizationDestination(page, "Daemons");
-    await expect(page.getByRole("heading", { name: "Triggers", exact: true })).toBeHidden();
+    await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeHidden();
   } finally {
     await download.release();
   }
@@ -43,13 +43,16 @@ test("a later navigation wins while an earlier download is pending", async ({ hu
     await projectApp(page).navigation.openOrganizationSection("Daemons");
     await download.requested;
     await download.showPendingPage();
-    await projectApp(page).navigation.openOrganizationSection("Triggers");
-    await expectOrganizationPage(page, "Triggers");
+    // Home is the page already on screen, so its scripts are here; the later navigation to it
+    // wins over the Daemons download that is still held.
+    await projectApp(page).navigation.openOrganizationSection("Home");
+    await expectOrganizationPage(page, "Home");
   } finally {
     await download.release();
   }
-  await expectOrganizationPage(page, "Triggers");
-  await expect(page.getByRole("heading", { name: "Daemons", exact: true })).toBeHidden();
+  await expectOrganizationPage(page, "Home");
+  // Home has a Daemons section of its own; the page that must not have arrived is the h1.
+  await expect(page.getByRole("heading", { name: "Daemons", exact: true, level: 1 })).toBeHidden();
 });
 
 test("keeps settings tabs aligned through pending navigation and Back", async ({ hub, page }) => {
@@ -78,22 +81,22 @@ test("switches organization and instance context with the presented page", async
 }) => {
   await openOrganization(hub, page);
   await hub.grantOperator("owner");
-  await expectOrganizationPage(page, "Triggers");
+  await expectOrganizationPage(page, "Home");
   const download = await holdPageScripts(page);
   try {
     await enterInstance(page);
     await download.requested;
-    await expectOrganizationPage(page, "Triggers");
+    await expectOrganizationPage(page, "Home");
     await download.showPendingPage();
     await projectApp(page).navigation.expectBreadcrumb("Instance", "Apps");
     await expect(page.getByRole("navigation", { name: "Instance", exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Triggers", exact: true })).toBeHidden();
+    await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeHidden();
   } finally {
     await download.release();
   }
   await expect(page.getByRole("heading", { name: "Apps", exact: true })).toBeVisible();
   await projectApp(page).navigation.leaveInstance();
-  await expectOrganizationPage(page, "Triggers");
+  await expectOrganizationPage(page, "Home");
 });
 
 test("removes the previous page's header actions when its replacement is presented", async ({
@@ -124,7 +127,7 @@ test("replaces the old body while destination data is delayed", async ({ hub, pa
     await projectApp(page).navigation.openOrganizationSection("Daemons");
     await data.requested;
     await expectOrganizationPage(page, "Daemons");
-    await expect(page.getByRole("heading", { name: "Triggers", exact: true })).toBeHidden();
+    await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeHidden();
   } finally {
     await data.release();
   }
@@ -134,7 +137,7 @@ test("replaces the old body while destination data is delayed", async ({ hub, pa
 async function openOrganization(hub: PaseoHub, page: Page) {
   await hub.signUpAs("owner", owner);
   await hub.createOrganization("owner", "Acme");
-  await expectOrganizationPage(page, "Triggers");
+  await expectOrganizationPage(page, "Home");
 }
 
 async function expectOrganizationDestination(page: Page, name: string) {

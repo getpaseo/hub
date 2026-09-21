@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../auth/server.js";
 import { createMemoryDatabase } from "../db/memory.js";
+import { acceptingAgentValidator } from "../test-utils/agent-validator.js";
 import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
 import { TriggerDashboard } from "./dashboard.js";
 import { OrganizationTriggerStore } from "./store.js";
@@ -21,11 +22,15 @@ describe("trigger dashboard read model", () => {
       ],
     });
     await enrollTestDaemon(database, "org-1");
-    const trigger = await new OrganizationTriggerStore(database, "org-1").save({
+    const trigger = await new OrganizationTriggerStore(
+      database,
+      "org-1",
+      acceptingAgentValidator(),
+    ).save({
       yaml: triggerYaml,
       userId: "user-1",
     });
-    const dashboard = new TriggerDashboard(database, accountAuth());
+    const dashboard = new TriggerDashboard(database, accountAuth(), acceptingAgentValidator());
     const request = new Request("https://hub.test/o/acme/triggers");
 
     const before = await dashboard.snapshot(request, "acme");
@@ -74,7 +79,7 @@ on:
   manual.run: {}
 run:
   target: { daemon: ${TEST_DAEMON_SLUG}, cwd: /workspace }
-  agent: { provider: test, mode: full-access }
+  agent: { provider: codex, mode: full-access }
   prompt: Handle it
 `;
 

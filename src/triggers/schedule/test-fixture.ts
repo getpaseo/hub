@@ -8,6 +8,6 @@ on:
       timezone: Europe/Berlin
 run:
   target: { daemon: devbox, cwd: /workspace }
-  agent: { provider: test, mode: full-access, thinkingOptionId: low }
+  agent: { provider: codex, mode: full-access, thinkingOptionId: low }
   prompt: 'Scan at \${{ paseo.context }}'
 `;

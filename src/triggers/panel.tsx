@@ -44,6 +44,7 @@ import type { HubProviderSnapshot, HubProviderSnapshotEntry } from "../hub/proto
 import { EventFields } from "./event-fields.js";
 import { EDITOR_EVENTS, eventDefinition, parseEditorEvent } from "./configuration/events.js";
 import { selectedProviderModel } from "./provider-catalog.js";
+import { supportsUnattendedRuns } from "./configuration/unattended.js";
 
 type BrowserTrigger = TriggerSnapshot["triggers"][number];
 type EditorMode = "form" | "yaml";
@@ -118,7 +119,7 @@ export function TriggersPanel() {
               </Button>
             }
           >
-            <p>Triggers need a daemon to run.</p>
+            <p>Triggers need a daemon that can run agents.</p>
           </WarningAlert>
         ) : null}
         <DataTable
@@ -767,7 +768,7 @@ function TriggerForm({
                   <FormField
                     id="trigger-cwd"
                     label="Working directory"
-                    description="Absolute path on the daemon."
+                    description="Absolute path of the checkout on the daemon, for example /home/you/repo. The agents you can run are read from there."
                     kind="text"
                     name="cwd"
                     value={form.cwd}
@@ -1124,8 +1125,10 @@ function ProviderCatalogFields({
   onChange: (value: TriggerFormValue) => void;
 }) {
   const selected = selectedProviderModel(entries, form.agent);
+  // A provider the daemon cannot run unattended is not offered: Hub sends a tool policy with every
+  // run, and the daemon refuses the policy at launch for any provider outside that set.
   const agentOptions = (entries ?? []).flatMap((entry) =>
-    entry.status !== "ready" || !entry.enabled
+    entry.status !== "ready" || !entry.enabled || !supportsUnattendedRuns(entry.provider)
       ? []
       : (entry.models ?? [])
           .filter((model) => model.isSelectable !== false)
@@ -1149,7 +1152,7 @@ function ProviderCatalogFields({
       <FormField
         id="trigger-agent"
         label="Agent"
-        description="Models reported by the selected daemon."
+        description="Models the selected daemon can run unattended: Claude, Codex, or OpenCode."
         required
         {...fieldError(errors, "agent")}
       >
@@ -1261,8 +1264,16 @@ function providerCatalogError(
   return providerErrors.length > 0 ? providerErrors.join(" ") : undefined;
 }
 
+/**
+ * A new trigger starts from what the organization already has: its Slack workspace, its daemon.
+ * The working directory is the one thing nobody but the reader knows — a prefilled path that does
+ * not exist on the daemon was accepted as it was, and the first run failed on it — so it stays
+ * empty until they type the real one.
+ */
 function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
   const slack = snapshot.connections.find(({ provider }) => provider === "slack");
+  const daemon =
+    snapshot.daemons.find(({ presence }) => presence === "connected") ?? snapshot.daemons[0];
   return {
     name: "new-trigger",
     enabled: true,
@@ -1270,8 +1281,8 @@ function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
     connection: slack?.slug ?? "",
     allowedUsers: "*",
     qualifiers: {},
-    daemon: "",
-    cwd: "/workspace",
+    daemon: daemon?.slug ?? "",
+    cwd: "",
     agent: "",
     mode: "",
     thinkingOptionId: "",

@@ -73,7 +73,7 @@ it("round trips recurrence through YAML, compiler and the existing execution for
     timezone: "America/New_York",
   });
   expect(parsed.run.agent).toEqual({
-    provider: "test",
+    provider: "codex",
     mode: "full-access",
     thinkingOptionId: "low",
   });

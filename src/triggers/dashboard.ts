@@ -4,6 +4,7 @@ import type { Database, OrganizationTriggerRecord } from "../db/types.js";
 import { resolveRouteTenant } from "../projects/access.js";
 import { ProjectCommandError } from "../projects/command-error.js";
 import { parseCompiledHubConfig } from "../config/compiler.js";
+import type { DaemonAgentConfigurationValidator } from "../configuration/store.js";
 import { projectTriggerForm } from "./configuration/editor.js";
 import { OrganizationTriggerStore } from "./store.js";
 
@@ -11,13 +12,18 @@ export class TriggerDashboard {
   constructor(
     private readonly database: Database,
     private readonly auth: AuthServer,
+    private readonly agentValidator: DaemonAgentConfigurationValidator,
   ) {}
 
   async snapshot(request: Request, organizationSlug: string) {
     const { tenant } = await resolveRouteTenant(this.auth, this.database, request, {
       organizationSlug,
     });
-    const store = new OrganizationTriggerStore(this.database, tenant.organization.id);
+    const store = new OrganizationTriggerStore(
+      this.database,
+      tenant.organization.id,
+      this.agentValidator,
+    );
     const [triggers, daemons, connections] = await Promise.all([
       store.list(),
       this.database.listDaemonsForOrganization(tenant.organization.id),
@@ -42,8 +48,12 @@ export class TriggerDashboard {
         ),
       ),
       activity,
+      // Only a daemon that can run agents is a target; one enrolled without `hub.execute` would
+      // be refused at save, and Home says how to grant it.
       daemons: daemons
-        .filter(({ status }) => status === "active")
+        .filter(
+          ({ status, permissions }) => status === "active" && permissions.includes("hub.execute"),
+        )
         .map(({ id, slug, presence }) => ({ id, slug, presence })),
       connections: [
         ...connections.slack.map(({ id, slug, teamName }) => ({
@@ -119,7 +129,11 @@ export class TriggerDashboard {
     if (!capabilitiesFor(tenant.membership.role).manageResources) {
       throw new ProjectCommandError("forbidden");
     }
-    return new OrganizationTriggerStore(this.database, tenant.organization.id).save({
+    return new OrganizationTriggerStore(
+      this.database,
+      tenant.organization.id,
+      this.agentValidator,
+    ).save({
       ...(input.triggerId === undefined ? {} : { triggerId: input.triggerId }),
       yaml: input.yaml,
       userId: account.account.id,

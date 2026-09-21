@@ -24,13 +24,46 @@ export class OrganizationTriggers {
     // The last step keeps its place and says what it is waiting for, so the shape of the
     // trigger is on screen before a daemon is chosen; only its controls are absent.
     await expect(this.page.getByRole("heading", { name: "What runs there" })).toBeVisible();
-    await expect(this.page.getByRole("combobox", { name: "Agent" })).toBeHidden();
-    await expect(this.page.getByLabel("Working directory")).toBeHidden();
     const topbar = this.page.locator("header.sticky");
     await expect(topbar.getByRole("radio", { name: "Form" })).toBeEnabled();
     await expect(topbar.getByRole("radio", { name: "YAML" })).toBeVisible();
     await expect(topbar.getByRole("button", { name: "Discard" })).toBeVisible();
     await expect(this.page.getByLabel("Trigger ID")).toHaveValue("Assigned when saved");
+  }
+
+  /** No daemon yet: the target and agent steps keep their place and say what they wait for. */
+  async expectWaitingForDaemon() {
+    await expect(this.page.getByRole("combobox", { name: "Agent" })).toBeHidden();
+    await expect(this.page.getByLabel("Working directory")).toBeHidden();
+  }
+
+  /**
+   * The organization's daemon is already chosen, and the working directory is the one thing the
+   * form does not guess: a prefilled path that did not exist on the daemon was saved as it was and
+   * failed the first run, so the field starts empty and the agent step waits for it.
+   */
+  async expectDaemonPreselected(daemon: string) {
+    await expect(this.page.getByRole("combobox", { name: "Run on daemon" })).toHaveAttribute(
+      "data-value",
+      daemon,
+    );
+    await expect(this.page.getByLabel("Working directory")).toHaveValue("");
+    await expect(this.page.getByLabel("Working directory")).toHaveAttribute("required", "");
+  }
+
+  /** Pressing save with the document as it is answers in the summary and stays on the editor. */
+  async expectRefusedOnSubmit(reason: string) {
+    const url = this.page.url();
+    await this.page
+      .locator("#trigger-editor-form")
+      .getByRole("button", { name: /Create trigger|Save changes|Save YAML/u })
+      .click();
+    await expect(
+      this.page
+        .getByRole("alert")
+        .filter({ hasText: /This trigger is not ready to save|Trigger not saved/u }),
+    ).toContainText(reason);
+    await expect(this.page).toHaveURL(url);
   }
 
   async exploreEventQualifiers() {
@@ -140,7 +173,7 @@ export class OrganizationTriggers {
       name: "periodic-scan",
       daemon,
       cwd: "/workspace/acme",
-      agent: "pi/gateway/vendor/model-v1",
+      agent: "opencode/gateway/vendor/model-v1",
       mode: "full-access",
       thinking: "low",
       prompt: "Read reports and summarize new items.",
@@ -309,7 +342,7 @@ export class OrganizationTriggers {
       name: input.name,
       daemon: input.daemon,
       cwd: "/workspace/acme",
-      agent: "pi/gateway/vendor/model-v1",
+      agent: "opencode/gateway/vendor/model-v1",
       mode: "full-access",
       thinking: "high",
       prompt: "Handle the labeled item.",
