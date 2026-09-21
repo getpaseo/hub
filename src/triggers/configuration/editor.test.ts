@@ -272,7 +272,7 @@ describe("what the form still needs", () => {
       daemon: "Daemon is required.",
     });
     expect(triggerFormErrors({ ...editable(), cwd: "workspace" })).toEqual({
-      cwd: "Working directory must be an absolute path.",
+      cwd: "Working directory must be an absolute path: POSIX (/a/b) or Windows (D:\\a\\b, D:/a/b, \\\\server\\share).",
     });
     expect(triggerFormErrors({ ...editable(), agent: "" })).toEqual({
       agent: "Agent is required.",
@@ -283,6 +283,14 @@ describe("what the form still needs", () => {
     expect(triggerFormErrors({ ...editable(), prompt: "  " })).toEqual({
       prompt: "Instructions are required.",
     });
+  });
+
+  test.each([
+    ["a Windows drive path with backslashes", "D:\\workspace"],
+    ["a Windows drive path with forward slashes", "D:/workspace"],
+    ["a UNC share", "\\\\server\\share"],
+  ])("accepts %s as an absolute working directory", (_name, cwd) => {
+    expect(triggerFormErrors({ ...editable(), cwd }).cwd).toBeUndefined();
   });
 
   test("holds the name to the document's own alphabet", () => {

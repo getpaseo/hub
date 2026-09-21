@@ -9,7 +9,12 @@ import {
 } from "../../config/compiler.js";
 import { TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
 
-export { TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
+export {
+  ABSOLUTE_TARGET_PATH_SHAPES,
+  TriggerDocumentSchema,
+  isAbsoluteTargetPath,
+  type TriggerDocument,
+} from "./schema.js";
 export {
   migrateLegacyBundle,
   type MigratedLegacyTrigger,

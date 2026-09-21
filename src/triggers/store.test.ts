@@ -5,26 +5,7 @@ import { OrganizationTriggerStore } from "./store.js";
 
 describe("organization trigger store", () => {
   it("creates and updates one hidden runtime without exposing a project", async () => {
-    const database = createMemoryDatabase({ organizationIds: ["org"] });
-    await database.issueEnrollmentToken({
-      id: "token",
-      verifier: "token-verifier",
-      organizationId: "org",
-      expiresAt: new Date("2026-08-29T22:00:00.000Z"),
-      consumedAt: null,
-    });
-    await database.enrollDaemon({
-      daemonId: "daemon-00000000",
-      idempotencyKey: "daemon-key",
-      suggestedSlug: "devbox",
-      tokenVerifier: "token-verifier",
-      serverId: "server",
-      daemonPublicKey: "public-key",
-      credentialVerifier: "credential-verifier",
-      permissions: ["hub.execute"],
-      now: new Date("2026-08-29T21:00:00.000Z"),
-    });
-    const store = new OrganizationTriggerStore(database, "org");
+    const { database, store } = await storeWithDaemon();
     const first = await store.save({ yaml: triggerYaml(true), userId: null });
     const second = await store.save({
       triggerId: first.id,
@@ -49,7 +30,7 @@ describe("organization trigger store", () => {
   });
 
   it.each([
-    ["a relative working directory", "cwd: workspace", /absolute path/iu],
+    ["a relative working directory", "cwd: workspace", /absolute path: POSIX.*Windows/iu],
     ["an omitted execution mode", "provider: test, mode: full-access", /mode.*required/iu],
   ])("rejects %s at the authoring boundary", async (_name, authored, expected) => {
     const database = createMemoryDatabase({ organizationIds: ["org"] });
@@ -61,7 +42,40 @@ describe("organization trigger store", () => {
 
     await assert.rejects(store.save({ yaml, userId: null }), expected);
   });
+
+  it.each([
+    ["a Windows drive path with backslashes", "D:\\workspace"],
+    ["a Windows drive path with forward slashes", "D:/workspace"],
+  ])("accepts %s as an absolute working directory", async (_name, cwd) => {
+    const { store } = await storeWithDaemon();
+    const yaml = triggerYaml(true).replace("cwd: /workspace", `cwd: ${cwd}`);
+
+    await assert.doesNotReject(store.save({ yaml, userId: null }));
+  });
 });
+
+async function storeWithDaemon() {
+  const database = createMemoryDatabase({ organizationIds: ["org"] });
+  await database.issueEnrollmentToken({
+    id: "token",
+    verifier: "token-verifier",
+    organizationId: "org",
+    expiresAt: new Date("2026-08-29T22:00:00.000Z"),
+    consumedAt: null,
+  });
+  await database.enrollDaemon({
+    daemonId: "daemon-00000000",
+    idempotencyKey: "daemon-key",
+    suggestedSlug: "devbox",
+    tokenVerifier: "token-verifier",
+    serverId: "server",
+    daemonPublicKey: "public-key",
+    credentialVerifier: "credential-verifier",
+    permissions: ["hub.execute"],
+    now: new Date("2026-08-29T21:00:00.000Z"),
+  });
+  return { database, store: new OrganizationTriggerStore(database, "org") };
+}
 
 function triggerYaml(enabled: boolean): string {
   return `name: manual-task

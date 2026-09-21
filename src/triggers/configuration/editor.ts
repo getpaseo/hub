@@ -7,7 +7,13 @@ import {
 import { ContinuationSchema } from "../continuation.js";
 import { parseDocument, stringify, type Document } from "yaml";
 import { z } from "zod";
-import { IDENTIFIER, TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
+import {
+  ABSOLUTE_TARGET_PATH_SHAPES,
+  IDENTIFIER,
+  isAbsoluteTargetPath,
+  TriggerDocumentSchema,
+  type TriggerDocument,
+} from "./schema.js";
 
 import {
   eventDefinition,
@@ -313,8 +319,8 @@ export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
   }
   Object.assign(errors, recurrenceErrors(value));
   if (value.daemon.trim().length === 0) errors.daemon = "Daemon is required.";
-  if (!value.cwd.trim().startsWith("/")) {
-    errors.cwd = "Working directory must be an absolute path.";
+  if (!isAbsoluteTargetPath(value.cwd.trim())) {
+    errors.cwd = `Working directory must be an absolute path: ${ABSOLUTE_TARGET_PATH_SHAPES}.`;
   }
   if (value.maxRuntime.trim().length === 0) errors.maxRuntime = "Maximum runtime is required.";
   if (value.idleTimeout.trim().length === 0) errors.idleTimeout = "Idle timeout is required.";
