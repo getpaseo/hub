@@ -277,6 +277,8 @@ it("validates, installs, exports and edits scheduled YAML through the existing p
   const application = createHubApplication({
     database: fixture.database,
     entitlements: createUnlimitedEntitlementsService(),
+    // Installing asks the daemon about the agent, so the fixture daemon answers for it.
+    daemonConnectionForId: (id) => (id === fixture.daemonId ? new ScheduleTestDaemon() : undefined),
     publicApi: {
       status: "enabled",
       authenticator: {

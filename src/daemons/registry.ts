@@ -163,6 +163,7 @@ export class ActiveDaemonRegistry {
       agents: this.active.get(daemonId)!.agents,
       getProviderSnapshot: (options) => this.getProviderSnapshot(daemonId, options),
       refreshProviderSnapshot: (options) => this.refreshProviderSnapshot(daemonId, options),
+      validateAgentConfiguration: (agent) => this.validateAgentConfiguration(daemonId, agent),
     };
   }
 

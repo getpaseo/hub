@@ -27,6 +27,7 @@ import {
   revokeDaemon,
   updateDaemonPermissions,
   type DaemonClock,
+  type DaemonConnection,
   type DaemonModule,
 } from "./daemons/index.js";
 import { createDispatcherWithEngine } from "./dispatcher/index.js";
@@ -124,6 +125,9 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
     options.database === null
       ? null
       : new ActiveDaemonRegistry(options.database, options.daemonClock);
+  const connectionForDaemon = (daemonId: string) =>
+    options.daemonConnectionForId?.(daemonId) ?? daemons?.connection(daemonId);
+  const agentValidator = daemons === null ? null : createAgentValidator(connectionForDaemon);
   const storeForProject = (projectId: string) => {
     if (options.database === null) throw new DatabaseUnavailableError();
     return new ProjectConfigurationStore(options.database, projectId, daemons ?? undefined);
@@ -233,9 +237,8 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
 
   const hub: HubRuntime = {
     daemonModule,
-    connectionForDaemon: (daemonId) =>
-      options.daemonConnectionForId?.(daemonId) ?? daemons?.connection(daemonId),
-    agentValidator: daemons,
+    connectionForDaemon,
+    agentValidator,
     resourceCounts: () => ({
       executionSubscriptions: daemonModule?.lifecycle.activeExecutionObservationCount() ?? 0,
     }),
@@ -270,7 +273,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
     options,
     manualSource,
     storeForProject,
-    daemons,
+    agentValidator,
   );
   const publicApi = createPublicApi(options.publicApi, publicOperations);
   const operations: HubOperations = {
@@ -320,11 +323,25 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
   return { hub, operations, publicApi, configurationForProject: storeForProject };
 }
 
+/**
+ * Every question Hub asks a daemon goes through its connection, so a test that stands in a
+ * connection stands in for agent validation too.
+ */
+function createAgentValidator(
+  connectionForDaemon: (daemonId: string) => DaemonConnection | undefined,
+): DaemonAgentConfigurationValidator {
+  return {
+    validateAgentConfiguration: (daemonId, agent) =>
+      connectionForDaemon(daemonId)?.validateAgentConfiguration(agent) ??
+      Promise.reject(new Error("daemon_not_connected")),
+  };
+}
+
 function createAppPublicOperations(
   options: HubRuntimeOptions,
   manualSource: ReturnType<typeof createManualTriggerSource> | undefined,
   configurationForProject: (projectId: string) => ProjectConfigurationStore,
-  daemonAgentValidator: ActiveDaemonRegistry | null,
+  daemonAgentValidator: DaemonAgentConfigurationValidator | null,
 ) {
   if (options.database === null || manualSource === undefined || daemonAgentValidator === null) {
     return null;

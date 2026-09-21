@@ -117,6 +117,7 @@ describe("durable Hub action acknowledgement state", () => {
           throw new Error("Provider catalog is not used");
         },
         refreshProviderSnapshot: async () => {},
+        validateAgentConfiguration: async () => ({ valid: true }),
       };
       const lifecycle = createDaemonDispatchLifecycle({
         database,
@@ -470,6 +471,10 @@ class AcknowledgementConnection implements DaemonConnection {
   }
 
   async refreshProviderSnapshot(): Promise<never> {
+    throw new Error("not used");
+  }
+
+  async validateAgentConfiguration(): Promise<never> {
     throw new Error("not used");
   }
 }

@@ -342,6 +342,7 @@ async function runTwoStepWorkflow<
     getProviderSnapshot: async () => {
       throw new Error("not used");
     },
+    validateAgentConfiguration: async () => ({ valid: true }),
     refreshProviderSnapshot: async () => {
       throw new Error("not used");
     },
