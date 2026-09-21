@@ -10,10 +10,6 @@ import { InstanceSetupEntry } from "./instance-setup-entry.js";
 import { AppSetupEntry } from "../provider-applications/panel.js";
 import { PasswordChangeEntry } from "./password-change.js";
 import { EmailVerificationResult, PasswordResetEntry } from "./account-recovery.js";
-import {
-  parseSignupIntent,
-  SIGNUP_INTENT_QUERY_PARAMETER,
-} from "../organizations/signup-intent.js";
 
 export function AccountApp() {
   const authCallback = readAuthCallback();
@@ -34,16 +30,9 @@ function AccountApplication() {
   const search =
     typeof window === "undefined" ? undefined : new URLSearchParams(window.location.search);
   const invitation = search?.get("invitation") ?? undefined;
-  const signupIntent = parseSignupIntent(search?.get(SIGNUP_INTENT_QUERY_PARAMETER));
   const account = useQuery({
-    queryKey: ["account", invitation, signupIntent],
-    queryFn: () =>
-      loadAccount({
-        data: {
-          ...(invitation === undefined ? {} : { invitation }),
-          ...(signupIntent === undefined ? {} : { signupIntent }),
-        },
-      }),
+    queryKey: ["account", invitation],
+    queryFn: () => loadAccount({ data: invitation === undefined ? {} : { invitation } }),
   });
   if (account.isPending) return <LoadingEntry />;
   if (account.isError || account.data.status === "error") {

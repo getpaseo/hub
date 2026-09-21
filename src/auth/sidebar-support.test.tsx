@@ -3,7 +3,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, it } from "vitest";
 import { SidebarMenu, SidebarProvider } from "../components/ui/sidebar.js";
 import { HelpChannels, SidebarHelp } from "./sidebar-help.js";
-import { trialNoticeLabel } from "./trial-notice.js";
 
 function footerMarkup(): string {
   return renderToStaticMarkup(
@@ -41,13 +40,5 @@ describe("the help popover's copy", () => {
     const markup = renderToStaticMarkup(<HelpChannels />);
 
     assert.match(markup, /target="_blank"[^>]*rel="noreferrer"/u);
-  });
-});
-
-describe("the trial reminder's copy", () => {
-  it("counts days, and one day as a day", () => {
-    assert.equal(trialNoticeLabel(12), "12 days left in trial");
-    assert.equal(trialNoticeLabel(1), "1 day left in trial");
-    assert.equal(trialNoticeLabel(0), "0 days left in trial");
   });
 });

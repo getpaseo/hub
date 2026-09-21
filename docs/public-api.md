@@ -45,16 +45,15 @@ entitlement template (`granted` caps/flags/meters); that stays internal to `src/
 `src/entitlements/`. This is the shape the marketing site (paseo.sh) fetches to render pricing;
 Hub itself has no pricing page.
 
-It returns the plans that are for sale. The catalog also carries the internal record that
-authors the no-subscription entitlement floor; that one is withheld here and everywhere else a
-customer can see. Today the hosted offer is one plan:
+It returns every plan the instance offers, the free one included, in catalog order. Today that is
+two:
 
 ```json
 {
   "plans": [
     {
-      "slug": "hosted",
-      "name": "Hosted",
+      "slug": "free",
+      "name": "Free",
       "billing": {
         "model": "per_unit",
         "unit": {
@@ -64,8 +63,35 @@ customer can see. Today the hosted offer is one plan:
       },
       "features": [
         {
-          "key": "hub-operation",
-          "label": "Paseo operates Hub",
+          "key": "monthly-executions",
+          "label": "A monthly allowance of agent runs",
+          "tooltip": null
+        }
+      ],
+      "prices": [
+        {
+          "interval": "monthly",
+          "intervalCount": 1,
+          "unitAmount": 0,
+          "currency": "eur",
+          "tooltip": null
+        }
+      ]
+    },
+    {
+      "slug": "hosted",
+      "name": "Pro",
+      "billing": {
+        "model": "per_unit",
+        "unit": {
+          "key": "seat",
+          "label": "seat"
+        }
+      },
+      "features": [
+        {
+          "key": "unlimited-executions",
+          "label": "Unlimited agent runs",
           "tooltip": null
         }
       ],
@@ -84,8 +110,9 @@ customer can see. Today the hosted offer is one plan:
 ```
 
 `unitAmount` is the amount per billing unit in the smallest currency unit (cents for `eur`),
-matching Stripe's own `Price` convention. An interval is absent when the plan has no active price
-at that interval. A
-self-hosted instance without `STRIPE_SECRET_KEY` 404s this route rather than serving an empty
-catalog — the billing boundary means the route is never registered on an unconfigured instance.
-See docs/billing.md.
+matching Stripe's own `Price` convention; a free plan prices at `0`. An interval is absent when the
+plan has no active price at that interval. `slug` is catalog identity and does not change with the
+displayed `name`. Feature copy describes what a plan includes without restating the numeric
+allowance behind it — the entitlement template never crosses this boundary. A self-hosted instance
+without `STRIPE_SECRET_KEY` 404s this route rather than serving an empty catalog — the billing
+boundary means the route is never registered on an unconfigured instance. See docs/billing.md.

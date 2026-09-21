@@ -7,11 +7,9 @@ import type { StripeCatalogSource } from "./stripe-catalog-source.js";
 import type { StripeBillingClient, StripeSubscriptionState } from "./stripe-billing-client.js";
 
 /**
- * The public catalog boundary. `free` is an internal entitlement record — the template a hosted
- * organization is stamped with before its creation-time trial reconciles, on failure, and after
- * cancellation — not something a customer can buy. Billing commits to that distinction here, so
- * no consumer (the plans endpoint, the billing overview, the picker) has to know the slug or
- * re-derive the rule.
+ * The public catalog boundary: every active mirrored plan, Free included. Free is the plan a
+ * hosted organization lands on and stays on, so the plans endpoint, the billing overview, and the
+ * picker all name it. A plan the sync deactivated is the one thing withheld.
  */
 
 const unusedCatalogSource: StripeCatalogSource = {
@@ -22,7 +20,6 @@ const unusedBillingClient: StripeBillingClient = {
   ensureCustomer: () => Promise.reject(new Error("unused")),
   listCustomerSubscriptions: () => Promise.reject(new Error("unused")),
   createCheckoutSession: () => Promise.reject(new Error("unused")),
-  createTrialSubscription: () => Promise.reject(new Error("unused")),
   changeSubscriptionPrice: () => Promise.reject(new Error("unused")),
   reportSeatQuantity: () => Promise.reject(new Error("unused")),
   createBillingPortalSession: () => Promise.reject(new Error("unused")),
@@ -40,18 +37,18 @@ function billingOver(database: Database): BillingRuntime {
   });
 }
 
-const internalFreePlan: SyncBillingPlanInput = {
+const freePlan: SyncBillingPlanInput = {
   id: "prod_free",
   slug: "free",
   name: "Free",
   template: {
     seats: { max: 1 },
     canInviteMembers: false,
-    meters: { "executions.monthly": { limit: 0 } },
+    meters: { "executions.monthly": { limit: 50 } },
   },
   templateHash: "hash-free",
   marketing: {
-    features: [{ key: "feature-1", label: "0 executions / month", tooltip: null }],
+    features: [{ key: "feature-1", label: "One seat", tooltip: null }],
     priceTooltips: { monthly: null, annual: null },
   },
   active: true,
@@ -101,14 +98,37 @@ const hostedPlan: SyncBillingPlanInput = {
 };
 
 describe("BillingRuntime.publicCatalog", () => {
-  it("publishes the purchasable plan and withholds the internal free record", async () => {
+  it("publishes the Free plan alongside the plan a customer pays for", async () => {
     const database = createMemoryDatabase();
-    await database.syncBillingPlan(internalFreePlan);
+    await database.syncBillingPlan(freePlan);
     await database.syncBillingPlan(hostedPlan);
 
     const catalog = await billingOver(database).publicCatalog();
 
-    assert.deepEqual(catalog, [
+    assert.deepEqual(
+      catalog.map((plan) => plan.slug),
+      ["free", "hosted"],
+    );
+    assert.deepEqual(
+      catalog.find((plan) => plan.slug === "free"),
+      {
+        slug: "free",
+        name: "Free",
+        billing: { model: "per_unit", unit: { key: "seat", label: "seat" } },
+        features: [{ key: "feature-1", label: "One seat", tooltip: null }],
+        prices: [
+          {
+            interval: "monthly",
+            intervalCount: 1,
+            unitAmount: 0,
+            currency: "eur",
+            tooltip: null,
+          },
+        ],
+      },
+    );
+    assert.deepEqual(
+      catalog.find((plan) => plan.slug === "hosted"),
       {
         slug: "hosted",
         name: "Paseo Hub",
@@ -136,14 +156,17 @@ describe("BillingRuntime.publicCatalog", () => {
           },
         ],
       },
-    ]);
+    );
   });
 
-  it("publishes nothing when the catalog carries only the internal free record", async () => {
+  it("publishes Free on its own when nothing is for sale yet", async () => {
     const database = createMemoryDatabase();
-    await database.syncBillingPlan(internalFreePlan);
+    await database.syncBillingPlan(freePlan);
 
-    assert.deepEqual(await billingOver(database).publicCatalog(), []);
+    assert.deepEqual(
+      (await billingOver(database).publicCatalog()).map((plan) => plan.slug),
+      ["free"],
+    );
   });
 
   it("withholds a plan the catalog sync deactivated", async () => {

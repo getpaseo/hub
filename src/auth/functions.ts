@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { deleteCookie, getCookie, getRequest, setCookie } from "@tanstack/react-start/server";
+import { getRequest } from "@tanstack/react-start/server";
 import { isAPIError } from "better-auth/api";
 import { z } from "zod";
 import { respondOk, type Result } from "../contract/respond.js";
@@ -13,11 +13,6 @@ import {
 import { PASSWORD_MIN_LENGTH } from "./instance-policy.js";
 import { API_KEY_SCOPES, apiKeyScopeSchema } from "./api-key-contract.js";
 import { parseEntitlementDenial, type EntitlementDenialPayload } from "../entitlements/denial.js";
-import {
-  SIGNUP_INTENT_COOKIE,
-  parseSignupIntent,
-  signupIntentSchema,
-} from "../organizations/signup-intent.js";
 
 const credentialsSchema = z.object({
   email: z.string().email(),
@@ -35,10 +30,7 @@ const resetPasswordSchema = z.object({
   token: z.string().min(1),
   newPassword: z.string().min(PASSWORD_MIN_LENGTH),
 });
-const accountEntrySchema = z.object({
-  invitation: z.string().optional(),
-  signupIntent: signupIntentSchema.optional(),
-});
+const accountEntrySchema = z.object({ invitation: z.string().optional() });
 const initialOperatorSchema = credentialsSchema.strip();
 const createOrganizationSchema = z.object({ name: z.string().trim().min(1).max(100) });
 const selectOrganizationSchema = z.object({ organizationId: z.string().min(1) });
@@ -80,15 +72,6 @@ export const accountState = createServerFn({ method: "GET" })
   .validator(accountEntrySchema)
   .handler(async ({ data }): Promise<Result<z.infer<typeof accountStateSchema>>> => {
     const request = getRequest();
-    if (data.signupIntent !== undefined) {
-      setCookie(SIGNUP_INTENT_COOKIE, data.signupIntent, {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: new URL(request.url).protocol === "https:",
-        path: "/",
-        maxAge: 24 * 60 * 60,
-      });
-    }
     const url = new URL("/api/auth/paseo/state", request.url);
     if (data.invitation !== undefined) url.searchParams.set("invitation", data.invitation);
     try {
@@ -407,11 +390,7 @@ type CreateOrganizationCommandResult = Result<{
 export const createOrganization = createServerFn({ method: "POST" })
   .validator(createOrganizationSchema)
   .handler(async ({ data }): Promise<CreateOrganizationCommandResult> => {
-    const signupIntent = parseSignupIntent(getCookie(SIGNUP_INTENT_COOKIE));
-    const response = await sendAccountCommand("/api/auth/paseo/create-organization", {
-      ...data,
-      ...(signupIntent === undefined ? {} : { signupIntent }),
-    });
+    const response = await sendAccountCommand("/api/auth/paseo/create-organization", data);
     if (response instanceof AccountRequestError) {
       return accountTransportFailure(
         response,
@@ -427,7 +406,6 @@ export const createOrganization = createServerFn({ method: "POST" })
         response,
         "Hub couldn't create the organization. Review its name and your permissions before submitting again.",
       );
-    deleteCookie(SIGNUP_INTENT_COOKIE, { path: "/" });
     try {
       const result = z.object({ organizationSlug: z.string().min(1) }).parse(await response.json());
       return respondOk({ state: "complete", organizationSlug: result.organizationSlug });

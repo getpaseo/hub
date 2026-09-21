@@ -1408,6 +1408,12 @@ export interface Database {
   ): Promise<OrganizationEntitlementsRecord>;
   listEntitlementChanges(organizationId: string, limit: number): Promise<EntitlementChangeRecord[]>;
   /**
+   * The organizations stamped from `planId` whose stamp predates the plan's current template —
+   * `plan_version` differs from `templateHash`. Stripe carries no version counter, so a content
+   * hash mismatch is what "off template" means. The catalog sync re-stamps exactly this list.
+   */
+  listOrganizationsOffPlanTemplate(planId: string, templateHash: string): Promise<string[]>;
+  /**
    * Every organization, for the instance-operator picker. Not a membership read — the operator
    * acts on organizations it does not belong to, so the caller must gate this on the operator
    * flag before invoking it.

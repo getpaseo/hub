@@ -15,7 +15,6 @@ const unusedBillingClient: StripeBillingClient = {
   ensureCustomer: () => Promise.reject(new Error("unused")),
   listCustomerSubscriptions: () => Promise.reject(new Error("unused")),
   createCheckoutSession: () => Promise.reject(new Error("unused")),
-  createTrialSubscription: () => Promise.reject(new Error("unused")),
   changeSubscriptionPrice: () => Promise.reject(new Error("unused")),
   reportSeatQuantity: () => Promise.reject(new Error("unused")),
   createBillingPortalSession: () => Promise.reject(new Error("unused")),
@@ -41,7 +40,7 @@ function freePlan(overrides: Partial<SyncBillingPlanInput> = {}): SyncBillingPla
     template: {
       seats: { max: 1 },
       canInviteMembers: false,
-      meters: { "executions.monthly": { limit: 0 } },
+      meters: { "executions.monthly": { limit: 50 } },
     },
     templateHash: "hash-free",
     marketing: {
@@ -65,7 +64,7 @@ describe("BillingRuntime.provisioningEntitlement", () => {
     assert.deepEqual(entitlement.granted, {
       seats: { max: 1 },
       canInviteMembers: false,
-      meters: { "executions.monthly": { limit: 0 } },
+      meters: { "executions.monthly": { limit: 50 } },
     });
   });
 
@@ -80,7 +79,9 @@ describe("BillingRuntime.provisioningEntitlement", () => {
     assert.equal(entitlement.planId, null);
     assert.equal(entitlement.granted.seats.max, 1);
     assert.equal(entitlement.granted.canInviteMembers, false);
-    assert.notEqual(entitlement.granted.meters["executions.monthly"].limit, null);
+    // Not unlimited, and not zero either: the floor carries the same allowance the Free product
+    // is authored with, so a catalog gap does not silently strand a new organization.
+    assert.equal(entitlement.granted.meters["executions.monthly"].limit, 50);
   });
 
   it("ignores an inactive Free plan and uses the fallback", async () => {

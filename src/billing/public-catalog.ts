@@ -5,7 +5,8 @@ import { selectActivePlanPrice } from "./plan-prices.js";
 
 /**
  * The public plan catalog: name, slug, prices by interval, marketing bullets. The entitlement
- * template never crosses this boundary — see the plan's public plans endpoint section.
+ * template never crosses this boundary — a plan's allowance is enforced from the stamp and read
+ * on the Usage page, never advertised from here.
  */
 export interface PublicBillingPlan {
   slug: string;
@@ -51,18 +52,12 @@ const SEAT_BILLING: PublicBillingPlan["billing"] = {
 };
 
 /**
- * Turns the catalog mirror into the plans a customer may buy. Two things are withheld: a plan the
- * sync deactivated, and `excludeSlug` — the internal entitlement record (see `FREE_PLAN_SLUG`),
- * which exists so provisioning and cancellation have a template to stamp, not so anyone can
- * purchase it. Withholding it here is what lets every consumer treat "the catalog" as "the offer".
+ * Turns the catalog mirror into the plans Hub offers, Free included — it is the plan a hosted
+ * organization lands on, so every consumer names it. The one thing withheld is a plan the sync
+ * deactivated, which stops being selectable rather than lingering in the offer.
  */
-export function publicBillingPlans(
-  records: readonly BillingPlanRecord[],
-  excludeSlug: string,
-): PublicBillingPlan[] {
-  return records
-    .filter((record) => record.active && record.slug !== excludeSlug)
-    .map(publicBillingPlan);
+export function publicBillingPlans(records: readonly BillingPlanRecord[]): PublicBillingPlan[] {
+  return records.filter((record) => record.active).map(publicBillingPlan);
 }
 
 function publicBillingPlan(record: BillingPlanRecord): PublicBillingPlan {

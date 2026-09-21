@@ -29,7 +29,6 @@ import {
   type AccountSession,
   type OrganizationAccessValue,
 } from "./organization-access.js";
-import type { OrganizationCreatedEvent } from "../organizations/signup-intent.js";
 import { paseoOrganizationPlugin } from "./organization-policy.js";
 import type { EntitlementsService } from "../entitlements/service.js";
 import {
@@ -89,7 +88,6 @@ export interface AuthServerOptions {
   provisioningEntitlements?: ProvisioningEntitlementResolver;
   /** Post-commit hook awaited after organization creation. Integration failures must never fail
    * or roll back the successfully created organization. Undefined self-hosted. */
-  onOrganizationCreated?: (event: OrganizationCreatedEvent) => Promise<void>;
   /** Post-commit hook fired when a membership change alters an organization's seat count. The
    * composition root wires billing's seat-quantity reporter here; undefined self-hosted. */
   onMembershipChanged?: (organizationId: string) => Promise<void>;
@@ -232,9 +230,6 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     instanceSetup,
     appOnboarding,
     provisioningEntitlements,
-    ...(options.onOrganizationCreated === undefined
-      ? {}
-      : { onOrganizationCreated: options.onOrganizationCreated }),
     ...(options.onMembershipChanged === undefined
       ? {}
       : { onMembershipChanged: options.onMembershipChanged }),

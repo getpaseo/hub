@@ -9,8 +9,6 @@ import type {
   PublicBillingPlanFeature,
   PublicBillingPlanPrice,
 } from "../../server/runtime.js";
-export { TRIAL_DAYS } from "../trial-policy.js";
-
 /**
  * Every word the billing surfaces render: prices, the button on each plan, and the one sentence
  * that says what happens next. The copy is pure and unit-testable; nothing here reaches for the
@@ -94,9 +92,20 @@ export function planPrice(
   return { amount: formatAmount(price), unit: `per seat / ${words.unit}` };
 }
 
-/** A plan a customer pays for, as opposed to the mirrored Free tier. Only these carry a trial. */
+/** A plan a customer pays for, as opposed to Free. */
 export function isPaidPrice(price: PublicBillingPlanPrice | null): boolean {
   return price !== null && price.unitAmount > 0;
+}
+
+/**
+ * The plans there is something to buy in. Free is in the catalog and on the page like any other
+ * plan, but it is not a purchase, so the page asks "is there anything here this organization is
+ * not already on" through this rather than counting the catalog.
+ */
+export function purchasablePlans(
+  plans: readonly PublicBillingPlan[],
+): readonly PublicBillingPlan[] {
+  return plans.filter((plan) => plan.prices.some(isPaidPrice));
 }
 
 export interface PlanAction {
@@ -112,7 +121,6 @@ export function planAction(input: {
   planName: string;
   price: PublicBillingPlanPrice | null;
   isCurrent: boolean;
-  trialEligible: boolean;
 }): PlanAction {
   if (input.isCurrent) {
     return { label: "Current plan", name: `Current plan: ${input.planName}`, disabled: true };
@@ -120,22 +128,14 @@ export function planAction(input: {
   if (input.price === null) {
     return { label: "Not available", name: `Not available: ${input.planName}`, disabled: true };
   }
-  if (input.trialEligible && isPaidPrice(input.price)) {
-    return {
-      label: "Start free trial",
-      name: `Start free trial with ${input.planName}`,
-      disabled: false,
-    };
-  }
   return { label: "Subscribe", name: `Subscribe to ${input.planName}`, disabled: false };
 }
 
 export interface SubscriptionSummary {
-  /** The plan the organization is billed on, or null when it has none. Billing never reports the
-   * internal free entitlement record here, so null means "no subscription", not "the free tier". */
+  /** The plan the organization is on — Free included — or null when it has never been stamped. */
   planName: string | null;
   /** The Stripe status pill. Null when no live subscription exists, which is the normal state
-   * for a free organization and for one whose subscription was cancelled. */
+   * for a Free organization and for one whose subscription was cancelled. */
   status: { tone: StatusTone; label: string } | null;
   /** One sentence naming the next thing that will happen to this subscription, or null when
    * there is no subscription and so nothing to say about one. */
@@ -155,18 +155,19 @@ export function subscriptionSummary(
   };
 }
 
-/** The headline for an organization with no subscription. Never names a tier — there is nothing
- * for sale at zero, and the entitlement floor it sits on is enforcement, not an offer. */
-export const NO_SUBSCRIPTION = "No subscription";
+/** The headline for an organization the catalog cannot name a plan for — a mirror that has not
+ * synced yet. Never a tier: the plans on the page are the plans there are. */
+export const NO_PLAN = "No plan";
 
+/**
+ * The one sentence about the subscription's next event. Only a live subscription has one: an
+ * organization on Free is not counting down to anything.
+ */
 function subscriptionDetail(subscription: BillingOverviewView["subscription"]): string | null {
-  // No subscription, nothing to date: the headline and the button already say everything, so the
-  // card stays silent rather than filling the gap with a pitch.
-  if (subscription.planName === null) return null;
+  if (!subscription.manageable) return null;
   if (subscription.cancelAtPeriodEnd && subscription.currentPeriodEnd !== null) {
     return `Cancels on ${formatAbsolute(subscription.currentPeriodEnd)}.`;
   }
-  if (subscription.trialEnd !== null) return `Trial ends ${formatAbsolute(subscription.trialEnd)}.`;
   if (subscription.currentPeriodEnd !== null) {
     return `Renews on ${formatAbsolute(subscription.currentPeriodEnd)}.`;
   }
