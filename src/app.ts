@@ -127,7 +127,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       : new ActiveDaemonRegistry(options.database, options.daemonClock);
   const connectionForDaemon = (daemonId: string) =>
     options.daemonConnectionForId?.(daemonId) ?? daemons?.connection(daemonId);
-  const agentValidator = daemons === null ? null : createAgentValidator(connectionForDaemon);
+  const agentValidator = createAgentValidator(daemons, connectionForDaemon);
   const storeForProject = (projectId: string) => {
     if (options.database === null) throw new DatabaseUnavailableError();
     return new ProjectConfigurationStore(options.database, projectId, daemons ?? undefined);
@@ -328,8 +328,10 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
  * connection stands in for agent validation too.
  */
 function createAgentValidator(
+  daemons: ActiveDaemonRegistry | null,
   connectionForDaemon: (daemonId: string) => DaemonConnection | undefined,
-): DaemonAgentConfigurationValidator {
+): DaemonAgentConfigurationValidator | null {
+  if (daemons === null) return null;
   return {
     validateAgentConfiguration: (daemonId, agent) =>
       connectionForDaemon(daemonId)?.validateAgentConfiguration(agent) ??
