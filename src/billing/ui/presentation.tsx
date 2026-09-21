@@ -39,6 +39,33 @@ export function FeatureList({
   );
 }
 
+/**
+ * What a plan includes, as a customer reads it: its own figures first, then the words its author
+ * wrote. The figures come from `included`, which the catalog sync flattens out of the validated
+ * entitlement template, so the allowance on the page and the allowance enforcement stamps cannot
+ * drift apart — a Stripe dashboard edit moves both. null is unlimited, everywhere.
+ */
+export function planFeatures(plan: PublicBillingPlan): PublicBillingPlanFeature[] {
+  const { executionsPerMonth, seats } = plan.included;
+  return [
+    {
+      key: "included-executions",
+      label:
+        executionsPerMonth === null
+          ? "Unlimited agent runs"
+          : `${executionsPerMonth} agent runs a month`,
+      tooltip: null,
+    },
+    {
+      key: "included-seats",
+      // Plain digits, the way the meter and the Usage page write the same numbers.
+      label: seats === null ? "Unlimited seats" : `${seats} ${seats === 1 ? "seat" : "seats"}`,
+      tooltip: null,
+    },
+    ...plan.features,
+  ];
+}
+
 const INTERVAL_WORDS: Record<
   BillingPlanPriceInterval,
   { label: string; unit: string; adjective: string }

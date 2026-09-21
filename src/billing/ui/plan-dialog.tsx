@@ -16,6 +16,7 @@ import {
   intervalLabel,
   offeredIntervals,
   planAction,
+  planFeatures,
   planPrice,
   priceForInterval,
 } from "./presentation.js";
@@ -162,7 +163,7 @@ function PlanCard({
         {/* Stacked on a phone, the plan you are already on collapses to a marker: its feature list
             is the one thing on the screen nobody needs to read, and it costs a full scroll. */}
         <FeatureList
-          features={plan.features}
+          features={planFeatures(plan)}
           className={cn("flex-1", isCurrent && "hidden sm:grid")}
         />
         <Button

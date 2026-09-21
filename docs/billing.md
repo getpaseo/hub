@@ -45,8 +45,13 @@ logged loudly — nothing ever stamps from an unvalidated template. `plan_versio
 `hashTemplate()` (`src/entitlements/catalog.ts:260`) of the validated template, because Stripe
 carries no version counter of its own; an off-template organization is a hash mismatch.
 
-Catalog sync stores Hub's presentation with the mirrored price data in `billing_plans.marketing`.
-The public endpoint and Hub billing UI both read that combined record.
+Catalog sync stores Hub's presentation with the mirrored price data in `billing_plans.marketing`,
+and flattens the validated template's figures into `marketing.included` (seats and the monthly
+execution allowance, null for unlimited) while it is there. The public endpoint and Hub billing UI
+both read that combined record, which is how a plan's numbers reach a customer without the
+template document itself ever reaching the projection. Every sync rewrites `marketing` for every
+product, so a field added to it lands on the next boot or product webhook rather than needing a
+migration.
 
 Catalog sync uses Stripe's List API, not Search. Search has indexing lag, which would make the
 boot sync racy right after a dashboard edit.
@@ -83,10 +88,11 @@ making consumers infer it from copy.
 Nothing about this is hardcoded to two plans. Publish a third product in Stripe and the picker
 lays out three columns; publish an annual price and the interval switch appears.
 
-Plan feature copy never restates a number the entitlement template carries. An allowance edited in
-the Stripe dashboard would leave a hardcoded "50 executions" behind in marketing copy, and the
-template never crosses the public boundary. The live figure reaches a customer through the meter
-and the Usage page, which read the organization's own stamp.
+No copy anywhere states a plan's figures. Seats and the execution allowance are rendered from
+`included` — the picker column, the billing card, and the public plans endpoint all read the same
+two numbers — so an allowance edited in the Stripe dashboard changes what a customer is promised
+and what enforcement stamps in the same move. `plan-presentation.ts` holds only prose that no
+template can contradict.
 
 ## Organization provisioning
 

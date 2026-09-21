@@ -40,6 +40,7 @@ export { selectActivePlanPrice, AmbiguousPlanPriceError } from "./plan-prices.js
 export type {
   PublicBillingPlan,
   PublicBillingPlanFeature,
+  PublicBillingPlanIncluded,
   PublicBillingPlanPrice,
 } from "./public-catalog.js";
 

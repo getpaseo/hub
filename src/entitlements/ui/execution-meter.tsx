@@ -20,11 +20,19 @@ export function meteredExecutions(
   return executions;
 }
 
-/** "12 of 50 executions this month" — what is left of the allowance, in the one sentence the
- * sidebar and the billing page both show. Never clamps: a limit lowered under what was already
- * consumed reads as the overage it is. */
+/** "12 of 50 executions this month" — what is left of the allowance, in one sentence. Never
+ * clamps: a limit lowered under what was already consumed reads as the overage it is. */
 export function executionMeterLabel(measure: UsageMeasure): string {
-  return `${measure.used} of ${measure.limit} executions this month`;
+  return `${executionMeterShortLabel(measure)} this month`;
+}
+
+/**
+ * The same count without its period, for the 240px sidebar item, which truncates anything longer.
+ * The sentence is still what the item is named and what its tooltip says, so nothing is lost to
+ * a screen reader or to a collapsed sidebar — only to a glance, which the count is enough for.
+ */
+export function executionMeterShortLabel(measure: UsageMeasure): string {
+  return `${measure.used} of ${measure.limit} executions`;
 }
 
 /** The organization's execution meter, read from the same usage snapshot the Usage page shows. */
@@ -58,9 +66,13 @@ export function ExecutionMeter() {
     <>
       <SidebarMenuItem>
         <SidebarMenuButton asChild tooltip={label}>
-          <Link to={`/o/${tenant.organization.slug}/settings/usage` as never} onClick={navigate}>
+          <Link
+            to={`/o/${tenant.organization.slug}/settings/usage` as never}
+            aria-label={label}
+            onClick={navigate}
+          >
             <Gauge aria-hidden="true" />
-            <span>{label}</span>
+            <span>{executionMeterShortLabel(meter)}</span>
           </Link>
         </SidebarMenuButton>
       </SidebarMenuItem>

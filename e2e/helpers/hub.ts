@@ -4258,6 +4258,13 @@ class HubUser {
     const plan = this.planSection();
     await expect(plan.getByText(FREE_PLAN_NAME, { exact: true })).toBeVisible();
     await expect(plan.getByText(executionMeterText(used))).toBeVisible();
+    // The plan's own figures come from the catalog's `included` facts, not from static copy.
+    await expect(plan.getByRole("listitem")).toHaveText([
+      `${FIXTURE_FREE_EXECUTIONS} agent runs a month`,
+      "1 seat",
+      "Managed GitHub, Slack, and Discord triggers",
+      "Daemons run on your machines",
+    ]);
     await expect(plan.getByRole("button", { name: "Upgrade", exact: true })).toBeVisible();
     await expect(plan.getByRole("button", { name: "Manage billing" })).toHaveCount(0);
     await expect(plan.getByRole("button", { name: "Change plan" })).toHaveCount(0);
@@ -4273,10 +4280,19 @@ class HubUser {
    * The sidebar's standing account of the allowance, and the way to more of it. Reloaded first:
    * the limits behind it are read once per page load, so a stamp that landed since (an upgrade, a
    * cancellation, a Stripe catalog edit) shows up on the next load rather than mid-session.
+   *
+   * The item is named by the whole sentence and shows the count; the count has to fit the 240px
+   * sidebar at whatever numbers the test uses, which the overflow check is here to prove.
    */
   async expectExecutionMeter(used: number, limit?: number): Promise<void> {
     await this.page.reload();
-    await expect(this.executionMeter(used, limit)).toBeVisible();
+    const meter = this.executionMeter(used, limit);
+    await expect(meter).toBeVisible();
+    await expect(meter).toHaveText(executionMeterCount(used, limit));
+    const clipped = await meter
+      .locator("span")
+      .evaluate((label) => label.scrollWidth - label.clientWidth);
+    expect(clipped, "the sidebar meter is truncated").toBeLessThanOrEqual(0);
     await expect(this.page.getByRole("link", { name: "Upgrade", exact: true })).toBeVisible();
   }
 
@@ -4303,6 +4319,11 @@ class HubUser {
     await expect(dialog).toContainText("per seat / month");
     await expect(dialog).toContainText("€0");
     await expect(dialog).toContainText("forever");
+    // Each column states its own figures, from the catalog rather than from copy.
+    await expect(dialog).toContainText(`${FIXTURE_FREE_EXECUTIONS} agent runs a month`);
+    await expect(dialog).toContainText("1 seat");
+    await expect(dialog).toContainText("Unlimited agent runs");
+    await expect(dialog).toContainText("Unlimited seats");
     await expect(
       dialog.getByRole("button", { name: `Current plan: ${FREE_PLAN_NAME}` }),
     ).toBeDisabled();
@@ -4354,7 +4375,7 @@ class HubUser {
     // above it is the label.
     await expect(plan.getByRole("listitem")).toHaveText([
       "Unlimited agent runs",
-      "Invite your team",
+      "Unlimited seats",
       "Paseo operates Hub",
       "Managed GitHub, Slack, and Discord triggers",
       "Daemons run on your machines",
@@ -5570,6 +5591,7 @@ interface PublicBillingPlanExpectation {
     model: "per_unit";
     unit: { key: "seat"; label: "seat" };
   };
+  included: { seats: number | null; executionsPerMonth: number | null };
   features: readonly { key: string; label: string; tooltip: string | null }[];
   prices: readonly {
     interval: "monthly" | "annual";
@@ -5595,15 +5617,14 @@ const FIXTURE_FREE_PLAN_EXPECTATION: PublicBillingPlanExpectation = {
       label: "seat",
     },
   },
+  included: { seats: 1, executionsPerMonth: 50 },
   features: [
-    { key: "monthly-executions", label: "A monthly allowance of agent runs", tooltip: null },
     {
       key: "managed-triggers",
       label: "Managed GitHub, Slack, and Discord triggers",
       tooltip: null,
     },
     { key: "daemon-location", label: "Daemons run on your machines", tooltip: null },
-    { key: "solo", label: "One seat", tooltip: null },
   ],
   prices: [
     {
@@ -5628,14 +5649,9 @@ const FIXTURE_BILLING_PLAN_EXPECTATIONS: readonly PublicBillingPlanExpectation[]
         label: "seat",
       },
     },
+    included: { seats: null, executionsPerMonth: null },
     features: [
-      { key: "unlimited-executions", label: "Unlimited agent runs", tooltip: null },
-      { key: "seats", label: "Invite your team", tooltip: null },
-      {
-        key: "hub-operation",
-        label: "Paseo operates Hub",
-        tooltip: null,
-      },
+      { key: "hub-operation", label: "Paseo operates Hub", tooltip: null },
       {
         key: "managed-triggers",
         label: "Managed GitHub, Slack, and Discord triggers",
@@ -5660,13 +5676,19 @@ const FIXTURE_BILLING_PLAN_EXPECTATIONS: readonly PublicBillingPlanExpectation[]
     ],
   },
 ];
+
 /** The two plans the fixture catalog — and the live Stripe catalog — publishes. */
 const FREE_PLAN_NAME = "Free";
 const HOSTED_PLAN_NAME = "Pro";
 
-/** The meter's sentence, from the Free product's authored allowance in the fixture catalog. */
+/** The meter's sentence — the sidebar item's accessible name, and the billing card's line. */
 function executionMeterText(used: number, limit: number = FIXTURE_FREE_EXECUTIONS): string {
-  return `${used} of ${limit} executions this month`;
+  return `${executionMeterCount(used, limit)} this month`;
+}
+
+/** What the sidebar item shows, which is the sentence without its period. */
+function executionMeterCount(used: number, limit: number = FIXTURE_FREE_EXECUTIONS): string {
+  return `${used} of ${limit} executions`;
 }
 
 /** `ent_executions_monthly_limit` on the fixture Free product. */

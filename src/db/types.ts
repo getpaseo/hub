@@ -948,7 +948,19 @@ export interface BillingPlanMarketingFeature {
   tooltip: string | null;
 }
 
+/**
+ * The plan's own numbers, as scalars. Derived once by the catalog sync from the validated
+ * entitlement template (`src/billing/catalog-sync.ts`) so the public catalog can state what a
+ * plan includes without the template document itself ever reaching the projection. null is
+ * unlimited, matching the catalog's convention everywhere else.
+ */
+export interface BillingPlanIncluded {
+  seats: number | null;
+  executionsPerMonth: number | null;
+}
+
 export interface BillingPlanMarketing {
+  included: BillingPlanIncluded;
   features: readonly BillingPlanMarketingFeature[];
   priceTooltips: Record<BillingPlanPriceInterval, string | null>;
 }

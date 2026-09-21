@@ -1,6 +1,24 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { executionMeterLabel, meteredExecutions } from "./execution-meter.js";
+import {
+  executionMeterLabel,
+  executionMeterShortLabel,
+  meteredExecutions,
+} from "./execution-meter.js";
+
+describe("the execution meter's short label", () => {
+  it("drops the period, which the full sentence beside it still carries", () => {
+    // The sidebar item is 240px wide and truncates; the count is what has to survive, so the
+    // visible label stops after it and the sentence stays as the accessible name.
+    assert.equal(executionMeterShortLabel({ used: 0, limit: 50 }), "0 of 50 executions");
+    assert.equal(executionMeterShortLabel({ used: 2000, limit: 2000 }), "2000 of 2000 executions");
+    assert.ok(
+      executionMeterLabel({ used: 0, limit: 50 }).startsWith(
+        executionMeterShortLabel({ used: 0, limit: 50 }),
+      ),
+    );
+  });
+});
 
 describe("the execution meter's copy", () => {
   it("counts what is used against the allowance, in one sentence", () => {

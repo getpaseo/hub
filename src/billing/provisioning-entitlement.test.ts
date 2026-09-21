@@ -44,7 +44,8 @@ function freePlan(overrides: Partial<SyncBillingPlanInput> = {}): SyncBillingPla
     },
     templateHash: "hash-free",
     marketing: {
-      features: [{ key: "feature-1", label: "1 seat", tooltip: null }],
+      included: { seats: 1, executionsPerMonth: 50 },
+      features: [{ key: "feature-1", label: "Daemons run on your machines", tooltip: null }],
       priceTooltips: { monthly: null, annual: null },
     },
     active: true,

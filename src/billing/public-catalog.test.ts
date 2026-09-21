@@ -10,6 +10,9 @@ import type { StripeBillingClient, StripeSubscriptionState } from "./stripe-bill
  * The public catalog boundary: every active mirrored plan, Free included. Free is the plan a
  * hosted organization lands on and stays on, so the plans endpoint, the billing overview, and the
  * picker all name it. A plan the sync deactivated is the one thing withheld.
+ *
+ * `included` is the other half of the boundary: the plan's own figures reach a customer, while
+ * the entitlement document they were flattened from does not.
  */
 
 const unusedCatalogSource: StripeCatalogSource = {
@@ -48,7 +51,8 @@ const freePlan: SyncBillingPlanInput = {
   },
   templateHash: "hash-free",
   marketing: {
-    features: [{ key: "feature-1", label: "One seat", tooltip: null }],
+    included: { seats: 1, executionsPerMonth: 50 },
+    features: [{ key: "feature-1", label: "Daemons run on your machines", tooltip: null }],
     priceTooltips: { monthly: null, annual: null },
   },
   active: true,
@@ -75,6 +79,7 @@ const hostedPlan: SyncBillingPlanInput = {
   },
   templateHash: "hash-hosted",
   marketing: {
+    included: { seats: null, executionsPerMonth: null },
     features: [
       {
         key: "feature-1",
@@ -115,7 +120,8 @@ describe("BillingRuntime.publicCatalog", () => {
         slug: "free",
         name: "Free",
         billing: { model: "per_unit", unit: { key: "seat", label: "seat" } },
-        features: [{ key: "feature-1", label: "One seat", tooltip: null }],
+        included: { seats: 1, executionsPerMonth: 50 },
+        features: [{ key: "feature-1", label: "Daemons run on your machines", tooltip: null }],
         prices: [
           {
             interval: "monthly",
@@ -139,6 +145,7 @@ describe("BillingRuntime.publicCatalog", () => {
             label: "seat",
           },
         },
+        included: { seats: null, executionsPerMonth: null },
         features: [
           {
             key: "feature-1",
@@ -176,14 +183,25 @@ describe("BillingRuntime.publicCatalog", () => {
     assert.deepEqual(await billingOver(database).publicCatalog(), []);
   });
 
-  it("never carries the entitlement template off the boundary", async () => {
+  it("carries the plan's numbers but never the template they came from", async () => {
     const database = createMemoryDatabase();
-    await database.syncBillingPlan(hostedPlan);
+    await database.syncBillingPlan(freePlan);
 
     const [plan] = await billingOver(database).publicCatalog();
 
     assert.notEqual(plan, undefined);
-    assert.deepEqual(Object.keys(plan!).sort(), ["billing", "features", "name", "prices", "slug"]);
+    assert.deepEqual(Object.keys(plan!).sort(), [
+      "billing",
+      "features",
+      "included",
+      "name",
+      "prices",
+      "slug",
+    ]);
+    // What a customer may know: the figures. Not the document enforcement reads.
+    assert.deepEqual(plan?.included, { seats: 1, executionsPerMonth: 50 });
+    assert.equal(Reflect.get(plan, "template"), undefined);
+    assert.equal(Reflect.get(plan, "meters"), undefined);
   });
 
   it("prices an interval only from its exact lookup key, so a mismatched price reads unavailable", async () => {

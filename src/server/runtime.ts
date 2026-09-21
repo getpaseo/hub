@@ -26,6 +26,7 @@ import type { DaemonProviderCatalog } from "../daemons/provider-catalog.js";
 export type {
   PublicBillingPlan,
   PublicBillingPlanFeature,
+  PublicBillingPlanIncluded,
   PublicBillingPlanPrice,
 } from "../billing/index.js";
 

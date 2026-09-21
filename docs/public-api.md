@@ -40,10 +40,10 @@ The self-hosted Scalar reference is served with a restrictive Content Security P
 ## Plan catalog
 
 `GET /api/billing/plans` is unauthenticated and read-only. It returns the plan catalog mirrored
-from Stripe (see docs/billing.md) as marketing copy and pricing only. It never includes the
-entitlement template (`granted` caps/flags/meters); that stays internal to `src/billing/` and
-`src/entitlements/`. This is the shape the marketing site (paseo.sh) fetches to render pricing;
-Hub itself has no pricing page.
+from Stripe (see docs/billing.md) as marketing copy, pricing, and the figures each plan includes.
+It never includes the entitlement document itself (`granted` caps/flags/meters); that stays
+internal to `src/billing/` and `src/entitlements/`. This is the shape the marketing site
+(paseo.sh) fetches to render pricing; Hub itself has no pricing page.
 
 It returns every plan the instance offers, the free one included, in catalog order. Today that is
 two:
@@ -61,10 +61,14 @@ two:
           "label": "seat"
         }
       },
+      "included": {
+        "seats": 1,
+        "executionsPerMonth": 50
+      },
       "features": [
         {
-          "key": "monthly-executions",
-          "label": "A monthly allowance of agent runs",
+          "key": "daemon-location",
+          "label": "Daemons run on your machines",
           "tooltip": null
         }
       ],
@@ -88,10 +92,14 @@ two:
           "label": "seat"
         }
       },
+      "included": {
+        "seats": null,
+        "executionsPerMonth": null
+      },
       "features": [
         {
-          "key": "unlimited-executions",
-          "label": "Unlimited agent runs",
+          "key": "hub-operation",
+          "label": "Paseo operates Hub",
           "tooltip": null
         }
       ],
@@ -109,10 +117,15 @@ two:
 }
 ```
 
+`included` is what the plan gives, as figures: `seats` is the seat cap and `executionsPerMonth`
+the monthly agent-run allowance, each `null` for unlimited. They are derived from the same
+validated template the instance enforces, so a plan's advertised numbers and its stamped limits
+cannot disagree. Render these rather than writing the numbers into your own copy; `features` is
+prose that no template can contradict.
+
 `unitAmount` is the amount per billing unit in the smallest currency unit (cents for `eur`),
 matching Stripe's own `Price` convention; a free plan prices at `0`. An interval is absent when the
 plan has no active price at that interval. `slug` is catalog identity and does not change with the
-displayed `name`. Feature copy describes what a plan includes without restating the numeric
-allowance behind it — the entitlement template never crosses this boundary. A self-hosted instance
-without `STRIPE_SECRET_KEY` 404s this route rather than serving an empty catalog — the billing
-boundary means the route is never registered on an unconfigured instance. See docs/billing.md.
+displayed `name`. A self-hosted instance without `STRIPE_SECRET_KEY` 404s this route rather than
+serving an empty catalog — the billing boundary means the route is never registered on an
+unconfigured instance. See docs/billing.md.

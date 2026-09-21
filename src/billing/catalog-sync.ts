@@ -152,6 +152,12 @@ function planInput(
     template: parsed.template,
     templateHash: hashTemplate(parsed.template),
     marketing: {
+      // The plan's numbers, flattened out of the validated template once, here. Everything
+      // downstream reads these scalars, so the template never has to leave the mirror.
+      included: {
+        seats: parsed.template.seats.max,
+        executionsPerMonth: parsed.template.meters["executions.monthly"].limit,
+      },
       features: presentation.features.map((feature) => ({ ...feature })),
       priceTooltips: { ...presentation.priceTooltips },
     },

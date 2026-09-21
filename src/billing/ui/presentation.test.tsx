@@ -13,6 +13,7 @@ import {
   intervalLabel,
   offeredIntervals,
   planAction,
+  planFeatures,
   planPrice,
   purchasablePlans,
   subscriptionSummary,
@@ -30,6 +31,7 @@ function plan(
   slug: string,
   name: string,
   prices: Partial<Record<BillingPlanPriceInterval, ReturnType<typeof euros>>>,
+  included: PublicBillingPlan["included"] = { seats: null, executionsPerMonth: null },
 ): PublicBillingPlan {
   return {
     slug,
@@ -41,6 +43,7 @@ function plan(
         label: "seat",
       },
     },
+    included,
     features: [],
     prices: Object.values(prices),
   };
@@ -103,6 +106,38 @@ it("disables a plan the catalog does not price at the selected interval", () => 
     name: "Not available: Paseo Hub",
     disabled: true,
   });
+});
+
+it("leads a plan's list with its own figures, then the words the plan author wrote", () => {
+  const free = plan("free", "Free", { monthly: euros(0) }, { seats: 1, executionsPerMonth: 50 });
+
+  assert.deepEqual(
+    planFeatures({
+      ...free,
+      features: [{ key: "daemon-location", label: "Daemons run on your machines", tooltip: null }],
+    }),
+    [
+      { key: "included-executions", label: "50 agent runs a month", tooltip: null },
+      { key: "included-seats", label: "1 seat", tooltip: null },
+      { key: "daemon-location", label: "Daemons run on your machines", tooltip: null },
+    ],
+  );
+});
+
+it("says unlimited where a plan has no cap, and counts seats in the plural", () => {
+  assert.deepEqual(planFeatures(plan("hosted", "Pro", { monthly: euros(1500) })).slice(0, 2), [
+    { key: "included-executions", label: "Unlimited agent runs", tooltip: null },
+    { key: "included-seats", label: "Unlimited seats", tooltip: null },
+  ]);
+  assert.deepEqual(
+    planFeatures(
+      plan("team", "Team", { monthly: euros(9900) }, { seats: 5, executionsPerMonth: 2000 }),
+    ).slice(0, 2),
+    [
+      { key: "included-executions", label: "2000 agent runs a month", tooltip: null },
+      { key: "included-seats", label: "5 seats", tooltip: null },
+    ],
+  );
 });
 
 it("counts Free as a plan on the page but not as something to buy", () => {

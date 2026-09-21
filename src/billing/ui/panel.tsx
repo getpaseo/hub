@@ -17,6 +17,7 @@ import { PlanDialog } from "./plan-dialog.js";
 import {
   FeatureList,
   NO_PLAN,
+  planFeatures,
   purchasablePlans,
   subscriptionSummary,
   type SubscriptionSummary,
@@ -89,9 +90,9 @@ function BillingContent({
       <Section title="Plan">
         <Card>
           <PlanIdentity summary={summary} action={action} onOpenPicker={openDialog} />
-          {/* This organization's own figure before the plan's generic list of what it includes. */}
-          <ExecutionAllowance />
           {currentPlan !== undefined && <PlanIncludes plan={currentPlan} />}
+          {/* What the plan gives, then how much of it is left. */}
+          <ExecutionAllowance />
           {canManage && subscription.manageable && <PortalBand slug={slug} />}
         </Card>
       </Section>
@@ -161,10 +162,9 @@ function PlanIdentity({
   );
 }
 
-/** What the organization is actually entitled to right now, in the plan author's own words. */
+/** What the organization is actually entitled to right now: the plan's figures, then its words. */
 function PlanIncludes({ plan }: { plan: PublicBillingPlan }) {
-  if (plan.features.length === 0) return null;
-  return <FeatureList features={plan.features} className="sm:grid-cols-2 sm:gap-x-6" />;
+  return <FeatureList features={planFeatures(plan)} className="sm:grid-cols-2 sm:gap-x-6" />;
 }
 
 /**

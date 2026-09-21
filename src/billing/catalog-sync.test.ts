@@ -79,10 +79,9 @@ const TEST_PLAN_PRESENTATIONS: BillingPlanPresentations = {
     features: [
       {
         key: "feature-1",
-        label: "5 seats",
-        tooltip: "Includes owners, members, and pending invitations.",
+        label: "Daemons run on your machines",
+        tooltip: "Connect any number of development machines.",
       },
-      { key: "feature-2", label: "2000 executions / month", tooltip: null },
     ],
     priceTooltips: { monthly: "Billed monthly for each seat.", annual: null },
   },
@@ -128,17 +127,15 @@ describe("syncBillingCatalog", () => {
     assert.equal(plan.slug, "solo");
     assert.equal(plan.name, "Solo");
     assert.equal(plan.active, true);
+    // The plan's figures are flattened out of the validated template once, here, so the public
+    // catalog can state them without ever reading the template.
     assert.deepEqual(plan.marketing, {
+      included: { seats: 5, executionsPerMonth: 2000 },
       features: [
         {
           key: "feature-1",
-          label: "5 seats",
-          tooltip: "Includes owners, members, and pending invitations.",
-        },
-        {
-          key: "feature-2",
-          label: "2000 executions / month",
-          tooltip: null,
+          label: "Daemons run on your machines",
+          tooltip: "Connect any number of development machines.",
         },
       ],
       priceTooltips: { monthly: "Billed monthly for each seat.", annual: null },
