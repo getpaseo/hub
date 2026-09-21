@@ -20,8 +20,6 @@ import { StatGrid, StatTile } from "../components/app/stat-tile.js";
 import { StatusPill, statusLabel, type StatusTone } from "../components/app/status-pill.js";
 import { TwoLine } from "../components/app/two-line.js";
 import { Button } from "../components/ui/button.js";
-import { connectionStatus, type ConnectionStatus } from "../connections/functions.js";
-import { CONNECTION_PROVIDERS } from "../connections/result-contract.js";
 import { daemonLoginCommand, GRANT_EXECUTE_COMMAND } from "../daemons/handoff.js";
 import { queryState } from "../projects/panel-state.js";
 import { useRouteTenant } from "../projects/context.js";
@@ -40,23 +38,11 @@ export function HomePanel() {
     queryKey: ["home", tenant.account.id, tenant.organization.id],
     queryFn: () => load({ data: scope }),
   });
-  const loadStatus = useServerFn(connectionStatus);
-  const status = useQuery({
-    queryKey: ["connection-status", tenant.account.id, tenant.organization.id],
-    queryFn: () => loadStatus({ data: scope }),
-  });
   const home = queryState<HomeSnapshot>(snapshot, "Overview unavailable", <HomeLoading />);
   if (!home.ok) return home.element;
-  const apps = queryState<ConnectionStatus>(status, "Connections unavailable", <HomeLoading />);
-  if (!apps.ok) return apps.element;
   const data = home.data;
   const base = `/o/${data.organization.slug}`;
-  const checklist = deriveChecklist({
-    appsConfigured: CONNECTION_PROVIDERS.some(
-      (provider) => apps.data[provider].status !== "notConfigured",
-    ),
-    snapshot: data,
-  });
+  const checklist = deriveChecklist(data);
   const unroutedCount = data.unrouted.reduce((total, { count }) => total + count, 0);
   return (
     <>
@@ -207,6 +193,10 @@ function GetStarted({
 }) {
   const [open, setOpen] = useState(!checklist.complete);
   const progress = `${String(checklist.completed)} of ${String(checklist.steps.length)} done`;
+  // The address the reader reached this Hub at is the address their daemon has to be told. Home
+  // is a route, so it can be rendered on the server, where there is no window: the command is
+  // simply absent from that render and arrives with the client.
+  const origin = typeof window === "undefined" ? undefined : window.location.origin;
   return (
     <Section>
       <Disclosure
@@ -221,7 +211,10 @@ function GetStarted({
       >
         <RecordList label="Get started">
           {checklist.steps.map((step) => (
-            <StepRow key={step.key} {...stepPresentation(step, snapshot, base, operator)} />
+            <StepRow
+              key={step.key}
+              {...stepPresentation(step, snapshot, { base, operator, origin })}
+            />
           ))}
         </RecordList>
       </Disclosure>
@@ -256,16 +249,23 @@ function StepRow({ title, hint, status, action, command }: StepPresentation) {
 const DONE = { label: "Done", tone: "success" } as const;
 const TO_DO = { label: "To do", tone: "neutral" } as const;
 
+/** What the page knows that the snapshot does not: where it is, who is reading, and from where. */
+interface StepContext {
+  base: string;
+  operator: boolean;
+  /** This Hub's address as the browser sees it; absent in a server render. */
+  origin: string | undefined;
+}
+
 function stepPresentation(
   step: ChecklistStep,
   snapshot: HomeSnapshot,
-  base: string,
-  operator: boolean,
+  context: StepContext,
 ): StepPresentation {
-  if (step.key === "app") return appStep(step.state, snapshot, base, operator);
-  if (step.key === "daemon") return daemonStep(step.state, snapshot);
-  if (step.key === "trigger") return triggerStep(step.state, snapshot, base);
-  return runStep(step.state, snapshot, base);
+  if (step.key === "app") return appStep(step.state, snapshot, context.base, context.operator);
+  if (step.key === "daemon") return daemonStep(step.state, snapshot, context.origin);
+  if (step.key === "trigger") return triggerStep(step.state, snapshot, context.base);
+  return runStep(step.state, snapshot, context.base);
 }
 
 function appStep(
@@ -315,6 +315,7 @@ function appStep(
 function daemonStep(
   state: Extract<ChecklistStep, { key: "daemon" }>["state"],
   snapshot: HomeSnapshot,
+  origin: string | undefined,
 ): StepPresentation {
   const title = "Connect a daemon";
   if (state === "done") {
@@ -338,7 +339,9 @@ function daemonStep(
     title,
     hint: "Hub runs your triggers on a machine you own. Run this where your code lives, and answer yes to running Hub automations:",
     status: TO_DO,
-    command: { label: "Login command", value: daemonLoginCommand(window.location.origin) },
+    ...(origin === undefined
+      ? {}
+      : { command: { label: "Login command", value: daemonLoginCommand(origin) } }),
   };
 }
 

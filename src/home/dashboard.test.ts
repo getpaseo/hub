@@ -14,16 +14,20 @@ import { OrganizationTriggerStore } from "../triggers/store.js";
 import { HomeDashboard } from "./dashboard.js";
 
 const NOW = new Date("2026-09-21T12:00:00.000Z");
+const APPS_CONFIGURED = () => true;
 const request = new Request("https://hub.test/o/acme/home");
 
 describe("home read model", () => {
   it("describes a fresh organization as nothing connected and nothing run", async () => {
     const database = memberDatabase({ slack: false });
-    const snapshot = await new HomeDashboard(database, accountAuth(), () => NOW).snapshot(
-      request,
-      "acme",
-    );
+    const snapshot = await new HomeDashboard(
+      database,
+      accountAuth(),
+      APPS_CONFIGURED,
+      () => NOW,
+    ).snapshot(request, "acme");
 
+    assert.equal(snapshot.appsConfigured, true);
     assert.deepEqual(snapshot.connections, []);
     assert.deepEqual(snapshot.daemons, []);
     assert.deepEqual(snapshot.triggers, []);
@@ -45,10 +49,12 @@ describe("home read model", () => {
     await recordRun(database, trigger.runtimeProjectId, "first", "succeeded", 120_000);
     await recordRun(database, trigger.runtimeProjectId, "second", "failed", 60_000);
 
-    const snapshot = await new HomeDashboard(database, accountAuth(), () => NOW).snapshot(
-      request,
-      "acme",
-    );
+    const snapshot = await new HomeDashboard(
+      database,
+      accountAuth(),
+      APPS_CONFIGURED,
+      () => NOW,
+    ).snapshot(request, "acme");
 
     assert.deepEqual(snapshot.connections, [
       { provider: "slack", slug: "acme-slack", label: "Acme Slack" },
@@ -100,12 +106,31 @@ describe("home read model", () => {
       "trigger_filters_rejected",
     );
 
-    const snapshot = await new HomeDashboard(database, accountAuth(), () => NOW).snapshot(
-      request,
-      "acme",
-    );
+    const snapshot = await new HomeDashboard(
+      database,
+      accountAuth(),
+      APPS_CONFIGURED,
+      () => NOW,
+    ).snapshot(request, "acme");
 
     assert.deepEqual(snapshot.unrouted, [{ provider: "slack", count: 2 }]);
+  });
+
+  it("asks the provider registrations whether any app is configured, with the organization's bindings", async () => {
+    const database = memberDatabase();
+    const seen: unknown[] = [];
+    const snapshot = await new HomeDashboard(
+      database,
+      accountAuth(),
+      (bindings) => {
+        seen.push(bindings.slack.map(({ slug }) => slug));
+        return false;
+      },
+      () => NOW,
+    ).snapshot(request, "acme");
+
+    assert.equal(snapshot.appsConfigured, false);
+    assert.deepEqual(seen, [["acme-slack"]]);
   });
 });
 

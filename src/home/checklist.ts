@@ -25,30 +25,24 @@ export interface Checklist {
   complete: boolean;
 }
 
-export interface ChecklistFacts {
-  /** Whether any provider app (GitHub, Slack, Discord, Linear) is set up on this Hub. */
-  appsConfigured: boolean;
-  snapshot: Pick<HomeSnapshot, "connections" | "daemons" | "triggers" | "runs">;
-}
+export type ChecklistFacts = Pick<
+  HomeSnapshot,
+  "appsConfigured" | "connections" | "daemons" | "triggers" | "runs"
+>;
 
-function appState(
-  appsConfigured: boolean,
-  snapshot: ChecklistFacts["snapshot"],
-): Extract<ChecklistStep, { key: "app" }>["state"] {
+function appState(snapshot: ChecklistFacts): Extract<ChecklistStep, { key: "app" }>["state"] {
   if (snapshot.connections.length > 0) return "done";
-  return appsConfigured ? "pending" : "setup";
+  return snapshot.appsConfigured ? "pending" : "setup";
 }
 
-function daemonState(
-  snapshot: ChecklistFacts["snapshot"],
-): Extract<ChecklistStep, { key: "daemon" }>["state"] {
+function daemonState(snapshot: ChecklistFacts): Extract<ChecklistStep, { key: "daemon" }>["state"] {
   if (snapshot.daemons.some((daemon) => daemon.canExecute)) return "done";
   return snapshot.daemons.length > 0 ? "cannotRun" : "pending";
 }
 
-export function deriveChecklist({ appsConfigured, snapshot }: ChecklistFacts): Checklist {
+export function deriveChecklist(snapshot: ChecklistFacts): Checklist {
   const steps: ChecklistStep[] = [
-    { key: "app", state: appState(appsConfigured, snapshot) },
+    { key: "app", state: appState(snapshot) },
     { key: "daemon", state: daemonState(snapshot) },
     { key: "trigger", state: snapshot.triggers.length > 0 ? "done" : "pending" },
     { key: "run", state: snapshot.runs.length > 0 ? "done" : "pending" },

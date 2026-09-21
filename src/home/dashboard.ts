@@ -1,5 +1,10 @@
 import type { AuthServer } from "../auth/server.js";
-import type { Database, OrganizationRunRecord, UnroutedProviderEventCount } from "../db/types.js";
+import type {
+  Database,
+  OrganizationConnectionUsage,
+  OrganizationRunRecord,
+  UnroutedProviderEventCount,
+} from "../db/types.js";
 import { resolveRouteTenant } from "../projects/access.js";
 import { projectTriggerForm } from "../triggers/configuration/editor.js";
 
@@ -9,6 +14,8 @@ const RUNS_SHOWN = 50;
 
 export interface HomeSnapshot {
   organization: { id: string; name: string; slug: string };
+  /** Whether any provider app (GitHub, Slack, Discord, Linear) is set up on this Hub at all. */
+  appsConfigured: boolean;
   connections: readonly {
     provider: "github" | "slack" | "discord" | "linear";
     slug: string;
@@ -36,6 +43,11 @@ export class HomeDashboard {
   constructor(
     private readonly database: Database,
     private readonly auth: AuthServer,
+    /**
+     * Whether any provider app is configured, answered by the same registrations the
+     * connections status reads; a self-hosted Hub with none has nothing to connect yet.
+     */
+    private readonly providerAppsConfigured: (bindings: OrganizationConnectionUsage) => boolean,
     private readonly now: () => Date = () => new Date(),
   ) {}
 
@@ -59,6 +71,7 @@ export class HomeDashboard {
     ]);
     return {
       organization: tenant.organization,
+      appsConfigured: this.providerAppsConfigured(connections),
       connections: [
         ...connections.github.map(({ slug, accountLogin }) => ({
           provider: "github" as const,
