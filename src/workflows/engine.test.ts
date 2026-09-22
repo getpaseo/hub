@@ -82,6 +82,10 @@ describe("durable multi-step workflow engine", () => {
         );
         assert.ok(execution);
         assert.equal(
+          intent.title,
+          intent.triggerName === "first" ? `Intake · ${execution.id}` : undefined,
+        );
+        assert.equal(
           execution.launchIntent?.environment.worktree?.mode === "branch-off"
             ? execution.launchIntent.environment.worktree.newBranch
             : undefined,
@@ -2011,12 +2015,13 @@ function terminalRecoveryConfiguration(): Record<string, unknown> {
 }
 
 function executionWorktreeConfiguration(): Record<string, unknown> {
-  const step = (id: string) => ({
+  const step = (id: string, title?: string) => ({
     id,
     environment: "runner",
     max_runtime: "10m",
     idle_timeout: "1m",
     agent: { provider: "codex" },
+    ...(title === undefined ? {} : { title }),
     prompt: [{ text: "Do the work." }],
   });
   return {
@@ -2033,7 +2038,9 @@ function executionWorktreeConfiguration(): Record<string, unknown> {
       name,
       on: "manual.run",
       max_runtime: "1h",
-      steps: [step(`work-${name}`)],
+      steps: [
+        step(`work-${name}`, name === "first" ? "Intake · ${{ paseo.execution.id }}" : undefined),
+      ],
     })),
   };
 }

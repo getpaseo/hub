@@ -68,6 +68,7 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
             ? {}
             : { startup_timeout: authored.run.startup_timeout }),
           agent,
+          ...(authored.run.title === undefined ? {} : { title: authored.run.title }),
           prompt: [{ text: authored.run.prompt }],
           ...(authored.run.env === undefined ? {} : { env: authored.run.env }),
           ...(authored.run.github === undefined ? {} : { github: authored.run.github }),

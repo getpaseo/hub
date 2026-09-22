@@ -91,6 +91,7 @@ export class ActiveDaemonRegistry {
       agents: new DaemonAgents(
         (frame) => socket.send(frame),
         () => this.clock.nowDate(),
+        (error, operation) => this.report(error, operation, daemon.id),
       ),
       generation: ++this.generation,
       socket,

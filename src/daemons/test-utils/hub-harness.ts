@@ -127,6 +127,12 @@ const ExecutionSessionRequestSchema = z.object({
       requestId: z.string(),
       agentId: z.string(),
     }),
+    z.object({
+      type: z.literal("workspace.title.set.request"),
+      requestId: z.string(),
+      workspaceId: z.string(),
+      title: z.string().nullable(),
+    }),
     z.object({ type: z.literal("fetch_agents_request"), requestId: z.string() }),
     z.object({ type: z.literal("agent.timeline.set_subscription.request"), requestId: z.string() }),
     z.object({
@@ -810,6 +816,8 @@ export class HubHarness {
     }
     return {
       provider: agent["provider"],
+      title: agent["title"],
+      workspaceTitle: agent["workspaceTitle"],
       modeId: agent["modeId"],
       cwd: agent["cwd"],
       prompt: agent["prompt"],
@@ -2599,19 +2607,11 @@ class TestDaemon {
       return;
     }
     if (request.type === "fetch_agent_request") {
-      const agent = this.agents.get(request.agentId);
-      this.send({
-        type: "fetch_agent_response",
-        payload: {
-          requestId: request.requestId,
-          agent: agent
-            ? {
-                ...agentSnapshot(request.agentId, readAgentStatus(agent["status"])),
-                workspaceId: `workspace-${request.agentId}`,
-              }
-            : null,
-        },
-      });
+      this.fetchAgent(request);
+      return;
+    }
+    if (request.type === "workspace.title.set.request") {
+      this.titleWorkspace(request);
       return;
     }
     if (
@@ -2671,6 +2671,41 @@ class TestDaemon {
     this.resolveSpawn();
     if (this.holdAck) this.pendingCreate = pending;
     else this.acknowledge(pending);
+  }
+
+  private fetchAgent(request: { requestId: string; agentId: string }): void {
+    const agent = this.agents.get(request.agentId);
+    this.send({
+      type: "fetch_agent_response",
+      payload: {
+        requestId: request.requestId,
+        agent: agent
+          ? {
+              ...agentSnapshot(request.agentId, readAgentStatus(agent["status"])),
+              workspaceId: `workspace-${request.agentId}`,
+            }
+          : null,
+      },
+    });
+  }
+
+  private titleWorkspace(request: {
+    requestId: string;
+    workspaceId: string;
+    title: string | null;
+  }): void {
+    const agent = this.agents.get(request.workspaceId.slice("workspace-".length));
+    if (agent) agent["workspaceTitle"] = request.title;
+    this.send({
+      type: "workspace.title.set.response",
+      payload: {
+        requestId: request.requestId,
+        workspaceId: request.workspaceId,
+        accepted: true,
+        title: request.title,
+        error: null,
+      },
+    });
   }
 
   private acknowledge(pending: { requestId: string; executionId: string }): void {

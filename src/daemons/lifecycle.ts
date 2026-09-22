@@ -26,6 +26,7 @@ import {
   type LaunchMachineIntent,
 } from "../dispatcher/launch-machine-intent.js";
 import { logger as defaultLogger } from "../logger.js";
+import { MAX_EXPLICIT_AGENT_TITLE_CHARS } from "@getpaseo/protocol/agent-title-limits";
 import { reportFailure } from "../failures/index.js";
 import type { TriggerProvider } from "../triggers/index.js";
 import type { ExecutionAuthority } from "../execution-authority/index.js";
@@ -1934,6 +1935,8 @@ async function buildCreateAgentOptions(
 ): Promise<DaemonCreateAgentOptions> {
   return {
     provider: intent.agent.provider,
+    title: EXECUTION_AGENT_TITLE,
+    workspaceTitle: executionWorkspaceTitle(intent, hubExecutionEnv.executionId),
     ...(intent.agent.mode === undefined ? {} : { mode: intent.agent.mode }),
     ...(intent.agent.model === undefined ? {} : { model: intent.agent.model }),
     ...(intent.agent.thinkingOptionId === undefined
@@ -1959,6 +1962,25 @@ async function buildCreateAgentOptions(
           worktree: intent.environment.worktree,
         }),
   };
+}
+
+/**
+ * Paseo shows the agent title beside the workspace title, so the agent title is static and the
+ * workspace carries the identity: an authored `run.title` when present, otherwise the trigger
+ * name (which already carries the platform or the bot's job) and the execution prefix that tells
+ * runs of one trigger apart. A continuation session keeps the titles from the execution that
+ * created it. The daemon rejects titles over its limit, so clamp instead of failing.
+ */
+export const EXECUTION_AGENT_TITLE = "Hub agent";
+
+export function executionWorkspaceTitle(
+  intent: Pick<LaunchMachineIntent, "title" | "triggerName">,
+  executionId: string,
+): string {
+  const authored = intent.title?.trim() ?? "";
+  const title =
+    authored.length > 0 ? authored : `Hub · ${intent.triggerName} · ${executionId.slice(0, 8)}`;
+  return title.slice(0, MAX_EXPLICIT_AGENT_TITLE_CHARS).trim();
 }
 
 function buildAgentEnv(

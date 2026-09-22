@@ -18,6 +18,13 @@ function reportsMissingEvent(error: unknown): boolean {
   );
 }
 
+function reportsEmptyTitle(error: unknown): boolean {
+  return (
+    error instanceof TriggerDocumentError &&
+    error.issues.some(({ path }) => path.join(".") === "run.title")
+  );
+}
+
 const trigger = `
 name: engineering-requests
 enabled: true
@@ -74,6 +81,27 @@ describe("self-contained trigger documents", () => {
     assert.equal(
       parseTriggerDocument(serializeTriggerDocument(compiled.authored)).run.startup_timeout,
       "3m",
+    );
+  });
+
+  it("compiles an authored title template and preserves it through canonical YAML", () => {
+    const title = "Intake · ${{ paseo.execution.id }}";
+    const yaml = trigger.replace("  max_runtime: 90m", `  max_runtime: 90m\n  title: "${title}"`);
+    const compiled = compileTriggerDocument(yaml);
+    assert.equal(compiled.events[0]?.steps[0]?.title, title);
+    assert.equal(
+      parseTriggerDocument(serializeTriggerDocument(compiled.authored)).run.title,
+      title,
+    );
+  });
+
+  it("rejects an empty title at the document boundary", () => {
+    assert.throws(
+      () =>
+        parseTriggerDocument(
+          trigger.replace("  max_runtime: 90m", '  max_runtime: 90m\n  title: ""'),
+        ),
+      reportsEmptyTitle,
     );
   });
 

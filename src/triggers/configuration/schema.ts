@@ -99,6 +99,8 @@ export const TriggerRunSchema = z
     target: TriggerTargetSchema,
     agent: TriggerAgentSelectionSchema,
     continuation: ContinuationSchema.default({ mode: "conversation" }),
+    /** Workspace title template: literal text plus `${{ paseo.execution.id }}`. */
+    title: z.string().min(1).optional(),
     prompt: z.string().min(1),
     max_runtime: z.string().min(1).default("2h"),
     idle_timeout: z.string().min(1).default("10m"),

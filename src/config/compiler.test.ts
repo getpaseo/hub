@@ -120,6 +120,37 @@ describe("workflow compiler", () => {
     );
   });
 
+  it("accepts the execution id in a step title and stores the template", () => {
+    const authored = configuration();
+    Reflect.set(authored.triggers[0]!.steps[0]!, "title", "Intake · ${{ paseo.execution.id }}");
+    const compiled = compileHubConfig(authored);
+    assert.equal(compiled.triggers[0]?.steps[0]?.title, "Intake · ${{ paseo.execution.id }}");
+    assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+  });
+
+  it.each(["paseo.prompt", "paseo.context", "paseo.inputs.repo", "values.branch"])(
+    "rejects %s in a step title with field provenance",
+    (expression) => {
+      const authored = configuration();
+      Reflect.set(authored.triggers[0]!.steps[0]!, "title", "Intake ${{ " + expression + " }}");
+      assert.throws(
+        () => compileHubConfig(authored),
+        (error) => {
+          assert.ok(error instanceof Error);
+          assert.deepEqual(Reflect.get(error, "path"), [
+            "triggers",
+            "run",
+            "steps",
+            "work",
+            "title",
+          ]);
+          assert.match(error.message, /supports only paseo\.execution\.id/u);
+          return true;
+        },
+      );
+    },
+  );
+
   it("preserves opaque provider options and leaves an omitted mode omitted", () => {
     const sourceOptions = {
       sandbox_workspace_write: {

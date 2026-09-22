@@ -948,6 +948,9 @@ function buildStepIntent(
       },
       ...(step.env === undefined ? {} : { env: step.env }),
       ...(step.github === undefined ? {} : { github: step.github }),
+      ...(step.title === undefined
+        ? {}
+        : { title: renderExecutionTemplate(step.title, executionId) }),
       prompt: step.prompt
         .map((block) =>
           renderExpressionTemplate(block.kind === "text" ? block.value : block.content, context),
