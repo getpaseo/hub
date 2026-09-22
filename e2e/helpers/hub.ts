@@ -5418,7 +5418,10 @@ class ContractDaemon {
     const value: unknown = JSON.parse(readSocketData(data));
     if (this.acceptHello(value) || this.acceptProviderRequest(value)) return;
     const envelope = ExecutionRequestSchema.safeParse(value);
-    if (!envelope.success) return;
+    if (!envelope.success) {
+      this.rejectUnknownRequest(value);
+      return;
+    }
     const request = envelope.data.message;
     if (request.type === "create_agent_request") {
       const capability = request.config.mcpServers["hub"];
@@ -5451,11 +5454,31 @@ class ContractDaemon {
       this.executionCreateEvents.delete(executionId);
       return;
     }
-    const responseType =
-      request.type === "agent.timeline.set_subscription.request"
-        ? "agent.timeline.set_subscription.response"
-        : request.type.replace("_request", "_response");
-    this.sendAgentResponse(responseType, { requestId: request.requestId });
+    // Request names end in either `_request` or `.request`; the response keeps the separator.
+    this.sendAgentResponse(request.type.replace(/([._])request$/, "$1response"), {
+      requestId: request.requestId,
+    });
+  }
+
+  /**
+   * A real daemon answers a request it cannot parse with an rpc_error carrying the request id, so
+   * Hub fails fast. Without this the fake stays silent and Hub waits out its request timeout, which
+   * reads as an execution stuck in spawning rather than a request this daemon does not serve.
+   */
+  private rejectUnknownRequest(value: unknown): void {
+    const unknown = z
+      .object({
+        type: z.literal("session"),
+        message: z.object({ type: z.string().regex(/[._]request$/), requestId: z.string() }),
+      })
+      .safeParse(value);
+    if (!unknown.success) return;
+    this.sendAgentResponse("rpc_error", {
+      requestId: unknown.data.message.requestId,
+      requestType: unknown.data.message.type,
+      error: `Unknown request ${unknown.data.message.type}`,
+      code: "unknown_schema",
+    });
   }
 
   private agentSnapshot(agentId: string) {
@@ -5862,6 +5885,7 @@ const ExecutionRequestSchema = z.object({
         "agent.timeline.set_subscription.request",
         "cancel_agent_request",
         "archive_workspace_request",
+        "workspace.title.set.request",
       ]),
       requestId: z.string(),
     }),
