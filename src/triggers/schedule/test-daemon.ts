@@ -27,4 +27,7 @@ export class ScheduleTestDaemon implements DaemonConnection {
     throw new Error("Provider catalog is not used by this test daemon.");
   }
   async refreshProviderSnapshot() {}
+  async validateAgentConfiguration(): Promise<{ valid: true }> {
+    return { valid: true };
+  }
 }

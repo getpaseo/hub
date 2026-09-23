@@ -30,6 +30,7 @@ describe("daemon provider catalog", () => {
       refreshProviderSnapshot: async ({ cwd }) => {
         calls.push(`refresh:${cwd}`);
       },
+      validateAgentConfiguration: async () => ({ valid: true }),
       getProviderSnapshot: async ({ cwd }) => {
         calls.push(`get:${cwd}`);
         return {

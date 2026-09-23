@@ -1,5 +1,5 @@
 import type { WorktreeTarget } from "../config/index.js";
-import type { JsonValue } from "../config/compiler.js";
+import type { CompiledAgent, JsonValue } from "../config/compiler.js";
 import type {
   HubExecutionAgentSnapshot,
   HubExecutionAgentStreamEvent,
@@ -64,10 +64,21 @@ export interface DaemonAgentUpdateEvent {
 
 export type DaemonEvent = DaemonAgentStreamDaemonEvent | DaemonAgentUpdateEvent;
 
+export interface AgentValidationIssue {
+  path: readonly (string | number)[];
+  message: string;
+}
+
+export type AgentValidationVerdict =
+  | { valid: true }
+  | { valid: false; issues: readonly AgentValidationIssue[] };
+
 export interface DaemonConnection {
   agents: import("./agents/index.js").AgentConnection;
   getProviderSnapshot(options: { cwd?: string }): Promise<HubProviderSnapshot>;
   refreshProviderSnapshot(options: { cwd?: string; providers?: string[] }): Promise<void>;
+  /** The daemon's own answer about whether it can run this agent as configured. */
+  validateAgentConfiguration(agent: CompiledAgent): Promise<AgentValidationVerdict>;
 }
 
 /** A durable daemon request may have succeeded before its acknowledgement was lost. */

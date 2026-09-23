@@ -9,5 +9,5 @@ export const Route = createFileRoute("/_shell/")({
 
 function DashboardLanding() {
   const account = useActiveAccount();
-  return <Navigate to={`/o/${account.organization.slug}/triggers` as never} replace />;
+  return <Navigate to={`/o/${account.organization.slug}/home` as never} replace />;
 }

@@ -13,6 +13,7 @@ import {
 } from "../../db/runtime/index.js";
 import { createDatabase } from "../../db/pg.js";
 import { OrganizationTriggerStore } from "../store.js";
+import { acceptingAgentValidator } from "../../test-utils/agent-validator.js";
 import { DurableWorkflowEngine } from "../../workflows/engine.js";
 import { createUnlimitedEntitlementsService } from "../../entitlements/test-utils.js";
 import { scheduleYaml } from "./test-fixture.js";
@@ -213,7 +214,7 @@ it("Hub runtime dispatches through the peer daemon port and completes ordinary s
     await Promise.all([first.processWorkflowOutbox(), second.processWorkflowOutbox()]);
     expect(connection.launches).toHaveLength(1);
     expect(connection.launches[0]).toMatchObject({
-      provider: "test",
+      provider: "codex",
       mode: "full-access",
       thinkingOptionId: "low",
       cwd: "/workspace",
@@ -276,6 +277,8 @@ it("validates, installs, exports and edits scheduled YAML through the existing p
   const application = createHubApplication({
     database: fixture.database,
     entitlements: createUnlimitedEntitlementsService(),
+    // Installing asks the daemon about the agent, so the fixture daemon answers for it.
+    daemonConnectionForId: (id) => (id === fixture.daemonId ? new ScheduleTestDaemon() : undefined),
     publicApi: {
       status: "enabled",
       authenticator: {
@@ -363,7 +366,7 @@ async function setup(kind: "embedded" | "postgres") {
       return database;
     },
     get store() {
-      return new OrganizationTriggerStore(database, "schedule-org");
+      return new OrganizationTriggerStore(database, "schedule-org", acceptingAgentValidator());
     },
     daemonId,
     connectionString: connectionString?.href,

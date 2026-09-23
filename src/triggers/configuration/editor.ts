@@ -244,6 +244,12 @@ function formEventDefinition(value: TriggerFormValue): TriggerDocument["on"][str
   };
 }
 
+function workingDirectoryErrors(value: TriggerFormValue): TriggerFieldErrors {
+  const cwd = value.cwd.trim();
+  if (cwd.length === 0) return { cwd: "Working directory is required." };
+  return cwd.startsWith("/") ? {} : { cwd: "Working directory must be an absolute path." };
+}
+
 function recurrenceErrors(value: TriggerFormValue): TriggerFieldErrors {
   if (value.event !== "schedule.tick") return {};
   const parsed = RecurrenceSchema.safeParse(value.recurrence ?? DEFAULT_RECURRENCE);
@@ -313,9 +319,7 @@ export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
   }
   Object.assign(errors, recurrenceErrors(value));
   if (value.daemon.trim().length === 0) errors.daemon = "Daemon is required.";
-  if (!value.cwd.trim().startsWith("/")) {
-    errors.cwd = "Working directory must be an absolute path.";
-  }
+  Object.assign(errors, workingDirectoryErrors(value));
   if (value.maxRuntime.trim().length === 0) errors.maxRuntime = "Maximum runtime is required.";
   if (value.idleTimeout.trim().length === 0) errors.idleTimeout = "Idle timeout is required.";
   const agent = refused(() => splitAgentId(value.agent));

@@ -9,6 +9,7 @@ import {
 } from "./attachments/capabilities.js";
 import {
   ProjectConfigurationStore,
+  type DaemonAgentConfigurationValidator,
   validateHubBundleForOrganization,
 } from "./configuration/store.js";
 import type {
@@ -26,6 +27,7 @@ import {
   revokeDaemon,
   updateDaemonPermissions,
   type DaemonClock,
+  type DaemonConnection,
   type DaemonModule,
 } from "./daemons/index.js";
 import { createDispatcherWithEngine } from "./dispatcher/index.js";
@@ -75,6 +77,8 @@ export interface HubRuntimeOptions {
 export interface HubRuntime {
   daemonModule: DaemonModule | null;
   connectionForDaemon(daemonId: string): import("./daemons/index.js").DaemonConnection | undefined;
+  /** The daemons' own answer about an agent configuration; null without a database. */
+  agentValidator: DaemonAgentConfigurationValidator | null;
   resourceCounts(): {
     executionSubscriptions: number;
   };
@@ -121,6 +125,9 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
     options.database === null
       ? null
       : new ActiveDaemonRegistry(options.database, options.daemonClock);
+  const connectionForDaemon = (daemonId: string) =>
+    options.daemonConnectionForId?.(daemonId) ?? daemons?.connection(daemonId);
+  const agentValidator = createAgentValidator(daemons, connectionForDaemon);
   const storeForProject = (projectId: string) => {
     if (options.database === null) throw new DatabaseUnavailableError();
     return new ProjectConfigurationStore(options.database, projectId, daemons ?? undefined);
@@ -230,8 +237,8 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
 
   const hub: HubRuntime = {
     daemonModule,
-    connectionForDaemon: (daemonId) =>
-      options.daemonConnectionForId?.(daemonId) ?? daemons?.connection(daemonId),
+    connectionForDaemon,
+    agentValidator,
     resourceCounts: () => ({
       executionSubscriptions: daemonModule?.lifecycle.activeExecutionObservationCount() ?? 0,
     }),
@@ -266,7 +273,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
     options,
     manualSource,
     storeForProject,
-    daemons,
+    agentValidator,
   );
   const publicApi = createPublicApi(options.publicApi, publicOperations);
   const operations: HubOperations = {
@@ -316,19 +323,37 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
   return { hub, operations, publicApi, configurationForProject: storeForProject };
 }
 
+/**
+ * Every question Hub asks a daemon goes through its connection, so a test that stands in a
+ * connection stands in for agent validation too.
+ */
+function createAgentValidator(
+  daemons: ActiveDaemonRegistry | null,
+  connectionForDaemon: (daemonId: string) => DaemonConnection | undefined,
+): DaemonAgentConfigurationValidator | null {
+  if (daemons === null) return null;
+  return {
+    validateAgentConfiguration: (daemonId, agent) =>
+      connectionForDaemon(daemonId)?.validateAgentConfiguration(agent) ??
+      Promise.reject(new Error("daemon_not_connected")),
+  };
+}
+
 function createAppPublicOperations(
   options: HubRuntimeOptions,
   manualSource: ReturnType<typeof createManualTriggerSource> | undefined,
   configurationForProject: (projectId: string) => ProjectConfigurationStore,
-  daemonAgentValidator: ActiveDaemonRegistry | null,
+  daemonAgentValidator: DaemonAgentConfigurationValidator | null,
 ) {
-  if (options.database === null || manualSource === undefined) return null;
+  if (options.database === null || manualSource === undefined || daemonAgentValidator === null) {
+    return null;
+  }
   const database = options.database;
   return createPublicOperations(
     createDatabasePublicOperationRepository(database),
     {
       triggerForOrganization: (organizationId) => {
-        const store = new OrganizationTriggerStore(database, organizationId);
+        const store = new OrganizationTriggerStore(database, organizationId, daemonAgentValidator);
         return {
           async list() {
             return Promise.all(

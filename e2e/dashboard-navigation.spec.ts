@@ -18,6 +18,7 @@ test("keeps every daily surface at organization scope", async ({ hub, page }) =>
   const organizationNav = page.getByRole("navigation", { name: "Organization", exact: true });
   const organizationSwitcher = page.getByRole("button", { name: "Organization" });
   await expect(organizationNav.getByRole("link")).toHaveText([
+    "Home",
     "Triggers",
     "Activity",
     "Daemons",
@@ -27,7 +28,7 @@ test("keeps every daily surface at organization scope", async ({ hub, page }) =>
   await expect(page.getByRole("navigation", { name: "Project", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Project", exact: true })).toHaveCount(0);
   await expect(organizationSwitcher).toContainText("Acme");
-  await expect(page.getByRole("heading", { name: "Triggers", level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/01-organization-scope.png`, fullPage: true });
 });
 
@@ -110,7 +111,7 @@ test.describe("instance scope", () => {
 
     await test.step("the back row names the organization it returns to", async () => {
       await app.navigation.leaveInstance();
-      await expect(page.getByRole("heading", { name: "Triggers" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Home" })).toBeVisible();
       await expect(instanceNav).toHaveCount(0);
       await expect(
         page.getByRole("navigation", { name: "Organization", exact: true }),

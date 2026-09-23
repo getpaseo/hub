@@ -23,6 +23,7 @@ import {
   toProjectRecord,
   toProviderEventReceiptSummary,
   toProviderEventReceiptRecord,
+  launchedAgent,
 } from "./mappers.js";
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
 import type { DatabaseRuntime, QueryHandle, QueryRow } from "./runtime/index.js";
@@ -45,6 +46,8 @@ import type {
   TransitionAgentExecutionResult,
   ProviderEventReceiptRecord,
   ProviderEventReceiptSummary,
+  OrganizationRunRecord,
+  UnroutedProviderEventCount,
   EnrollDaemonInput,
   EnrollmentTokenRecord,
   DaemonRecord,
@@ -4123,6 +4126,63 @@ class PgDatabase implements Database {
     return rows.rows.map(toProviderEventReceiptSummary);
   }
 
+  async listOrganizationRunsSince(
+    organizationId: string,
+    since: Date,
+    limit: number,
+  ): Promise<OrganizationRunRecord[]> {
+    const rows = await query<OrganizationRunRow>(
+      this.pool,
+      `select runs.id, runs.configured_trigger_name, runs.status,
+              receipts.provider, receipts.source, receipts.received_at,
+              (select executions.launch_intent -> 'agent'
+                 from workflow_step_runs steps
+                 join agent_executions executions on executions.id = steps.agent_execution_id
+                where steps.trigger_run_id = runs.id
+                order by steps.ordinal
+                limit 1) as agent
+       from trigger_runs runs
+       join provider_event_receipts receipts
+         on receipts.id = runs.provider_event_receipt_id
+        and receipts.organization_id = runs.organization_id
+       where runs.organization_id = $1 and runs.created_at >= $2
+       order by runs.created_at desc, runs.id desc
+       limit $3`,
+      [organizationId, since, limit],
+    );
+    return rows.rows.map((row) => ({
+      id: row.id,
+      triggerName: row.configured_trigger_name,
+      provider: row.provider,
+      source: row.source,
+      status: row.status,
+      receivedAt: row.received_at,
+      agent: launchedAgent(row.agent),
+    }));
+  }
+
+  async countUnroutedProviderEventsSince(
+    organizationId: string,
+    since: Date,
+  ): Promise<UnroutedProviderEventCount[]> {
+    const rows = await query<{ provider: ProviderEventReceiptRecord["provider"]; count: number }>(
+      this.pool,
+      `select receipts.provider, count(*)::int as count
+       from provider_event_receipts receipts
+       where receipts.organization_id = $1
+         and receipts.received_at >= $2
+         and receipts.dropped_reason in ('no_project_route', 'no_trigger_for_source')
+         and not exists (
+           select 1 from trigger_runs runs
+           where runs.provider_event_receipt_id = receipts.id
+         )
+       group by receipts.provider
+       order by count desc, receipts.provider`,
+      [organizationId, since],
+    );
+    return rows.rows.map((row) => ({ provider: row.provider, count: row.count }));
+  }
+
   async isOrganizationMember(userId: string, organizationId: string): Promise<boolean> {
     const rows = await query(
       this.pool,
@@ -4479,6 +4539,16 @@ interface ProjectActivityRunRow extends TriggerRunRow {
   received_at: Date;
   dropped_reason: string | null;
   accepted_routes: unknown;
+}
+
+interface OrganizationRunRow extends QueryRow {
+  id: string;
+  configured_trigger_name: string;
+  status: TriggerRunRecord["status"];
+  provider: ProviderEventReceiptRecord["provider"];
+  source: string;
+  received_at: Date;
+  agent: unknown;
 }
 
 interface ProjectActivityRunListRow extends TriggerRunRow {

@@ -22,6 +22,7 @@ test("requires daemon setup before trigger configuration", async ({ hub, page })
   );
   await page.screenshot({ path: `${SHOTS}/00-no-daemon-callout.png`, fullPage: true });
   await triggers.startNew();
+  await triggers.expectWaitingForDaemon();
   await triggers.exploreEventQualifiers();
   await expect(
     page.getByText("No daemon is connected to this organization yet", { exact: false }),
@@ -52,14 +53,16 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
 
   await test.step("the common setup stays in one small form", async () => {
     await triggers.startNew();
+    await triggers.expectDaemonPreselected(daemon);
     await page.screenshot({ path: `${SHOTS}/01b-daemon-required.png`, fullPage: true });
+    await triggers.expectRefusedOnSubmit("Working directory is required.");
     await triggers.configureSlackMention({
       name: "slack-help",
       connection: "company-slack",
       daemon,
       cwd: "/workspace/acme",
       users: "U123, U456",
-      agent: "pi/gateway/vendor/model-v1",
+      agent: "opencode/gateway/vendor/model-v1",
       mode: "full-access",
       thinking: "high",
       providerOptions: '{"sandbox_mode":"workspace-write"}',
@@ -81,13 +84,32 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
     await triggers.switchToYaml();
     await page.waitForFunction(() => window.scrollY === 0);
     await triggers.expectYamlContains(
-      "provider: pi",
+      "provider: opencode",
       "model: gateway/vendor/model-v1",
       "mode: full-access",
       "sandbox_mode: workspace-write",
       "mode: conversation",
     );
     await triggers.capture(`${SHOTS}/03-generated-yaml.png`);
+  });
+
+  await test.step("a mode the daemon does not offer is refused at save, not at the first run", async () => {
+    // `Invalid mode 'default' for provider 'opencode'. Available modes: build, plan` was a
+    // production run failure. The daemon's catalog answers before anything is stored.
+    await triggers.replaceYaml(
+      advancedTriggerYaml(daemon).replace("mode: full-access", "mode: default"),
+    );
+    await triggers.expectRefusedOnSubmit(
+      "run.agent.mode: Mode 'default' is not available for provider 'opencode'",
+    );
+    await triggers.replaceYaml(
+      advancedTriggerYaml(daemon).replace("provider: opencode", "provider: omp"),
+    );
+    await triggers.expectRefusedOnSubmit("Provider 'omp' cannot run unattended Hub automations");
+    await triggers.capture(`${SHOTS}/03b-refused-mode.png`);
+  });
+
+  await test.step("valid YAML saves and lists", async () => {
     await triggers.replaceYaml(advancedTriggerYaml(daemon));
     await triggers.save("slack-help");
     await triggers.expectOperationalList("slack-help");
@@ -97,7 +119,7 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
   await test.step("the form projects advanced YAML without hiding or deleting it", async () => {
     await triggers.openTrigger("slack-help");
     await triggers.expectFormAgent({
-      agent: "pi/gateway/vendor/model-v1",
+      agent: "opencode/gateway/vendor/model-v1",
       mode: "full-access",
       providerOptions: '{\n  "sandbox_mode": "workspace-write",\n  "approval_policy": "never"\n}',
       prompt: "Handle the Slack request.",
@@ -194,7 +216,7 @@ run:
       mode: branch-off
       newBranch: trigger-work
   agent:
-    provider: pi
+    provider: opencode
     model: gateway/vendor/model-v1
     mode: full-access
     thinkingOptionId: high

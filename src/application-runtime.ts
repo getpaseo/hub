@@ -28,6 +28,8 @@ import { CompositionResources } from "./composition-resources.js";
 import { TriggerDashboard } from "./triggers/dashboard.js";
 import type { ProviderApplications } from "./provider-applications/index.js";
 import { DaemonProviderCatalog } from "./daemons/provider-catalog.js";
+import { HomeDashboard } from "./home/dashboard.js";
+import type { ProviderConnectionRegistration } from "./providers/registration.js";
 
 export interface ApplicationCompositionOptions {
   database: Database | null;
@@ -146,8 +148,9 @@ async function createOwnedApplicationRuntime(
             githubConfigurations[0],
             (projectId) => application.configurationForProject(projectId),
           ),
-    triggerDashboard: triggerDashboardFor(options),
+    triggerDashboard: triggerDashboardFor(options, application.hub),
     daemonProviderCatalog: daemonProviderCatalogFor(options, application.hub),
+    homeDashboard: homeDashboardFor(options, connections),
     ...entitlementSurfaces(options),
     testTriggerRoutes: options.testTriggerRoutes ?? false,
     auth: (request) => {
@@ -357,10 +360,33 @@ async function createOwnedApplicationRuntime(
   };
 }
 
-function triggerDashboardFor(options: ApplicationCompositionOptions): TriggerDashboard | null {
-  return options.database === null || options.auth === null
+function triggerDashboardFor(
+  options: ApplicationCompositionOptions,
+  hub: import("./app.js").HubRuntime,
+): TriggerDashboard | null {
+  return options.database === null || options.auth === null || hub.agentValidator === null
     ? null
-    : new TriggerDashboard(options.database, options.auth);
+    : new TriggerDashboard(options.database, options.auth, hub.agentValidator);
+}
+
+function homeDashboardFor(
+  options: ApplicationCompositionOptions,
+  connections: ReadonlyMap<string, ProviderConnectionRegistration>,
+): HomeDashboard | null {
+  if (options.database === null || options.auth === null) return null;
+  // The same registrations `connectionStatus` answers from: a provider whose status is anything
+  // but "not configured" has an app behind it.
+  return new HomeDashboard(options.database, options.auth, (bindings) =>
+    [...connections.values()].some((connection) => isConfigured(connection.status(bindings))),
+  );
+}
+
+function isConfigured(status: unknown): boolean {
+  return (
+    typeof status === "object" &&
+    status !== null &&
+    Reflect.get(status, "status") !== "notConfigured"
+  );
 }
 
 function daemonProviderCatalogFor(
