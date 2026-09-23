@@ -1283,7 +1283,10 @@ class PgDatabase implements Database {
         const stepRows = await client.query<WorkflowStepRunRow>(
           `select * from workflow_step_runs
          where trigger_run_id = $1 and ($2::text is null or step_id = $2)
-         order by ordinal limit 1 for update`,
+         order by
+           case when $2::text is null and status in ('pending', 'running') then 0 else 1 end,
+           ordinal
+         limit 1 for update`,
           [triggerRunId, stepId ?? null],
         );
         const step = stepRows.rows[0];
