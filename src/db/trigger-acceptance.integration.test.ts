@@ -676,6 +676,32 @@ describe("trigger acceptance persistence", () => {
     });
     assert.equal(unrelated.status, "dropped");
     if (unrelated.status === "dropped") assert.equal(unrelated.reason, "no_project_route");
+
+    const disconnectClient = await createPostgresQueryRuntime(databaseUrl);
+    await disconnectClient.query(`delete from project_trigger_routes where connection_id = $1`, [
+      connectionId,
+    ]);
+    await disconnectClient.query(`delete from linear_connections where id = $1`, [connectionId]);
+    await disconnectClient.close();
+    const stoppedAfterDisconnect = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-stop-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-stop-session-stopped-after-disconnect",
+      source: "linear.agent_session",
+      payload: stopPayload("session-1"),
+      receivedAt: new Date("2026-01-01T00:03:00.000Z"),
+    });
+    assert.equal(stoppedAfterDisconnect.status, "accepted");
+    if (stoppedAfterDisconnect.status !== "accepted") {
+      throw new Error("expected disconnected session stop event to be accepted");
+    }
+    assert.deepEqual(
+      stoppedAfterDisconnect.events.map((event) => ({
+        projectId: event.projectId,
+        configurationRevisionId: event.configurationRevisionId,
+      })),
+      [{ projectId, configurationRevisionId: revision.id }],
+    );
     await database.close();
   }, 120_000);
 });
