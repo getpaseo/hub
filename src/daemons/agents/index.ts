@@ -55,6 +55,7 @@ export class DaemonAgents implements AgentConnection {
   constructor(
     private readonly sendFrame: (frame: string) => void,
     private readonly now: () => Date = () => new Date(),
+    private readonly reportFailure: (error: unknown, operation: string) => void = () => {},
   ) {}
 
   receive(value: unknown): boolean {
@@ -120,6 +121,7 @@ export class DaemonAgents implements AgentConnection {
         idempotencyKey: key,
         config: {
           provider: options.provider,
+          title: options.title,
           cwd: options.cwd,
           model: options.model,
           modeId: options.mode,
@@ -133,7 +135,22 @@ export class DaemonAgents implements AgentConnection {
       },
       timeoutMs,
     );
-    return SnapshotSchema.parse(response["agent"]);
+    const agent = SnapshotSchema.parse(response["agent"]);
+    if (options.workspaceTitle !== undefined)
+      await this.titleWorkspace(agent.workspaceId, options.workspaceTitle);
+    return agent;
+  }
+  /**
+   * The daemon takes no workspace title on create and never auto-names a workspace whose agent
+   * starts without a prompt, so the workspace is titled after the agent exists. The agent is
+   * already created and titled, so a failure here is reported and the dispatch continues.
+   */
+  private async titleWorkspace(workspaceId: string, title: string): Promise<void> {
+    try {
+      await this.request({ type: "workspace.title.set.request", workspaceId, title });
+    } catch (error) {
+      this.reportFailure(error, "daemon.workspace.title.set");
+    }
   }
   async get(agentId: string): Promise<AgentSnapshot> {
     const response = await this.request({ type: "fetch_agent_request", agentId });

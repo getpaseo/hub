@@ -164,6 +164,13 @@ describe("daemon enrollment and execution", () => {
     );
     const agent = hub.createdAgentLaunch();
     assert.deepEqual({ worktree: agent.worktree }, { worktree: undefined });
+    assert.deepEqual(
+      { title: agent.title, workspaceTitle: agent.workspaceTitle },
+      {
+        title: "Hub agent",
+        workspaceTitle: `Hub · discord-ping · ${result.execution.id.slice(0, 8)}`,
+      },
+    );
     assert.equal(agent.cwd, "/workspace");
     assert.equal(agent.prompt, "Reply pong.");
     assert.equal(agent.thinkingOptionId, "xhigh");
@@ -185,6 +192,16 @@ describe("daemon enrollment and execution", () => {
         headers: { Authorization: "Bearer <private>" },
       },
     });
+  });
+
+  it("names the workspace after an authored title while the agent title stays static", async () => {
+    await hub.connectDaemon();
+    await hub.dispatch({ title: "Intake · custom" });
+    const agent = hub.createdAgentLaunch();
+    assert.deepEqual(
+      { title: agent.title, workspaceTitle: agent.workspaceTitle },
+      { title: "Hub agent", workspaceTitle: "Intake · custom" },
+    );
   });
 
   it("does not infer GitHub authority from a GitHub trigger source", async () => {

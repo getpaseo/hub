@@ -150,6 +150,7 @@ function singleRunDocument(
         ...(environment.worktree === undefined ? {} : { worktree: environment.worktree }),
       },
       agent: authoredAgent(step.agent),
+      ...(step.title === undefined ? {} : { title: step.title }),
       prompt: step.prompt
         .map((block) => (block.kind === "text" ? block.value : block.content))
         .join("\n"),

@@ -8,6 +8,7 @@ import type { DaemonEvent, DaemonConnection } from "./protocol.js";
 import {
   createDaemonDispatchLifecycle,
   DaemonDispatchFailure,
+  executionWorkspaceTitle,
   type DaemonDispatchLifecycle,
 } from "./lifecycle.js";
 import { createDurableWorkflowHandler } from "../workflows/engine.js";
@@ -15,12 +16,45 @@ import type { TriggerProvider } from "../triggers/index.js";
 import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
 import type { DaemonRecord } from "../db/types.js";
 import { createLogger, serializeError } from "../logger.js";
+import { MAX_EXPLICIT_AGENT_TITLE_CHARS } from "@getpaseo/protocol/agent-title-limits";
 import { assertOneFailure, FailureLogStream } from "../test-utils/failure-logs.js";
 
 const DAEMON_ID = "daemon-ack-test";
 const AGENT_ID = "agent-ack-test";
 const EXECUTION_ID = "00000000-0000-4000-8000-000000000001";
 const ACKNOWLEDGED_AT = new Date("2026-01-01T00:00:01.000Z");
+
+describe("execution workspace title", () => {
+  const executionId = "e6a296d1-1f0c-4c4e-9b2a-000000000000";
+
+  it("defaults to the trigger name and the execution prefix", () => {
+    assert.equal(
+      executionWorkspaceTitle({ triggerName: "paseo-pr-triage" }, executionId),
+      "Hub · paseo-pr-triage · e6a296d1",
+    );
+  });
+
+  it("prefers an authored title, trimmed and clamped to the daemon limit", () => {
+    assert.equal(
+      executionWorkspaceTitle(
+        { triggerName: "intake", title: "  Intake · e6a296d1  " },
+        executionId,
+      ),
+      "Intake · e6a296d1",
+    );
+    assert.equal(
+      executionWorkspaceTitle(
+        { triggerName: "intake", title: `${"x".repeat(MAX_EXPLICIT_AGENT_TITLE_CHARS)} tail` },
+        executionId,
+      ),
+      "x".repeat(MAX_EXPLICIT_AGENT_TITLE_CHARS),
+    );
+    assert.equal(
+      executionWorkspaceTitle({ triggerName: "intake", title: "   " }, executionId),
+      "Hub · intake · e6a296d1",
+    );
+  });
+});
 
 describe("durable Hub action acknowledgement state", () => {
   it("keeps the classified dispatch code in redacted error logs", () => {

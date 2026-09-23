@@ -12,27 +12,49 @@ const options: DaemonCreateAgentOptions = {
   toolPolicy: { preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }] },
 };
 
-test("ordinary creation keeps prompt delivery separate from optional titles and preserves provider configuration", async () => {
-  const requests: Record<string, unknown>[] = [];
-  const agents = new DaemonAgents((frame) => {
-    const { message } = z
-      .object({ message: z.record(z.string(), z.unknown()) })
-      .parse(JSON.parse(frame));
-    requests.push(message);
-    agents.receive({
-      type: "session",
-      message: {
-        type: message["type"] === "create_agent_request" ? "status" : "send_agent_message_response",
-        payload: {
-          requestId: message["requestId"],
-          status: "agent_created",
-          accepted: true,
-          agent: { id: "agent", workspaceId: "workspace", status: "idle" },
+function connect(
+  requests: Record<string, unknown>[],
+  titleResponse: (requestId: unknown) => Record<string, unknown> = (requestId) => ({
+    type: "workspace.title.set.response",
+    payload: { requestId, workspaceId: "workspace", accepted: true, title: "x", error: null },
+  }),
+  reportFailure?: (error: unknown, operation: string) => void,
+): DaemonAgents {
+  const agents = new DaemonAgents(
+    (frame) => {
+      const { message } = z
+        .object({ message: z.record(z.string(), z.unknown()) })
+        .parse(JSON.parse(frame));
+      requests.push(message);
+      const requestId = message["requestId"];
+      if (message["type"] === "workspace.title.set.request") {
+        agents.receive({ type: "session", message: titleResponse(requestId) });
+        return;
+      }
+      agents.receive({
+        type: "session",
+        message: {
+          type:
+            message["type"] === "create_agent_request" ? "status" : "send_agent_message_response",
+          payload: {
+            requestId,
+            status: "agent_created",
+            accepted: true,
+            agent: { id: "agent", workspaceId: "workspace", status: "idle" },
+          },
         },
-      },
-    });
-  });
+      });
+    },
+    undefined,
+    reportFailure,
+  );
   enable(agents);
+  return agents;
+}
+
+test("ordinary creation keeps prompt delivery separate from creation and preserves provider configuration", async () => {
+  const requests: Record<string, unknown>[] = [];
+  const agents = connect(requests);
   const created = await agents.create("stable-creation-key", options);
   await agents.send(created.id, "stable-message-key", prompt);
   expect(requests).toHaveLength(2);
@@ -55,6 +77,51 @@ test("ordinary creation keeps prompt delivery separate from optional titles and 
     messageId: "stable-message-key",
     text: prompt,
   });
+});
+
+test("a titled creation names the agent and then the workspace the daemon created for it", async () => {
+  const requests: Record<string, unknown>[] = [];
+  const agents = connect(requests);
+  const created = await agents.create("key", {
+    ...options,
+    title: "Hub agent",
+    workspaceTitle: "Hub · pr-triage · e6a296d1",
+  });
+  expect(created.workspaceId).toBe("workspace");
+  expect(requests).toHaveLength(2);
+  expect(requests[0]).toMatchObject({
+    type: "create_agent_request",
+    config: { title: "Hub agent" },
+  });
+  expect(requests[1]).toMatchObject({
+    type: "workspace.title.set.request",
+    workspaceId: "workspace",
+    title: "Hub · pr-triage · e6a296d1",
+  });
+});
+
+test("a rejected workspace title is reported and leaves the titled agent usable", async () => {
+  const requests: Record<string, unknown>[] = [];
+  const failures: string[] = [];
+  const agents = connect(
+    requests,
+    (requestId) => ({
+      type: "rpc_error",
+      payload: { requestId, error: "Workspace not found" },
+    }),
+    (error, operation) => failures.push(`${operation}: ${String(error)}`),
+  );
+  const created = await agents.create("key", {
+    ...options,
+    title: "Hub agent",
+    workspaceTitle: "Hub · pr-triage · e6a296d1",
+  });
+  expect(created.id).toBe("agent");
+  expect(requests.map((request) => request["type"])).toEqual([
+    "create_agent_request",
+    "workspace.title.set.request",
+  ]);
+  expect(failures).toEqual(["daemon.workspace.title.set: Error: Workspace not found"]);
 });
 
 test("requires ordinary agent RPCs and durable receipts instead of falling back to Hub creation", async () => {

@@ -27,6 +27,8 @@ export interface LaunchMachineIntent {
   environment: DaemonEnvironmentTarget;
   env?: Readonly<Record<string, string>>;
   github?: CompiledGitHubAuthority;
+  /** Authored workspace title, already rendered; absent means Hub's default workspace title. */
+  title?: string;
   prompt: string;
   agent: TriggerAgentConfig;
   allowOutputs: readonly AllowedOutput[];
@@ -52,6 +54,7 @@ export function buildLaunchMachineIntent(input: {
   environment: DaemonEnvironmentTarget;
   env?: Readonly<Record<string, string>>;
   github?: CompiledGitHubAuthority;
+  title?: string;
   prompt: string;
   agent: TriggerAgentConfig;
   allowOutputs: readonly AllowedOutput[];
@@ -73,6 +76,7 @@ export function buildLaunchMachineIntent(input: {
     environment: input.environment,
     ...(input.env === undefined ? {} : { env: input.env }),
     ...(input.github === undefined ? {} : { github: input.github }),
+    ...(input.title === undefined ? {} : { title: input.title }),
     prompt: input.prompt,
     agent: input.agent,
     allowOutputs: input.allowOutputs,

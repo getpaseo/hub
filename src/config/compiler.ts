@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   expressionPaths,
   parseExpression,
+  expressionPathsInTemplate,
   validateExecutionTemplate,
   type Expression,
   type ExpressionPath,
@@ -170,6 +171,7 @@ const StepSchema = z
     idle_timeout: z.string().min(1),
     startup_timeout: z.string().min(1).optional(),
     agent: AuthoredAgentSelectionSchema,
+    title: z.string().min(1).optional(),
     prompt: z.array(PromptBlockSchema).min(1),
     env: z.record(z.string().min(1), z.string()).optional(),
     github: AuthoredGitHubAuthoritySchema.optional(),
@@ -246,6 +248,8 @@ export interface CompiledStep {
   idleTimeoutMs: number;
   startupTimeoutMs?: number | undefined;
   agent: CompiledAgentSelection;
+  /** Execution template for the workspace title; absent means Hub's default workspace title. */
+  title?: string | undefined;
   prompt: readonly CompiledPromptBlock[];
   env?: Readonly<Record<string, string>> | undefined;
   github?: CompiledGitHubAuthority | undefined;
@@ -395,6 +399,7 @@ const CompiledStepSchema: z.ZodType<CompiledStep> = z
     idleTimeoutMs: z.number().int().positive().max(MAX_DURATION_MS),
     startupTimeoutMs: z.number().int().positive().max(MAX_DURATION_MS).optional(),
     agent: CompiledAgentSelectionSchema,
+    title: z.string().min(1).optional(),
     prompt: z.array(CompiledPromptBlockSchema).min(1),
     env: z.record(z.string(), z.string()).optional(),
     github: CompiledGitHubAuthoritySchema.optional(),
@@ -605,6 +610,7 @@ function compileStep(
           ),
         }),
     agent,
+    ...(step.title === undefined ? {} : { title: step.title }),
     prompt: compilePromptBlocks(trigger.name, step.id, step.prompt, resolvedPromptPartials),
     ...(env === undefined ? {} : { env }),
     ...(github === undefined ? {} : { github }),
@@ -855,6 +861,10 @@ function validateExpressionContract(
       validateTemplate(step.environment, ordinal, `step ${step.id} environment`, true);
       validateEnvironmentSelection(step.environment, ordinal, step.id);
     });
+    if (step.title !== undefined)
+      compileAt(["triggers", triggerName, "steps", step.id, "title"], () =>
+        validateTitleTemplate(step.title!, `step ${step.id} title`),
+      );
     if ("selector" in step.agent) {
       const selection = step.agent;
       compileAt(["triggers", triggerName, "steps", step.id, "agent"], () => {
@@ -1029,7 +1039,9 @@ function validateExpressionContract(
         return;
       }
       if (reference.path[0] === "execution") {
-        throw new Error(`${path} uses paseo.execution outside environment worktree.newBranch`);
+        throw new Error(
+          `${path} uses paseo.execution outside environment worktree.newBranch or a step title`,
+        );
       }
       const inputName = reference.path[1];
       const input = trigger.inputs[inputName];
@@ -1193,6 +1205,25 @@ function validateCompiledContract(config: CompiledHubConfig): void {
     }
     validateExpressionContract(trigger.name, trigger, environments);
     validateTriggerLaunchSecurity(trigger);
+  }
+}
+
+/**
+ * A title is presentation: it may carry the execution id so runs of one trigger can be told
+ * apart, but never event text, so prompt, context, and inputs are refused by name.
+ */
+function validateTitleTemplate(title: string, path: string): void {
+  for (const reference of expressionPathsInTemplate(title)) {
+    if (reference.namespace !== "paseo") {
+      throw new Error(
+        `${path} uses ${reference.namespace}; a title supports only paseo.execution.id`,
+      );
+    }
+    const name = typeof reference.path === "string" ? reference.path : reference.path[0];
+    if (name === "execution") continue;
+    throw new Error(
+      `${path} uses paseo.${name}; a title is presentation and supports only paseo.execution.id`,
+    );
   }
 }
 
