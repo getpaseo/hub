@@ -19,8 +19,11 @@ describe("Linear event acceptance", () => {
       accessTokenExpiresAt: null,
       scopes: ["read", "write", "app:assignable", "app:mentionable"],
     };
+    let connected = true;
     database.findLinearConnection = async (linearOrganizationId) =>
-      linearOrganizationId === connection.linearOrganizationId ? connection : undefined;
+      connected && linearOrganizationId === connection.linearOrganizationId
+        ? connection
+        : undefined;
     const project = await database.createProject({
       organizationId: connection.organizationId,
       name: "Linear session",
@@ -199,6 +202,40 @@ describe("Linear event acceptance", () => {
     });
     assert.equal(unrelated.status, "dropped");
     if (unrelated.status === "dropped") assert.equal(unrelated.reason, "no_project_route");
+
+    connected = false;
+    const stoppedAfterDisconnect = await database.acceptLinearEvent({
+      linearOrganizationId: connection.linearOrganizationId,
+      projectId: "linear-project",
+      deliveryId: "linear-session-stopped-after-disconnect",
+      source: "linear.agent_session",
+      payload: stopPayload("session-1"),
+      receivedAt: new Date("2026-01-01T00:03:00.000Z"),
+    });
+    assert.equal(stoppedAfterDisconnect.status, "accepted");
+    if (stoppedAfterDisconnect.status !== "accepted") {
+      throw new Error("expected disconnected session stop event to be accepted");
+    }
+    assert.deepEqual(
+      stoppedAfterDisconnect.events.map((event) => ({
+        projectId: event.projectId,
+        configurationRevisionId: event.configurationRevisionId,
+      })),
+      [{ projectId: project.id, configurationRevisionId: revision.id }],
+    );
+
+    const unknownAfterDisconnect = await database.acceptLinearEvent({
+      linearOrganizationId: connection.linearOrganizationId,
+      projectId: "linear-project",
+      deliveryId: "unknown-linear-session-stopped-after-disconnect",
+      source: "linear.agent_session",
+      payload: stopPayload("unknown-session"),
+      receivedAt: new Date("2026-01-01T00:04:00.000Z"),
+    });
+    assert.equal(unknownAfterDisconnect.status, "dropped");
+    if (unknownAfterDisconnect.status === "dropped") {
+      assert.equal(unknownAfterDisconnect.reason, "linear_unbound");
+    }
   });
 });
 
