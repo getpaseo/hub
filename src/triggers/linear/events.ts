@@ -10,12 +10,14 @@ const LinearIssueSchema = z.object({
   description: z.string().nullable(),
   url: z.string().url().optional(),
   projectId: LinearIdSchema.nullable(),
+  teamId: LinearIdSchema.nullable(),
   stateId: LinearIdSchema.nullable(),
   assigneeId: LinearIdSchema.nullable(),
   labelIds: z.array(LinearIdSchema),
 });
 const LinearIssuePreviousSchema = z.object({
   projectId: LinearIdSchema.nullable().optional(),
+  teamId: LinearIdSchema.nullable().optional(),
   stateId: LinearIdSchema.nullable().optional(),
   assigneeId: LinearIdSchema.nullable().optional(),
   labelIds: z.array(LinearIdSchema).optional(),
@@ -38,19 +40,80 @@ export const NormalizedLinearCommentEventSchema = z.object({
   id: LinearIdSchema,
   organizationId: LinearIdSchema,
   actor: LinearActorSchema.nullable(),
-  comment: z.object({ id: LinearIdSchema, body: z.string(), issueId: LinearIdSchema }),
+  comment: z.object({
+    id: LinearIdSchema,
+    body: z.string(),
+    issueId: LinearIdSchema,
+    parentId: LinearIdSchema.nullable(),
+  }),
   issue: LinearIssueSchema.nullable(),
+  /**
+   * Author IDs of the thread root and its replies (`user.id`, or `botActor.id` for integration
+   * comments). The webhook does not carry them: the trigger provider fills them when a filter
+   * needs them, and leaves them absent when the thread was not or could not be read.
+   */
+  threadAuthorIds: z.array(LinearIdSchema).optional(),
+  /**
+   * Whether the thread root is the root comment of an agent session. Linear materializes a
+   * session as a comment thread, so a reply there is already delivered as a session prompt.
+   * Filled together with `threadAuthorIds`.
+   */
+  threadIsAgentSession: z.boolean().optional(),
   occurredAt: z.string().datetime().optional(),
+});
+
+export const NormalizedLinearAgentSessionEventSchema = z.object({
+  type: z.literal("agent_session"),
+  action: z.enum(["created", "prompted"]),
+  id: LinearIdSchema,
+  organizationId: LinearIdSchema,
+  actor: LinearActorSchema.nullable(),
+  agentSession: z.object({
+    id: LinearIdSchema,
+    appUserId: LinearIdSchema,
+    issueId: LinearIdSchema,
+    status: z.string().min(1),
+    url: z.string().url().optional(),
+    /** The root comment of the thread the session is attached to, when it was opened from one. */
+    rootCommentId: LinearIdSchema.optional(),
+    /**
+     * The comment behind this turn. For `created`, the comment that opened the session: the root
+     * itself, or a reply that mentioned the app. For `prompted`, the reply Linear turned into the
+     * prompt.
+     */
+    sourceCommentId: LinearIdSchema.optional(),
+  }),
+  agentActivity: z
+    .object({
+      id: LinearIdSchema,
+      type: z.literal("prompt"),
+      body: z.string(),
+      createdAt: z.string().datetime(),
+      /** Linear's `stop` signal asks the agent to abandon the turn instead of starting one. */
+      signal: z.literal("stop").optional(),
+    })
+    .nullable(),
+  /** The canonical prompt given to the workflow. `created` uses Linear's promptContext. */
+  prompt: z.string().min(1),
+  /** The direct user text used only for input parsing and text filters. */
+  parserMessage: z.string().min(1),
+  promptContext: z.string().nullable(),
+  issue: LinearIssueSchema.nullable(),
+  occurredAt: z.string().datetime(),
 });
 
 export const NormalizedLinearEventSchema = z.discriminatedUnion("type", [
   NormalizedLinearIssueEventSchema,
   NormalizedLinearCommentEventSchema,
+  NormalizedLinearAgentSessionEventSchema,
 ]);
 
 export type NormalizedLinearIssue = z.infer<typeof LinearIssueSchema>;
 export type NormalizedLinearIssueEvent = z.infer<typeof NormalizedLinearIssueEventSchema>;
 export type NormalizedLinearCommentEvent = z.infer<typeof NormalizedLinearCommentEventSchema>;
+export type NormalizedLinearAgentSessionEvent = z.infer<
+  typeof NormalizedLinearAgentSessionEventSchema
+>;
 export type NormalizedLinearEvent = z.infer<typeof NormalizedLinearEventSchema>;
 
 /**
@@ -62,6 +125,9 @@ export function normalizeLinearEvent(
   eventName?: string | null,
   hydratedIssue?: LinearIssueDetails,
 ): NormalizedLinearEvent | undefined {
+  if (isAgentSessionEvent(payload, eventName)) {
+    return normalizeAgentSessionEvent(payload, hydratedIssue);
+  }
   const envelope = readEnvelope(payload, eventName);
   if (envelope === undefined) return undefined;
   return envelope.kind === "issue"
@@ -70,11 +136,34 @@ export function normalizeLinearEvent(
 }
 
 export function eventIssueId(event: NormalizedLinearEvent): string {
-  return event.type === "issue" ? event.issue.id : event.comment.issueId;
+  if (event.type === "issue") return event.issue.id;
+  return event.type === "comment" ? event.comment.issueId : event.agentSession.issueId;
 }
 
 export function eventProjectId(event: NormalizedLinearEvent): string | undefined {
   return event.issue?.projectId ?? undefined;
+}
+
+export function eventTeamId(event: NormalizedLinearEvent): string | undefined {
+  return event.issue?.teamId ?? undefined;
+}
+
+/** Distinguish a complete projectless event from a compact event that still needs hydration. */
+export function hasExplicitNullLinearProject(payload: unknown, eventName?: string | null): boolean {
+  if (!isRecord(payload)) return false;
+  let issue: Record<string, unknown> | undefined;
+  if (isAgentSessionEvent(payload, eventName)) {
+    issue = asRecord(asRecord(payload["agentSession"])?.["issue"]);
+  } else {
+    const envelope = readEnvelope(payload, eventName);
+    if (envelope === undefined) return false;
+    issue = envelope.kind === "issue" ? envelope.data : asRecord(envelope.data["issue"]);
+  }
+  return (
+    issue !== undefined &&
+    ((hasOwn(issue, "projectId") && issue["projectId"] === null) ||
+      (hasOwn(issue, "project") && issue["project"] === null))
+  );
 }
 
 interface LinearEnvelope {
@@ -159,10 +248,204 @@ function normalizeCommentEvent(
       normalizeActor(envelope.data["user"]) ??
       actorFromUserId(envelope.data) ??
       null,
-    comment: { id: commentId, body: readString(envelope.data["body"]) ?? "", issueId },
+    comment: {
+      id: commentId,
+      body: readString(envelope.data["body"]) ?? "",
+      issueId,
+      parentId: relatedId(envelope.data, "parentId", "parent", null),
+    },
     issue: normalizeIssue(asRecord(envelope.data["issue"]) ?? {}, hydratedIssue) ?? null,
     ...(envelope.occurredAt === undefined ? {} : { occurredAt: envelope.occurredAt }),
   });
+}
+
+function normalizeAgentSessionEvent(
+  payload: Record<string, unknown>,
+  hydratedIssue: LinearIssueDetails | undefined,
+): NormalizedLinearEvent | undefined {
+  const envelope = readAgentSessionEnvelope(payload);
+  if (envelope === undefined) return undefined;
+  const { action, organizationId, session, sessionId, appUserId, issueId, status, issueData } =
+    envelope;
+  const issue = normalizeIssue(issueData, hydratedIssue) ?? null;
+  const promptContext = readString(payload["promptContext"]);
+  const turn = normalizeAgentSessionTurn({ action, payload, session, issue, promptContext });
+  if (turn === undefined) return undefined;
+  const url = readString(session["url"]);
+  const rootCommentId = firstDefined(
+    readString(asRecord(session["comment"])?.["id"]),
+    readString(session["commentId"]),
+  );
+  return NormalizedLinearAgentSessionEventSchema.parse({
+    type: "agent_session",
+    action,
+    id: turn.activity?.id ?? sessionId,
+    organizationId,
+    actor: turn.actor,
+    agentSession: {
+      id: sessionId,
+      appUserId,
+      issueId,
+      status,
+      ...(url === undefined ? {} : { url }),
+      ...(rootCommentId === undefined ? {} : { rootCommentId }),
+      ...(turn.sourceCommentId === undefined ? {} : { sourceCommentId: turn.sourceCommentId }),
+    },
+    agentActivity: turn.activity ?? null,
+    prompt: turn.prompt,
+    parserMessage: turn.parserMessage,
+    promptContext: promptContext ?? null,
+    issue,
+    occurredAt: turn.occurredAt,
+  });
+}
+
+function readAgentSessionEnvelope(payload: Record<string, unknown>):
+  | {
+      action: "created" | "prompted";
+      organizationId: string;
+      session: Record<string, unknown>;
+      sessionId: string;
+      appUserId: string;
+      issueId: string;
+      status: string;
+      issueData: Record<string, unknown>;
+    }
+  | undefined {
+  const action = readAgentSessionAction(payload["action"]);
+  const organizationId = readString(payload["organizationId"]);
+  const session = asRecord(payload["agentSession"]);
+  if (action === undefined || organizationId === undefined || session === undefined) {
+    return undefined;
+  }
+  const sessionId = readString(session["id"]);
+  const appUserId = firstDefined(
+    readString(payload["appUserId"]),
+    readString(session["appUserId"]),
+  );
+  const issueData = asRecord(session["issue"]) ?? {};
+  const issueId = firstDefined(readString(session["issueId"]), readString(issueData["id"]));
+  const status = readString(session["status"]);
+  if (
+    sessionId === undefined ||
+    appUserId === undefined ||
+    issueId === undefined ||
+    status === undefined
+  ) {
+    return undefined;
+  }
+  return { action, organizationId, session, sessionId, appUserId, issueId, status, issueData };
+}
+
+function normalizeAgentSessionTurn(input: {
+  action: "created" | "prompted";
+  payload: Record<string, unknown>;
+  session: Record<string, unknown>;
+  issue: NormalizedLinearIssue | null;
+  promptContext: string | undefined;
+}):
+  | {
+      activity: NormalizedPromptActivity | undefined;
+      actor: { id: string; name?: string } | undefined;
+      prompt: string;
+      parserMessage: string;
+      occurredAt: string;
+      sourceCommentId: string | undefined;
+    }
+  | undefined {
+  const activityData = asRecord(input.payload["agentActivity"]);
+  const promptActivity = normalizePromptActivity(activityData);
+  if (input.action === "prompted") {
+    if (promptActivity === undefined) return undefined;
+    const { activity } = promptActivity;
+    return {
+      activity,
+      actor: normalizeActor(activityData?.["user"]) ?? actorFromUserId(activityData ?? {}),
+      prompt: activity.body,
+      parserMessage: activity.body,
+      occurredAt: activity.createdAt,
+      // The session's own source comment opened it and was handled when the session was created;
+      // this turn comes from the comment Linear attached to the prompt activity, if any.
+      sourceCommentId: promptActivity.sourceCommentId,
+    };
+  }
+
+  const rootComment = asRecord(input.session["comment"]);
+  const directMessage = readString(rootComment?.["body"]);
+  const prompt = firstDefined(input.promptContext, directMessage, issuePrompt(input.issue));
+  const parserMessage = firstDefined(directMessage, prompt);
+  const occurredAt = firstDefined(
+    readDate(input.payload["createdAt"]),
+    readDate(input.session["createdAt"]),
+  );
+  if (prompt === undefined || parserMessage === undefined || occurredAt === undefined) {
+    return undefined;
+  }
+  return {
+    activity: promptActivity?.activity,
+    actor:
+      normalizeActor(input.payload["actor"]) ??
+      normalizeActor(input.session["creator"]) ??
+      actorFromId(input.session["creatorId"]) ??
+      actorFromId(rootComment?.["userId"]),
+    prompt,
+    parserMessage,
+    occurredAt,
+    sourceCommentId: firstDefined(
+      readString(asRecord(input.session["sourceComment"])?.["id"]),
+      readString(input.session["sourceCommentId"]),
+      readString(input.payload["sourceCommentId"]),
+    ),
+  };
+}
+
+interface NormalizedPromptActivity {
+  id: string;
+  type: "prompt";
+  body: string;
+  createdAt: string;
+  signal?: "stop";
+}
+
+/**
+ * The prompt activity, and the comment Linear attached to it when the prompt came from a reply
+ * in the session thread. The webhook may carry that comment as `sourceCommentId`, as a nested
+ * `sourceComment`, or inside the content; a prompt typed in the session panel has none.
+ */
+function normalizePromptActivity(
+  value: unknown,
+): { activity: NormalizedPromptActivity; sourceCommentId: string | undefined } | undefined {
+  const activity = asRecord(value);
+  const content = asRecord(activity?.["content"]);
+  if (activity === undefined || content?.["type"] !== "prompt") return undefined;
+  const id = readString(activity["id"]);
+  // Linear serializes the signal beside the content; older payloads nested it inside.
+  const signal = readStopSignal(activity["signal"]) ?? readStopSignal(content["signal"]);
+  // A stop prompt carries no user text, but the event still needs a non-empty prompt. The
+  // synthetic "Stop" body never reaches a run: the provider handles a `stop` signal before
+  // trigger matching and drops the event as `agent_session_stopped`.
+  const body = readString(content["body"]) ?? (signal === undefined ? undefined : "Stop");
+  const createdAt = readDate(activity["createdAt"]);
+  if (id === undefined || body === undefined || createdAt === undefined) return undefined;
+  return {
+    activity: { id, type: "prompt", body, createdAt, ...(signal === undefined ? {} : { signal }) },
+    sourceCommentId: firstDefined(
+      readString(activity["sourceCommentId"]),
+      readString(asRecord(activity["sourceComment"])?.["id"]),
+      readString(content["sourceCommentId"]),
+    ),
+  };
+}
+
+function readStopSignal(value: unknown): "stop" | undefined {
+  return value === "stop" ? "stop" : undefined;
+}
+
+function issuePrompt(issue: NormalizedLinearIssue | null): string | undefined {
+  if (issue === null) return undefined;
+  return issue.description === null || issue.description.length === 0
+    ? issue.title
+    : `${issue.title}\n\n${issue.description}`;
 }
 
 function normalizeIssue(
@@ -182,6 +465,7 @@ function normalizeIssue(
     description: nullableValue(data, "description", hydrated?.description ?? null),
     ...optionalProperty("url", url),
     projectId: relatedId(data, "projectId", "project", hydrated?.projectId ?? null),
+    teamId: relatedId(data, "teamId", "team", hydrated?.teamId ?? null),
     stateId: relatedId(data, "stateId", "state", hydrated?.stateId ?? null),
     assigneeId: relatedId(data, "assigneeId", "assignee", hydrated?.assigneeId ?? null),
     labelIds: firstDefined(readLabelIds(data), hydrated?.labelIds) ?? [],
@@ -190,6 +474,11 @@ function normalizeIssue(
 
 function actorFromUserId(data: Record<string, unknown>): { id: string } | undefined {
   const id = readString(data["userId"]);
+  return id === undefined ? undefined : { id };
+}
+
+function actorFromId(value: unknown): { id: string } | undefined {
+  const id = readString(value);
   return id === undefined ? undefined : { id };
 }
 
@@ -229,6 +518,9 @@ function normalizePreviousIssue(value: unknown): z.infer<typeof LinearIssuePrevi
   return {
     ...(hasOwn(previous, "projectId") || hasOwn(previous, "project")
       ? { projectId: readPreviousRelatedId(previous, "projectId", "project") }
+      : {}),
+    ...(hasOwn(previous, "teamId") || hasOwn(previous, "team")
+      ? { teamId: readPreviousRelatedId(previous, "teamId", "team") }
       : {}),
     ...(hasOwn(previous, "stateId") || hasOwn(previous, "state")
       ? { stateId: readPreviousRelatedId(previous, "stateId", "state") }
@@ -272,8 +564,21 @@ function readKind(
   return undefined;
 }
 
+function isAgentSessionEvent(
+  payload: unknown,
+  eventName: string | null | undefined,
+): payload is Record<string, unknown> {
+  if (!isRecord(payload)) return false;
+  const value = (eventName ?? readString(payload["type"]) ?? "").toLowerCase();
+  return value === "agentsessionevent" || value === "agent_session";
+}
+
 function readAction(value: unknown): "create" | "update" | "remove" | undefined {
   return value === "create" || value === "update" || value === "remove" ? value : undefined;
+}
+
+function readAgentSessionAction(value: unknown): "created" | "prompted" | undefined {
+  return value === "created" || value === "prompted" ? value : undefined;
 }
 
 function readLabelIds(value: Record<string, unknown>): string[] | undefined {

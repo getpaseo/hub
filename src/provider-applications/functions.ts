@@ -58,6 +58,7 @@ const connectionSchema = z.object({
   provider: providerSchema,
   organizationId: z.string().min(1),
   surface: surfaceSchema,
+  linearAgentSessions: z.boolean().optional(),
 });
 const slackSocketSchema = z.object({
   appToken: z.string().trim().startsWith("xapp-").min(6),
@@ -116,13 +117,9 @@ export const beginProviderConnection = createServerFn({ method: "POST" })
     try {
       const capability = (await getApplication()).providerApplications;
       if (capability === null) throw new Error("unavailable");
+      const request = providerConnectionRequest(getRequest(), data);
       return respondOk(
-        await capability.beginConnection(
-          getRequest(),
-          data.provider,
-          data.organizationId,
-          data.surface,
-        ),
+        await capability.beginConnection(request, data.provider, data.organizationId, data.surface),
       );
     } catch (error) {
       const name = providerName(data.provider);
@@ -148,6 +145,16 @@ export const beginProviderConnection = createServerFn({ method: "POST" })
       );
     }
   });
+
+function providerConnectionRequest(
+  request: Request,
+  input: z.infer<typeof connectionSchema>,
+): Request {
+  if (input.provider !== "linear" || input.linearAgentSessions !== true) return request;
+  const url = new URL(request.url);
+  url.searchParams.set("linearAgentSessions", "true");
+  return new Request(url, { method: request.method, headers: request.headers });
+}
 
 export const configureSlackSocketApplication = createServerFn({ method: "POST" })
   .validator(slackSocketSchema)

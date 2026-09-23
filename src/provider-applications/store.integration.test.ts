@@ -292,7 +292,7 @@ async function exerciseLinearScopeHealth(bundle: DatabaseRuntimeBundle) {
 
   await bundle.runtime.query(
     `update linear_connections
-     set scopes = '["read", "comments:create"]'::jsonb,
+     set scopes = '["read", "write", "app:assignable", "app:mentionable"]'::jsonb,
          access_token_expires_at = '2000-01-01T00:00:00.000Z',
          refresh_token = null
      where linear_organization_id = 'linear-org'`,

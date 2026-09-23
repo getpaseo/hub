@@ -312,7 +312,7 @@ function bind(
       appUserId: "linear-app-user",
       accessToken: "linear-token",
       refreshToken: "linear-refresh-token",
-      scopes: ["read", "comments:create"],
+      scopes: ["read", "write", "app:assignable", "app:mentionable"],
     });
   }
   return database.bindDiscordConnection({

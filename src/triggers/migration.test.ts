@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { compileHubBundle, type HubBundleFile } from "../config/bundle.js";
+import { parseProjectConfiguration } from "../configuration/store.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database, ProjectRecord } from "../db/types.js";
+import { enrollTestDaemon, TEST_DAEMON_ID } from "../test-utils/project-configuration.js";
 import { migrateLegacyProjectTriggers } from "./migration.js";
 
 const hub = `
@@ -13,6 +15,35 @@ agents:
 `;
 
 describe("startup project trigger migration", () => {
+  it("compiles daemon references in migrated runtime revisions", async () => {
+    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    await enrollMigrationDaemon(database);
+    await activeProject(database, "legacy", [workflow("check", "manual.run", oneStep())]);
+
+    await migrateLegacyProjectTriggers(database);
+
+    const trigger = (await database.listOrganizationTriggers("org"))[0]!;
+    const revision = await database.findActiveProjectConfiguration(trigger.runtimeProjectId);
+    assert.notEqual(revision, undefined);
+    const environment = parseProjectConfiguration(revision!).environments[0];
+    assert.equal(environment?.kind, "daemon");
+    assert.equal(environment?.kind === "daemon" ? environment.daemonId : undefined, TEST_DAEMON_ID);
+  });
+
+  it("leaves the legacy project active when its daemon target cannot be compiled", async () => {
+    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    const project = await activeProject(database, "legacy", [
+      workflow("check", "manual.run", oneStep()),
+    ]);
+
+    await assert.rejects(
+      migrateLegacyProjectTriggers(database),
+      /"devbox" does not match any daemon/u,
+    );
+    assert.equal((await database.findProjectById(project.id))?.status, "active");
+    assert.equal((await database.listOrganizationTriggers("org")).length, 0);
+  });
+
   it("migrates mixed projects once and preserves the legacy execution lane across restart", async () => {
     const database = createMemoryDatabase({
       organizationIds: ["org"],
@@ -21,6 +52,7 @@ describe("startup project trigger migration", () => {
         slackConnection("slack-b", "team-b"),
       ],
     });
+    await enrollMigrationDaemon(database);
     await activeProject(
       database,
       "support",
@@ -73,6 +105,7 @@ describe("startup project trigger migration", () => {
 
   it("deterministically disambiguates duplicate trigger names when projects collapse", async () => {
     const database = createMemoryDatabase({ organizationIds: ["org"] });
+    await enrollMigrationDaemon(database);
     await activeProject(database, "hub", [workflow("request", "manual.run", oneStep())]);
     await activeProject(database, "paseo", [workflow("request", "manual.run", oneStep())]);
 
@@ -107,6 +140,7 @@ describe("startup project trigger migration", () => {
 
   it("keeps the old project active when a persisted route cannot be assigned", async () => {
     const database = createMemoryDatabase({ organizationIds: ["org"] });
+    await enrollMigrationDaemon(database);
     await activeProject(
       database,
       "mismatched-route",
@@ -189,6 +223,11 @@ async function activeProject(
   });
   await database.activateProjectConfigurationRevision(project.id, revision.id, routes);
   return project;
+}
+
+async function enrollMigrationDaemon(database: Database): Promise<void> {
+  await enrollTestDaemon(database, "org");
+  await database.renameDaemonForOrganization("org", TEST_DAEMON_ID, "devbox");
 }
 
 function slackConnection(id: string, teamId: string) {

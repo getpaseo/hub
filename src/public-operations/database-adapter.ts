@@ -60,9 +60,12 @@ export function createDatabasePublicOperationRepository(
         ({ name }) => name === triggerName,
       );
       if (organizationTrigger !== undefined) {
-        return organizationTrigger.enabled
-          ? { status: "resolved", id: organizationTrigger.runtimeProjectId }
-          : { status: "disabled" };
+        const runtimeProject = await database.findProjectById(organizationTrigger.runtimeProjectId);
+        if (runtimeProject?.status === "active") {
+          return organizationTrigger.enabled
+            ? { status: "resolved", id: organizationTrigger.runtimeProjectId }
+            : { status: "disabled" };
+        }
       }
       const project = await database.findProjectBySlugForOrganization(organizationId, projectSlug);
       return project === undefined || project.status !== "active"
