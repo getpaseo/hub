@@ -4,7 +4,12 @@ import type {
   OrganizationTriggerRevisionRecord,
 } from "../db/types.js";
 import { resolveTriggerConfigurationForOrganization } from "../configuration/store.js";
-import { compileTriggerDocument, TriggerDocumentError } from "./configuration/index.js";
+import {
+  ABSOLUTE_TARGET_PATH_SHAPES,
+  compileTriggerDocument,
+  isAbsoluteTargetPath,
+  TriggerDocumentError,
+} from "./configuration/index.js";
 
 export interface SaveTriggerInput {
   triggerId?: string;
@@ -91,8 +96,11 @@ function validateAuthoringContract(
   trigger: ReturnType<typeof compileTriggerDocument>["authored"],
 ): void {
   const issues: Array<{ path: readonly (string | number)[]; message: string }> = [];
-  if (!trigger.run.target.cwd.startsWith("/")) {
-    issues.push({ path: ["run", "target", "cwd"], message: "must be an absolute path" });
+  if (!isAbsoluteTargetPath(trigger.run.target.cwd)) {
+    issues.push({
+      path: ["run", "target", "cwd"],
+      message: `must be an absolute path: ${ABSOLUTE_TARGET_PATH_SHAPES}`,
+    });
   }
   if ("choices" in trigger.run.agent) {
     for (const [name, agent] of Object.entries(trigger.run.agent.choices)) {

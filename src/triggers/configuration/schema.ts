@@ -17,6 +17,16 @@ const WorktreeTargetSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("checkout-pr"), prNumber: z.number().int().positive() }),
 ]);
 
+const WINDOWS_ABSOLUTE_PATH = /^[A-Za-z]:[\\/]/u;
+
+export const ABSOLUTE_TARGET_PATH_SHAPES =
+  "POSIX (/a/b) or Windows (D:\\a\\b, D:/a/b, \\\\server\\share)";
+
+/** Checks path shape, not `process.platform`: the daemon resolving `cwd` may run another OS than Hub. */
+export function isAbsoluteTargetPath(path: string): boolean {
+  return path.startsWith("/") || path.startsWith("\\\\") || WINDOWS_ABSOLUTE_PATH.test(path);
+}
+
 /** A trigger or choice name: the document's own alphabet, shared with the form that writes one. */
 export const IDENTIFIER = /^[a-z][a-z0-9_-]*$/u;
 const EVENT_NAME = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$/u;
