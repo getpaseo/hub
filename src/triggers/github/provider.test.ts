@@ -133,8 +133,10 @@ describe("GitHub Phase 1 trigger provider", () => {
 
   it.each([
     ["issues", "opened", "github.issue_created", 211],
+    ["issues", "closed", "github.issue_closed", 211],
     ["issues", "labeled", "github.issue_label_added", 211],
     ["pull_request", "opened", "github.pull_request_created", 312],
+    ["pull_request", "synchronize", "github.pull_request_synchronized", 312],
     ["pull_request", "labeled", "github.pull_request_label_added", 312],
   ] as const)("derives an item reaction target for %s %s", async (type, action, source, number) => {
     const configuration = githubConfiguration();
@@ -150,6 +152,76 @@ describe("GitHub Phase 1 trigger provider", () => {
       kind: "item",
       issueNumber: number,
     });
+  });
+
+  it("derives a pull-request reaction target for submitted change requests", async () => {
+    const configuration = githubConfiguration();
+    configuration.triggers[0] = {
+      ...configuration.triggers[0]!,
+      on: "github.pull_request_review_changes_requested",
+    };
+    const { project, revision, store } = await activeConfiguration(configuration);
+    const provider = createProvider(store, new TestReactions());
+    const event: NormalizedGitHubEvent = {
+      id: "github-pull-request-review-submitted",
+      type: "pull_request_review",
+      repo: "boudra/faro",
+      repositoryId: 7,
+      installationId: 42,
+      payload: {
+        action: "submitted",
+        pull_request: {
+          number: 312,
+          title: "smoke",
+          body: "pull request body",
+          user: { login: "boudra" },
+        },
+        review: {
+          body: "Please fix this @paseo",
+          state: "changes_requested",
+          user: { login: "boudra" },
+        },
+        sender: { login: "boudra" },
+      },
+      createdAt: "2026-05-19T00:00:00.000Z",
+    };
+
+    const matches = await provider.match(external(project.id, revision.id, event));
+    if (typeof matches === "string") throw new Error("expected review match");
+
+    assert.deepEqual(matches[0]?.triggerContext.reactionSubject, {
+      kind: "item",
+      issueNumber: 312,
+    });
+  });
+
+  it("does not add pull-request reactions for legacy review triggers", async () => {
+    const configuration = githubConfiguration();
+    configuration.triggers[0] = {
+      ...configuration.triggers[0]!,
+      on: "github.pull_request_review",
+    };
+    const { project, revision, store } = await activeConfiguration(configuration);
+    const provider = createProvider(store, new TestReactions());
+    const event: NormalizedGitHubEvent = {
+      id: "github-pull-request-review-submitted",
+      type: "pull_request_review",
+      repo: "boudra/faro",
+      repositoryId: 7,
+      installationId: 42,
+      payload: {
+        action: "submitted",
+        pull_request: { number: 312 },
+        review: { body: "@paseo please fix this", state: "changes_requested" },
+        sender: { login: "boudra" },
+      },
+      createdAt: "2026-05-19T00:00:00.000Z",
+    };
+
+    const matches = await provider.match(external(project.id, revision.id, event));
+    if (typeof matches === "string") throw new Error("expected review match");
+
+    assert.equal(matches[0]?.triggerContext.reactionSubject, null);
   });
 
   it.each([
@@ -562,7 +634,7 @@ function createEvent(
 
 function createItemEvent(
   type: "issues" | "pull_request",
-  action: "opened" | "labeled",
+  action: "opened" | "closed" | "labeled" | "synchronize",
   number: number,
 ): NormalizedGitHubEvent {
   return {

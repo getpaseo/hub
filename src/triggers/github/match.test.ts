@@ -27,6 +27,18 @@ describe("GitHub trigger matching", () => {
       expected: 0,
     },
     {
+      acceptance: "1: issue_closed accepts only closed issues",
+      on: "github.issue_closed",
+      event: eventFor("issues", { action: "closed", issue: issue() }),
+      expected: 1,
+    },
+    {
+      acceptance: "1: issue_closed rejects non-closed issues",
+      on: "github.issue_closed",
+      event: eventFor("issues", { action: "labeled", issue: issue() }),
+      expected: 0,
+    },
+    {
       acceptance: "2: pull_request_created accepts only opened pull requests",
       on: "github.pull_request_created",
       event: eventFor("pull_request", { action: "opened", pull_request: pullRequest() }),
@@ -36,6 +48,18 @@ describe("GitHub trigger matching", () => {
       acceptance: "2: pull_request_created rejects non-opened pull requests",
       on: "github.pull_request_created",
       event: eventFor("pull_request", { action: "closed", pull_request: pullRequest() }),
+      expected: 0,
+    },
+    {
+      acceptance: "2: pull_request_synchronized accepts only synchronized pull requests",
+      on: "github.pull_request_synchronized",
+      event: eventFor("pull_request", { action: "synchronize", pull_request: pullRequest() }),
+      expected: 1,
+    },
+    {
+      acceptance: "2: pull_request_synchronized rejects other pull request actions",
+      on: "github.pull_request_synchronized",
+      event: eventFor("pull_request", { action: "labeled", pull_request: pullRequest() }),
       expected: 0,
     },
     {
@@ -58,6 +82,36 @@ describe("GitHub trigger matching", () => {
       acceptance: "3: semantic comments reject actions other than created",
       on: "github.issue_comment_created",
       event: eventFor("issue_comment", { action: "edited", issue: issue(), comment: comment() }),
+      expected: 0,
+    },
+    {
+      acceptance: "3: changes_requested accepts only submitted change requests",
+      on: "github.pull_request_review_changes_requested",
+      event: eventFor("pull_request_review", {
+        action: "submitted",
+        pull_request: pullRequest(),
+        review: { body: "Please fix this", state: "changes_requested", user: { login: "boudra" } },
+      }),
+      expected: 1,
+    },
+    {
+      acceptance: "3: changes_requested rejects approved reviews",
+      on: "github.pull_request_review_changes_requested",
+      event: eventFor("pull_request_review", {
+        action: "submitted",
+        pull_request: pullRequest(),
+        review: { body: "Looks good", state: "approved", user: { login: "boudra" } },
+      }),
+      expected: 0,
+    },
+    {
+      acceptance: "3: changes_requested rejects edited change requests",
+      on: "github.pull_request_review_changes_requested",
+      event: eventFor("pull_request_review", {
+        action: "edited",
+        pull_request: pullRequest(),
+        review: { body: "Please fix this", state: "changes_requested", user: { login: "boudra" } },
+      }),
       expected: 0,
     },
     {
@@ -187,6 +241,19 @@ describe("GitHub trigger matching", () => {
     });
 
     assert.equal(matchTriggers(config, event).length, 1);
+  });
+
+  it("matches push events from an allowed sender", () => {
+    const config = configFor({ repo: "boudra/faro", from_users: ["boudra"] });
+    const trigger = config.triggers[0]!;
+    const configured = { ...config, triggers: [{ ...trigger, on: "github.push" }] };
+    const event = eventFor("push", {
+      after: "0123456789abcdef0123456789abcdef01234567",
+      ref: "refs/heads/topic",
+      commits: [],
+    });
+
+    assert.equal(matchTriggers(configured, event).length, 1);
   });
 
   it.each([
