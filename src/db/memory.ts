@@ -1345,14 +1345,18 @@ class MemoryDatabase implements Database {
 
   async acceptLinearEvent(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance> {
     const binding = await this.findLinearConnection(input.linearOrganizationId);
-    const reason = linearDropReason(input, binding);
+    const stoppedConnection =
+      binding === undefined ? this.findDisconnectedLinearStopConnection(input) : undefined;
+    const connection = binding ?? stoppedConnection;
+    const reason =
+      stoppedConnection === undefined ? linearDropReason(input, binding) : input.dropReason;
     const resourceIds = [input.projectId, input.teamId].flatMap((id) =>
       id === undefined ? [] : [id],
     );
     return this.acceptMemoryEvent(
       input,
-      binding?.organizationId,
-      binding?.id,
+      connection?.organizationId,
+      connection?.id,
       resourceIds[0] ?? null,
       reason,
       resourceIds,
@@ -3635,6 +3639,48 @@ class MemoryDatabase implements Database {
     }));
     this.providerEventReceipts.set(receipt.id, { ...receipt, acceptedRoutes });
     return { status: "accepted", events, receiptId: receipt.id };
+  }
+
+  private findDisconnectedLinearStopConnection(
+    input: AcceptLinearEventInput,
+  ): Pick<LinearConnectionRecord, "id" | "organizationId"> | undefined {
+    const agentSessionId = linearAgentSessionStopId(input);
+    if (agentSessionId === undefined) return undefined;
+    const running = Array.from(this.triggerRuns.values()).find((run) => {
+      return (
+        run.outcome === "accepted" &&
+        run.status === "running" &&
+        matchesLinearSessionOutput(run.outputContext, input.linearOrganizationId, agentSessionId)
+      );
+    });
+    const runningReceipt =
+      running === undefined
+        ? undefined
+        : this.providerEventReceipts.get(running.providerEventReceiptId);
+    if (runningReceipt?.provider === "linear" && runningReceipt.connectionId !== null) {
+      return {
+        id: runningReceipt.connectionId,
+        organizationId: runningReceipt.organizationId,
+      };
+    }
+
+    const accepted = Array.from(this.providerEventReceipts.values())
+      .filter(
+        (receipt) =>
+          receipt.provider === "linear" &&
+          receipt.connectionId !== null &&
+          receipt.source === "linear.agent_session" &&
+          receipt.droppedReason === null &&
+          receipt.acceptedRoutes !== null &&
+          receipt.receivedAt.getTime() <= input.receivedAt.getTime() &&
+          isRecord(receipt.payload) &&
+          receipt.payload["organizationId"] === input.linearOrganizationId &&
+          linearAgentSessionId(receipt) === agentSessionId,
+      )
+      .sort((left, right) => right.receivedAt.getTime() - left.receivedAt.getTime())[0];
+    return accepted?.connectionId === null || accepted?.connectionId === undefined
+      ? undefined
+      : { id: accepted.connectionId, organizationId: accepted.organizationId };
   }
 
   private findReceiptId(
