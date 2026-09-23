@@ -39,6 +39,18 @@ describe("GitHub trigger matching", () => {
       expected: 0,
     },
     {
+      acceptance: "2: pull_request_updated accepts synchronized pull requests",
+      on: "github.pull_request_updated",
+      event: eventFor("pull_request", { action: "synchronize", pull_request: pullRequest() }),
+      expected: 1,
+    },
+    {
+      acceptance: "2: pull_request_updated does not match edited pull-request metadata",
+      on: "github.pull_request_updated",
+      event: eventFor("pull_request", { action: "edited", pull_request: pullRequest() }),
+      expected: 0,
+    },
+    {
       acceptance: "3: created issue comments are separate from pull-request comments",
       on: "github.issue_comment_created",
       event: eventFor("issue_comment", { action: "created", issue: issue(), comment: comment() }),
