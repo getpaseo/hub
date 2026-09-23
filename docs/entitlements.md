@@ -12,12 +12,16 @@ An organization holds one row: `granted` (stamped from a plan template or provis
 
 The two are kept apart so a plan re-stamp can overwrite `granted` freely without ever touching
 `overrides`. A custom deal for a customer is a standard plan plus overrides, never a new plan
-row, and it survives every later plan sync intact.
+row, and it survives every later plan sync intact. A hand-granted trial is the same thing: an
+operator override with a reason, not a mechanism of its own.
 
 Entitlements are materialized onto the organization rather than referenced by plan id.
 Enforcement only ever reads the organization's own row; changing a plan means re-stamping the
-template onto every affected organization. This is also what makes deleting `src/billing/` safe:
-organizations keep whatever they were last stamped with, and nothing in enforcement breaks.
+template onto every affected organization. `plan_id` and `plan_version` are what make that
+re-stamp findable — an organization behind its plan is a `plan_version` mismatch, and on a hosted
+instance catalog sync converges it (docs/billing.md). This is also what makes deleting
+`src/billing/` safe: organizations keep whatever they were last stamped with, and nothing in
+enforcement breaks.
 
 ## Caps, flags, meters
 
@@ -64,7 +68,10 @@ teams still see their own limits and usage.
 - **Usage** (`src/usage/`) — org-scoped, read-only, always present. Any member sees the
   organization's effective limits, current usage against the meter, the over-limit banner, and the
   change history. No billing gate, so it renders identically self-hosted and hosted. Resolves
-  through the organization's own membership.
+  through the organization's own membership. The sidebar's execution meter
+  (`src/entitlements/ui/execution-meter.tsx`) is the same snapshot in one sentence: it renders only
+  where the executions meter has a finite limit, so an unlimited organization — every self-hosted
+  one by default, and every paid hosted one — has no meter at all.
 - **Operator** (`src/operator/`) — instance-scoped, gated on `user.is_instance_operator`. The only
   surface that writes overrides: an operator picks any organization and sets or clears its limits
   with a required reason. It is not a membership read — an operator acts on organizations it does
@@ -98,8 +105,11 @@ Lock the control when the UI can see the denial coming. Shared primitives in
 an existing overage, render a locked action, and link it to the deployment's remedy — the plan
 picker (`/o/:slug/settings/billing?plans=true`, open on arrival) on a billing-configured instance,
 the Usage page otherwise, since self-hosted has nothing to buy and the limit is the operator's to
-raise. The call site still owns its policy check and the sentence naming the limit: a boolean flag
-and a numeric cap need not pretend to be the same rule.
+raise. `useEntitlementRemedy` answers where and, in `action`, whether there is anything to buy at
+all; that is the one thing the meter needs to decide between offering Upgrade and offering
+nothing, and it is how the whole upgrade path stays out of the billing import boundary. The call
+site still owns its policy check and the sentence naming the limit: a boolean flag and a numeric
+cap need not pretend to be the same rule.
 
 Keep a locked control as a live link rather than a disabled button: a disabled control leads
 nowhere and explains nothing. The server-side denial message stays as the fallback for the race,

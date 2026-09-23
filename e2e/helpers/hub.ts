@@ -25,11 +25,6 @@ import {
 } from "../../src/e2e/harness/browser-billing.js";
 import { configurationBundleFixture } from "../../src/test-utils/configuration-bundle.js";
 import { slugify } from "../../src/slug.js";
-import {
-  SIGNUP_INTENT_COOKIE,
-  SIGNUP_INTENT_QUERY_PARAMETER,
-  type SignupIntent,
-} from "../../src/organizations/signup-intent.js";
 import { AppSetupSurface, allowClipboard } from "./apps.js";
 import { SHOTS } from "./app-evidence.js";
 import {
@@ -52,8 +47,6 @@ export interface BuiltApplication {
   setBillingProduct(product: FixtureBillingProduct): Promise<void>;
   /** Stand in for a portal cancellation: move the organization's fixture subscription to canceled. */
   cancelSubscription(organizationId: string): Promise<void>;
-  /** Arms one creation-time Stripe trial failure, exercising the Checkout fallback. */
-  failNextTrialCreation(): Promise<void>;
   /** The seat quantity billing last reported to the fixture Stripe for this organization. */
   reportedSeatQuantity(organizationId: string): Promise<number | null>;
   /** Arms one account-setup failure inside the built application, for the error/retry journey. */
@@ -105,8 +98,8 @@ export interface BuiltApplicationOptions {
     ownerEmail: string;
     ownerPassword: string;
   };
-  /** Configures billing with the fixture Stripe catalog (internal free record plus the one
-   * purchasable Paseo Hub plan). Default: unconfigured. */
+  /** Configures billing with the fixture Stripe catalog (the Free plan plus the one purchasable
+   * plan). Default: unconfigured. */
   billing?: boolean;
 }
 
@@ -277,20 +270,6 @@ export class PaseoHub {
   ): Promise<void> {
     await this.signUpAs(alias, account);
     await this.requireUser(alias).completePasswordRecovery(account, replacementPassword);
-  }
-
-  async expectUnsupportedSignupPlanIgnored(alias: string, plan: string): Promise<void> {
-    const user = await this.user(alias);
-    await user.expectUnsupportedSignupPlanIgnored(plan);
-  }
-
-  async signUpAsWithPlanIntent(alias: string, account: Account, plan: SignupIntent): Promise<void> {
-    const user = await this.user(alias);
-    await user.signUp(account, plan);
-  }
-
-  async expectSignupPlanCookie(alias: string, plan: SignupIntent): Promise<void> {
-    await this.requireUser(alias).expectSignupPlanCookie(plan);
   }
 
   async createOrganization(alias: string, name: string): Promise<void> {
@@ -891,14 +870,13 @@ export class PaseoHub {
 
   /**
    * Starts a second, billing-configured application and walks the plan catalog mirror through
-   * three states. First: the public endpoint serves the one purchasable plan and withholds the
-   * internal free entitlement record, which is in the same Stripe catalog. Second: a Stripe
-   * dashboard typo (invalid `ent_seats_max`) delivered as a real HMAC-signed `product.updated`
-   * is rejected by the sync, logged loudly, and leaves the previously synced row serving. Third:
-   * a product that loses its `paseo_plan` tag is deactivated by the reconciled snapshot, so the
-   * catalog stops offering it rather than leaving a removed plan selectable — and what is left is
-   * an empty offer, never the free record promoted into one. Re-tagging restores it, because the
-   * mirror is a reconciled snapshot rather than a one-way delete.
+   * three states. First: the public endpoint serves both plans Hub offers, Free included. Second:
+   * a Stripe dashboard typo (invalid `ent_seats_max`) delivered as a real HMAC-signed
+   * `product.updated` is rejected by the sync, logged loudly, and leaves the previously synced row
+   * serving. Third: a product that loses its `paseo_plan` tag is deactivated by the reconciled
+   * snapshot, so the catalog stops offering it rather than leaving a removed plan selectable.
+   * Re-tagging restores it, because the mirror is a reconciled snapshot rather than a one-way
+   * delete.
    */
   async proveStripePlanCatalogMirror(): Promise<string> {
     const application = await this.startApplication({ databaseProfile: "fresh", billing: true });
@@ -930,9 +908,9 @@ export class PaseoHub {
       metadata: { paseo_plan: "false" },
     });
     await this.deliverBillingWebhook(application, "product.updated", "prod_fixture_hosted");
-    // Nothing left to sell. The free record is still mirrored for entitlement stamping, so an
-    // empty offer here is also the proof that it never gets promoted into one.
-    await this.expectPublicBillingPlans(application, []);
+    // Nothing left to sell. Free stays: it is still mirrored, still active, and still the plan
+    // every organization here is on.
+    await this.expectPublicBillingPlans(application, [FIXTURE_FREE_PLAN_EXPECTATION]);
 
     // Re-tagging in Stripe brings the plan back: the mirror is a reconciled snapshot, not a
     // one-way delete.
@@ -949,6 +927,20 @@ export class PaseoHub {
     const response = await this.requests.get(`${application.origin}/api/billing/plans`);
     expect(response.status()).toBe(200);
     expect(await response.json()).toEqual({ plans: expected });
+  }
+
+  /**
+   * A Stripe dashboard edit to the Free product's monthly allowance, delivered as a real signed
+   * `product.updated`. The resync mirrors the new template and carries every organization on the
+   * plan onto it — the whole migration mechanism for a plan change.
+   */
+  async raiseFreeExecutionAllowance(limit: number): Promise<void> {
+    const free = FIXTURE_BILLING_PRODUCTS[0]!;
+    await this.primary.setBillingProduct({
+      ...free,
+      metadata: { ...free.metadata, ent_executions_monthly_limit: String(limit) },
+    });
+    await this.deliverBillingWebhook(this.primary, "product.updated", "prod_fixture_free");
   }
 
   private async deliverBillingWebhook(
@@ -1022,13 +1014,10 @@ export class PaseoHub {
    * that a multi-seat paid organization is billed for its actual seats, not one. Polled because the
    * report is post-commit off the membership change.
    */
-  async expectReportedSeatQuantity(alias: string, quantity: number): Promise<void> {
+  /** Null means Stripe was never told anything: the organization has no subscription at all. */
+  async expectReportedSeatQuantity(alias: string, quantity: number | null): Promise<void> {
     const organizationId = await this.organizationIdForAlias(alias);
     await expect.poll(() => this.primary.reportedSeatQuantity(organizationId)).toBe(quantity);
-  }
-
-  async failNextTrialCreation(): Promise<void> {
-    await this.primary.failNextTrialCreation();
   }
 
   async subscribeToPlan(alias: string, plan: string): Promise<void> {
@@ -1039,10 +1028,6 @@ export class PaseoHub {
     await this.requireUser(alias).openPlanDialog();
   }
 
-  async expectCardlessTrialOffer(alias: string): Promise<void> {
-    await this.requireUser(alias).expectCardlessTrialOffer();
-  }
-
   async choosePlan(alias: string, plan: string): Promise<void> {
     await this.requireUser(alias).choosePlan(plan);
   }
@@ -1051,24 +1036,28 @@ export class PaseoHub {
     await this.requireUser(alias).expectCurrentPlan(plan);
   }
 
-  async expectActiveTrial(alias: string): Promise<void> {
-    await this.requireUser(alias).expectActiveTrial();
+  async expectPaidPlan(alias: string): Promise<void> {
+    await this.requireUser(alias).expectPaidPlan();
   }
 
-  async expectNoSubscription(alias: string): Promise<void> {
-    await this.requireUser(alias).expectNoSubscription();
+  async expectUpgradeOffer(alias: string): Promise<void> {
+    await this.requireUser(alias).expectUpgradeOffer();
   }
 
-  async expectNoSecondTrialOffer(alias: string): Promise<void> {
-    await this.requireUser(alias).expectNoSecondTrialOffer();
+  async dismissPlanDialog(alias: string): Promise<void> {
+    await this.requireUser(alias).dismissPlanDialog();
   }
 
-  async expectTrialReminder(alias: string): Promise<void> {
-    await this.requireUser(alias).expectTrialReminder();
+  async expectExecutionMeter(alias: string, used: number, limit?: number): Promise<void> {
+    await this.requireUser(alias).expectExecutionMeter(used, limit);
   }
 
-  async expectNoTrialReminder(alias: string): Promise<void> {
-    await this.requireUser(alias).expectNoTrialReminder();
+  async expectFreePlan(alias: string, used: number): Promise<void> {
+    await this.requireUser(alias).expectFreePlan(used);
+  }
+
+  async expectNoExecutionMeter(alias: string): Promise<void> {
+    await this.requireUser(alias).expectNoExecutionMeter();
   }
 
   async expectPlanPickerFitsPhone(alias: string): Promise<void> {
@@ -2588,37 +2577,14 @@ class HubUser {
     this.navigation = new ProjectNavigation(page);
   }
 
-  async signUp(account: Account, plan?: SignupIntent): Promise<void> {
+  async signUp(account: Account): Promise<void> {
     this.email = account.email.toLowerCase();
-    if (plan !== undefined) {
-      await this.page.goto(`${this.origin}/?${SIGNUP_INTENT_QUERY_PARAMETER}=${plan}`);
-    } else if (this.page.url() === "about:blank") {
+    if (this.page.url() === "about:blank") {
       await this.page.goto(this.origin);
     }
     await this.submitSignUp(account);
     await this.completeEmailVerification(account.email);
     await expect(this.page.getByRole("heading", { name: "Choose an organization" })).toBeVisible();
-  }
-
-  async expectUnsupportedSignupPlanIgnored(plan: string): Promise<void> {
-    await this.page.goto(
-      `${this.origin}/?${SIGNUP_INTENT_QUERY_PARAMETER}=${encodeURIComponent(plan)}`,
-    );
-    await expect(this.page.getByRole("heading", { name: "Sign in to Paseo Hub" })).toBeVisible();
-    await expect(
-      this.context
-        .cookies(this.origin)
-        .then((cookies) => cookies.find((cookie) => cookie.name === SIGNUP_INTENT_COOKIE)),
-    ).resolves.toBeUndefined();
-  }
-
-  async expectSignupPlanCookie(plan: SignupIntent): Promise<void> {
-    await expect
-      .poll(async () => {
-        const cookies = await this.context.cookies(this.origin);
-        return cookies.find((cookie) => cookie.name === SIGNUP_INTENT_COOKIE)?.value;
-      })
-      .toBe(plan);
   }
 
   async completeBootstrapJourney(
@@ -4036,9 +4002,9 @@ class HubUser {
   }
 
   /**
-   * The footer's stops after the destinations: Help, then the account menu. A trial reminder
-   * precedes Help when the organization is trialing, which this harness never is — the browser
-   * fixtures that configure billing do not drive the sidebar by keyboard.
+   * The footer's stops after the destinations: Help, then the account menu. The execution meter
+   * and its upgrade link precede Help on a metered organization, which this harness never is —
+   * the browser fixtures that configure billing do not drive the sidebar by keyboard.
    */
   private async tabThroughSidebarFooter(): Promise<void> {
     await this.page.keyboard.press("Tab");
@@ -4250,18 +4216,16 @@ class HubUser {
 
   async openPlanDialog(): Promise<void> {
     await this.openOrganizationSection("Billing");
-    await this.page.getByRole("button", { name: /^(Subscribe|Change plan)$/u }).click();
+    await this.page.getByRole("button", { name: /^(Upgrade|Change plan)$/u }).click();
     await expect(this.page.getByRole("dialog")).toBeVisible();
   }
 
   async choosePlan(plan: string): Promise<void> {
     // Each plan's button carries the plan in its accessible name even when the visible label is
-    // the short "Start free trial", so a plan is always addressable by name.
+    // the short "Subscribe", so a plan is always addressable by name.
     await this.page
       .getByRole("dialog")
-      .getByRole("button", {
-        name: new RegExp(`^(Start free trial with|Subscribe to) ${plan}$`, "u"),
-      })
+      .getByRole("button", { name: `Subscribe to ${plan}` })
       .click();
     await expect(
       this.page.getByRole("heading", { name: "Billing", exact: true, level: 1 }),
@@ -4284,69 +4248,94 @@ class HubUser {
   }
 
   /**
-   * The billing page for an organization with nothing to bill: the fact, and the one thing to do
-   * about it. Nothing dresses the zero-execution enforcement floor up as a tier the customer is
-   * on, and nothing argues for the plan — that is what the picker is for.
+   * The billing page for an organization on Free: the plan it is on, what that plan includes, how
+   * much of the allowance is left, and the one thing to do about it. Nothing is dated, because
+   * nothing is going to happen to it, and there is no subscription to manage.
    */
-  async expectNoSubscription(): Promise<void> {
+  async expectFreePlan(used: number): Promise<void> {
     await this.openOrganizationSection("Billing");
     await this.page.reload();
     const plan = this.planSection();
-    await expect(plan.getByText("No subscription", { exact: true })).toBeVisible();
-    await expect(plan.getByRole("button", { name: "Subscribe", exact: true })).toBeVisible();
-    await expect(plan).not.toContainText("0 executions");
-    await expect(plan.getByText("Free", { exact: true })).toHaveCount(0);
+    await expect(plan.getByText(FREE_PLAN_NAME, { exact: true })).toBeVisible();
+    await expect(plan.getByText(executionMeterText(used))).toBeVisible();
+    // The plan's own figures come from the catalog's `included` facts, not from static copy.
+    await expect(plan.getByRole("listitem")).toHaveText([
+      `${FIXTURE_FREE_EXECUTIONS} agent runs a month`,
+      "1 seat",
+      "Managed GitHub, Slack, and Discord triggers",
+      "Daemons run on your machines",
+    ]);
+    await expect(plan.getByRole("button", { name: "Upgrade", exact: true })).toBeVisible();
     await expect(plan.getByRole("button", { name: "Manage billing" })).toHaveCount(0);
-    await expect(plan.getByRole("button", { name: "Choose a plan" })).toHaveCount(0);
-    await expect(plan).not.toContainText("run workflows");
+    await expect(plan.getByRole("button", { name: "Change plan" })).toHaveCount(0);
+    // No countdown, no expiry, no "no subscription": Free is where the organization lives.
+    await expect(plan).not.toContainText("No plan");
+    await expect(plan).not.toContainText("trial");
+    await expect(plan).not.toContainText("Renews on");
+    await expect(plan).not.toContainText("Cancels on");
     await expectAccessible(this.page);
   }
 
   /**
-   * The sidebar's ambient countdown. The day count is Stripe's to decide, so this pins the
-   * sentence rather than a number — what matters is that it is there and reads as days left.
+   * The sidebar's standing account of the allowance, and the way to more of it. Reloaded first:
+   * the limits behind it are read once per page load, so a stamp that landed since (an upgrade, a
+   * cancellation, a Stripe catalog edit) shows up on the next load rather than mid-session.
+   *
+   * The item is named by the whole sentence and shows the count; the count has to fit the 240px
+   * sidebar at whatever numbers the test uses, which the overflow check is here to prove.
    */
-  async expectTrialReminder(): Promise<void> {
-    await expect(this.trialReminder()).toBeVisible();
+  async expectExecutionMeter(used: number, limit?: number): Promise<void> {
+    await this.page.reload();
+    const meter = this.executionMeter(used, limit);
+    await expect(meter).toBeVisible();
+    await expect(meter).toHaveText(executionMeterCount(used, limit));
+    const clipped = await meter
+      .locator("span")
+      .evaluate((label) => label.scrollWidth - label.clientWidth);
+    expect(clipped, "the sidebar meter is truncated").toBeLessThanOrEqual(0);
+    await expect(this.page.getByRole("link", { name: "Upgrade", exact: true })).toBeVisible();
   }
 
-  /** No trial, no countdown. A paid, free, or cancelled organization is told nothing. */
-  async expectNoTrialReminder(): Promise<void> {
-    await expect(this.trialReminder()).toHaveCount(0);
+  /** Unlimited executions, so there is nothing to count and nothing to sell. */
+  async expectNoExecutionMeter(): Promise<void> {
+    await this.page.reload();
+    await expect(this.page.getByRole("link", { name: /executions this month$/u })).toHaveCount(0);
+    await expect(this.page.getByRole("link", { name: "Upgrade", exact: true })).toHaveCount(0);
   }
 
-  private trialReminder(): Locator {
-    return this.page.getByRole("link", { name: /^\d+ days? left in trial$/u });
+  private executionMeter(used: number, limit?: number): Locator {
+    return this.page.getByRole("link", { name: executionMeterText(used, limit), exact: true });
   }
 
-  /** The picker offering the cardless trial, exactly: a badge, the offer, and the action. */
-  async expectCardlessTrialOffer(): Promise<void> {
+  /** The picker: both plans, the current one marked, and one thing to buy. */
+  async expectUpgradeOffer(): Promise<void> {
     await this.openPlanDialog();
     const dialog = this.page.getByRole("dialog");
-    await expect(dialog).toContainText("7 days free · No card required");
-    await expect(
-      dialog.getByRole("button", { name: `Start free trial with ${HOSTED_PLAN_NAME}` }),
-    ).toHaveText("Start free trial");
-    await this.expectPickerShowsOnlyTheOffer(dialog);
-    // Nothing frames or hedges the offer: no heading, no sales sentence, no post-trial footnote.
-    await expect(dialog).not.toContainText("7 days free, then");
-    await expect(dialog).not.toContainText("Nothing is charged");
-    await expectAccessible(this.page);
-  }
-
-  /**
-   * The picker only ever shows what Hub sells, and only what it takes to accept it. The internal
-   * free entitlement record is in the same Stripe catalog, so its absence here is the visible half
-   * of the public-catalog boundary. The interval switch is absent because the catalog prices one
-   * interval, and there is no visible heading — the dialog's accessible name is enough.
-   */
-  private async expectPickerShowsOnlyTheOffer(dialog: Locator): Promise<void> {
-    await expect(dialog.getByRole("heading", { level: 3 })).toHaveText([HOSTED_PLAN_NAME]);
+    await expect(dialog.getByRole("heading", { level: 3 })).toHaveText([
+      FREE_PLAN_NAME,
+      HOSTED_PLAN_NAME,
+    ]);
     await expect(dialog).toContainText("€15");
     await expect(dialog).toContainText("per seat / month");
-    await expect(dialog).not.toContainText("0 executions");
+    await expect(dialog).toContainText("€0");
+    await expect(dialog).toContainText("forever");
+    // Each column states its own figures, from the catalog rather than from copy.
+    await expect(dialog).toContainText(`${FIXTURE_FREE_EXECUTIONS} agent runs a month`);
+    await expect(dialog).toContainText("1 seat");
+    await expect(dialog).toContainText("Unlimited agent runs");
+    await expect(dialog).toContainText("Unlimited seats");
+    await expect(
+      dialog.getByRole("button", { name: `Current plan: ${FREE_PLAN_NAME}` }),
+    ).toBeDisabled();
+    await expect(
+      dialog.getByRole("button", { name: `Subscribe to ${HOSTED_PLAN_NAME}` }),
+    ).toHaveText("Subscribe");
+    // Nothing frames or hedges the offer, and no trial is promised anywhere.
+    await expect(dialog).not.toContainText("trial");
+    await expect(dialog).not.toContainText("No card required");
     await expect(dialog).not.toContainText("Choose your plan");
     await expect(dialog).not.toContainText("Recommended");
+    // The catalog prices one interval, so there is no switch.
     await expect(dialog.getByRole("group", { name: "Billing interval" })).toHaveCount(0);
     await expect(dialog.getByRole("button", { name: /^(Monthly|Annual)$/u })).toHaveCount(0);
     // A dialog still has to announce itself, so its title exists for assistive technology and
@@ -4354,6 +4343,16 @@ class HubUser {
     const title = dialog.getByRole("heading", { level: 2 });
     await expect(title).toHaveCount(1);
     expect((await title.boundingBox())?.height ?? 0).toBeLessThanOrEqual(1);
+    await expectAccessible(this.page);
+  }
+
+  /** The paywall is dismissible from the keyboard alone, and leaves the page behind it intact. */
+  async dismissPlanDialog(): Promise<void> {
+    await this.page.keyboard.press("Escape");
+    await expect(this.page.getByRole("dialog")).toHaveCount(0);
+    await expect(
+      this.page.getByRole("heading", { name: "Billing", exact: true, level: 1 }),
+    ).toBeVisible();
   }
 
   /** Scoped to the Plan section: a plan name could otherwise collide with a settings tab. */
@@ -4363,45 +4362,31 @@ class HubUser {
       .filter({ has: this.page.getByRole("heading", { name: "Plan", exact: true }) });
   }
 
-  async expectActiveTrial(): Promise<void> {
+  /** The paid plan, live: what it includes, the portal, and no allowance to count. */
+  async expectPaidPlan(): Promise<void> {
     await this.openOrganizationSection("Billing");
     await this.page.reload();
     const plan = this.planSection();
     await expect(plan.getByText(HOSTED_PLAN_NAME, { exact: true })).toBeVisible();
-    await expect(plan.getByText("Trialing", { exact: true })).toBeVisible();
-    await expect(plan.getByText(/^Trial ends /u)).toBeVisible();
+    await expect(plan.getByText("Active", { exact: true })).toBeVisible();
+    await expect(plan.getByText(/^Renews on /u)).toBeVisible();
     await expect(plan.getByRole("button", { name: "Manage billing" })).toBeVisible();
-    // The card states what the trial entitles the organization to, unlabelled — the plan name
+    // The card states what the plan entitles the organization to, unlabelled — the plan name
     // above it is the label.
     await expect(plan.getByRole("listitem")).toHaveText([
+      "Unlimited agent runs",
+      "Unlimited seats",
       "Paseo operates Hub",
       "Managed GitHub, Slack, and Discord triggers",
       "Daemons run on your machines",
       "Same projects, workflows, and activity",
     ]);
-    // One public offer means nothing to change to, so the picker has no entry point here.
+    // Unlimited executions: nothing to meter, and one paid plan means nothing to change to.
+    await expect(plan).not.toContainText("executions this month");
     await expect(plan.getByRole("button", { name: "Change plan" })).toHaveCount(0);
+    await expect(plan.getByRole("button", { name: "Upgrade" })).toHaveCount(0);
     await expect(plan).not.toContainText("Stripe billing portal");
     await expectAccessible(this.page);
-  }
-
-  /**
-   * A former subscriber is never promised a second free trial: the picker drops the cardless
-   * offer and falls back to ordinary paid Checkout. Escape closes it, so the paywall is
-   * dismissible from the keyboard alone.
-   */
-  async expectNoSecondTrialOffer(): Promise<void> {
-    await this.openPlanDialog();
-    const dialog = this.page.getByRole("dialog");
-    await expect(dialog).not.toContainText("No card required");
-    await expect(dialog.getByRole("button", { name: /^Start free trial/u })).toHaveCount(0);
-    await expect(
-      dialog.getByRole("button", { name: `Subscribe to ${HOSTED_PLAN_NAME}` }),
-    ).toHaveText("Subscribe");
-    await this.expectPickerShowsOnlyTheOffer(dialog);
-    await expectAccessible(this.page);
-    await this.page.keyboard.press("Escape");
-    await expect(dialog).toHaveCount(0);
   }
 
   /**
@@ -4416,7 +4401,7 @@ class HubUser {
       await this.page.evaluate(() => document.documentElement.scrollWidth),
     ).toBeLessThanOrEqual(viewport!.width);
     const action = this.page.getByRole("dialog").getByRole("button", {
-      name: new RegExp(`^(Start free trial with|Subscribe to) ${HOSTED_PLAN_NAME}$`, "u"),
+      name: `Subscribe to ${HOSTED_PLAN_NAME}`,
     });
     await action.scrollIntoViewIfNeeded();
     await expect(action).toBeInViewport();
@@ -5629,6 +5614,7 @@ interface PublicBillingPlanExpectation {
     model: "per_unit";
     unit: { key: "seat"; label: "seat" };
   };
+  included: { seats: number | null; executionsPerMonth: number | null };
   features: readonly { key: string; label: string; tooltip: string | null }[];
   prices: readonly {
     interval: "monthly" | "annual";
@@ -5640,14 +5626,45 @@ interface PublicBillingPlanExpectation {
 }
 
 /**
- * What `/api/billing/plans` serves for the fixture catalog in `browser-billing.ts`: the one plan
- * Hub sells. The `free` product is in that catalog too — it carries the entitlement floor — but it
- * is not an offer, and billing withholds it from every public response.
+ * What `/api/billing/plans` serves for the fixture catalog in `browser-billing.ts`: both plans
+ * Hub offers. Free is in it — the marketing page renders the pair from this response — and its
+ * entitlement template is not, which is the public-catalog boundary.
  */
+const FIXTURE_FREE_PLAN_EXPECTATION: PublicBillingPlanExpectation = {
+  slug: "free",
+  name: "Free",
+  billing: {
+    model: "per_unit",
+    unit: {
+      key: "seat",
+      label: "seat",
+    },
+  },
+  included: { seats: 1, executionsPerMonth: 50 },
+  features: [
+    {
+      key: "managed-triggers",
+      label: "Managed GitHub, Slack, and Discord triggers",
+      tooltip: null,
+    },
+    { key: "daemon-location", label: "Daemons run on your machines", tooltip: null },
+  ],
+  prices: [
+    {
+      interval: "monthly",
+      intervalCount: 1,
+      unitAmount: 0,
+      currency: "eur",
+      tooltip: null,
+    },
+  ],
+};
+
 const FIXTURE_BILLING_PLAN_EXPECTATIONS: readonly PublicBillingPlanExpectation[] = [
+  FIXTURE_FREE_PLAN_EXPECTATION,
   {
     slug: "hosted",
-    name: "Hosted",
+    name: "Pro",
     billing: {
       model: "per_unit",
       unit: {
@@ -5655,12 +5672,9 @@ const FIXTURE_BILLING_PLAN_EXPECTATIONS: readonly PublicBillingPlanExpectation[]
         label: "seat",
       },
     },
+    included: { seats: null, executionsPerMonth: null },
     features: [
-      {
-        key: "hub-operation",
-        label: "Paseo operates Hub",
-        tooltip: null,
-      },
+      { key: "hub-operation", label: "Paseo operates Hub", tooltip: null },
       {
         key: "managed-triggers",
         label: "Managed GitHub, Slack, and Discord triggers",
@@ -5685,8 +5699,23 @@ const FIXTURE_BILLING_PLAN_EXPECTATIONS: readonly PublicBillingPlanExpectation[]
     ],
   },
 ];
-/** The one plan the fixture catalog — and the live Stripe catalog — publishes. */
-const HOSTED_PLAN_NAME = "Hosted";
+
+/** The two plans the fixture catalog — and the live Stripe catalog — publishes. */
+const FREE_PLAN_NAME = "Free";
+const HOSTED_PLAN_NAME = "Pro";
+
+/** The meter's sentence — the sidebar item's accessible name, and the billing card's line. */
+function executionMeterText(used: number, limit: number = FIXTURE_FREE_EXECUTIONS): string {
+  return `${executionMeterCount(used, limit)} this month`;
+}
+
+/** What the sidebar item shows, which is the sentence without its period. */
+function executionMeterCount(used: number, limit: number = FIXTURE_FREE_EXECUTIONS): string {
+  return `${used} of ${limit} executions`;
+}
+
+/** `ent_executions_monthly_limit` on the fixture Free product. */
+const FIXTURE_FREE_EXECUTIONS = 50;
 const HOSTILE_ORIGIN = "https://hostile.invalid";
 const JSON_TYPE = "application/json";
 const PROBLEM_TYPE = "application/problem+json";

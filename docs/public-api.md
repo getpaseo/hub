@@ -40,27 +40,61 @@ The self-hosted Scalar reference is served with a restrictive Content Security P
 ## Plan catalog
 
 `GET /api/billing/plans` is unauthenticated and read-only. It returns the plan catalog mirrored
-from Stripe (see docs/billing.md) as marketing copy and pricing only. It never includes the
-entitlement template (`granted` caps/flags/meters); that stays internal to `src/billing/` and
-`src/entitlements/`. This is the shape the marketing site (paseo.sh) fetches to render pricing;
-Hub itself has no pricing page.
+from Stripe (see docs/billing.md) as marketing copy, pricing, and the figures each plan includes.
+It never includes the entitlement document itself (`granted` caps/flags/meters); that stays
+internal to `src/billing/` and `src/entitlements/`. This is the shape the marketing site
+(paseo.sh) fetches to render pricing; Hub itself has no pricing page.
 
-It returns the plans that are for sale. The catalog also carries the internal record that
-authors the no-subscription entitlement floor; that one is withheld here and everywhere else a
-customer can see. Today the hosted offer is one plan:
+It returns every plan the instance offers, the free one included, in catalog order. Today that is
+two:
 
 ```json
 {
   "plans": [
     {
-      "slug": "hosted",
-      "name": "Hosted",
+      "slug": "free",
+      "name": "Free",
       "billing": {
         "model": "per_unit",
         "unit": {
           "key": "seat",
           "label": "seat"
         }
+      },
+      "included": {
+        "seats": 1,
+        "executionsPerMonth": 50
+      },
+      "features": [
+        {
+          "key": "daemon-location",
+          "label": "Daemons run on your machines",
+          "tooltip": null
+        }
+      ],
+      "prices": [
+        {
+          "interval": "monthly",
+          "intervalCount": 1,
+          "unitAmount": 0,
+          "currency": "eur",
+          "tooltip": null
+        }
+      ]
+    },
+    {
+      "slug": "hosted",
+      "name": "Pro",
+      "billing": {
+        "model": "per_unit",
+        "unit": {
+          "key": "seat",
+          "label": "seat"
+        }
+      },
+      "included": {
+        "seats": null,
+        "executionsPerMonth": null
       },
       "features": [
         {
@@ -83,9 +117,15 @@ customer can see. Today the hosted offer is one plan:
 }
 ```
 
+`included` is what the plan gives, as figures: `seats` is the seat cap and `executionsPerMonth`
+the monthly agent-run allowance, each `null` for unlimited. They are derived from the same
+validated template the instance enforces, so a plan's advertised numbers and its stamped limits
+cannot disagree. Render these rather than writing the numbers into your own copy; `features` is
+prose that no template can contradict.
+
 `unitAmount` is the amount per billing unit in the smallest currency unit (cents for `eur`),
-matching Stripe's own `Price` convention. An interval is absent when the plan has no active price
-at that interval. A
-self-hosted instance without `STRIPE_SECRET_KEY` 404s this route rather than serving an empty
-catalog — the billing boundary means the route is never registered on an unconfigured instance.
-See docs/billing.md.
+matching Stripe's own `Price` convention; a free plan prices at `0`. An interval is absent when the
+plan has no active price at that interval. `slug` is catalog identity and does not change with the
+displayed `name`. A self-hosted instance without `STRIPE_SECRET_KEY` 404s this route rather than
+serving an empty catalog — the billing boundary means the route is never registered on an
+unconfigured instance. See docs/billing.md.

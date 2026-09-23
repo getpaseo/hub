@@ -94,11 +94,6 @@ interface BillingInspectCommand {
   organizationId: string;
 }
 
-interface BillingTrialFailureCommand {
-  id: string;
-  type: "fail-next-billing-trial";
-}
-
 interface AccountSetupFailureCommand {
   id: string;
   type: "fail-next-account-setup";
@@ -462,20 +457,14 @@ function browserProviderPage(request: Request, publicBaseUrl: string): Response 
   );
 }
 
-/** Hosted harness: new organizations stamp the Free floor and immediately start a Stripe trial;
- * membership changes re-report seats. Self-hosted keeps unlimited and no Stripe hooks. */
+/** Hosted harness: new organizations stamp the Free plan; membership changes re-report seats.
+ * Self-hosted keeps unlimited and no Stripe hooks. */
 function billingAuthOptions(
   billing: BillingRuntime | null,
-): Partial<
-  Pick<
-    AuthServerOptions,
-    "provisioningEntitlements" | "onOrganizationCreated" | "onMembershipChanged"
-  >
-> {
+): Partial<Pick<AuthServerOptions, "provisioningEntitlements" | "onMembershipChanged">> {
   if (billing === null) return {};
   return {
     provisioningEntitlements: () => billing.provisioningEntitlement(),
-    onOrganizationCreated: (event) => billing.startSignup(event),
     onMembershipChanged: (organizationId: string) => billing.reportSeatUsage(organizationId),
   };
 }
@@ -874,25 +863,7 @@ function acceptBillingCommand(
     });
     return true;
   }
-  if (isBillingTrialFailureCommand(message)) {
-    if (billingClient === null) {
-      process.send?.({ id: message.id, ok: false, error: "billing is not configured" });
-      return true;
-    }
-    billingClient.failNextTrialCreation();
-    process.send?.({ id: message.id, ok: true });
-    return true;
-  }
   return false;
-}
-
-function isBillingTrialFailureCommand(value: unknown): value is BillingTrialFailureCommand {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    Reflect.get(value, "type") === "fail-next-billing-trial" &&
-    typeof Reflect.get(value, "id") === "string"
-  );
 }
 
 function isGitHubConfigurationCommand(value: unknown): value is GitHubConfigurationCommand {

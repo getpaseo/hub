@@ -2582,6 +2582,16 @@ class PgDatabase implements Database {
     return rows.rows.map(toEntitlementChangeRecord);
   }
 
+  async listOrganizationsOffPlanTemplate(planId: string, templateHash: string): Promise<string[]> {
+    const rows = await query<{ organization_id: string }>(
+      this.pool,
+      `select organization_id from organization_entitlements
+       where plan_id = $1 and plan_version is distinct from $2`,
+      [planId, templateHash],
+    );
+    return rows.rows.map((row) => row.organization_id);
+  }
+
   async listOrganizationsForOperator(): Promise<OperatorOrganizationRecord[]> {
     const rows = await query<OperatorOrganizationRow>(
       this.pool,

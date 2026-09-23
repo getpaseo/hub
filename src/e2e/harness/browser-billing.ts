@@ -26,12 +26,13 @@ export interface FixtureBillingPrice {
  * A deterministic mirror of the catalog Hub actually publishes, not an invented price list. Two
  * products, because that is what Stripe carries:
  *
- * - `free` is the internal entitlement record. It exists so provisioning and cancellation have a
- *   template to stamp; it is not an offer, and `BillingRuntime.publicCatalog` withholds it. Its
- *   zero execution limit is the enforcement floor a customer without a subscription lands on —
- *   E2E asserts it is never rendered as a plan.
- * - `hosted` is the one purchasable plan: Hosted, €15 per seat per month, monthly only. There
- *   is no annual price, so the picker has no interval to switch between.
+ * - `free` is the plan every hosted organization is provisioned on and returns to after
+ *   cancellation: one seat, no invitations, and a monthly execution allowance. The allowance is
+ *   authored in Stripe metadata, so this number and `ent_executions_monthly_limit` on the live
+ *   Free product have to agree.
+ * - `hosted` is the one purchasable plan: Pro, €15 per seat per month, monthly only. There is no
+ *   annual price, so the picker has no interval to switch between. The slug stays `hosted`; the
+ *   customer-facing name is Hub's, in `src/billing/plan-presentation.ts`.
  *
  * Keep this in step with the live Stripe catalog. A test that needs several plans to exercise
  * generic catalog behaviour builds its own synthetic products (see `src/billing/reconcile.test.ts`)
@@ -47,7 +48,7 @@ export const FIXTURE_BILLING_PRODUCTS: readonly FixtureBillingProduct[] = [
       paseo_plan_slug: "free",
       ent_seats_max: "1",
       ent_can_invite: "false",
-      ent_executions_monthly_limit: "0",
+      ent_executions_monthly_limit: "50",
     },
   },
   {
@@ -124,7 +125,6 @@ export interface FixtureSubscriptionState {
   quantity: number;
   status: string;
   currentPeriodEnd: Date | null;
-  trialEnd: Date | null;
   cancelAtPeriodEnd: boolean;
 }
 
@@ -153,12 +153,6 @@ export function fixtureSubscriptionId(organizationId: string): string {
  */
 export class FixtureStripeBillingClient {
   private readonly subscriptions = new Map<string, FixtureSubscriptionState>();
-  private failNextTrial = false;
-
-  /** Test-only: make the next creation-time trial fail before Stripe records a subscription. */
-  failNextTrialCreation(): void {
-    this.failNextTrial = true;
-  }
 
   async ensureCustomer(input: { organizationId: string }): Promise<string> {
     return `cus_fixture_${input.organizationId}`;
@@ -180,25 +174,11 @@ export class FixtureStripeBillingClient {
     priceId: string;
     quantity: number;
     successUrl: string;
-    trial: boolean;
   }): Promise<{ url: string }> {
     // Idempotent initial subscription: if one already exists, checkout does not open a second or
     // rewrite its price. A price change must go through changeSubscriptionPrice.
-    this.createSubscription(input, input.trial);
+    this.createSubscription(input);
     return { url: `/test/stripe-checkout?success=${encodeURIComponent(input.successUrl)}` };
-  }
-
-  async createTrialSubscription(input: {
-    organizationId: string;
-    customerId: string;
-    priceId: string;
-    quantity: number;
-  }): Promise<string> {
-    if (this.failNextTrial) {
-      this.failNextTrial = false;
-      throw new Error("fixture trial creation failed");
-    }
-    return this.createSubscription(input, true).id;
   }
 
   async changeSubscriptionPrice(input: { subscriptionId: string; priceId: string }): Promise<void> {
@@ -256,10 +236,12 @@ export class FixtureStripeBillingClient {
     return undefined;
   }
 
-  private createSubscription(
-    input: { organizationId: string; customerId: string; priceId: string; quantity: number },
-    trial: boolean,
-  ): FixtureSubscriptionState {
+  private createSubscription(input: {
+    organizationId: string;
+    customerId: string;
+    priceId: string;
+    quantity: number;
+  }): FixtureSubscriptionState {
     const id = fixtureSubscriptionId(input.organizationId);
     const existing = this.subscriptions.get(id);
     if (existing !== undefined) return existing;
@@ -269,9 +251,8 @@ export class FixtureStripeBillingClient {
       organizationId: input.organizationId,
       priceId: input.priceId,
       quantity: input.quantity,
-      status: trial ? "trialing" : "active",
+      status: "active",
       currentPeriodEnd: new Date(Date.now() + FIXTURE_SUBSCRIPTION_PERIOD_MS),
-      trialEnd: trial ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) : null,
       cancelAtPeriodEnd: false,
     };
     this.subscriptions.set(id, subscription);

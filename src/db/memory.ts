@@ -2684,6 +2684,12 @@ class MemoryDatabase implements Database {
     );
   }
 
+  async listOrganizationsOffPlanTemplate(planId: string, templateHash: string): Promise<string[]> {
+    return [...this.organizationEntitlements.values()]
+      .filter((row) => row.planId === planId && row.planVersion !== templateHash)
+      .map((row) => row.organizationId);
+  }
+
   async listOrganizationsForOperator(): Promise<OperatorOrganizationRecord[]> {
     return this.operatorOrganizations();
   }

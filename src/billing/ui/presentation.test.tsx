@@ -13,7 +13,9 @@ import {
   intervalLabel,
   offeredIntervals,
   planAction,
+  planFeatures,
   planPrice,
+  purchasablePlans,
   subscriptionSummary,
 } from "./presentation.js";
 
@@ -29,6 +31,7 @@ function plan(
   slug: string,
   name: string,
   prices: Partial<Record<BillingPlanPriceInterval, ReturnType<typeof euros>>>,
+  included: PublicBillingPlan["included"] = { seats: null, executionsPerMonth: null },
 ): PublicBillingPlan {
   return {
     slug,
@@ -40,6 +43,7 @@ function plan(
         label: "seat",
       },
     },
+    included,
     features: [],
     prices: Object.values(prices),
   };
@@ -54,8 +58,6 @@ function subscription(
     status: null,
     cancelAtPeriodEnd: false,
     currentPeriodEnd: null,
-    trialEnd: null,
-    trialEligible: true,
     manageable: false,
     ...overrides,
   };
@@ -80,31 +82,8 @@ it("says which interval is missing rather than showing a blank price", () => {
   assert.deepEqual(planPrice(null, "annual"), { amount: "—", unit: "No yearly price" });
 });
 
-it("keeps the plan name in the trial button's accessible name while the visible label stays short", () => {
-  const action = planAction({
-    planName: "Paseo Hub",
-    price: euros(1500),
-    isCurrent: false,
-    trialEligible: true,
-  });
-  assert.deepEqual(action, {
-    label: "Start free trial",
-    name: "Start free trial with Paseo Hub",
-    disabled: false,
-  });
-  assert.ok(
-    action.name.includes(action.label),
-    "the accessible name must contain the visible label",
-  );
-});
-
-it("offers a former subscriber ordinary checkout instead of a second trial", () => {
-  const action = planAction({
-    planName: "Paseo Hub",
-    price: euros(1500),
-    isCurrent: false,
-    trialEligible: false,
-  });
+it("keeps the plan name in the button's accessible name while the visible label stays short", () => {
+  const action = planAction({ planName: "Paseo Hub", price: euros(1500), isCurrent: false });
   assert.deepEqual(action, {
     label: "Subscribe",
     name: "Subscribe to Paseo Hub",
@@ -116,28 +95,57 @@ it("offers a former subscriber ordinary checkout instead of a second trial", () 
   );
 });
 
-it("never offers a trial on a zero-priced plan, even when the organization is trial eligible", () => {
-  assert.deepEqual(
-    planAction({ planName: "Free", price: euros(0), isCurrent: false, trialEligible: true }),
-    { label: "Subscribe", name: "Subscribe to Free", disabled: false },
-  );
-});
-
 it("disables the plan the organization is already on and names it", () => {
-  const action = planAction({
-    planName: "Free",
-    price: euros(0),
-    isCurrent: true,
-    trialEligible: true,
-  });
+  const action = planAction({ planName: "Free", price: euros(0), isCurrent: true });
   assert.deepEqual(action, { label: "Current plan", name: "Current plan: Free", disabled: true });
 });
 
 it("disables a plan the catalog does not price at the selected interval", () => {
+  assert.deepEqual(planAction({ planName: "Paseo Hub", price: null, isCurrent: false }), {
+    label: "Not available",
+    name: "Not available: Paseo Hub",
+    disabled: true,
+  });
+});
+
+it("leads a plan's list with its own figures, then the words the plan author wrote", () => {
+  const free = plan("free", "Free", { monthly: euros(0) }, { seats: 1, executionsPerMonth: 50 });
+
   assert.deepEqual(
-    planAction({ planName: "Paseo Hub", price: null, isCurrent: false, trialEligible: true }),
-    { label: "Not available", name: "Not available: Paseo Hub", disabled: true },
+    planFeatures({
+      ...free,
+      features: [{ key: "daemon-location", label: "Daemons run on your machines", tooltip: null }],
+    }),
+    [
+      { key: "included-executions", label: "50 agent runs a month", tooltip: null },
+      { key: "included-seats", label: "1 seat", tooltip: null },
+      { key: "daemon-location", label: "Daemons run on your machines", tooltip: null },
+    ],
   );
+});
+
+it("says unlimited where a plan has no cap, and counts seats in the plural", () => {
+  assert.deepEqual(planFeatures(plan("hosted", "Pro", { monthly: euros(1500) })).slice(0, 2), [
+    { key: "included-executions", label: "Unlimited agent runs", tooltip: null },
+    { key: "included-seats", label: "Unlimited seats", tooltip: null },
+  ]);
+  assert.deepEqual(
+    planFeatures(
+      plan("team", "Team", { monthly: euros(9900) }, { seats: 5, executionsPerMonth: 2000 }),
+    ).slice(0, 2),
+    [
+      { key: "included-executions", label: "2000 agent runs a month", tooltip: null },
+      { key: "included-seats", label: "5 seats", tooltip: null },
+    ],
+  );
+});
+
+it("counts Free as a plan on the page but not as something to buy", () => {
+  const free = plan("free", "Free", { monthly: euros(0) });
+  const pro = plan("hosted", "Pro", { monthly: euros(1500) });
+
+  assert.deepEqual(purchasablePlans([free, pro]), [pro]);
+  assert.deepEqual(purchasablePlans([free]), []);
 });
 
 it("hides the interval switch for a catalog that only charges monthly", () => {
@@ -164,56 +172,53 @@ it("labels intervals the way the picker shows them", () => {
   assert.equal(intervalLabel("annual"), "Annual");
 });
 
-it("says nothing beyond the fact when there is no subscription to describe", () => {
-  for (const trialEligible of [true, false]) {
-    assert.deepEqual(subscriptionSummary(subscription({ trialEligible })), {
-      planName: null,
-      status: null,
-      detail: null,
-    });
-  }
+it("says nothing beyond the plan when there is no subscription to describe", () => {
+  // Free is a plan with no subscription behind it: it is named, and nothing is dated or pending.
+  assert.deepEqual(subscriptionSummary(subscription({ planSlug: "free", planName: "Free" })), {
+    planName: "Free",
+    status: null,
+    detail: null,
+  });
 });
 
-it("leads with the trial end date while a trial is running", () => {
+it("leads with the renewal date while a subscription is running", () => {
   const summary = subscriptionSummary(
     subscription({
       planSlug: "hosted",
-      planName: "Paseo Hub",
-      status: "trialing",
-      trialEnd: "2026-09-11T00:00:00.000Z",
-      currentPeriodEnd: "2026-09-11T00:00:00.000Z",
+      planName: "Pro",
+      status: "active",
+      currentPeriodEnd: "2026-10-01T00:00:00.000Z",
       manageable: true,
     }),
   );
-  assert.deepEqual(summary.status, { tone: "success", label: "Trialing" });
-  // The trial end wins over the period end, and the date is the app's one absolute formatter —
-  // a billing date and the same instant in a tooltip read as the same string.
-  assert.equal(summary.detail, `Trial ends ${formatAbsolute("2026-09-11T00:00:00.000Z")}.`);
+  assert.deepEqual(summary.status, { tone: "success", label: "Active" });
+  // The date is the app's one absolute formatter — a billing date and the same instant in a
+  // tooltip read as the same string.
+  assert.equal(summary.detail, `Renews on ${formatAbsolute("2026-10-01T00:00:00.000Z")}.`);
 });
 
 it("leads with the cancellation date once a subscription is set to end", () => {
   const summary = subscriptionSummary(
     subscription({
       planSlug: "hosted",
-      planName: "Paseo Hub",
+      planName: "Pro",
       status: "active",
       cancelAtPeriodEnd: true,
-      trialEnd: "2026-09-11T00:00:00.000Z",
       currentPeriodEnd: "2026-10-01T00:00:00.000Z",
       manageable: true,
     }),
   );
-  // A pending cancellation outranks the trial, and it dates from the period end, not the trial end.
+  // A pending cancellation outranks the renewal, and it dates from the period end.
   assert.equal(summary.detail, `Cancels on ${formatAbsolute("2026-10-01T00:00:00.000Z")}.`);
 });
 
 it("warns on a payment problem and stays neutral on an unrecognised status", () => {
   assert.deepEqual(
-    subscriptionSummary(subscription({ planName: "Paseo Hub", status: "past_due" })).status,
+    subscriptionSummary(subscription({ planName: "Pro", status: "past_due" })).status,
     { tone: "warning", label: "Past due" },
   );
   assert.deepEqual(
-    subscriptionSummary(subscription({ planName: "Paseo Hub", status: "paused" })).status,
+    subscriptionSummary(subscription({ planName: "Pro", status: "paused" })).status,
     { tone: "neutral", label: "Paused" },
   );
 });

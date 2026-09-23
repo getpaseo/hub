@@ -22,12 +22,12 @@ The coupling runs one direction: `billing` calls
 `src/billing/`.
 
 A surface that needs one billing-derived fact but is not the billing surface asks for that fact
-alone, through `src/server/capabilities.ts`. Both probes there follow the same shape: the answer
-is a boolean or a number resolved by the composition root, never a subscription, a status, or a
-plan, and the self-hosted answer is a truthful "no" rather than an error. That is what lets the
-dashboard shell gate the Billing nav entry and count down a trial while still deleting cleanly
-with `src/billing/`. Widening one of these into a view is how the boundary gets lost — a surface
-that needs the subscription needs the billing page.
+alone, through `src/server/capabilities.ts`. The probe there answers a boolean resolved by the
+composition root — never a subscription, a status, or a plan — and the self-hosted answer is a
+truthful "no" rather than an error. That is what lets the dashboard shell gate the Billing nav
+entry, and the sidebar's execution meter offer an upgrade, while still deleting cleanly with
+`src/billing/`. Widening it into a view is how the boundary gets lost — a surface that needs the
+subscription needs the billing page.
 
 ## Plan catalog
 
@@ -45,8 +45,13 @@ logged loudly — nothing ever stamps from an unvalidated template. `plan_versio
 `hashTemplate()` (`src/entitlements/catalog.ts:260`) of the validated template, because Stripe
 carries no version counter of its own; an off-template organization is a hash mismatch.
 
-Catalog sync stores Hub's presentation with the mirrored price data in `billing_plans.marketing`.
-The public endpoint and Hub billing UI both read that combined record.
+Catalog sync stores Hub's presentation with the mirrored price data in `billing_plans.marketing`,
+and flattens the validated template's figures into `marketing.included` (seats and the monthly
+execution allowance, null for unlimited) while it is there. The public endpoint and Hub billing UI
+both read that combined record, which is how a plan's numbers reach a customer without the
+template document itself ever reaching the projection. Every sync rewrites `marketing` for every
+product, so a field added to it lands on the next boot or product webhook rather than needing a
+migration.
 
 Catalog sync uses Stripe's List API, not Search. Search has indexing lag, which would make the
 boot sync racy right after a dashboard edit.
@@ -54,49 +59,70 @@ boot sync racy right after a dashboard edit.
 `GET /api/billing/plans` is documented in docs/public-api.md — marketing copy and pricing only,
 never the entitlement template.
 
-## The offer, and the record that is not one
+## Two plans, one of them free
 
-The Stripe catalog carries a `free` product. It is not a tier Hub sells: it is where the
-entitlement floor is authored, so provisioning and cancellation have a real template to stamp
-instead of a constant in the code. Hosted Hub sells exactly one plan today — Hosted, per seat,
-per month.
+The Stripe catalog carries two products. `free` is the plan every hosted organization is
+provisioned on and returns to after cancellation: one seat, no invitations, and a monthly
+execution allowance, all authored in the product's metadata. `hosted` is the one plan a customer
+pays for — per seat, per month, unlimited executions, invitations on. Its slug and lookup key stay
+`hosted`; the customer-facing name is Hub's, in `plan-presentation.ts`, which is why it reads
+"Pro" everywhere without a Stripe rename.
 
-`BillingRuntime.publicCatalog` is the boundary that keeps those two apart. It withholds the free
-record and every plan the sync deactivated, so "the catalog" and "the offer" are the same thing to
-every consumer — the plans endpoint, the billing overview, the picker. `subscriptionSnapshot` is
-the other half: an organization stamped with the free record reports **no plan**, which is why the
-billing page reads as a paywall rather than advertising a zero-execution tier as the customer's
-own. No consumer knows the slug exists, and none should learn it.
+Free is a plan, not a floor with a name. `publicCatalog` publishes it, `subscriptionSnapshot`
+reports it as the organization's plan, and the billing page names it, lists what it includes, and
+shows how much of its allowance is left. What Free lacks is a subscription: no Stripe customer, no
+card, nothing to manage, and nothing dated. There is no trial — `plan-presentation.ts` has no copy
+for one, `createCheckout` never asks Stripe for one, and an organization that stops paying lands
+back on Free rather than on zero.
+
+`purchasablePlans` (`src/billing/ui/presentation.ts`) is the distinction the UI needs: the plans
+with a paid price. The page offers **Upgrade** when there is a purchasable plan the organization is
+not on and no subscription to manage, **Change plan** when there is one and there is, and nothing
+otherwise — so the single-paid-plan catalog shows Upgrade on Free and only "Manage billing" on Pro,
+with no slug hardcoded anywhere.
 
 Every paid plan is seat-based today: checkout and reconciliation report members plus pending
 invitations as Stripe quantity. The public catalog commits that billing unit to its DTO instead of
 making consumers infer it from copy.
 
-Nothing about this is hardcoded to one plan. Publish a second product in Stripe and the picker
-lays out two columns; publish an annual price and the interval switch appears. What is fixed is
-that a customer only ever sees what Stripe says is for sale.
+Nothing about this is hardcoded to two plans. Publish a third product in Stripe and the picker
+lays out three columns; publish an annual price and the interval switch appears.
 
-## Organization provisioning and creation-time trials
+No copy anywhere states a plan's figures. Seats and the execution allowance are rendered from
+`included` — the picker column, the billing card, and the public plans endpoint all read the same
+two numbers — so an allowance edited in the Stripe dashboard changes what a customer is promised
+and what enforcement stamps in the same move. `plan-presentation.ts` holds only prose that no
+template can contradict.
 
-A marketing entry may select the signup offer with `?plan=trial`. Hub validates that closed value
-at the page boundary, keeps it in the HTTP-only `paseo_signup_plan` cookie across account signup,
-and consumes it when the owner creates an organization. Billing owns the intent dispatch. Unknown
-values are ignored, and an absent value defaults to `trial`, so `https://hub.paseo.sh/` continues
-to start a trial until the marketing link adds the explicit parameter. A future hosted-free offer
-requires a new validated intent and billing branch, not changes to the organization-creation flow.
+## Organization provisioning
 
-A hosted organization is first provisioned with the free record's template resolved from the
-mirror (`BillingRuntime.provisioningEntitlement`), then its post-commit creation hook immediately
-starts and synchronously reconciles a Stripe-owned trial. The floor is the fail-closed state if
-Stripe cannot be reached during creation and the landing state after cancellation. If the mirror
-has no active free record yet — first boot before sync, or a Stripe account missing the product —
-provisioning falls back to `FREE_TIER_FALLBACK`. The fallback fails closed rather than open to
-unlimited and logs loudly so the gap gets noticed; every organization stamped from it re-stamps
-to the offered plan when trial creation or the fallback Checkout path succeeds.
+A hosted organization is provisioned with the Free plan's template resolved from the mirror
+(`BillingRuntime.provisioningEntitlement`) and nothing else happens: no Stripe call, no customer,
+no subscription. Organization creation has no billing hook at all — the only thing that puts an
+organization onto a paid plan is a Checkout the owner completes.
+
+If the mirror has no active Free plan yet — first boot before sync, or a Stripe account missing
+the product — provisioning falls back to `FREE_TIER_FALLBACK`. It fails closed on seats and
+invitations rather than open to unlimited, carries the same execution allowance the Free product
+is authored with, and logs loudly so the gap gets noticed. Keep its allowance in step with
+`ent_executions_monthly_limit` on the live Free product and with the E2E fixture.
 
 The billing view derives the current plan from what the organization was last _stamped_ with, not
 from a copied Stripe subscription. It reads Stripe only for the billing page, through a short,
 single-flight in-memory cache; execution and workflow paths read the local entitlement stamp only.
+
+### Re-stamping on a template change
+
+Catalog sync does not stop at the mirror. After upserting a plan it re-stamps every organization
+whose `plan_id` is that plan and whose `plan_version` is behind the plan's current template hash
+(`Database.listOrganizationsOffPlanTemplate`). Editing a plan's metadata in the Stripe dashboard is
+therefore the whole migration: the `product.updated` webhook resyncs, and every organization on
+that plan converges. Boot does the same for anything a missed webhook left behind.
+
+Only `granted` moves. An operator's overrides are a separate document and survive untouched (see
+docs/entitlements.md), and the stamp is idempotent, so a resync with an unchanged template writes
+no audit row. A stamp that throws aborts the sync, which turns the webhook into a 503 Stripe
+redelivers, rather than leaving half the organizations behind quietly.
 
 ## Checkout, portal, subscriptions
 
@@ -108,34 +134,28 @@ plan-picker dialog and a "Manage billing" button — payment methods, invoices, 
 stay in the Stripe portal.
 
 Inside `src/billing/ui/`, `panel.tsx` owns the page, `plan-dialog.tsx` owns the picker, and
-`presentation.tsx` owns every user-facing string either of them renders. None of them knows which
-plans are for sale — that is settled before the view, in `public-catalog.ts`. Copy lives there and
-nowhere else because it is the only part of the surface worth unit-testing: a button label has to
-stay short enough for a narrow plan column while its accessible name still identifies the plan.
+`presentation.tsx` owns every user-facing string either of them renders. Which plans exist is
+settled before the view, in `public-catalog.ts`; which of them can be bought is
+`purchasablePlans`. Copy lives in one file because it is the part of the surface worth
+unit-testing: a button label has to stay short enough for a narrow plan column while its
+accessible name still identifies the plan.
 
-Both surfaces render the offer and nothing around it. The picker has no heading (its dialog title
-is read, not shown), no framing sentence, and no interval switch unless the catalog prices more
-than one interval. The page offers "Change plan" only when there is more than one public plan to
-change to; with one offer, the way out is Manage billing. Everything here is driven off the
-catalog, so a second product or an annual price restores the controls without a redesign — but
-nothing that has no meaning today is rendered today.
+Both surfaces render the plans and nothing around them. The picker has no heading (its dialog
+title is read, not shown), no framing sentence, and no interval switch unless the catalog prices
+more than one interval. Everything here is driven off the catalog, so a second paid product or an
+annual price restores the controls without a redesign — but nothing that has no meaning today is
+rendered today.
 
-A new hosted organization's post-commit hook passes the stored signup intent to billing. Today's
-`trial` intent starts its Stripe-owned 7-day trial directly, with
-`trial_settings.end_behavior.missing_payment_method=cancel`, and reconciles it before the create
-request returns. No card or Checkout visit is required. The Subscribe → Checkout path remains for
-customers returning after cancellation and as the fallback when automatic trial creation failed;
-it uses `payment_method_collection=if_required` for a still-eligible first trial. Stripe
-subscription history determines eligibility, so any former subscription receives ordinary paid
-Checkout. Customer, Checkout, and subscription metadata carry the organization id, and
-idempotency keys collapse concurrent creation attempts. During a trial, the Stripe portal remains
-available to add a card voluntarily.
+Checkout is the only way onto a paid plan, and it always collects payment. Customer, Checkout, and
+subscription metadata carry the organization id, and idempotency keys collapse concurrent creation
+attempts. A customer who already has a subscription never reaches Checkout again: a plan change
+updates the existing subscription's item in place.
 
 The subscription webhook (`BillingRuntime.handleWebhook`) reconciles rather than applies. It takes
 only the subscription id from the event, then — under a per-organization advisory lock that
 serializes across processes — re-reads the subscription's live state and converges the
 organization onto it: resolve the price to a plan (resyncing the catalog once when a subscription
-webhook beat its own price webhook), then stamp the plan's template, or stamp the free floor on a terminal
+webhook beat its own price webhook), then stamp the plan's template, or stamp Free on a terminal
 cancellation so paid entitlements never outlive the subscription. The subscription mirror and the
 entitlement stamp commit in one transaction (`Database.reconcileOrganizationSubscription`), so the
 two can never disagree across a crash. Re-reading current state under the lock is what stops an
@@ -146,8 +166,10 @@ state nothing would revisit.
 
 `organization_billing_customers` is the sole durable Stripe identity link. It deliberately does
 not copy subscription status, price, cancellation, or period timestamps; Stripe remains the owner
-of that lifecycle. `trialing` and `active` stamp Hosted access; `canceled`, `incomplete_expired`,
-and `unpaid` stamp the free floor; `past_due` retains the last stamp during Stripe's retry window.
+of that lifecycle. `active` and `trialing` stamp the subscription's plan — Hub never starts a
+trial, but a subscription trialed by hand in the Stripe dashboard still grants the plan it is on;
+`canceled`, `incomplete_expired`, and `unpaid` stamp Free; `past_due` retains the last stamp during
+Stripe's retry window.
 
 ## Seats
 
@@ -158,8 +180,8 @@ to `BillingRuntime.reportSeatUsage`. The reporter reads the live count and write
 when it differs from what the subscription is currently billed for — so the resulting
 `customer.subscription.updated` echo carries no delta and cannot ping-pong with reconciliation.
 Reconciliation re-checks the count on every subscription webhook, the durable backstop if a
-post-commit report is lost. Only paid plans report; the free floor caps seats instead
-(`ent_seats_max=1`, `ent_can_invite=false`).
+post-commit report is lost. Only subscriptions report; an organization on Free has none, and its
+template caps seats instead (`ent_seats_max=1`, `ent_can_invite=false`).
 
 ### Why not `@better-auth/stripe`
 
@@ -191,6 +213,12 @@ renders self-hosted too — its copy names the limit and stays silent on remedie
 triggers the re-stamp that can produce the over-limit state, and links to Usage; it never shows or
 edits limits. See docs/entitlements.md's Surfaces section.
 
+The execution meter in the sidebar is the same split: it belongs to entitlements
+(`src/entitlements/ui/execution-meter.tsx`), reads the usage snapshot, renders only for an
+organization with a finite allowance, and asks `useEntitlementRemedy` whether this deployment has
+anything to sell. Billing contributes one boolean to that, through the capability probe. The
+billing page shows the same sentence from the same hook.
+
 ## Testing
 
 No Stripe account, no network calls, in tests — fixtures only. `stripe-mock` isn't used: it's
@@ -198,7 +226,9 @@ stateless, so `products.create` then `products.list` doesn't round-trip, which c
 catalog mirror. Webhook signature verification is tested for real by HMAC-signing payloads with a
 known secret, the same pattern `e2e/helpers/hub.ts` already uses for GitHub and Slack. Specs live
 in `e2e/billing-boundary.spec.ts`, `e2e/billing-catalog.spec.ts`, `e2e/billing-subscription.spec.ts`
-(the money test), and `e2e/billing-downgrade.spec.ts`.
+(the money test, plus the template-change re-stamp), `e2e/billing-downgrade.spec.ts`, and
+`e2e/billing-mobile.spec.ts`. The fixture catalog in `src/e2e/harness/browser-billing.ts` mirrors
+the live Stripe products, allowance included: change one and change the other.
 
 Running the E2E suite locally requires `PASEO_E2E_WORKTREE` pointed at a checkout of
 `getpaseo/paseo` — the harness npm-packs the server packages from it. Without it, entitlements'

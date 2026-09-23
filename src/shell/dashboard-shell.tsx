@@ -43,7 +43,7 @@ import {
   useRouteTenantStatus,
 } from "../projects/context.js";
 import { SidebarHelp } from "../auth/sidebar-help.js";
-import { TrialNotice } from "../auth/trial-notice.js";
+import { ExecutionMeter } from "../entitlements/ui/index.js";
 import { NavigationGroup, type NavigationItem } from "./navigation-group.js";
 import { SidebarIdentity } from "./sidebar-switcher.js";
 import {
@@ -286,7 +286,9 @@ function AppSidebar({
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu>
-          <TrialNotice organizationSlug={organization.slug} />
+          {/* The meter belongs to the organization the URL is in, so it waits for the tenant the
+              switchers above can show from the account alone. */}
+          {instance || tenant === undefined ? null : <ExecutionMeter />}
           <SidebarHelp />
           <SidebarMenuItem>
             <AccountMenu

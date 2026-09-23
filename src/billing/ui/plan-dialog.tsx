@@ -1,7 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { Sparkles } from "lucide-react";
 import { Card } from "../../components/app/card.js";
 import { FailureAlert } from "../../components/app/failure-alert.js";
 import { SegmentedControl, type SegmentedOption } from "../../components/app/segmented-control.js";
@@ -17,18 +16,17 @@ import {
   intervalLabel,
   offeredIntervals,
   planAction,
+  planFeatures,
   planPrice,
   priceForInterval,
-  TRIAL_DAYS,
 } from "./presentation.js";
 
 type CheckoutResult = Awaited<ReturnType<typeof billingCheckout>>;
 
 /**
- * The plan picker. It shows the offer and nothing else: the trial line when one is available,
- * then a card per plan, then the action. There is no heading, no framing sentence, and no
- * interval control unless the catalog actually prices more than one interval — a customer who
- * has one thing to accept should not have to read past anything to accept it.
+ * The plan picker: a card per plan, and the action on each. There is no heading, no framing
+ * sentence, and no interval control unless the catalog actually prices more than one interval —
+ * a customer who has one thing to accept should not have to read past anything to accept it.
  *
  * The grid and the modal width are driven by how many plans the catalog publishes, so a future
  * second product lays out as a pair without a redesign.
@@ -37,13 +35,11 @@ export function PlanDialog({
   plans,
   slug,
   currentPlanSlug,
-  trialEligible,
   onClose,
 }: {
   plans: readonly PublicBillingPlan[];
   slug: string;
   currentPlanSlug: string | null;
-  trialEligible: boolean;
   onClose: () => void;
 }) {
   const intervals = offeredIntervals(plans);
@@ -74,17 +70,9 @@ export function PlanDialog({
         {/* Radix requires a title for the dialog to be announced. There is nothing on this
             surface a sighted customer needs a heading for, so it is read, not shown. */}
         <DialogTitle className="sr-only">Plan</DialogTitle>
-        {(trialEligible || intervals.length > 1) && (
+        {intervals.length > 1 && (
           <div className="grid justify-items-center gap-4">
-            {trialEligible && (
-              <p className="flex items-center gap-1.5 text-sm">
-                <Sparkles aria-hidden="true" className="size-3.5 shrink-0" />
-                {TRIAL_DAYS} days free · No card required
-              </p>
-            )}
-            {intervals.length > 1 && (
-              <IntervalSwitch intervals={intervals} value={interval} onSelect={setInterval} />
-            )}
+            <IntervalSwitch intervals={intervals} value={interval} onSelect={setInterval} />
           </div>
         )}
         <div className={cn("grid gap-3", planColumns(plans.length))}>
@@ -94,7 +82,6 @@ export function PlanDialog({
               plan={plan}
               interval={interval}
               isCurrent={plan.slug === currentPlanSlug}
-              trialEligible={trialEligible}
               pending={checkout.isPending}
               onChoose={choose}
             />
@@ -144,19 +131,17 @@ function PlanCard({
   plan,
   interval,
   isCurrent,
-  trialEligible,
   pending,
   onChoose,
 }: {
   plan: PublicBillingPlan;
   interval: BillingPlanPriceInterval;
   isCurrent: boolean;
-  trialEligible: boolean;
   pending: boolean;
   onChoose: (planSlug: string) => void;
 }) {
   const price = priceForInterval(plan, interval);
-  const action = planAction({ planName: plan.name, price, isCurrent, trialEligible });
+  const action = planAction({ planName: plan.name, price, isCurrent });
   const { amount, unit } = planPrice(price, interval);
   const choose = useCallback(() => onChoose(plan.slug), [onChoose, plan.slug]);
 
@@ -178,7 +163,7 @@ function PlanCard({
         {/* Stacked on a phone, the plan you are already on collapses to a marker: its feature list
             is the one thing on the screen nobody needs to read, and it costs a full scroll. */}
         <FeatureList
-          features={plan.features}
+          features={planFeatures(plan)}
           className={cn("flex-1", isCurrent && "hidden sm:grid")}
         />
         <Button

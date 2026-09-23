@@ -35,6 +35,12 @@ test("a self-hosted instance without STRIPE_SECRET_KEY has no billing surface", 
     await hub.expectBillingWebhookUnavailable();
   });
 
+  await test.step("nothing meters or sells: the sidebar footer is unchanged", async () => {
+    // Self-hosted organizations are stamped unlimited, so there is no allowance to count — and
+    // nothing to buy even if an operator caps one.
+    await hub.expectNoExecutionMeter("owner");
+  });
+
   await test.step("usage is still present and read-only without any billing surface", async () => {
     // Limits, billing, and metrics are separate concerns: a self-hosted instance has no billing,
     // yet a team still sees its own limits and usage. Usage never gates on STRIPE_SECRET_KEY.

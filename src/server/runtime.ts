@@ -20,17 +20,18 @@ import type { DaemonProviderCatalog } from "../daemons/provider-catalog.js";
 
 /**
  * The public plan catalog shape is billing's own: `src/billing/public-catalog.ts` decides which
- * plans are an offer and what a consumer may see of them. Re-exported here so the rest of the app
+ * plans Hub offers and what a consumer may see of them. Re-exported here so the rest of the app
  * names it without importing across the billing boundary.
  */
 export type {
   PublicBillingPlan,
   PublicBillingPlanFeature,
+  PublicBillingPlanIncluded,
   PublicBillingPlanPrice,
 } from "../billing/index.js";
 
-/** The dashboard billing section: the organization's current plan plus the catalog to upgrade
- * into. Only ever built on a billing-configured instance; the route guards on that. */
+/** The dashboard billing section: the organization's current plan plus the catalog it can move
+ * within. Only ever built on a billing-configured instance; the route guards on that. */
 export interface BillingOverviewView {
   organization: { name: string; slug: string };
   /** Whether the caller may open checkout or the Stripe portal (the manage-resources capability,
@@ -44,15 +45,6 @@ export interface BillingCheckoutInput {
   organizationSlug: string;
   planSlug: string;
   interval: BillingPlanPriceInterval;
-}
-
-/**
- * A countdown, and nothing more. `null` is every state that is not a running trial — paid, free,
- * cancelled, and every self-hosted instance alike — so a consumer decides visibility on the one
- * field and can never render a trial the organization is not on.
- */
-export interface OrganizationTrialView {
-  daysLeft: number | null;
 }
 
 /**
@@ -120,9 +112,6 @@ export interface ApplicationRuntime {
   billingCheckout(request: Request, input: BillingCheckoutInput): Promise<{ url: string }>;
   /** A Stripe billing-portal URL, or null when the organization has no subscription to manage. */
   billingPortal(request: Request, organizationSlug: string): Promise<{ url: string | null }>;
-  /** Days left in the organization's trial, or null when it is not on one. Self-hosted always
-   * answers null, so the dashboard shell can render a countdown without knowing billing exists. */
-  organizationTrial(request: Request, organizationSlug: string): Promise<OrganizationTrialView>;
   providerRequest(name: string, request: Request): Promise<Response>;
   connectionStatus(request: Request): Promise<Response>;
   connectionAction(request: Request, provider: string, action: string): Promise<Response>;
@@ -197,13 +186,6 @@ export async function handleBillingPortal(
   organizationSlug: string,
 ): Promise<{ url: string | null }> {
   return (await getApplication()).billingPortal(request, organizationSlug);
-}
-
-export async function handleOrganizationTrial(
-  request: Request,
-  organizationSlug: string,
-): Promise<OrganizationTrialView> {
-  return (await getApplication()).organizationTrial(request, organizationSlug);
 }
 
 export async function handleProviderRequest(name: string, request: Request): Promise<Response> {

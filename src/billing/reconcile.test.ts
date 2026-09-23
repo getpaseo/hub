@@ -127,7 +127,6 @@ class FakeBillingClient implements StripeBillingClient {
       quantity: 1,
       status,
       currentPeriodEnd: new Date("2030-01-01T00:00:00Z"),
-      trialEnd: status === "trialing" ? new Date("2030-01-15T00:00:00Z") : null,
       cancelAtPeriodEnd: false,
     });
   }
@@ -153,9 +152,6 @@ class FakeBillingClient implements StripeBillingClient {
     return result;
   }
   async createCheckoutSession(): Promise<{ url: string }> {
-    throw new Error("unused");
-  }
-  async createTrialSubscription(): Promise<string> {
     throw new Error("unused");
   }
   async changeSubscriptionPrice(input: ChangeSubscriptionPriceInput): Promise<void> {
@@ -340,52 +336,47 @@ describe("subscription webhook reconciliation", () => {
 });
 
 /**
- * What the billing page is handed after reconciliation. The free record is the enforcement floor,
- * never an offer: an organization sitting on it has no plan to show, so the page reads as a
- * paywall instead of advertising a tier that is not for sale.
+ * What the billing page is handed after reconciliation. Free is a plan like any other here: an
+ * organization that never subscribed, or cancelled back down to it, reads Free rather than a
+ * blank. What falls away with the subscription is the Stripe status and anything to manage.
  */
 describe("customer-facing subscription view", () => {
-  it("names the plan an organization is trialing", async () => {
+  it("names the plan the subscription is on", async () => {
     const { billingClient, billing } = await setup();
-    billingClient.setSubscription("sub_1", "org_1", SOLO_PRICE, "trialing");
+    billingClient.setSubscription("sub_1", "org_1", SOLO_PRICE);
     await billing.handleWebhook(subscriptionWebhook("customer.subscription.created", "sub_1"));
 
     const view = await billing.subscriptionSnapshot("org_1");
 
     assert.equal(view.planSlug, "solo");
     assert.equal(view.planName, "Solo");
-    assert.equal(view.status, "trialing");
+    assert.equal(view.status, "active");
     assert.equal(view.manageable, true);
-    assert.equal(view.trialEligible, false);
   });
 
-  it("reports no plan after cancellation instead of the free record it stamped", async () => {
+  it("reports Free after cancellation, with nothing left to manage", async () => {
     const { database, billingClient, billing } = await setup();
     billingClient.setSubscription("sub_1", "org_1", SOLO_PRICE);
     await billing.handleWebhook(subscriptionWebhook("customer.subscription.created", "sub_1"));
     billingClient.cancel("sub_1");
     await billing.handleWebhook(subscriptionWebhook("customer.subscription.deleted", "sub_1"));
-    // The stamp really is Free — enforcement reverted — the customer view just does not show it.
     assert.equal((await database.getOrganizationEntitlements("org_1"))?.planId, FREE_PRODUCT);
 
     const view = await billing.subscriptionSnapshot("org_1");
 
-    assert.equal(view.planSlug, null);
-    assert.equal(view.planName, null);
+    assert.equal(view.planSlug, "free");
+    assert.equal(view.planName, "Free");
     assert.equal(view.status, null);
     assert.equal(view.manageable, false);
-    // The cancelled subscription is still Stripe history, so no second free trial is offered.
-    assert.equal(view.trialEligible, false);
   });
 
-  it("reports no plan for an organization that never subscribed, and offers it the trial", async () => {
+  it("reports no plan for an organization that was never stamped", async () => {
     const { billing } = await setup();
 
     const view = await billing.subscriptionSnapshot("org_never");
 
     assert.equal(view.planSlug, null);
     assert.equal(view.planName, null);
-    assert.equal(view.trialEligible, true);
     assert.equal(view.manageable, false);
   });
 });

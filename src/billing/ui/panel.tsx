@@ -9,13 +9,16 @@ import { PageHeader } from "../../components/app/page.js";
 import { Section } from "../../components/app/section.js";
 import { StatusPill } from "../../components/app/status-pill.js";
 import { Button } from "../../components/ui/button.js";
+import { executionMeterLabel, useExecutionMeter } from "../../entitlements/ui/index.js";
 import { useRouteTenant } from "../../projects/context.js";
 import type { BillingOverviewView, PublicBillingPlan } from "../../server/runtime.js";
 import { billingOverview, billingPortal } from "./functions.js";
 import { PlanDialog } from "./plan-dialog.js";
 import {
   FeatureList,
-  NO_SUBSCRIPTION,
+  NO_PLAN,
+  planFeatures,
+  purchasablePlans,
   subscriptionSummary,
   type SubscriptionSummary,
 } from "./presentation.js";
@@ -50,9 +53,9 @@ export function BillingPanel({ openPlans }: { openPlans: boolean }) {
 }
 
 /**
- * One card, read top to bottom: who you are on this plan, what the plan includes, and the way out
- * to Stripe. The three read as one object because they are one card, not three — a subscription is
- * a single fact with a single set of consequences.
+ * One card, read top to bottom: which plan the organization is on, what that plan includes, what
+ * is left of its allowance, and the way out to Stripe. They read as one object because they are
+ * one plan, not four — Free and Pro are the same card with different facts in it.
  */
 function BillingContent({
   overview,
@@ -88,6 +91,8 @@ function BillingContent({
         <Card>
           <PlanIdentity summary={summary} action={action} onOpenPicker={openDialog} />
           {currentPlan !== undefined && <PlanIncludes plan={currentPlan} />}
+          {/* What the plan gives, then how much of it is left. */}
+          <ExecutionAllowance />
           {canManage && subscription.manageable && <PortalBand slug={slug} />}
         </Card>
       </Section>
@@ -96,7 +101,6 @@ function BillingContent({
           plans={plans}
           slug={slug}
           currentPlanSlug={subscription.planSlug}
-          trialEligible={subscription.trialEligible}
           onClose={closeDialog}
         />
       )}
@@ -106,9 +110,10 @@ function BillingContent({
 
 /**
  * The button that opens the picker, or null when opening it would offer nothing. An organization
- * with no subscription is offered the one thing there is to do; a subscribed one is offered a
- * change only when the catalog publishes something to change to. Manage billing, in the band
- * below, is the way to leave.
+ * on Free is offered the upgrade; a subscribed one is offered a change only when there is another
+ * paid plan to change to. Free is in the catalog but is not something to buy, so the count that
+ * decides this is of purchasable plans, never of the catalog. Manage billing, in the band below,
+ * is the way to leave a subscription.
  */
 function planPickerAction({
   canManage,
@@ -120,8 +125,9 @@ function planPickerAction({
   plans: readonly PublicBillingPlan[];
 }): string | null {
   if (!canManage) return null;
-  if (subscription.planSlug === null) return "Subscribe";
-  return plans.length > 1 ? "Change plan" : null;
+  const available = purchasablePlans(plans).filter((plan) => plan.slug !== subscription.planSlug);
+  if (available.length === 0) return null;
+  return subscription.manageable ? "Change plan" : "Upgrade";
 }
 
 function PlanIdentity({
@@ -142,7 +148,7 @@ function PlanIdentity({
             <StatusPill tone={summary.status.tone}>{summary.status.label}</StatusPill>
           </div>
         )}
-        <p className="text-2xl">{summary.planName ?? NO_SUBSCRIPTION}</p>
+        <p className="text-2xl">{summary.planName ?? NO_PLAN}</p>
         {summary.detail !== null && (
           <p className="text-sm text-muted-foreground">{summary.detail}</p>
         )}
@@ -156,10 +162,20 @@ function PlanIdentity({
   );
 }
 
-/** What the organization is actually entitled to right now, in the plan author's own words. */
+/** What the organization is actually entitled to right now: the plan's figures, then its words. */
 function PlanIncludes({ plan }: { plan: PublicBillingPlan }) {
-  if (plan.features.length === 0) return null;
-  return <FeatureList features={plan.features} className="sm:grid-cols-2 sm:gap-x-6" />;
+  return <FeatureList features={planFeatures(plan)} className="sm:grid-cols-2 sm:gap-x-6" />;
+}
+
+/**
+ * How much of a metered allowance is spent, in the same sentence the sidebar shows. A plan with
+ * no finite allowance has nothing to say here, so an unlimited organization renders nothing —
+ * the feature list above already told it so.
+ */
+function ExecutionAllowance() {
+  const meter = useExecutionMeter();
+  if (meter === undefined) return null;
+  return <p className="text-sm text-muted-foreground">{executionMeterLabel(meter)}</p>;
 }
 
 function PortalBand({ slug }: { slug: string }) {
