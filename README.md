@@ -112,6 +112,60 @@ The image is published as `ghcr.io/getpaseo/hub:latest`.
 See the [self-hosting guide](https://paseo.sh/docs/hub/self-hosting) for production deployment details.
 For Linear setup and workflows, see the public [Linear app](https://paseo.sh/docs/hub/self-hosting/linear-app) and [Linear triggers](https://paseo.sh/docs/hub/triggers/linear) guides.
 
+## Run on NixOS
+
+The repository ships a Nix flake that builds the Hub and provides a NixOS module that runs it as a hardened `systemd` service under a dedicated `paseo-hub` user. With flakes enabled, add the flake as an input and enable `services.paseo-hub`:
+
+```nix
+# flake.nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    paseo-hub.url = "github:getpaseo/hub";
+  };
+
+  outputs = { self, nixpkgs, paseo-hub, ... }: {
+    nixosConfigurations.host = nixpkgs.lib.nixosSystem {
+      modules = [
+        paseo-hub.nixosModules.default
+        {
+          services.paseo-hub.enable = true;
+
+          # Canonical external origin Hub advertises and uses for links/redirects.
+          services.paseo-hub.appUrl = "https://hub.example.com";
+
+          # Optional: bind to loopback and let a reverse proxy terminate TLS.
+          # services.paseo-hub.address = "127.0.0.1";
+          # services.paseo-hub.trustedClientIpHeader = "X-Forwarded-For";
+          # services.paseo-hub.openFirewall = false; # true opens services.paseo-hub.port
+
+          # Optional: use PostgreSQL instead of the embedded database.
+          # services.paseo-hub.databaseUrl =
+          #   "postgres://postgres:postgres@localhost:5432/paseo_hub";
+
+          # Pass through any Hub configuration verbatim (see .env.example).
+          # Prefer environmentFile for secrets so they stay out of the Nix store.
+          # services.paseo-hub.environment = {
+          #   PASEO_REGISTRATION_MODE = "invite_only";
+          # };
+          # services.paseo-hub.environmentFile = "/run/secrets/paseo-hub.env";
+        }
+      ];
+    };
+  };
+}
+```
+
+```sh
+nixos-rebuild switch --flake .#host
+```
+
+The module maps `services.paseo-hub` options (`port`, `address`, `appUrl`, `dataDir`, `databaseUrl`, `trustedClientIpHeader`) onto the Hub's runtime environment variables, and passes any other configuration through `environment` / `environmentFile`. State persists under `/var/lib/paseo-hub` by default; set `services.paseo-hub.dataDir` to change it. To run Hub once without a service, use the package directly:
+
+```sh
+nix run github:getpaseo/hub
+```
+
 ## Provider options and Hub tools
 
 Workflow steps may pass a JSON-compatible, provider-native `agent.options` object. Hub preserves
