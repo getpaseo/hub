@@ -64,7 +64,14 @@ export class ProviderEventAcceptanceRepository {
       ...new Set(candidateResourceIds.flatMap((id) => (id === undefined ? [] : [String(id)]))),
     ];
     return this.database.transaction(async (transaction) => {
-      const connection = await findConnection(transaction, provider, externalId);
+      const stopSessionId = provider === "linear" ? linearAgentSessionStopId(input) : undefined;
+      const { connection, liveConnection } = await findProviderEventConnection(
+        transaction,
+        provider,
+        externalId,
+        stopSessionId,
+        input.receivedAt,
+      );
       if (connection === undefined) {
         return { status: "dropped", receiptId: input.deliveryId, reason: `${provider}_unbound` };
       }
@@ -76,7 +83,13 @@ export class ProviderEventAcceptanceRepository {
         input.dropReason ??
         ((provider === "github" && "status" in connection && connection.status === "suspended") ||
         (provider === "linear" &&
-          linearConnectionUnavailable(connection, input.receivedAt, input.source, input.payload))
+          liveConnection !== undefined &&
+          linearConnectionUnavailable(
+            liveConnection,
+            input.receivedAt,
+            input.source,
+            input.payload,
+          ))
           ? "configuration_unavailable"
           : undefined);
       const receipt = await claimProviderReceipt(transaction, {
@@ -129,7 +142,6 @@ export class ProviderEventAcceptanceRepository {
           ),
         );
 
-      const stopSessionId = provider === "linear" ? linearAgentSessionStopId(input) : undefined;
       const cancellationRoutes =
         stopSessionId === undefined
           ? []
@@ -326,6 +338,89 @@ export class ProviderEventAcceptanceRepository {
       .delete(schema.providerEventReceipts)
       .where(eq(schema.providerEventReceipts.id, providerEventReceiptId));
   }
+}
+
+async function findProviderEventConnection(
+  transaction: HubTransaction,
+  provider: "github" | "slack" | "discord" | "linear",
+  externalId: number | string,
+  stopSessionId: string | undefined,
+  receivedAt: Date,
+) {
+  const liveConnection = await findConnection(transaction, provider, externalId);
+  if (liveConnection !== undefined || stopSessionId === undefined) {
+    return { connection: liveConnection, liveConnection };
+  }
+  return {
+    connection: await findDisconnectedLinearStopConnection(
+      transaction,
+      String(externalId),
+      stopSessionId,
+      receivedAt,
+    ),
+    liveConnection,
+  };
+}
+
+/** Recover only the durable routing authority of a previously accepted session after disconnect. */
+async function findDisconnectedLinearStopConnection(
+  transaction: HubTransaction,
+  linearOrganizationId: string,
+  agentSessionId: string,
+  stoppedAt: Date,
+): Promise<{ id: string; organizationId: string } | undefined> {
+  const [running] = await transaction
+    .select({
+      id: schema.providerEventReceipts.connectionId,
+      organizationId: schema.triggerRuns.organizationId,
+    })
+    .from(schema.triggerRuns)
+    .innerJoin(
+      schema.providerEventReceipts,
+      and(
+        eq(schema.providerEventReceipts.id, schema.triggerRuns.providerEventReceiptId),
+        eq(schema.providerEventReceipts.organizationId, schema.triggerRuns.organizationId),
+      ),
+    )
+    .where(
+      and(
+        eq(schema.triggerRuns.status, "running"),
+        eq(schema.providerEventReceipts.provider, "linear"),
+        isNotNull(schema.providerEventReceipts.connectionId),
+        sql`${schema.triggerRuns.outputContext} ->> 'provider' = 'linear'`,
+        sql`${schema.triggerRuns.outputContext} ->> 'linearOrganizationId' = ${linearOrganizationId}`,
+        sql`${schema.triggerRuns.outputContext} ->> 'agentSessionId' = ${agentSessionId}`,
+      ),
+    )
+    .orderBy(desc(schema.providerEventReceipts.receivedAt))
+    .limit(1);
+  if (running?.id !== null && running?.id !== undefined) {
+    return { id: running.id, organizationId: running.organizationId };
+  }
+
+  const [accepted] = await transaction
+    .select({
+      id: schema.providerEventReceipts.connectionId,
+      organizationId: schema.providerEventReceipts.organizationId,
+    })
+    .from(schema.providerEventReceipts)
+    .where(
+      and(
+        eq(schema.providerEventReceipts.provider, "linear"),
+        eq(schema.providerEventReceipts.source, "linear.agent_session"),
+        isNull(schema.providerEventReceipts.droppedReason),
+        isNotNull(schema.providerEventReceipts.connectionId),
+        isNotNull(schema.providerEventReceipts.acceptedRoutes),
+        lte(schema.providerEventReceipts.receivedAt, stoppedAt),
+        sql`${schema.providerEventReceipts.payload} ->> 'organizationId' = ${linearOrganizationId}`,
+        sql`${schema.providerEventReceipts.payload} -> 'agentSession' ->> 'id' = ${agentSessionId}`,
+      ),
+    )
+    .orderBy(desc(schema.providerEventReceipts.receivedAt))
+    .limit(1);
+  return accepted?.id === null || accepted?.id === undefined
+    ? undefined
+    : { id: accepted.id, organizationId: accepted.organizationId };
 }
 
 async function findLinearStopRoutes(
