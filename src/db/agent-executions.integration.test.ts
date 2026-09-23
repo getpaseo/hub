@@ -457,9 +457,25 @@ describe("agent execution PostgreSQL repository", () => {
     });
   });
 
-  it("fails a linked live execution in the same transaction as its workflow run", async () => {
+  it("fails a linked live execution and its later workflow step in the same transaction", async () => {
     const fixture = await idleWorkflowFixture(postgres, { emitted: false });
     try {
+      const completedStepId = randomUUID();
+      const client = await createPostgresQueryRuntime(fixture.databaseUrl);
+      try {
+        await client.query(`update workflow_step_runs set ordinal = 1 where id = $1`, [
+          fixture.step.id,
+        ]);
+        await client.query(
+          `insert into workflow_step_runs
+             (id, trigger_run_id, step_id, ordinal, status, output, started_at, completed_at)
+           values ($1, $2, 'completed-before-stop', 0, 'succeeded', '{}'::jsonb, now(), now())`,
+          [completedStepId, fixture.run.id],
+        );
+      } finally {
+        await client.close();
+      }
+
       const failed = await fixture.database.failWorkflowRun(
         fixture.run.id,
         "failed",
@@ -480,6 +496,11 @@ describe("agent execution PostgreSQL repository", () => {
         (await fixture.database.findWorkflowStepRunById(fixture.step.id))?.status,
         "failed",
       );
+      assert.equal(
+        (await fixture.database.findWorkflowStepRunById(completedStepId))?.status,
+        "succeeded",
+      );
+      assert.equal(failed?.stepRun.id, fixture.step.id);
       assert.equal((await fixture.database.findTriggerRunById(fixture.run.id))?.status, "failed");
     } finally {
       await fixture.database.close();
@@ -1530,6 +1551,7 @@ async function idleWorkflowFixture(
   options: { emitted: boolean; requiredOutput?: boolean; failedDeliveries?: number },
 ): Promise<{
   database: Database;
+  databaseUrl: string;
   run: { id: string };
   step: { id: string };
   execution: AgentExecutionRecord;
@@ -1604,7 +1626,13 @@ async function idleWorkflowFixture(
   }
   const persisted = await fixture.database.findAgentExecutionById(execution.id);
   if (persisted === undefined) throw new Error("workflow execution was not persisted");
-  return { database: fixture.database, run, step, execution: persisted };
+  return {
+    database: fixture.database,
+    databaseUrl: fixture.databaseUrl,
+    run,
+    step,
+    execution: persisted,
+  };
 }
 
 function launchIntent(
