@@ -1,27 +1,17 @@
 import type { ProjectConfigurationStore } from "../../configuration/store.js";
 import type { JsonValue } from "../../config/compiler.js";
-import {
-  type TriggerProvider,
-  type TriggerProviderMatch,
-  type TriggerProviderReactionState,
-} from "../index.js";
+import { type TriggerProvider, type TriggerProviderReactionState } from "../index.js";
 import type { GitHubAuth } from "../../auth/github.js";
 import { reportFailure } from "../../failures/index.js";
+import { matchTriggers } from "./match.js";
 import {
-  matchTriggers,
-  readGitHubInvocationMessage,
-  readGitHubInvocationParserMessage,
-  readGitHubMention,
-} from "./match.js";
-import { matchesInputFilters, parseInvocation } from "../invocation.js";
-import {
-  IssueCommentPayloadSchema,
-  IssuesPayloadSchema,
   NormalizedGitHubEventSchema,
-  PullRequestPayloadSchema,
   PullRequestReviewCommentPayloadSchema,
 } from "../../auth/github-events.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
+import { forgeItemReactionSubjectForEvent } from "../forge/reaction-subject.js";
+import { reactToForgeLifecycle } from "../forge/reaction-lifecycle.js";
+import { buildForgeTriggerMatches } from "../forge/match-loop.js";
 import { classifyGitHubEvent, GITHUB_TRIGGER_SOURCE_NAMES } from "./classification.js";
 
 export interface GitHubReactionClient {
@@ -151,63 +141,34 @@ export function createGitHubTriggerProvider(options: {
         .configurationStoreForProject(externalTrigger.projectId)
         .getRevision(externalTrigger.configurationRevisionId);
       if (stored === undefined) return "configuration_unavailable";
+      const classified = classifyGitHubEvent(event);
       if (
         !stored.configuration.triggers.some((candidate) =>
-          [externalTrigger.source, classifyGitHubEvent(event).semanticEvent].includes(candidate.on),
+          [externalTrigger.source, classified.semanticEvent].includes(candidate.on),
         )
       )
         return "no_trigger_for_source";
-      const matches: TriggerProviderMatch<GitHubTriggerContext>[] = [];
 
-      for (const match of matchTriggers(
-        stored.configuration,
-        event,
-        externalTrigger.connectionId,
-      )) {
-        const compiledTrigger = stored.configuration.triggers.find(
-          (candidate) => candidate.name === match.trigger.name,
-        );
-        if (compiledTrigger === undefined)
-          throw new Error(`compiled trigger not found: ${match.trigger.name}`);
-        const triggerContext: GitHubTriggerContext = {
-          provider: "github",
-          target: { installationId: event.installationId, repository: event.repo },
-          event: buildGitHubMergeData(event),
-          reactionSubject: reactionSubjectForEvent(event),
-        };
-        const invocation = parseInvocation(
-          readGitHubInvocationMessage(event),
-          compiledTrigger.inputs,
-          readGitHubMention(event, compiledTrigger.filters),
-          readGitHubInvocationParserMessage(event, compiledTrigger.filters),
-        );
-        if (invocation.status === "accepted") {
-          if (!matchesInputFilters(invocation.inputs, compiledTrigger.filters?.inputs)) continue;
-        }
-        if (invocation.status === "rejected") {
-          matches.push({
-            conversation: githubConversation(event),
-            triggerName: match.trigger.name,
+      return buildForgeTriggerMatches({
+        matches: matchTriggers(stored.configuration, event, externalTrigger.connectionId),
+        triggers: stored.configuration.triggers,
+        message: classified.text,
+        revisionId: stored.revision.id,
+        hubConfig: stored.configuration,
+        contextFor: () => {
+          const triggerContext: GitHubTriggerContext = {
+            provider: "github",
+            target: { installationId: event.installationId, repository: event.repo },
+            event: buildGitHubMergeData(event),
+            reactionSubject: reactionSubjectForEvent(event),
+          };
+          return {
             triggerContext,
             outputContext: triggerContext,
-            configurationRevisionId: stored.revision.id,
-            hubConfig: stored.configuration,
-            invocation,
-          });
-          continue;
-        }
-        matches.push({
-          conversation: githubConversation(event),
-          triggerName: match.trigger.name,
-          triggerContext,
-          outputContext: triggerContext,
-          configurationRevisionId: stored.revision.id,
-          hubConfig: stored.configuration,
-          invocation,
-        });
-      }
-
-      return matches.length === 0 ? "trigger_filters_rejected" : matches;
+            conversation: githubConversation(event),
+          };
+        },
+      });
     },
     async materializeContext(launch) {
       return launch.triggerContext.event;
@@ -253,44 +214,33 @@ async function reactToLifecycle(
   content: GitHubReactionContent,
   reactionState?: TriggerProviderReactionState,
 ): Promise<GitHubReactionState | null> {
-  if (triggerContext.reactionSubject === null) {
-    return null;
-  }
-
-  await deleteReactionSafely(reactions, triggerContext, githubReactionId(reactionState));
-
-  const reaction = await reactions.createReaction({
-    installationId: triggerContext.target.installationId,
-    repo: triggerContext.target.repository,
-    subject: triggerContext.reactionSubject,
-    content,
-  });
-  return { reactionId: reaction.id } satisfies GitHubReactionState;
-}
-
-async function deleteReactionSafely(
-  reactions: GitHubReactionClient,
-  triggerContext: GitHubTriggerContext,
-  reactionId: number | undefined,
-): Promise<void> {
-  if (triggerContext.reactionSubject === null || reactionId === undefined) {
-    return;
-  }
-
-  try {
-    await reactions.deleteReaction({
-      installationId: triggerContext.target.installationId,
-      repo: triggerContext.target.repository,
-      subject: triggerContext.reactionSubject,
-      reactionId,
-    });
-  } catch (error) {
-    reportFailure(
-      error,
-      { operation: "github.reaction.cleanup", component: "triggers", provider: "github" },
-      { diagnostic: { repository: triggerContext.target.repository, reactionId } },
-    );
-  }
+  const reactionId = githubReactionId(reactionState);
+  return reactToForgeLifecycle(
+    triggerContext.reactionSubject,
+    reactionId,
+    (subject, previousReactionId) =>
+      reactions.deleteReaction({
+        installationId: triggerContext.target.installationId,
+        repo: triggerContext.target.repository,
+        subject,
+        reactionId: previousReactionId,
+      }),
+    async (subject) => {
+      const reaction = await reactions.createReaction({
+        installationId: triggerContext.target.installationId,
+        repo: triggerContext.target.repository,
+        subject,
+        content,
+      });
+      return { reactionId: reaction.id } satisfies GitHubReactionState;
+    },
+    (error) =>
+      reportFailure(
+        error,
+        { operation: "github.reaction.cleanup", component: "triggers", provider: "github" },
+        { diagnostic: { repository: triggerContext.target.repository, reactionId } },
+      ),
+  );
 }
 
 function githubReactionId(state: TriggerProviderReactionState | undefined): number | undefined {
@@ -302,27 +252,6 @@ function githubReactionId(state: TriggerProviderReactionState | undefined): numb
 }
 
 function reactionSubjectForEvent(event: NormalizedGitHubEvent): GitHubReactionSubject | null {
-  if (event.type === "issues") {
-    const payload = IssuesPayloadSchema.parse(event.payload);
-    return payload.issue?.number === undefined
-      ? null
-      : { kind: "item", issueNumber: payload.issue.number };
-  }
-
-  if (event.type === "pull_request") {
-    const payload = PullRequestPayloadSchema.parse(event.payload);
-    return payload.pull_request?.number === undefined
-      ? null
-      : { kind: "item", issueNumber: payload.pull_request.number };
-  }
-
-  if (event.type === "issue_comment") {
-    const payload = IssueCommentPayloadSchema.parse(event.payload);
-    return payload.comment?.id === undefined
-      ? null
-      : { kind: "issue_comment", commentId: payload.comment.id };
-  }
-
   if (event.type === "pull_request_review_comment") {
     const payload = PullRequestReviewCommentPayloadSchema.parse(event.payload);
     return payload.comment?.id === undefined
@@ -330,7 +259,7 @@ function reactionSubjectForEvent(event: NormalizedGitHubEvent): GitHubReactionSu
       : { kind: "pull_request_review_comment", commentId: payload.comment.id };
   }
 
-  return null;
+  return forgeItemReactionSubjectForEvent(event);
 }
 
 function splitRepo(fullName: string): [owner: string, repo: string] {

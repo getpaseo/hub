@@ -1,14 +1,16 @@
 import { z } from "zod";
 import { reportFailure } from "../failures/index.js";
 import {
-  IssueCommentPayloadSchema,
-  IssuesPayloadSchema,
   NormalizedGitHubEventSchema,
   PullRequestReviewCommentPayloadSchema,
   PullRequestReviewPayloadSchema,
   PushPayloadSchema,
   readGitHubTriggerUrl,
 } from "../auth/github-events.js";
+import {
+  IssueCommentPayloadSchema,
+  IssuesPayloadSchema,
+} from "../triggers/forge/payload-schemas.js";
 import { NormalizedDiscordMessageEventSchema } from "../triggers/discord/events.js";
 import { NormalizedSlackMentionEventSchema } from "../triggers/slack/events.js";
 import { NormalizedLinearEventSchema } from "../triggers/linear/events.js";
