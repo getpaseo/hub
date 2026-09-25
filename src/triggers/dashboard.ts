@@ -4,6 +4,7 @@ import type { Database, OrganizationTriggerRecord } from "../db/types.js";
 import { resolveRouteTenant } from "../projects/access.js";
 import { ProjectCommandError } from "../projects/command-error.js";
 import { parseCompiledHubConfig } from "../config/compiler.js";
+import type { ForgejoRepositoryResolver } from "../configuration/store.js";
 import { projectTriggerForm } from "./configuration/editor.js";
 import { OrganizationTriggerStore } from "./store.js";
 
@@ -11,13 +12,18 @@ export class TriggerDashboard {
   constructor(
     private readonly database: Database,
     private readonly auth: AuthServer,
+    private readonly forgejoRepositoryResolver?: ForgejoRepositoryResolver,
   ) {}
 
   async snapshot(request: Request, organizationSlug: string) {
     const { tenant } = await resolveRouteTenant(this.auth, this.database, request, {
       organizationSlug,
     });
-    const store = new OrganizationTriggerStore(this.database, tenant.organization.id);
+    const store = new OrganizationTriggerStore(
+      this.database,
+      tenant.organization.id,
+      this.forgejoRepositoryResolver,
+    );
     const [triggers, daemons, connections] = await Promise.all([
       store.list(),
       this.database.listDaemonsForOrganization(tenant.organization.id),
@@ -70,6 +76,13 @@ export class TriggerDashboard {
           provider: "linear" as const,
           label: linearOrganizationName,
         })),
+        ...connections.forgejo.map(({ id, slug, accountLogin, instanceHost }) => ({
+          id,
+          slug,
+          provider: "forgejo" as const,
+          // Two instances can both have a "zaphod" account, so the host disambiguates.
+          label: `${accountLogin}@${instanceHost}`,
+        })),
       ],
     };
   }
@@ -119,7 +132,11 @@ export class TriggerDashboard {
     if (!capabilitiesFor(tenant.membership.role).manageResources) {
       throw new ProjectCommandError("forbidden");
     }
-    return new OrganizationTriggerStore(this.database, tenant.organization.id).save({
+    return new OrganizationTriggerStore(
+      this.database,
+      tenant.organization.id,
+      this.forgejoRepositoryResolver,
+    ).save({
       ...(input.triggerId === undefined ? {} : { triggerId: input.triggerId }),
       yaml: input.yaml,
       userId: account.account.id,
@@ -185,14 +202,15 @@ function triggerEvent(yaml: string, fallback: string | undefined): string {
 function triggerProvider(
   event: string,
   fallback: string | undefined,
-): "github" | "discord" | "slack" | "linear" | "manual" | "schedule" {
+): "github" | "discord" | "slack" | "linear" | "forgejo" | "manual" | "schedule" {
   const provider = event.split(".")[0] ?? fallback;
   if (
     provider === "schedule" ||
     provider === "github" ||
     provider === "discord" ||
     provider === "slack" ||
-    provider === "linear"
+    provider === "linear" ||
+    provider === "forgejo"
   ) {
     return provider;
   }

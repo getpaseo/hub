@@ -1,0 +1,40 @@
+{
+  "id": 1,
+  "type": "forgejo",
+  "branch_filter": "",
+  "url": "https://hub.example.test/capture",
+  "config": {
+    "content_type": "json",
+    "url": "https://hub.example.test/capture"
+  },
+  "events": [
+    "create",
+    "delete",
+    "fork",
+    "push",
+    "issues",
+    "issue_assign",
+    "issue_label",
+    "issue_milestone",
+    "issue_comment",
+    "pull_request",
+    "pull_request_assign",
+    "pull_request_label",
+    "pull_request_milestone",
+    "pull_request_comment",
+    "pull_request_review_approved",
+    "pull_request_review_rejected",
+    "pull_request_review_comment",
+    "pull_request_sync",
+    "wiki",
+    "repository",
+    "release",
+    "pull_request_review_request"
+  ],
+  "authorization_header": "",
+  "content_type": "json",
+  "metadata": null,
+  "active": true,
+  "updated_at": "2026-09-27T17:41:01Z",
+  "created_at": "2026-09-27T17:41:01Z"
+}

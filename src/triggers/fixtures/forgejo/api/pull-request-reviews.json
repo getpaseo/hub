@@ -1,0 +1,42 @@
+[
+  {
+    "id": 501,
+    "user": {
+      "id": 1,
+      "login": "trillian",
+      "username": "trillian"
+    },
+    "team": null,
+    "body": "",
+    "commit_id": "c0ffee0000000000000000000000000000000001",
+    "state": "COMMENT",
+    "html_url": "https://git.example.test/acme/widgets/pulls/2#issuecomment-501",
+    "pull_request_url": "https://git.example.test/api/v1/repos/acme/widgets/pulls/2",
+    "submitted_at": "2026-09-25T12:04:40Z",
+    "stale": false,
+    "official": false,
+    "dismissed": false,
+    "comments_count": 1,
+    "updated_at": "2026-09-25T12:04:40Z"
+  },
+  {
+    "id": 500,
+    "user": {
+      "id": 1,
+      "login": "trillian",
+      "username": "trillian"
+    },
+    "team": null,
+    "body": "an earlier, unrelated review",
+    "commit_id": "c0ffee0000000000000000000000000000000000",
+    "state": "COMMENT",
+    "html_url": "https://git.example.test/acme/widgets/pulls/2#issuecomment-500",
+    "pull_request_url": "https://git.example.test/api/v1/repos/acme/widgets/pulls/2",
+    "submitted_at": "2026-09-25T11:40:00Z",
+    "stale": false,
+    "official": false,
+    "dismissed": false,
+    "comments_count": 0,
+    "updated_at": "2026-09-25T11:40:00Z"
+  }
+]

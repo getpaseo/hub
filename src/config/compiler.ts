@@ -26,6 +26,7 @@ import {
   type CompiledGitHubAuthority,
 } from "./github-authority.js";
 import { validateConnectionTemplate } from "./connection-template.js";
+import { allowedFilterKeysForProvider } from "./filter-keys.js";
 
 const IDENTIFIER = /^[a-z][a-z0-9_-]*$/u;
 const EVENT_NAME = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$/u;
@@ -98,8 +99,15 @@ const AuthoredTriggerFilterSchema = z
     states: z.array(z.string().min(1)).min(1).optional(),
     /** Linear label IDs which make an issue ineligible. */
     exclude_labels: z.array(z.string().min(1)).min(1).optional(),
-    /** Linear user IDs which may be assigned to the issue. */
+    /** Linear user IDs eligible to be assigned the issue, or, on a Forgejo assigned
+     * event, the logins this delivery added. GitHub supports neither. */
     assignees: z.array(z.string().min(1)).min(1).optional(),
+    /** Forgejo only: the login named by a pull_request_review_requested delivery's
+     * requested_reviewer field. */
+    reviewers: z.array(z.string().min(1)).min(1).optional(),
+    /** Forgejo push only: branch names matched against the pushed ref with
+     * refs/heads/ stripped, exact and case sensitive. A tag push never matches. */
+    branches: z.array(z.string().min(1)).min(1).optional(),
     channels: z.array(z.string().min(1)).optional(),
     from_users: z.array(z.string().min(1)).optional(),
     inputs: z.record(z.string(), InputValueSchema).optional(),
@@ -524,7 +532,11 @@ function compileTrigger(
     if (!EVENT_NAME.test(trigger.on)) throw new Error(`invalid trigger event: ${trigger.on}`);
   });
   const inputs = compileAt([...triggerPath, "inputs"], () => compileInputs(trigger));
-  compileAt([...triggerPath, "filters"], () => validateInputFilters(trigger, inputs));
+  compileAt([...triggerPath, "filters"], () => {
+    validateInputFilters(trigger, inputs);
+    validateFilterKeysForProvider(trigger);
+    validateForgejoEventScopedFilters(trigger);
+  });
   compileAt([...triggerPath, "steps"], () =>
     validateEnvironmentInputChoices(trigger, inputs, environmentNames, environments),
   );
@@ -780,6 +792,57 @@ function validateInputFilters(
     ) {
       throw new Error(`trigger ${trigger.name} input filter ${name} is not an allowed choice`);
     }
+  }
+}
+
+/** Reject a filter key that does not belong to the trigger's own provider, derived
+ * from trigger.on's prefix. triggers/configuration/schema.ts runs the same table for
+ * a friendlier field-level error before a document ever reaches this compiler. */
+function validateFilterKeysForProvider(trigger: AuthoredTrigger): void {
+  if (trigger.filters === undefined) return;
+  const provider = trigger.on.split(".")[0]!;
+  const allowed = allowedFilterKeysForProvider(provider);
+  if (allowed === undefined) return;
+  for (const key of Object.keys(trigger.filters)) {
+    if (!allowed.has(key)) {
+      throw new Error(
+        `trigger ${trigger.name} filters.${key} is not a ${provider} filter; remove it, or move this trigger to an event whose provider supports it`,
+      );
+    }
+  }
+}
+
+/**
+ * Forgejo's assignees and reviewers filters each read a field only one specific event
+ * populates. Authoring either on any other forgejo event would compile to a check
+ * that can never match, so this rejects it at save time instead of leaving a
+ * silently-dead filter in a saved trigger.
+ */
+function validateForgejoEventScopedFilters(trigger: AuthoredTrigger): void {
+  if (!trigger.on.startsWith("forgejo.") || trigger.filters === undefined) return;
+  if (
+    trigger.filters.assignees !== undefined &&
+    trigger.on !== "forgejo.issue_assigned" &&
+    trigger.on !== "forgejo.pull_request_assigned"
+  ) {
+    throw new Error(
+      `trigger ${trigger.name} filters.assignees only matches forgejo.issue_assigned or forgejo.pull_request_assigned, not ${trigger.on}`,
+    );
+  }
+  if (
+    trigger.filters.reviewers !== undefined &&
+    trigger.on !== "forgejo.pull_request_review_requested"
+  ) {
+    throw new Error(
+      `trigger ${trigger.name} filters.reviewers only matches forgejo.pull_request_review_requested, not ${trigger.on}`,
+    );
+  }
+  // a CI run's prettyref can't tell a branch from a tag, so branches is restricted to
+  // forgejo.push, the one event whose ref this repo can read unambiguously.
+  if (trigger.filters.branches !== undefined && trigger.on !== "forgejo.push") {
+    throw new Error(
+      `trigger ${trigger.name} filters.branches only matches forgejo.push, not ${trigger.on}`,
+    );
   }
 }
 

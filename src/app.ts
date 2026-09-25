@@ -10,6 +10,7 @@ import {
 import {
   ProjectConfigurationStore,
   validateHubBundleForOrganization,
+  type ForgejoRepositoryResolver,
 } from "./configuration/store.js";
 import type {
   AcceptedTriggerRunRecord,
@@ -70,6 +71,7 @@ export interface HubRuntimeOptions {
   dispatchTimeoutMs?: number;
   browserOrganizationAccess?: BrowserOrganizationAccess;
   daemonConnectionForId?: DaemonDispatchLifecycleOptions["connectionForDaemon"];
+  forgejoRepositoryResolver?: ForgejoRepositoryResolver;
 }
 
 export interface HubRuntime {
@@ -123,7 +125,12 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       : new ActiveDaemonRegistry(options.database, options.daemonClock);
   const storeForProject = (projectId: string) => {
     if (options.database === null) throw new DatabaseUnavailableError();
-    return new ProjectConfigurationStore(options.database, projectId, daemons ?? undefined);
+    return new ProjectConfigurationStore(
+      options.database,
+      projectId,
+      daemons ?? undefined,
+      options.forgejoRepositoryResolver,
+    );
   };
   const manualProvider =
     options.database === null ? undefined : createManualRunProvider(storeForProject);
@@ -328,7 +335,11 @@ function createAppPublicOperations(
     createDatabasePublicOperationRepository(database),
     {
       triggerForOrganization: (organizationId) => {
-        const store = new OrganizationTriggerStore(database, organizationId);
+        const store = new OrganizationTriggerStore(
+          database,
+          organizationId,
+          options.forgejoRepositoryResolver,
+        );
         return {
           async list() {
             return Promise.all(
@@ -377,6 +388,7 @@ function createAppPublicOperations(
           organizationId,
           files,
           daemonAgentValidator ?? undefined,
+          options.forgejoRepositoryResolver,
         ),
       dispatchManualEvent: (input) => dispatchManualTrigger(manualSource, input),
     },

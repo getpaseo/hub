@@ -336,7 +336,13 @@ test.each([
   "linear.comment_created",
   "linear.issue_entered_scope",
 ])("edits supported event %s", (event) => {
-  expect(projectTriggerForm(ADVANCED.replace("slack.mention", event)).status).toBe("editable");
+  // ADVANCED's filters carry slack's own `channels`, foreign to every event below it;
+  // drop it so the swap exercises the event itself, not a filter no provider here reads.
+  const yaml = ADVANCED.replace("slack.mention", event).replace(
+    "\n      channels: [engineering]",
+    "",
+  );
+  expect(projectTriggerForm(yaml).status).toBe("editable");
 });
 
 test("round trips the added label separately from existing item labels", () => {

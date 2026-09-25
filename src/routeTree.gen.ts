@@ -50,6 +50,7 @@ import { Route as ShellOOrganizationSlugConnectionsRouteImport } from './routes/
 import { Route as ShellOOrganizationSlugActivityRouteImport } from './routes/_shell/o/$organizationSlug/activity'
 import { Route as ShellOOrganizationSlugTriggersIndexRouteImport } from './routes/_shell/o/$organizationSlug/triggers/index'
 import { Route as ShellOOrganizationSlugSettingsIndexRouteImport } from './routes/_shell/o/$organizationSlug/settings/index'
+import { Route as ApiIntegrationsForgejoEventsConnectionIdRouteImport } from './routes/api/integrations/forgejo/events/$connectionId'
 import { Route as ShellOOrganizationSlugTriggersTriggerIdRouteImport } from './routes/_shell/o/$organizationSlug/triggers/$triggerId'
 import { Route as ShellOOrganizationSlugSettingsUsageRouteImport } from './routes/_shell/o/$organizationSlug/settings/usage'
 import { Route as ShellOOrganizationSlugSettingsTeamRouteImport } from './routes/_shell/o/$organizationSlug/settings/team'
@@ -278,6 +279,12 @@ const ShellOOrganizationSlugSettingsIndexRoute =
     path: '/',
     getParentRoute: () => ShellOOrganizationSlugSettingsRoute,
   } as any)
+const ApiIntegrationsForgejoEventsConnectionIdRoute =
+  ApiIntegrationsForgejoEventsConnectionIdRouteImport.update({
+    id: '/api/integrations/forgejo/events/$connectionId',
+    path: '/api/integrations/forgejo/events/$connectionId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ShellOOrganizationSlugTriggersTriggerIdRoute =
   ShellOOrganizationSlugTriggersTriggerIdRouteImport.update({
     id: '/$triggerId',
@@ -353,6 +360,7 @@ export interface FileRoutesByFullPath {
   '/o/$organizationSlug/settings/team': typeof ShellOOrganizationSlugSettingsTeamRoute
   '/o/$organizationSlug/settings/usage': typeof ShellOOrganizationSlugSettingsUsageRoute
   '/o/$organizationSlug/triggers/$triggerId': typeof ShellOOrganizationSlugTriggersTriggerIdRoute
+  '/api/integrations/forgejo/events/$connectionId': typeof ApiIntegrationsForgejoEventsConnectionIdRoute
   '/o/$organizationSlug/settings/': typeof ShellOOrganizationSlugSettingsIndexRoute
   '/o/$organizationSlug/triggers/': typeof ShellOOrganizationSlugTriggersIndexRoute
 }
@@ -398,6 +406,7 @@ export interface FileRoutesByTo {
   '/o/$organizationSlug/settings/team': typeof ShellOOrganizationSlugSettingsTeamRoute
   '/o/$organizationSlug/settings/usage': typeof ShellOOrganizationSlugSettingsUsageRoute
   '/o/$organizationSlug/triggers/$triggerId': typeof ShellOOrganizationSlugTriggersTriggerIdRoute
+  '/api/integrations/forgejo/events/$connectionId': typeof ApiIntegrationsForgejoEventsConnectionIdRoute
   '/o/$organizationSlug/settings': typeof ShellOOrganizationSlugSettingsIndexRoute
   '/o/$organizationSlug/triggers': typeof ShellOOrganizationSlugTriggersIndexRoute
 }
@@ -447,6 +456,7 @@ export interface FileRoutesById {
   '/_shell/o/$organizationSlug/settings/team': typeof ShellOOrganizationSlugSettingsTeamRoute
   '/_shell/o/$organizationSlug/settings/usage': typeof ShellOOrganizationSlugSettingsUsageRoute
   '/_shell/o/$organizationSlug/triggers/$triggerId': typeof ShellOOrganizationSlugTriggersTriggerIdRoute
+  '/api/integrations/forgejo/events/$connectionId': typeof ApiIntegrationsForgejoEventsConnectionIdRoute
   '/_shell/o/$organizationSlug/settings/': typeof ShellOOrganizationSlugSettingsIndexRoute
   '/_shell/o/$organizationSlug/triggers/': typeof ShellOOrganizationSlugTriggersIndexRoute
 }
@@ -496,6 +506,7 @@ export interface FileRouteTypes {
     | '/o/$organizationSlug/settings/team'
     | '/o/$organizationSlug/settings/usage'
     | '/o/$organizationSlug/triggers/$triggerId'
+    | '/api/integrations/forgejo/events/$connectionId'
     | '/o/$organizationSlug/settings/'
     | '/o/$organizationSlug/triggers/'
   fileRoutesByTo: FileRoutesByTo
@@ -541,6 +552,7 @@ export interface FileRouteTypes {
     | '/o/$organizationSlug/settings/team'
     | '/o/$organizationSlug/settings/usage'
     | '/o/$organizationSlug/triggers/$triggerId'
+    | '/api/integrations/forgejo/events/$connectionId'
     | '/o/$organizationSlug/settings'
     | '/o/$organizationSlug/triggers'
   id:
@@ -589,6 +601,7 @@ export interface FileRouteTypes {
     | '/_shell/o/$organizationSlug/settings/team'
     | '/_shell/o/$organizationSlug/settings/usage'
     | '/_shell/o/$organizationSlug/triggers/$triggerId'
+    | '/api/integrations/forgejo/events/$connectionId'
     | '/_shell/o/$organizationSlug/settings/'
     | '/_shell/o/$organizationSlug/triggers/'
   fileRoutesById: FileRoutesById
@@ -621,6 +634,7 @@ export interface RootRouteChildren {
   ApiIntegrationsLinearEventsRoute: typeof ApiIntegrationsLinearEventsRoute
   ApiIntegrationsSlackCallbackRoute: typeof ApiIntegrationsSlackCallbackRoute
   ApiIntegrationsSlackEventsRoute: typeof ApiIntegrationsSlackEventsRoute
+  ApiIntegrationsForgejoEventsConnectionIdRoute: typeof ApiIntegrationsForgejoEventsConnectionIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -912,6 +926,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellOOrganizationSlugSettingsIndexRouteImport
       parentRoute: typeof ShellOOrganizationSlugSettingsRoute
     }
+    '/api/integrations/forgejo/events/$connectionId': {
+      id: '/api/integrations/forgejo/events/$connectionId'
+      path: '/api/integrations/forgejo/events/$connectionId'
+      fullPath: '/api/integrations/forgejo/events/$connectionId'
+      preLoaderRoute: typeof ApiIntegrationsForgejoEventsConnectionIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_shell/o/$organizationSlug/triggers/$triggerId': {
       id: '/_shell/o/$organizationSlug/triggers/$triggerId'
       path: '/$triggerId'
@@ -1071,6 +1092,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiIntegrationsLinearEventsRoute: ApiIntegrationsLinearEventsRoute,
   ApiIntegrationsSlackCallbackRoute: ApiIntegrationsSlackCallbackRoute,
   ApiIntegrationsSlackEventsRoute: ApiIntegrationsSlackEventsRoute,
+  ApiIntegrationsForgejoEventsConnectionIdRoute:
+    ApiIntegrationsForgejoEventsConnectionIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -1,10 +1,12 @@
-import { and, eq, isNull, or } from "drizzle-orm";
+import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
 import type { DrizzleHandle } from "./runtime/index.js";
 import * as schema from "./schema.js";
 import { ConnectionRepository } from "./connections.js";
+import { FORGEJO_ENRICHMENT_STALE_MS } from "./forgejo-enrichment.js";
 import type {
   AcceptDiscordEventInput,
+  AcceptForgejoEventInput,
   AcceptGitHubEventInput,
   AcceptLinearEventInput,
   AcceptSlackEventInput,
@@ -45,11 +47,23 @@ export class ProviderEventAcceptanceRepository {
     return this.acceptProvider("linear", input.linearOrganizationId, input.projectId, input);
   }
 
+  // connection id doubles as the external key: the webhook path segment identified the tenant
+  acceptForgejo(input: AcceptForgejoEventInput): Promise<ProviderEventAcceptance> {
+    return this.acceptProvider(
+      "forgejo",
+      input.connectionId,
+      input.repositoryId,
+      input,
+      input.enrichmentPending === true,
+    );
+  }
+
   private async acceptProvider(
-    provider: "github" | "slack" | "discord" | "linear",
+    provider: "github" | "slack" | "discord" | "linear" | "forgejo",
     externalId: number | string,
     resourceId: number | string | undefined,
     input: ProviderEventEvidence,
+    enrichmentPending = false,
   ): Promise<ProviderEventAcceptance> {
     return this.database.transaction(async (transaction) => {
       const connection = await findConnection(transaction, provider, externalId);
@@ -58,7 +72,7 @@ export class ProviderEventAcceptanceRepository {
       }
 
       const existing = await findReceipt(transaction, input, connection.organizationId);
-      if (existing !== undefined) return replayProviderReceipt(existing);
+      if (existing !== undefined) return replayProviderReceipt(transaction, existing);
 
       const dropReason =
         input.dropReason ??
@@ -76,7 +90,7 @@ export class ProviderEventAcceptanceRepository {
       if (!receipt.inserted) {
         const existingReceipt = await findReceipt(transaction, input, connection.organizationId);
         if (existingReceipt === undefined) throw new Error("provider receipt unavailable");
-        return replayProviderReceipt(existingReceipt);
+        return replayProviderReceipt(transaction, existingReceipt);
       }
       if (dropReason !== undefined) {
         return { status: "dropped", receiptId: receipt.id, reason: dropReason };
@@ -133,9 +147,14 @@ export class ProviderEventAcceptanceRepository {
         connectionId: route.connectionId,
         resourceId: route.resourceId,
       }));
+      // marker lands in the same write as the routes, so no reader sees one without the other
       await transaction
         .update(schema.providerEventReceipts)
-        .set({ acceptedRoutes })
+        .set(
+          enrichmentPending
+            ? { acceptedRoutes, enrichmentPendingSince: sql`now()` }
+            : { acceptedRoutes },
+        )
         .where(eq(schema.providerEventReceipts.id, receipt.id));
 
       return {
@@ -153,6 +172,7 @@ export class ProviderEventAcceptanceRepository {
           resourceId: route.resourceId,
         })),
         receiptId: receipt.id,
+        ...(enrichmentPending ? { ownsEnrichment: true } : {}),
       };
     });
   }
@@ -297,6 +317,22 @@ export class ProviderEventAcceptanceRepository {
     });
   }
 
+  // writes the enriched payload and clears the pending marker in one statement, so a
+  // duplicate never replays the cleared receipt with the old payload
+  async completeForgejoEnrichment(
+    providerEventReceiptId: string,
+    payload?: unknown,
+  ): Promise<void> {
+    await this.database
+      .update(schema.providerEventReceipts)
+      .set(
+        payload === undefined
+          ? { enrichmentPendingSince: null }
+          : { enrichmentPendingSince: null, payload },
+      )
+      .where(eq(schema.providerEventReceipts.id, providerEventReceiptId));
+  }
+
   async releaseGitHubLifecycleReceipt(providerEventReceiptId: string): Promise<void> {
     await this.database
       .delete(schema.providerEventReceipts)
@@ -373,17 +409,63 @@ async function findReceipt(
   return receipt;
 }
 
-function replayProviderReceipt(
-  receipt: typeof schema.providerEventReceipts.$inferSelect,
-): ProviderEventAcceptance {
-  if (receipt.droppedReason !== null) {
-    return { status: "dropped", receiptId: receipt.id, reason: receipt.droppedReason };
+// a receipt still marked "enrichment pending" answers pending, not duplicate: nothing
+// will ever dispatch it on its own, so the caller (webhook.ts) turns ageMs into a real
+// failure only once the owner looks overdue. once the marker is stale, the conditional
+// UPDATE below lets exactly one caller take it over; a second concurrent taker blocks on
+// the row and matches nothing once it re-checks the refreshed marker.
+//
+// completeForgejoEnrichment runs outside this transaction as a plain UPDATE, so it can
+// commit in the gap between the initial read of existing and the conditional UPDATE,
+// clearing the marker while the UPDATE's WHERE still fails to match. the re-read below
+// catches that by reflecting the row's actual current state, not the initial snapshot.
+async function replayProviderReceipt(
+  transaction: HubTransaction,
+  existing: typeof schema.providerEventReceipts.$inferSelect,
+): Promise<ProviderEventAcceptance> {
+  if (existing.droppedReason !== null) {
+    return { status: "dropped", receiptId: existing.id, reason: existing.droppedReason };
   }
-  const routes = parseAcceptedRoutes(receipt.acceptedRoutes);
-  if (routes === null) return { status: "duplicate", receiptId: receipt.id };
+  const routes = parseAcceptedRoutes(existing.acceptedRoutes);
+  if (routes === null) return { status: "duplicate", receiptId: existing.id };
+  let receipt = existing;
+  let ownsEnrichment = false;
+  if (existing.enrichmentPendingSince !== null) {
+    const [taken] = await transaction
+      .update(schema.providerEventReceipts)
+      .set({ enrichmentPendingSince: sql`now()` })
+      .where(
+        and(
+          eq(schema.providerEventReceipts.id, existing.id),
+          lt(
+            schema.providerEventReceipts.enrichmentPendingSince,
+            sql`now() - make_interval(secs => ${FORGEJO_ENRICHMENT_STALE_MS / 1000})`,
+          ),
+        ),
+      )
+      .returning();
+    if (taken === undefined) {
+      const [refreshed] = await transaction
+        .select()
+        .from(schema.providerEventReceipts)
+        .where(eq(schema.providerEventReceipts.id, existing.id));
+      if (refreshed === undefined) return { status: "duplicate", receiptId: existing.id };
+      if (refreshed.enrichmentPendingSince === null) {
+        return replayProviderReceipt(transaction, refreshed);
+      }
+      return {
+        status: "pending",
+        receiptId: existing.id,
+        ageMs: Math.max(0, Date.now() - refreshed.enrichmentPendingSince.getTime()),
+      };
+    }
+    receipt = taken;
+    ownsEnrichment = true;
+  }
   return {
     status: "accepted",
     receiptId: receipt.id,
+    ...(ownsEnrichment ? { ownsEnrichment } : {}),
     events: routes.map((route) => ({
       providerEventReceiptId: receipt.id,
       organizationId: receipt.organizationId,
@@ -436,9 +518,20 @@ function selectFirstRoutePerProject<Route extends { projectId: string }>(
 
 async function findConnection(
   transaction: HubTransaction,
-  provider: "github" | "slack" | "discord" | "linear",
+  provider: "github" | "slack" | "discord" | "linear" | "forgejo",
   externalId: number | string,
 ) {
+  if (provider === "forgejo") {
+    const [row] = await transaction
+      .select({
+        id: schema.forgejoConnections.id,
+        organizationId: schema.forgejoConnections.organizationId,
+      })
+      .from(schema.forgejoConnections)
+      .where(eq(schema.forgejoConnections.id, String(externalId)))
+      .limit(1);
+    return row;
+  }
   if (provider === "github") {
     const [row] = await transaction
       .select({
@@ -491,7 +584,7 @@ async function claimProviderReceipt(
   transaction: HubTransaction,
   input: {
     organizationId: string;
-    provider: "github" | "slack" | "discord" | "linear" | "manual";
+    provider: "github" | "slack" | "discord" | "linear" | "forgejo" | "manual";
     connectionId: string | null;
     resourceId: string | null;
     input: ProviderEventEvidence;

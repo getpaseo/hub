@@ -1,4 +1,4 @@
-import { createHubApplication } from "./app.js";
+import { createHubApplication, type HubRuntimeOptions } from "./app.js";
 import type { AuthServer } from "./auth/server.js";
 import type { BillingRuntime } from "./billing/index.js";
 import type { ConnectionResolver } from "./config/connections.js";
@@ -10,6 +10,7 @@ import type { EntitlementsService } from "./entitlements/service.js";
 import { OperatorConsole } from "./operator/console.js";
 import { UsageDashboard } from "./usage/dashboard.js";
 import { OrganizationResources } from "./organizations/resources.js";
+import type { ForgejoRepositoryResolver } from "./configuration/store.js";
 import { OutputExecutorRegistry } from "./execution-capabilities/outputs.js";
 import type {
   ProviderIntegrationRegistration,
@@ -42,6 +43,7 @@ export interface ApplicationCompositionOptions {
   completionTokenSecret?: string;
   testTriggerRoutes?: boolean;
   daemonConnectionForId?: DaemonDispatchLifecycleOptions["connectionForDaemon"];
+  forgejoRepositoryResolver?: ForgejoRepositoryResolver;
   close(): Promise<void>;
 }
 
@@ -86,33 +88,15 @@ async function createOwnedApplicationRuntime(
     outputRegistry.register(output);
   }
 
-  const application = createHubApplication({
-    database: options.database,
-    entitlements: options.entitlements,
-    providerFactories: registrations.flatMap((registration) => registration.triggerProviders),
-    ...(executionAuthority === undefined ? {} : { executionAuthority }),
-    attachmentResolvers: Object.fromEntries(
-      registrations.flatMap((registration) =>
-        registration.attachment === undefined
-          ? []
-          : [[registration.attachment.provider, registration.attachment.resolve] as const],
-      ),
+  const application = createHubApplication(
+    hubApplicationOptions(
+      options,
+      registrations,
+      executionAuthority,
+      connectionsForProject,
+      outputRegistry,
     ),
-    connectionsForProject,
-    ...(options.auth === null ? {} : { browserOrganizationAccess: options.auth }),
-    publicApi:
-      options.auth?.publicCredentials === undefined
-        ? { status: "unavailable" }
-        : { status: "enabled", authenticator: options.auth.publicCredentials },
-    ...(options.publicBaseUrl === undefined ? {} : { publicBaseUrl: options.publicBaseUrl }),
-    ...(options.completionTokenSecret === undefined
-      ? {}
-      : { completionTokenSecret: options.completionTokenSecret }),
-    outputRegistry,
-    ...(options.daemonConnectionForId === undefined
-      ? {}
-      : { daemonConnectionForId: options.daemonConnectionForId }),
-  });
+  );
   ownership.own(() => application.hub.stop());
   await application.hub.start(registrations.flatMap((registration) => registration.sources));
 
@@ -357,10 +341,49 @@ async function createOwnedApplicationRuntime(
   };
 }
 
+function hubApplicationOptions(
+  options: ApplicationCompositionOptions,
+  registrations: readonly ProviderRegistration[],
+  executionAuthority: ExecutionAuthority | undefined,
+  connectionsForProject: ReturnType<typeof createConnectionsForProject>,
+  outputRegistry: OutputExecutorRegistry,
+): HubRuntimeOptions {
+  return {
+    database: options.database,
+    entitlements: options.entitlements,
+    providerFactories: registrations.flatMap((registration) => registration.triggerProviders),
+    ...(executionAuthority === undefined ? {} : { executionAuthority }),
+    attachmentResolvers: Object.fromEntries(
+      registrations.flatMap((registration) =>
+        registration.attachment === undefined
+          ? []
+          : [[registration.attachment.provider, registration.attachment.resolve] as const],
+      ),
+    ),
+    connectionsForProject,
+    ...(options.auth === null ? {} : { browserOrganizationAccess: options.auth }),
+    publicApi:
+      options.auth?.publicCredentials === undefined
+        ? { status: "unavailable" }
+        : { status: "enabled", authenticator: options.auth.publicCredentials },
+    ...(options.publicBaseUrl === undefined ? {} : { publicBaseUrl: options.publicBaseUrl }),
+    ...(options.completionTokenSecret === undefined
+      ? {}
+      : { completionTokenSecret: options.completionTokenSecret }),
+    outputRegistry,
+    ...(options.daemonConnectionForId === undefined
+      ? {}
+      : { daemonConnectionForId: options.daemonConnectionForId }),
+    ...(options.forgejoRepositoryResolver === undefined
+      ? {}
+      : { forgejoRepositoryResolver: options.forgejoRepositoryResolver }),
+  };
+}
+
 function triggerDashboardFor(options: ApplicationCompositionOptions): TriggerDashboard | null {
   return options.database === null || options.auth === null
     ? null
-    : new TriggerDashboard(options.database, options.auth);
+    : new TriggerDashboard(options.database, options.auth, options.forgejoRepositoryResolver);
 }
 
 function daemonProviderCatalogFor(
@@ -379,8 +402,11 @@ function providerApplicationsFor(
   return options.providerApplications ?? null;
 }
 
-function createConnectionsForProject(
-  database: Database | null,
+/** Narrowed to the two reads it makes, so a caller can supply exactly those. */
+export type ConnectionInventory = Pick<Database, "findProjectById" | "organizationConnectionUsage">;
+
+export function createConnectionsForProject(
+  database: ConnectionInventory | null,
   integrations: ReadonlyMap<string, ProviderIntegrationRegistration>,
 ): (projectId: string) => ConnectionResolver {
   return (projectId) => async (connectionSlug, value, context) => {
@@ -392,6 +418,8 @@ function createConnectionsForProject(
       ...usage.github.map((connection) => ({ provider: "github" as const, connection })),
       ...usage.discord.map((connection) => ({ provider: "discord" as const, connection })),
       ...usage.slack.map((connection) => ({ provider: "slack" as const, connection })),
+      ...usage.linear.map((connection) => ({ provider: "linear" as const, connection })),
+      ...usage.forgejo.map((connection) => ({ provider: "forgejo" as const, connection })),
     ].filter(
       ({ connection }) =>
         connection.organizationId === project.organizationId && connection.slug === connectionSlug,

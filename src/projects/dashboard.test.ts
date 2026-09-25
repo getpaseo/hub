@@ -30,6 +30,7 @@ describe("project dashboard activity read models", () => {
         github: [],
         discord: [],
         slack: [],
+        forgejo: [],
         linear: [
           {
             id: "expired",
@@ -82,6 +83,63 @@ describe("project dashboard activity read models", () => {
         ],
       );
     }
+  });
+
+  it("carries a forgejo connection's instance flavor and version into the snapshot", async () => {
+    const database = createMemoryDatabase({
+      memberships: [
+        {
+          userId: "user-1",
+          organizationId: "org-1",
+          organizationName: "Acme",
+          organizationSlug: "acme",
+          membershipId: "membership-1",
+          role: "owner",
+        },
+      ],
+    });
+    await database.createProject({
+      organizationId: "org-1",
+      name: "Hub",
+      slug: "hub",
+      createdByUserId: "user-1",
+    });
+    database.organizationConnectionUsage = () =>
+      Promise.resolve({
+        github: [],
+        discord: [],
+        slack: [],
+        linear: [],
+        forgejo: [
+          {
+            id: "forge-1",
+            organizationId: "org-1",
+            slug: "acme-forgejo",
+            instanceBaseUrl: "https://forgejo.example.test",
+            instanceHost: "forgejo.example.test",
+            webhookSecret: "shh",
+            accessToken: "token",
+            accountLogin: "acme-bot",
+            accountId: 20,
+            instanceFlavor: "forgejo",
+            instanceVersion: "16.0.5+gitea-1.22.0",
+          },
+        ],
+      });
+
+    const dashboard = new ProjectDashboard(database, accountAuth(), undefined);
+    const request = new Request("https://hub.test/o/acme/projects/hub");
+    const organization = await dashboard.organizationSnapshot(request, {
+      organizationSlug: "acme",
+    });
+
+    assert.deepEqual(
+      organization.connections.forgejo.map((connection) => ({
+        instanceFlavor: connection.instanceFlavor,
+        instanceVersion: connection.instanceVersion,
+      })),
+      [{ instanceFlavor: "forgejo", instanceVersion: "16.0.5+gitea-1.22.0" }],
+    );
   });
 
   it("omits payload-bearing evidence from lists and retains it in detail", async () => {

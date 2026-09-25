@@ -66,12 +66,80 @@ describe("trigger dashboard read model", () => {
       receivedAt: receivedAt.toISOString(),
     });
   });
+
+  it("lists Forgejo connections and reports forgejo as the trigger provider", async () => {
+    const database = createMemoryDatabase({
+      memberships: [
+        {
+          userId: "user-1",
+          organizationId: "org-1",
+          organizationName: "Acme",
+          organizationSlug: "acme",
+          membershipId: "membership-1",
+          role: "owner",
+        },
+      ],
+    });
+    await enrollTestDaemon(database, "org-1");
+    database.organizationConnectionUsage = () =>
+      Promise.resolve({
+        github: [],
+        slack: [],
+        discord: [],
+        linear: [],
+        forgejo: [
+          {
+            id: "00000000-0000-4000-8000-000000000020",
+            organizationId: "org-1",
+            slug: "acme-forgejo",
+            instanceBaseUrl: "https://forgejo.example.test",
+            instanceHost: "forgejo.example.test",
+            webhookSecret: "shh",
+            accessToken: "token",
+            accountLogin: "acme-bot",
+            accountId: 20,
+            instanceFlavor: "forgejo",
+            instanceVersion: "16.0.5+gitea-1.22.0",
+          },
+        ],
+      });
+    await new OrganizationTriggerStore(database, "org-1").save({
+      yaml: forgejoTriggerYaml,
+      userId: "user-1",
+    });
+    const dashboard = new TriggerDashboard(database, accountAuth());
+    const request = new Request("https://hub.test/o/acme/triggers");
+
+    const snapshot = await dashboard.snapshot(request, "acme");
+    assert.deepEqual(
+      snapshot.connections.find((connection) => connection.provider === "forgejo"),
+      {
+        id: "00000000-0000-4000-8000-000000000020",
+        slug: "acme-forgejo",
+        provider: "forgejo",
+        label: "acme-bot@forgejo.example.test",
+      },
+    );
+    assert.equal(snapshot.triggers[0]?.provider, "forgejo");
+  });
 });
 
 const triggerYaml = `name: manual-task
 enabled: true
 on:
   manual.run: {}
+run:
+  target: { daemon: ${TEST_DAEMON_SLUG}, cwd: /workspace }
+  agent: { provider: test, mode: full-access }
+  prompt: Handle it
+`;
+
+const forgejoTriggerYaml = `name: forgejo-triage
+enabled: true
+on:
+  forgejo.issue_comment_created:
+    connection: acme-forgejo
+    filters: { from_users: ["*"] }
 run:
   target: { daemon: ${TEST_DAEMON_SLUG}, cwd: /workspace }
   agent: { provider: test, mode: full-access }

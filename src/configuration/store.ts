@@ -27,10 +27,24 @@ import {
   configurationValidationErrors,
   type ConfigurationValidationErrors,
 } from "./validation-errors.js";
+import { splitForgejoRepository } from "../triggers/forgejo/repository.js";
 
 export interface StoredProjectConfiguration {
   revision: ProjectConfigurationRevisionRecord;
   configuration: CompiledProjectConfiguration;
+}
+
+/**
+ * What compiling a Forgejo trigger's repo filter needs: proof the repository exists,
+ * and the canonical full_name and numeric id to store instead of the raw authored
+ * string. ForgejoApiClient satisfies this structurally, so this module never imports it.
+ */
+export interface ForgejoRepositoryResolver {
+  getRepository(
+    credentials: { instanceBaseUrl: string; accessToken: string },
+    owner: string,
+    repo: string,
+  ): Promise<{ id: number; fullName: string } | undefined>;
 }
 
 export interface DaemonAgentConfigurationValidator {
@@ -99,6 +113,7 @@ export class ProjectConfigurationStore {
     private readonly database: Database,
     private readonly projectId: string,
     private readonly daemonAgentValidator?: DaemonAgentConfigurationValidator,
+    private readonly forgejoRepositoryResolver?: ForgejoRepositoryResolver,
   ) {}
 
   async validateBundle(
@@ -116,6 +131,7 @@ export class ProjectConfigurationStore {
       project.organizationId,
       files,
       this.daemonAgentValidator,
+      this.forgejoRepositoryResolver,
     );
   }
 
@@ -131,6 +147,7 @@ export class ProjectConfigurationStore {
       bundle.configuration,
       bundle.agentValidationTargets,
       this.daemonAgentValidator,
+      this.forgejoRepositoryResolver,
     );
     return this.database.insertProjectConfigurationRevision({
       projectId: this.projectId,
@@ -168,6 +185,7 @@ export class ProjectConfigurationStore {
             bundle.configuration,
             bundle.agentValidationTargets,
             this.daemonAgentValidator,
+            this.forgejoRepositoryResolver,
           )
         : {
             normalizedConfiguration: bundle.configuration,
@@ -287,6 +305,7 @@ export async function validateHubBundleForOrganization(
   organizationId: string,
   files: readonly HubBundleFile[],
   daemonAgentValidator?: DaemonAgentConfigurationValidator,
+  forgejoRepositoryResolver?: ForgejoRepositoryResolver,
 ): Promise<{ valid: true } | { valid: false; validationErrors: unknown }> {
   let bundle: CompiledHubBundle;
   try {
@@ -300,6 +319,7 @@ export async function validateHubBundleForOrganization(
     bundle.configuration,
     bundle.agentValidationTargets,
     daemonAgentValidator,
+    forgejoRepositoryResolver,
   );
   return prepared.validationErrors === undefined
     ? { valid: true }
@@ -353,6 +373,7 @@ async function prepareCompiledRevision(
   configuration: CompiledHubConfig,
   agentValidationTargets: readonly HubBundleAgentValidationTarget[],
   daemonAgentValidator: DaemonAgentConfigurationValidator | undefined,
+  forgejoRepositoryResolver: ForgejoRepositoryResolver | undefined,
 ): Promise<Extract<PreparedRevision, { kind: "compiled" }>> {
   const project = await database.findProjectById(projectId);
   if (project === undefined) {
@@ -369,6 +390,7 @@ async function prepareCompiledRevision(
     configuration,
     agentValidationTargets,
     daemonAgentValidator,
+    forgejoRepositoryResolver,
   );
 }
 
@@ -378,8 +400,14 @@ async function prepareCompiledRevisionForOrganization(
   configuration: CompiledHubConfig,
   agentValidationTargets: readonly HubBundleAgentValidationTarget[],
   daemonAgentValidator: DaemonAgentConfigurationValidator | undefined,
+  forgejoRepositoryResolver: ForgejoRepositoryResolver | undefined,
 ): Promise<Extract<PreparedRevision, { kind: "compiled" }>> {
-  const compiled = await resolveCompiledConfiguration(database, organizationId, configuration);
+  const compiled = await resolveCompiledConfiguration(
+    database,
+    organizationId,
+    configuration,
+    forgejoRepositoryResolver,
+  );
   if (!compiled.success) {
     return {
       kind: "compiled",
@@ -482,6 +510,7 @@ async function resolveCompiledConfiguration(
   database: Database,
   organizationId: string,
   configuration: CompiledHubConfig,
+  forgejoRepositoryResolver: ForgejoRepositoryResolver | undefined,
 ): Promise<CompileConfigurationResult> {
   const daemons = (await database.listDaemonsForOrganization(organizationId)).filter(
     ({ status, permissions }) => status === "active" && permissions.includes("hub.execute"),
@@ -516,6 +545,7 @@ async function resolveCompiledConfiguration(
     database,
     organizationId,
     configuration.triggers,
+    forgejoRepositoryResolver,
   );
   const issues = [...daemonIssues, ...triggerCompilation.issues];
   if (issues.length > 0) {
@@ -537,6 +567,7 @@ export async function resolveTriggerConfigurationForOrganization(
   database: Database,
   organizationId: string,
   configuration: CompiledHubConfig,
+  forgejoRepositoryResolver?: ForgejoRepositoryResolver,
 ): Promise<
   | {
       success: true;
@@ -554,7 +585,12 @@ export async function resolveTriggerConfigurationForOrganization(
       issues: readonly { path: readonly (string | number)[]; message: string }[];
     }
 > {
-  const resolved = await resolveCompiledConfiguration(database, organizationId, configuration);
+  const resolved = await resolveCompiledConfiguration(
+    database,
+    organizationId,
+    configuration,
+    forgejoRepositoryResolver,
+  );
   if (!resolved.success) {
     return {
       success: false,
@@ -562,7 +598,14 @@ export async function resolveTriggerConfigurationForOrganization(
       issues: resolved.issues,
     };
   }
-  const compiled = await compileTriggers(database, organizationId, resolved.configuration.triggers);
+  // already carries connectionId+resourceId from the resolution above, so this second
+  // pass never repeats a repository lookup.
+  const compiled = await compileTriggers(
+    database,
+    organizationId,
+    resolved.configuration.triggers,
+    forgejoRepositoryResolver,
+  );
   if (compiled.issues.length > 0) {
     return {
       success: false,
@@ -613,6 +656,7 @@ async function compileTriggerRoutes(
 ): Promise<ProjectTriggerRoute[]> {
   const project = await database.findProjectById(projectId);
   if (project === undefined) throw new Error("project not found");
+  // no resolver: this only ever runs on a configuration already resolved at save time.
   const routes = await compileTriggers(database, project.organizationId, configuration.triggers);
   if (routes.issues.length > 0)
     throw new Error(routes.issues.map(({ message }) => message).join("; "));
@@ -623,6 +667,7 @@ async function compileTriggers(
   database: Database,
   organizationId: string,
   triggers: readonly CompiledTrigger[],
+  forgejoRepositoryResolver?: ForgejoRepositoryResolver,
 ): Promise<{
   triggers: CompiledTrigger[];
   routes: ProjectTriggerRoute[];
@@ -661,40 +706,31 @@ async function compileTriggers(
       continue;
     }
     if (authored !== undefined) {
-      const resolved = await resolveResource(
+      const result = await compileAuthoredResourceTrigger(
         database,
         organizationId,
         provider,
+        trigger,
+        filter,
         authored,
-        new Set(candidates.map((connection) => connection.id)),
+        candidates,
+        forgejoRepositoryResolver,
       );
-      if (resolved === undefined) {
-        issues.push({
-          path: triggerFilterPath(trigger, resourceField(provider)),
-          message: `"${authored}" does not match any ${resourceLabel(provider)} (${await formatResourceCandidates(
-            database,
-            organizationId,
-            provider,
-            candidates,
-          )})`,
-        });
-        continue;
+      if (result.kind === "issue") {
+        issues.push(result.issue);
+      } else {
+        compiled.push(result.trigger);
+        routes.push(result.route);
       }
-      const resolvedFilter =
-        provider === "github"
-          ? filter
-          : { ...filter, [resourceField(provider)]: resolved.resourceId };
-      const nextFilter: CompiledTriggerFilter = {
-        ...resolvedFilter,
-        connectionId: resolved.connectionId,
-        resourceId: resolved.resourceId,
-      };
-      compiled.push({ ...trigger, filters: nextFilter });
-      routes.push({
-        provider,
-        connectionId: resolved.connectionId,
-        resourceId: resolved.resourceId,
-        triggerName: trigger.name,
+      continue;
+    }
+
+    // no repo or connection filter: routing to every candidate would fire once per
+    // connection, and two Forgejo connections on the same repo would double-fire.
+    if (provider === "forgejo" && candidates.length > 1) {
+      issues.push({
+        path: triggerFilterPath(trigger, "connection"),
+        message: `this trigger has no repo filter and matches more than one Forgejo connection (${formatConnectionCandidates(provider, candidates)}); add a connection filter to pick one`,
       });
       continue;
     }
@@ -716,12 +752,116 @@ async function compileTriggers(
   return { triggers: compiled, routes, issues };
 }
 
+interface TriggerCompilationIssue {
+  path: readonly (string | number)[];
+  message: string;
+}
+
+/** The named-resource half of compileTriggers' per-trigger work, split out to keep
+ * the main loop's own branching low enough for the complexity lint to pass. */
+async function compileAuthoredResourceTrigger(
+  database: Database,
+  organizationId: string,
+  provider: ConnectionProvider,
+  trigger: CompiledTrigger,
+  filter: CompiledTrigger["filters"],
+  authored: string,
+  candidates: ReturnType<typeof connectionCandidates>,
+  forgejoRepositoryResolver: ForgejoRepositoryResolver | undefined,
+): Promise<
+  | { kind: "issue"; issue: TriggerCompilationIssue }
+  | { kind: "compiled"; trigger: CompiledTrigger; route: ProjectTriggerRoute }
+> {
+  // a repo worth resolving but nothing to resolve it with: fail closed instead of
+  // silently keeping the unresolved, unmatchable authored string on the filter.
+  if (provider === "forgejo" && candidates.length > 0 && forgejoRepositoryResolver === undefined) {
+    return {
+      kind: "issue",
+      issue: {
+        path: triggerFilterPath(trigger, resourceField(provider)),
+        message: "forgejo repository resolution is unavailable",
+      },
+    };
+  }
+  const resolved = await resolveResource(
+    database,
+    organizationId,
+    provider,
+    authored,
+    new Set(candidates.map((connection) => connection.id)),
+    forgejoRepositoryResolver,
+  );
+  if (resolved.status === "unreachable") {
+    return {
+      kind: "issue",
+      issue: {
+        path: triggerFilterPath(trigger, resourceField(provider)),
+        message: `couldn't verify this ${resourceLabel(provider)} on ${resolved.instanceHost ?? "the instance"}: the instance could not be reached or refused the token`,
+      },
+    };
+  }
+  if (resolved.status === "not_found") {
+    return {
+      kind: "issue",
+      issue: {
+        path: triggerFilterPath(trigger, resourceField(provider)),
+        message: `"${authored}" does not match any ${resourceLabel(provider)} (${await formatResourceCandidates(
+          database,
+          organizationId,
+          provider,
+          candidates,
+        )})`,
+      },
+    };
+  }
+  if (resolved.status === "ambiguous") {
+    return {
+      kind: "issue",
+      issue: {
+        path: triggerFilterPath(trigger, "connection"),
+        message: `"${authored}" matches more than one ${providerLabel(provider)} connection (${formatConnectionCandidates(provider, candidates)}); add a connection filter to pick one`,
+      },
+    };
+  }
+  const resolvedFilter = resolvedFilterFor(provider, filter, authored, resolved);
+  const nextFilter: CompiledTriggerFilter = {
+    ...resolvedFilter,
+    connectionId: resolved.connectionId,
+    resourceId: resolved.resourceId,
+  };
+  return {
+    kind: "compiled",
+    trigger: { ...trigger, filters: nextFilter },
+    route: {
+      provider,
+      connectionId: resolved.connectionId,
+      resourceId: resolved.resourceId,
+      triggerName: trigger.name,
+    },
+  };
+}
+
+/** GitHub keeps the authored repo filter untouched, already the canonical fullName.
+ * Forgejo replaces it with the resolved canonicalResource, since the authored string
+ * can be a case difference or a rename the live lookup just canonicalized. */
+function resolvedFilterFor(
+  provider: ConnectionProvider,
+  filter: CompiledTrigger["filters"],
+  authored: string,
+  resolved: Extract<ResourceResolution, { status: "resolved" }>,
+): CompiledTrigger["filters"] {
+  if (provider === "github") return filter;
+  if (provider === "forgejo") return { ...filter, repo: resolved.canonicalResource ?? authored };
+  return { ...filter, [resourceField(provider)]: resolved.resourceId };
+}
+
 function providerForEvent(eventName: string): ConnectionProvider | undefined {
   const provider = eventName.slice(0, eventName.indexOf("."));
   return provider === "github" ||
     provider === "slack" ||
     provider === "discord" ||
-    provider === "linear"
+    provider === "linear" ||
+    provider === "forgejo"
     ? provider
     : undefined;
 }
@@ -732,7 +872,7 @@ function readAuthoredResource(
 ): string | undefined {
   if (filters === undefined) return undefined;
   let value: string | undefined;
-  if (provider === "github") value = filters.repo;
+  if (provider === "github" || provider === "forgejo") value = filters.repo;
   else if (provider === "slack") value = filters.workspace;
   else if (provider === "discord") value = filters.guild;
   else value = filters.project;
@@ -750,43 +890,127 @@ function connectionCandidates(
   return connections.filter((connection) => connection.slug === authoredSlug);
 }
 
+/** A confirmed resource, or why none was. ambiguous is Forgejo-only: two accounts
+ * sharing an instance can both see the same repo, a real match, not a typo, so it
+ * gets its own status instead of folding into not_found like the other providers do.
+ * unreachable is also Forgejo-only (the only live network lookup) and only fires when
+ * nothing confirmed the resource and at least one candidate's lookup threw. */
+type ResourceResolution =
+  | { status: "resolved"; connectionId: string; resourceId: string; canonicalResource?: string }
+  | { status: "not_found" }
+  | { status: "ambiguous" }
+  | { status: "unreachable"; instanceHost: string | undefined };
+
 async function resolveResource(
   database: Database,
   organizationId: string,
   provider: ConnectionProvider,
   resource: string,
   allowedConnectionIds: ReadonlySet<string>,
-): Promise<{ connectionId: string; resourceId: string } | undefined> {
+  forgejoRepositoryResolver?: ForgejoRepositoryResolver,
+): Promise<ResourceResolution> {
   if (provider === "github") {
     const repositories = (await database.listGitHubRepositories(organizationId)).filter(
       (repository) =>
         repository.fullName === resource && allowedConnectionIds.has(repository.connectionId),
     );
-    if (repositories.length !== 1) return undefined;
+    if (repositories.length !== 1) return { status: "not_found" };
     const repository = repositories[0]!;
-    return { connectionId: repository.connectionId, resourceId: String(repository.repositoryId) };
+    return {
+      status: "resolved",
+      connectionId: repository.connectionId,
+      resourceId: String(repository.repositoryId),
+    };
   }
   if (provider === "slack") {
     const connection = (await database.organizationConnectionUsage(organizationId)).slack.find(
       ({ id, slug }) => slug === resource && allowedConnectionIds.has(id),
     );
     return connection === undefined
-      ? undefined
-      : { connectionId: connection.id, resourceId: connection.teamId };
+      ? { status: "not_found" }
+      : { status: "resolved", connectionId: connection.id, resourceId: connection.teamId };
   }
   if (provider === "linear") {
     const connections = (await database.organizationConnectionUsage(organizationId)).linear.filter(
       ({ id }) => allowedConnectionIds.has(id),
     );
-    if (connections.length !== 1) return undefined;
-    return { connectionId: connections[0]!.id, resourceId: resource };
+    if (connections.length !== 1) return { status: "not_found" };
+    return { status: "resolved", connectionId: connections[0]!.id, resourceId: resource };
+  }
+  if (provider === "forgejo") {
+    return resolveForgejoRepository(
+      database,
+      organizationId,
+      resource,
+      allowedConnectionIds,
+      forgejoRepositoryResolver,
+    );
   }
   const connection = (await database.organizationConnectionUsage(organizationId)).discord.find(
     ({ id, slug }) => slug === resource && allowedConnectionIds.has(id),
   );
   return connection === undefined
-    ? undefined
-    : { connectionId: connection.id, resourceId: connection.guildId };
+    ? { status: "not_found" }
+    : { status: "resolved", connectionId: connection.id, resourceId: connection.guildId };
+}
+
+/**
+ * Forgejo has no synced repository table, so this validates live against every candidate
+ * connection's instance. More than one confirming connection stays ambiguous, since the repo
+ * really does exist on both. A lookup that throws only counts against the resource when nothing
+ * else confirmed it either, so an unreachable instance doesn't get reported as a typo.
+ */
+async function resolveForgejoRepository(
+  database: Database,
+  organizationId: string,
+  resource: string,
+  allowedConnectionIds: ReadonlySet<string>,
+  forgejoRepositoryResolver: ForgejoRepositoryResolver | undefined,
+): Promise<ResourceResolution> {
+  if (forgejoRepositoryResolver === undefined) return { status: "not_found" };
+  let owner: string;
+  let name: string;
+  try {
+    [owner, name] = splitForgejoRepository(resource);
+  } catch {
+    return { status: "not_found" };
+  }
+  const candidates = (await database.organizationConnectionUsage(organizationId)).forgejo.filter(
+    (connection) => allowedConnectionIds.has(connection.id),
+  );
+  let failedInstanceHost: string | undefined;
+  const found = await Promise.all(
+    candidates.map(async (connection) => {
+      try {
+        return await forgejoRepositoryResolver.getRepository(
+          { instanceBaseUrl: connection.instanceBaseUrl, accessToken: connection.accessToken },
+          owner,
+          name,
+        );
+      } catch {
+        failedInstanceHost ??= connection.instanceHost;
+        return undefined;
+      }
+    }),
+  );
+  const matches = candidates.flatMap((connection, index) => {
+    const repository = found[index];
+    return repository === undefined ? [] : [{ connection, repository }];
+  });
+  if (matches.length === 1) {
+    const match = matches[0]!;
+    return {
+      status: "resolved",
+      connectionId: match.connection.id,
+      resourceId: String(match.repository.id),
+      canonicalResource: match.repository.fullName,
+    };
+  }
+  if (matches.length > 1) return { status: "ambiguous" };
+  if (matches.length === 0 && failedInstanceHost !== undefined) {
+    return { status: "unreachable", instanceHost: failedInstanceHost };
+  }
+  return { status: "not_found" };
 }
 
 function triggerFilterPath(trigger: CompiledTrigger, field: string): readonly (string | number)[] {
@@ -794,20 +1018,23 @@ function triggerFilterPath(trigger: CompiledTrigger, field: string): readonly (s
 }
 
 function resourceField(provider: ConnectionProvider): "repo" | "workspace" | "guild" | "project" {
-  if (provider === "github") return "repo";
+  if (provider === "github" || provider === "forgejo") return "repo";
   if (provider === "slack") return "workspace";
-  return provider === "discord" ? "guild" : "project";
+  if (provider === "discord") return "guild";
+  return "project";
 }
 
 function providerLabel(provider: ConnectionProvider): string {
   if (provider === "github") return "GitHub";
   if (provider === "slack") return "Slack";
-  return provider === "discord" ? "Discord" : "Linear";
+  if (provider === "discord") return "Discord";
+  return provider === "linear" ? "Linear" : "Forgejo";
 }
 
 function resourceLabel(provider: ConnectionProvider): string {
   if (provider === "github") return "GitHub repository";
   if (provider === "linear") return "Linear project";
+  if (provider === "forgejo") return "Forgejo repository";
   return `${providerLabel(provider)} connection`;
 }
 
@@ -823,6 +1050,7 @@ function formatConnectionCandidates(
     guildName?: string;
     teamName?: string;
     linearOrganizationName?: string;
+    accountLogin?: string;
   }[],
 ): string {
   return formatCandidates(
@@ -833,6 +1061,8 @@ function formatConnectionCandidates(
         return `${connection.slug} "${connection.teamName}"`;
       if (provider === "linear" && connection.linearOrganizationName !== undefined)
         return `${connection.slug} "${connection.linearOrganizationName}"`;
+      if (provider === "forgejo" && connection.accountLogin !== undefined)
+        return `${connection.slug} "${connection.accountLogin}"`;
       return connection.slug;
     }),
   );
@@ -848,6 +1078,7 @@ async function formatResourceCandidates(
     guildName?: string;
     teamName?: string;
     linearOrganizationName?: string;
+    accountLogin?: string;
   }[],
 ): Promise<string> {
   if (provider !== "github") return formatConnectionCandidates(provider, connections);

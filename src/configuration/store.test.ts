@@ -2,10 +2,18 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { dump } from "js-yaml";
 import { compiledConfigurationHash, parseCompiledHubConfig } from "../config/compiler.js";
-import { ProjectConfigurationStore, revisionBundleFiles } from "./store.js";
+import {
+  ProjectConfigurationStore,
+  revisionBundleFiles,
+  type ForgejoRepositoryResolver,
+} from "./store.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
-import type { DiscordConnectionRecord, LinearConnectionRecord } from "../db/types.js";
+import type {
+  DiscordConnectionRecord,
+  ForgejoConnectionRecord,
+  LinearConnectionRecord,
+} from "../db/types.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
 
 const primary: DiscordConnectionRecord = {
@@ -37,6 +45,27 @@ const linear: LinearConnectionRecord = {
   refreshToken: "refresh-token",
   accessTokenExpiresAt: null,
   scopes: ["read", "comments:create"],
+};
+
+const forgejoPrimary: ForgejoConnectionRecord = {
+  id: "00000000-0000-4000-8000-000000000010",
+  organizationId: "org_1",
+  slug: "forgejo-primary",
+  instanceBaseUrl: "https://forgejo.example.test",
+  instanceHost: "forgejo.example.test",
+  webhookSecret: "shh",
+  accessToken: "token",
+  accountLogin: "acme-bot",
+  accountId: 10,
+  instanceFlavor: "forgejo",
+  instanceVersion: "16.0.5+gitea-1.22.0",
+};
+
+const forgejoSecondary: ForgejoConnectionRecord = {
+  ...forgejoPrimary,
+  id: "00000000-0000-4000-8000-000000000011",
+  slug: "forgejo-secondary",
+  accountId: 11,
 };
 
 describe("ProjectConfigurationStore resource compilation", () => {
@@ -106,7 +135,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
     await enrollTestDaemon(database);
     const connections = [primary, secondary];
     database.organizationConnectionUsage = () =>
-      Promise.resolve({ github: [], slack: [], discord: connections, linear: [] });
+      Promise.resolve({ github: [], slack: [], discord: connections, linear: [], forgejo: [] });
     const project = await database.createProject({
       organizationId: "org_1",
       name: "Guild project",
@@ -149,7 +178,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
     const database = createMemoryDatabase();
     await enrollTestDaemon(database);
     database.organizationConnectionUsage = () =>
-      Promise.resolve({ github: [], slack: [], discord: [], linear: [linear] });
+      Promise.resolve({ github: [], slack: [], discord: [], linear: [linear], forgejo: [] });
     database.findLinearConnection = async (linearOrganizationId) =>
       linearOrganizationId === linear.linearOrganizationId ? linear : undefined;
     const project = await database.createProject({
@@ -246,6 +275,329 @@ describe("ProjectConfigurationStore resource compilation", () => {
     }
   });
 
+  it("rejects a connection-wide Forgejo trigger that matches more than one connection", async () => {
+    const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
+    database.organizationConnectionUsage = () =>
+      Promise.resolve({
+        github: [],
+        slack: [],
+        discord: [],
+        linear: [],
+        forgejo: [forgejoPrimary, forgejoSecondary],
+      });
+    const project = await database.createProject({
+      organizationId: "org_1",
+      name: "Forgejo fan-out project",
+      slug: "forgejo-fan-out-project",
+      createdByUserId: "user-1",
+    });
+    const store = new ProjectConfigurationStore(database, project.id);
+    const revision = await store.insertManualBundleRevision({
+      files: configurationBundleFixture(dump(forgejoConfiguration({}))),
+      userId: "user-1",
+    });
+
+    assert.deepEqual(revision.validationErrors, {
+      formErrors: [],
+      issues: [
+        {
+          path: [".paseo/workflows/forgejo-triage.yml", "filters", "connection"],
+          message:
+            'this trigger has no repo filter and matches more than one Forgejo connection (connected: forgejo-primary "acme-bot", forgejo-secondary "acme-bot"); add a connection filter to pick one',
+        },
+      ],
+    });
+  });
+
+  it("still routes a repo-less Forgejo trigger narrowed to one connection by slug", async () => {
+    const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
+    database.organizationConnectionUsage = () =>
+      Promise.resolve({
+        github: [],
+        slack: [],
+        discord: [],
+        linear: [],
+        forgejo: [forgejoPrimary, forgejoSecondary],
+      });
+    database.findForgejoConnection = async (connectionId) =>
+      [forgejoPrimary, forgejoSecondary].find(({ id }) => id === connectionId);
+    const project = await database.createProject({
+      organizationId: "org_1",
+      name: "Forgejo scoped fan-out project",
+      slug: "forgejo-scoped-fan-out-project",
+      createdByUserId: "user-1",
+    });
+    const store = new ProjectConfigurationStore(database, project.id);
+    const revision = await store.insertManualBundleRevision({
+      files: configurationBundleFixture(
+        dump(forgejoConfiguration({ connection: "forgejo-primary" })),
+      ),
+      userId: "user-1",
+    });
+    assert.equal(revision.validationErrors, null);
+
+    const active = await store.activate(revision.id);
+    assert.equal(active.configuration.triggers[0]?.filters?.connectionId, forgejoPrimary.id);
+
+    const accepted = await database.acceptForgejoEvent({
+      connectionId: forgejoPrimary.id,
+      repositoryId: 9001,
+      deliveryId: "forgejo-scoped-fan-out",
+      source: "forgejo.issue_comment",
+      payload: {},
+      receivedAt: new Date(0),
+    });
+    assert.equal(accepted.status, "accepted");
+    if (accepted.status === "accepted") assert.equal(accepted.events[0]?.projectId, project.id);
+  });
+
+  it("narrows Forgejo candidates by connection slug and resolves the repo filter to its id", async () => {
+    const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
+    database.organizationConnectionUsage = () =>
+      Promise.resolve({
+        github: [],
+        slack: [],
+        discord: [],
+        linear: [],
+        forgejo: [forgejoPrimary, forgejoSecondary],
+      });
+    const project = await database.createProject({
+      organizationId: "org_1",
+      name: "Forgejo scoped project",
+      slug: "forgejo-scoped-project",
+      createdByUserId: "user-1",
+    });
+    const store = new ProjectConfigurationStore(
+      database,
+      project.id,
+      undefined,
+      fakeForgejoResolver({ "acme/widgets": { id: 501, fullName: "acme/widgets" } }),
+    );
+    const revision = await store.insertManualBundleRevision({
+      files: configurationBundleFixture(
+        dump(forgejoConfiguration({ connection: "forgejo-primary", repo: "acme/widgets" })),
+      ),
+      userId: "user-1",
+    });
+    const active = await store.activate(revision.id);
+
+    assert.equal(active.configuration.triggers[0]?.filters?.connectionId, forgejoPrimary.id);
+    assert.equal(active.configuration.triggers[0]?.filters?.resourceId, "501");
+    assert.equal(active.configuration.triggers[0]?.filters?.repo, "acme/widgets");
+  });
+
+  it("rejects a Forgejo repo filter that matches no repository on any candidate connection", async () => {
+    const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
+    database.organizationConnectionUsage = () =>
+      Promise.resolve({
+        github: [],
+        slack: [],
+        discord: [],
+        linear: [],
+        forgejo: [forgejoPrimary],
+      });
+    const project = await database.createProject({
+      organizationId: "org_1",
+      name: "Forgejo typo project",
+      slug: "forgejo-typo-project",
+      createdByUserId: "user-1",
+    });
+    const store = new ProjectConfigurationStore(
+      database,
+      project.id,
+      undefined,
+      fakeForgejoResolver({ "acme/widgets": { id: 501, fullName: "acme/widgets" } }),
+    );
+    const revision = await store.insertManualBundleRevision({
+      files: configurationBundleFixture(dump(forgejoConfiguration({ repo: "acme/typo-repo" }))),
+      userId: "user-1",
+    });
+
+    assert.deepEqual(revision.validationErrors, {
+      formErrors: [],
+      issues: [
+        {
+          path: [".paseo/workflows/forgejo-triage.yml", "filters", "repo"],
+          message:
+            '"acme/typo-repo" does not match any Forgejo repository (connected: forgejo-primary "acme-bot")',
+        },
+      ],
+    });
+  });
+
+  it("reports an unreachable instance separately from a genuine 404 on the repo filter", async () => {
+    const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
+    const unreachableConnection: ForgejoConnectionRecord = {
+      ...forgejoPrimary,
+      accessToken: "unreachable-secret-a1b2c3",
+    };
+    database.organizationConnectionUsage = () =>
+      Promise.resolve({
+        github: [],
+        slack: [],
+        discord: [],
+        linear: [],
+        forgejo: [unreachableConnection],
+      });
+    const project = await database.createProject({
+      organizationId: "org_1",
+      name: "Forgejo unreachable project",
+      slug: "forgejo-unreachable-project",
+      createdByUserId: "user-1",
+    });
+    const store = new ProjectConfigurationStore(
+      database,
+      project.id,
+      undefined,
+      throwingForgejoResolver(new Error("connect ECONNREFUSED")),
+    );
+    const revision = await store.insertManualBundleRevision({
+      files: configurationBundleFixture(dump(forgejoConfiguration({ repo: "acme/widgets" }))),
+      userId: "user-1",
+    });
+
+    assert.deepEqual(revision.validationErrors, {
+      formErrors: [],
+      issues: [
+        {
+          path: [".paseo/workflows/forgejo-triage.yml", "filters", "repo"],
+          message:
+            "couldn't verify this Forgejo repository on forgejo.example.test: the instance could not be reached or refused the token",
+        },
+      ],
+    });
+    for (const issue of revision.validationErrors.issues) {
+      assert.equal(issue.message.includes(unreachableConnection.accessToken), false);
+      assert.equal(issue.message.includes("ECONNREFUSED"), false);
+    }
+  });
+
+  it("still resolves the repo filter when one candidate throws but another confirms it", async () => {
+    const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
+    const unreachableConnection: ForgejoConnectionRecord = {
+      ...forgejoPrimary,
+      id: "00000000-0000-4000-8000-000000000012",
+      slug: "forgejo-unreachable",
+      instanceBaseUrl: "https://forgejo-a.example.test",
+      instanceHost: "forgejo-a.example.test",
+      accessToken: "token-a",
+    };
+    const workingConnection: ForgejoConnectionRecord = {
+      ...forgejoPrimary,
+      id: "00000000-0000-4000-8000-000000000013",
+      slug: "forgejo-working",
+      instanceBaseUrl: "https://forgejo-b.example.test",
+      instanceHost: "forgejo-b.example.test",
+      accessToken: "token-b",
+    };
+    database.organizationConnectionUsage = () =>
+      Promise.resolve({
+        github: [],
+        slack: [],
+        discord: [],
+        linear: [],
+        forgejo: [unreachableConnection, workingConnection],
+      });
+    const project = await database.createProject({
+      organizationId: "org_1",
+      name: "Forgejo partial outage project",
+      slug: "forgejo-partial-outage-project",
+      createdByUserId: "user-1",
+    });
+    const store = new ProjectConfigurationStore(
+      database,
+      project.id,
+      undefined,
+      mixedForgejoResolver({
+        "token-a": new Error("connect ECONNREFUSED"),
+        "token-b": { id: 501, fullName: "acme/widgets" },
+      }),
+    );
+    const revision = await store.insertManualBundleRevision({
+      files: configurationBundleFixture(dump(forgejoConfiguration({ repo: "acme/widgets" }))),
+      userId: "user-1",
+    });
+    const active = await store.activate(revision.id);
+
+    assert.equal(active.configuration.triggers[0]?.filters?.connectionId, workingConnection.id);
+    assert.equal(active.configuration.triggers[0]?.filters?.resourceId, "501");
+  });
+
+  it("canonicalizes a case-different Forgejo repo filter and resolves it to the repository id", async () => {
+    const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
+    database.organizationConnectionUsage = () =>
+      Promise.resolve({
+        github: [],
+        slack: [],
+        discord: [],
+        linear: [],
+        forgejo: [forgejoPrimary],
+      });
+    const project = await database.createProject({
+      organizationId: "org_1",
+      name: "Forgejo canonicalization project",
+      slug: "forgejo-canonicalization-project",
+      createdByUserId: "user-1",
+    });
+    const store = new ProjectConfigurationStore(
+      database,
+      project.id,
+      undefined,
+      fakeForgejoResolver({ "acme/widgets": { id: 501, fullName: "acme/Widgets" } }),
+    );
+    const revision = await store.insertManualBundleRevision({
+      files: configurationBundleFixture(dump(forgejoConfiguration({ repo: "Acme/widgets" }))),
+      userId: "user-1",
+    });
+    const active = await store.activate(revision.id);
+
+    assert.equal(active.configuration.triggers[0]?.filters?.connectionId, forgejoPrimary.id);
+    assert.equal(active.configuration.triggers[0]?.filters?.resourceId, "501");
+    assert.equal(active.configuration.triggers[0]?.filters?.repo, "acme/Widgets");
+  });
+
+  it("rejects an unknown Forgejo connection slug", async () => {
+    const database = createMemoryDatabase();
+    await enrollTestDaemon(database);
+    database.organizationConnectionUsage = () =>
+      Promise.resolve({
+        github: [],
+        slack: [],
+        discord: [],
+        linear: [],
+        forgejo: [forgejoPrimary],
+      });
+    const project = await database.createProject({
+      organizationId: "org_1",
+      name: "Forgejo unknown connection project",
+      slug: "forgejo-unknown-connection-project",
+      createdByUserId: "user-1",
+    });
+    const store = new ProjectConfigurationStore(database, project.id);
+    const revision = await store.insertManualBundleRevision({
+      files: configurationBundleFixture(dump(forgejoConfiguration({ connection: "missing" }))),
+      userId: "user-1",
+    });
+
+    assert.deepEqual(revision.validationErrors, {
+      formErrors: [],
+      issues: [
+        {
+          path: [".paseo/workflows/forgejo-triage.yml", "filters", "connection"],
+          message:
+            '"missing" does not match any Forgejo connection (connected: forgejo-primary "acme-bot")',
+        },
+      ],
+    });
+  });
+
   it("keeps authored prompt partials when switching a GitHub-managed configuration to manual", async () => {
     const database = createMemoryDatabase();
     await enrollTestDaemon(database);
@@ -284,7 +636,13 @@ describe("ProjectConfigurationStore resource compilation", () => {
     const database = createMemoryDatabase();
     await enrollTestDaemon(database);
     database.organizationConnectionUsage = () =>
-      Promise.resolve({ github: [], slack: [], discord: [primary, secondary], linear: [] });
+      Promise.resolve({
+        github: [],
+        slack: [],
+        discord: [primary, secondary],
+        linear: [],
+        forgejo: [],
+      });
     const project = await database.createProject({
       organizationId: "org_1",
       name: "Unique guild project",
@@ -306,7 +664,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
     const database = createMemoryDatabase();
     await enrollTestDaemon(database);
     database.organizationConnectionUsage = () =>
-      Promise.resolve({ github: [], slack: [], discord: [primary], linear: [] });
+      Promise.resolve({ github: [], slack: [], discord: [primary], linear: [], forgejo: [] });
     const project = await database.createProject({
       organizationId: "org_1",
       name: "Unknown connection project",
@@ -337,7 +695,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
     const database = createMemoryDatabase();
     await enrollTestDaemon(database);
     database.organizationConnectionUsage = () =>
-      Promise.resolve({ github: [], slack: [], discord: [primary], linear: [] });
+      Promise.resolve({ github: [], slack: [], discord: [primary], linear: [], forgejo: [] });
     const project = await database.createProject({
       organizationId: "org_1",
       name: "Unknown guild project",
@@ -417,7 +775,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
     const database = createMemoryDatabase();
     await enrollTestDaemon(database);
     database.organizationConnectionUsage = () =>
-      Promise.resolve({ github: [], slack: [], discord: [primary], linear: [] });
+      Promise.resolve({ github: [], slack: [], discord: [primary], linear: [], forgejo: [] });
     database.findDiscordConnection = () => Promise.resolve(primary);
     database.findDiscordConnectionForOrganization = async (_organizationId, guildId) =>
       guildId === primary.guildId ? primary : undefined;
@@ -456,7 +814,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
     const database = createMemoryDatabase();
     await enrollTestDaemon(database);
     database.organizationConnectionUsage = () =>
-      Promise.resolve({ github: [], slack: [], discord: [primary], linear: [] });
+      Promise.resolve({ github: [], slack: [], discord: [primary], linear: [], forgejo: [] });
     database.findDiscordConnection = () => Promise.resolve(primary);
     database.findDiscordConnectionForOrganization = async (_organizationId, guildId) =>
       guildId === primary.guildId ? primary : undefined;
@@ -518,6 +876,63 @@ function discordConfiguration(filters: Record<string, string>) {
         ],
       },
     ],
+  };
+}
+
+function forgejoConfiguration(filters: Record<string, string>) {
+  return {
+    environments: [{ name: "runner", kind: "daemon", daemon: TEST_DAEMON_SLUG, cwd: "/repo" }],
+    triggers: [
+      {
+        name: "forgejo-triage",
+        on: "forgejo.issue_comment_created",
+        max_runtime: "1h",
+        filters: { ...filters, from_users: ["*"] },
+        steps: [
+          {
+            id: "run",
+            environment: "runner",
+            max_runtime: "30m",
+            idle_timeout: "5m",
+            agent: { provider: "test", mode: "default" },
+            prompt: [{ text: "Triage the comment" }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function fakeForgejoResolver(
+  repositories: Record<string, { id: number; fullName: string }>,
+): ForgejoRepositoryResolver {
+  return {
+    getRepository: (_credentials, owner, repo) =>
+      Promise.resolve(repositories[`${owner}/${repo}`.toLowerCase()]),
+  };
+}
+
+/** Every lookup throws, the way a network error or a refused token would. */
+function throwingForgejoResolver(error: Error): ForgejoRepositoryResolver {
+  return {
+    async getRepository() {
+      throw error;
+    },
+  };
+}
+
+/** Which outcome a lookup gets, keyed by the access token, so a test can give two
+ * candidate connections different fates without depending on call order. */
+function mixedForgejoResolver(
+  byAccessToken: Record<string, Error | { id: number; fullName: string }>,
+): ForgejoRepositoryResolver {
+  return {
+    async getRepository(credentials) {
+      const outcome = byAccessToken[credentials.accessToken];
+      if (outcome === undefined) return undefined;
+      if (outcome instanceof Error) throw outcome;
+      return outcome;
+    },
   };
 }
 

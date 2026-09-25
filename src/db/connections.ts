@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { Locks } from "./runtime/locks/index.js";
 import type { DatabaseRuntime, DrizzleHandle, TransactionHandle } from "./runtime/index.js";
 import { slugify } from "../slug.js";
@@ -6,6 +6,7 @@ import {
   ConnectionAccessDeniedError,
   ConnectionAttemptUnavailableError,
   ConnectionConflictError,
+  ForgejoAccountAlreadyConnectedError,
 } from "./errors.js";
 import * as schema from "./schema.js";
 import type {
@@ -13,19 +14,23 @@ import type {
   BindDiscordConnectionInput,
   BindGitHubConnectionInput,
   BindLinearConnectionInput,
+  BindForgejoConnectionInput,
   BindSlackConnectionInput,
   CompleteLinearProviderApplicationInput,
   CompleteSlackProviderApplicationInput,
   ConnectionAccountAccess,
   ConnectionAttemptPhase,
+  ConnectionAttemptProvider,
   ConnectionAttemptRecord,
   ConnectionProvider,
   ConnectionStartAuthority,
   DiscordConnectionRecord,
   GitHubConnectionRecord,
+  ForgejoConnectionRecord,
   LinearConnectionRecord,
   LinearConnectionRefreshOperation,
   ReadConnectionAttemptInput,
+  ReplaceForgejoConnectionTokenInput,
   SlackConnectionRecord,
   StartConnectionAttemptInput,
   UpdateLinearConnectionTokensInput,
@@ -342,6 +347,95 @@ export class ConnectionRepository {
     await this.bindLinearTransition(input);
   }
 
+  // no attempt row to consume, unlike every other provider here: a pasted token never
+  // left the browser for a third party and came back. each paste makes a new connection,
+  // nothing is deduplicated on the host.
+  async bindForgejo(input: BindForgejoConnectionInput): Promise<ForgejoConnectionRecord> {
+    return this.runtime.transaction(async (runtimeTransaction) => {
+      const transaction = runtimeTransaction.drizzle();
+      // lockStartAuthority, not just lockAccountSession: every other connect flow requires
+      // owner/admin membership first, and a pasted token shouldn't skip that check
+      await lockStartAuthority(transaction, input.access);
+      // retried once against committed state if the slug race below happens; twice is real
+      for (let attempt = 1; ; attempt += 1) {
+        let inserted: (typeof schema.forgejoConnections.$inferSelect)[];
+        try {
+          // a savepoint, not the bare insert: a unique violation aborts the transaction
+          // it runs in, and the lookup below needs the outer transaction still usable
+          inserted = await transaction.transaction(async (savepoint) => {
+            const slug = await uniqueConnectionSlug(
+              savepoint,
+              input.access.organizationId,
+              "forgejo",
+              input.instanceHost,
+            );
+            return savepoint
+              .insert(schema.forgejoConnections)
+              .values({
+                organizationId: input.access.organizationId,
+                slug,
+                instanceBaseUrl: input.instanceBaseUrl,
+                instanceHost: input.instanceHost,
+                webhookSecret: input.webhookSecret,
+                accessToken: input.accessToken,
+                accountLogin: input.accountLogin,
+                accountId: input.accountId,
+                instanceFlavor: input.instanceFlavor,
+                instanceVersion: input.instanceVersion,
+                connectedByUserId: input.access.userId,
+              })
+              .returning();
+          });
+        } catch (error) {
+          // only fires when two connects race past the endpoint's own pre-check and the
+          // unique index stops the second insert; look up the row that won and report it
+          if (isForgejoAccountConflict(error)) {
+            const [existing] = await transaction
+              .select({ id: schema.forgejoConnections.id, slug: schema.forgejoConnections.slug })
+              .from(schema.forgejoConnections)
+              .where(
+                and(
+                  eq(schema.forgejoConnections.organizationId, input.access.organizationId),
+                  eq(schema.forgejoConnections.instanceBaseUrl, input.instanceBaseUrl),
+                  eq(schema.forgejoConnections.accountId, input.accountId),
+                ),
+              );
+            if (existing !== undefined) {
+              throw new ForgejoAccountAlreadyConnectedError(existing.id, existing.slug);
+            }
+            throw error;
+          }
+          // uniqueConnectionSlug reads a snapshot before either insert commits, so two
+          // connects can compute the same candidate slug and only one wins; retry once
+          if (isForgejoSlugConflict(error) && attempt === 1) continue;
+          throw error;
+        }
+        const [row] = inserted;
+        if (row === undefined) throw new Error("forgejo connection was not stored");
+        return forgejoConnection(row);
+      }
+    });
+  }
+
+  async replaceForgejoToken(input: ReplaceForgejoConnectionTokenInput): Promise<void> {
+    const [row] = await this.database
+      .update(schema.forgejoConnections)
+      .set({
+        accessToken: input.accessToken,
+        instanceFlavor: input.instanceFlavor,
+        instanceVersion: input.instanceVersion,
+        updatedAt: sql`clock_timestamp()`,
+      })
+      .where(
+        and(
+          eq(schema.forgejoConnections.id, input.connectionId),
+          eq(schema.forgejoConnections.organizationId, input.organizationId),
+        ),
+      )
+      .returning({ id: schema.forgejoConnections.id });
+    if (row === undefined) throw new ConnectionAccessDeniedError();
+  }
+
   async completeLinearProviderApplication(
     input: CompleteLinearProviderApplicationInput,
   ): Promise<void> {
@@ -642,6 +736,33 @@ export class ConnectionRepository {
           accessToken: connection.accessToken,
         } as const;
       }
+      if (provider === "forgejo") {
+        const [connection] = await transaction
+          .select({
+            instanceBaseUrl: schema.forgejoConnections.instanceBaseUrl,
+            accessToken: schema.forgejoConnections.accessToken,
+          })
+          .from(schema.forgejoConnections)
+          .where(
+            and(
+              eq(schema.forgejoConnections.id, connectionId),
+              eq(schema.forgejoConnections.organizationId, access.organizationId),
+            ),
+          )
+          .for("update");
+        if (connection === undefined) throw new ConnectionAccessDeniedError();
+        await transaction
+          .delete(schema.projectTriggerRoutes)
+          .where(eq(schema.projectTriggerRoutes.connectionId, connectionId));
+        await transaction
+          .delete(schema.forgejoConnections)
+          .where(eq(schema.forgejoConnections.id, connectionId));
+        return {
+          provider,
+          instanceBaseUrl: connection.instanceBaseUrl,
+          accessToken: connection.accessToken,
+        } as const;
+      }
       const [connection] = await transaction
         .select({
           teamId: schema.slackConnections.teamId,
@@ -729,6 +850,34 @@ export class ConnectionRepository {
       .where(eq(schema.linearConnections.linearOrganizationId, linearOrganizationId))
       .limit(1);
     return row === undefined ? undefined : linearConnection(row);
+  }
+
+  /** Keyed on the row id, because the webhook path segment is the tenancy key. */
+  async findForgejo(connectionId: string): Promise<ForgejoConnectionRecord | undefined> {
+    const [row] = await this.database
+      .select()
+      .from(schema.forgejoConnections)
+      .where(eq(schema.forgejoConnections.id, connectionId))
+      .limit(1);
+    return row === undefined ? undefined : forgejoConnection(row);
+  }
+
+  async listForgejoSiblingAccountIds(input: {
+    organizationId: string;
+    instanceBaseUrl: string;
+    excludeConnectionId: string;
+  }): Promise<number[]> {
+    const rows = await this.database
+      .select({ accountId: schema.forgejoConnections.accountId })
+      .from(schema.forgejoConnections)
+      .where(
+        and(
+          eq(schema.forgejoConnections.organizationId, input.organizationId),
+          eq(schema.forgejoConnections.instanceBaseUrl, input.instanceBaseUrl),
+          ne(schema.forgejoConnections.id, input.excludeConnectionId),
+        ),
+      );
+    return rows.map((row) => row.accountId);
   }
 
   async findLinearForOrganization(
@@ -1051,7 +1200,9 @@ async function consumeLockedAttempt(transaction: HubTransaction, attemptId: stri
     .where(eq(schema.organizationConnectionAttempts.id, attemptId));
 }
 
-function initialConnectionAttemptPhase(provider: ConnectionProvider): ConnectionAttemptPhase {
+function initialConnectionAttemptPhase(
+  provider: ConnectionAttemptProvider,
+): ConnectionAttemptPhase {
   if (provider === "github") return "github_setup";
   if (provider === "discord") return "discord_authorization";
   return provider === "slack" ? "slack_authorization" : "linear_authorization";
@@ -1137,6 +1288,53 @@ function linearConnection(
   };
 }
 
+function isForgejoAccountConflict(error: unknown): boolean {
+  return isUniqueViolation(error, "forgejo_connections_organization_instance_account_unique");
+}
+
+function isForgejoSlugConflict(error: unknown): boolean {
+  return isUniqueViolation(error, "forgejo_connections_organization_slug_unique");
+}
+
+// drizzle wraps the driver's error in its own DrizzleQueryError with the pg error as
+// .cause, so check both the raw error and one .cause unwrap
+function isUniqueViolation(error: unknown, constraint: string): boolean {
+  return (
+    isUniqueViolationCandidate(error, constraint) ||
+    isUniqueViolationCandidate(cause(error), constraint)
+  );
+}
+
+function isUniqueViolationCandidate(error: unknown, constraint: string): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const postgresError = error as { code?: unknown; constraint?: unknown };
+  return postgresError.code === "23505" && postgresError.constraint === constraint;
+}
+
+function cause(error: unknown): unknown {
+  return typeof error === "object" && error !== null && "cause" in error
+    ? (error as { cause?: unknown }).cause
+    : undefined;
+}
+
+function forgejoConnection(
+  row: typeof schema.forgejoConnections.$inferSelect,
+): ForgejoConnectionRecord {
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    slug: row.slug,
+    instanceBaseUrl: row.instanceBaseUrl,
+    instanceHost: row.instanceHost,
+    webhookSecret: row.webhookSecret,
+    accessToken: row.accessToken,
+    accountLogin: row.accountLogin,
+    accountId: row.accountId,
+    instanceFlavor: row.instanceFlavor,
+    instanceVersion: row.instanceVersion,
+  };
+}
+
 async function uniqueConnectionSlug(
   transaction: HubTransaction,
   organizationId: string,
@@ -1153,6 +1351,8 @@ async function uniqueConnectionSlug(
       select slug from discord_connections where organization_id = ${organizationId}
       union all
       select slug from linear_connections where organization_id = ${organizationId}
+      union all
+      select slug from forgejo_connections where organization_id = ${organizationId}
     ) slugs
     where slug = ${base} or slug like ${`${base}-%`}
     order by slug

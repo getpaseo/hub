@@ -9,14 +9,29 @@ import { TerminalIcon, ClockIcon } from "lucide-react";
 export function ProviderGlyph({
   provider,
 }: {
-  provider: "github" | "discord" | "slack" | "linear" | "manual" | "schedule";
+  provider: "github" | "discord" | "slack" | "linear" | "forgejo" | "manual" | "schedule";
 }) {
   if (provider === "schedule") return <ClockIcon className="size-4.5" aria-hidden="true" />;
   if (provider === "github") return <GitHubMark />;
   if (provider === "discord") return <DiscordMark />;
   if (provider === "slack") return <SlackMark />;
   if (provider === "linear") return <LinearMark />;
+  if (provider === "forgejo") return <ForgejoMark />;
   return <TerminalIcon className="size-4.5" aria-hidden="true" />;
+}
+
+function ForgejoMark() {
+  return (
+    <svg viewBox="0 0 24 24" className="size-4.5" aria-hidden="true">
+      <g fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <path d="M6 16.5v-6a3.5 3.5 0 0 1 3.5-3.5H13" />
+        <path d="M6 11.5h3.5A3.5 3.5 0 0 0 13 8V6.5" />
+        <circle cx="17" cy="5.5" r="2.5" />
+        <circle cx="17" cy="12" r="2.5" />
+        <circle cx="6" cy="19" r="2.5" />
+      </g>
+    </svg>
+  );
 }
 
 function GitHubMark() {

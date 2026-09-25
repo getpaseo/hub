@@ -71,7 +71,13 @@ describe("Discord registration", () => {
     });
 
     assert.deepEqual(
-      registration.connection.status({ github: [], discord: [], slack: [], linear: [] }),
+      registration.connection.status({
+        github: [],
+        discord: [],
+        slack: [],
+        linear: [],
+        forgejo: [],
+      }),
       {
         status: "notConfigured",
       },

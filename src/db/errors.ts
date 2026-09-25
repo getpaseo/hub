@@ -27,6 +27,18 @@ export class ConnectionConflictError extends Error {
   }
 }
 
+// only reached when two connects race past the create pre-check and the database's
+// own unique index stops the second insert
+export class ForgejoAccountAlreadyConnectedError extends Error {
+  constructor(
+    readonly connectionId: string,
+    readonly connectionSlug: string,
+  ) {
+    super("forgejo account already connected in this organization");
+    this.name = "ForgejoAccountAlreadyConnectedError";
+  }
+}
+
 export class ConnectionAttemptUnavailableError extends Error {
   readonly code = "invalidInput";
 

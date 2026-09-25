@@ -3,7 +3,10 @@ import type {
   OrganizationTriggerRecord,
   OrganizationTriggerRevisionRecord,
 } from "../db/types.js";
-import { resolveTriggerConfigurationForOrganization } from "../configuration/store.js";
+import {
+  resolveTriggerConfigurationForOrganization,
+  type ForgejoRepositoryResolver,
+} from "../configuration/store.js";
 import { compileTriggerDocument, TriggerDocumentError } from "./configuration/index.js";
 
 export interface SaveTriggerInput {
@@ -18,6 +21,7 @@ export class OrganizationTriggerStore {
   constructor(
     private readonly database: Database,
     private readonly organizationId: string,
+    private readonly forgejoRepositoryResolver?: ForgejoRepositoryResolver,
   ) {}
 
   list(): Promise<OrganizationTriggerRecord[]> {
@@ -72,6 +76,7 @@ export class OrganizationTriggerStore {
         environments: [compiled.environment],
         triggers: compiled.events,
       },
+      this.forgejoRepositoryResolver,
     );
     if (!resolved.success) {
       throw new TriggerDocumentError(resolved.issues);

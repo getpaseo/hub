@@ -119,6 +119,67 @@ describe("summarizeTrigger", () => {
     });
   });
 
+  it("summarizes a Forgejo issue comment with the issue number and commenter", () => {
+    const summary = summarizeTrigger("forgejo.issue_comment", {
+      id: "1",
+      type: "issue_comment",
+      repo: "acme/widgets",
+      repositoryId: 1,
+      connectionId: "conn-1",
+      createdAt: new Date().toISOString(),
+      payload: {
+        issue: { number: 42, title: "Bug" },
+        comment: { id: 1, body: "hi", html_url: "https://git.example.test/acme/widgets/issues/42" },
+        sender: { login: "trillian" },
+      },
+    });
+
+    assert.deepEqual(summary, {
+      provider: "forgejo",
+      headline: "Comment on #42",
+      actor: "trillian",
+      externalUrl: "https://git.example.test/acme/widgets/issues/42",
+    });
+  });
+
+  it("summarizes a created Forgejo pull request with its number and title", () => {
+    const summary = summarizeTrigger("forgejo.pull_request", {
+      id: "1",
+      type: "pull_request",
+      repo: "acme/widgets",
+      repositoryId: 1,
+      connectionId: "conn-1",
+      createdAt: new Date().toISOString(),
+      payload: {
+        action: "opened",
+        pull_request: {
+          number: 7,
+          title: "Ship the forge",
+          html_url: "https://git.example.test/acme/widgets/pulls/7",
+        },
+        sender: { login: "zaphod" },
+      },
+    });
+
+    assert.deepEqual(summary, {
+      provider: "forgejo",
+      headline: "Pull request #7: Ship the forge",
+      actor: "zaphod",
+      externalUrl: "https://git.example.test/acme/widgets/pulls/7",
+    });
+  });
+
+  it("falls back to a generic headline when the Forgejo payload does not parse", () => {
+    const summary = summarizeTrigger("forgejo.issue_comment", { not: "an event" });
+
+    assert.deepEqual(summary, {
+      provider: "forgejo",
+      headline: "Forgejo event",
+      actor: null,
+      externalUrl: null,
+    });
+  });
+
   it("summarizes a Slack mention using the message content", () => {
     const summary = summarizeTrigger("slack.mention", {
       type: "mention",

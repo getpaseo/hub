@@ -3,6 +3,7 @@ export const PROVIDER_EVENT_DROP_REASON_CODES = [
   "no_trigger_for_source",
   "trigger_filters_rejected",
   "configuration_unavailable",
+  "own_account",
 ] as const;
 
 export type ProviderEventDropReasonCode = (typeof PROVIDER_EVENT_DROP_REASON_CODES)[number];
@@ -12,6 +13,7 @@ const SUMMARIES: Readonly<Record<ProviderEventDropReasonCode, string>> = {
   no_trigger_for_source: "No configured trigger handles this event.",
   trigger_filters_rejected: "The event did not pass the configured trigger filters.",
   configuration_unavailable: "The relevant configuration or connection is unavailable.",
+  own_account: "The delivery's sender is the connection's own account.",
 };
 
 export function isProviderEventDropReasonCode(value: string): value is ProviderEventDropReasonCode {

@@ -1,4 +1,9 @@
-import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
+import type {
+  AgentExecutionStatus,
+  ForgejoInstanceFlavor,
+  MachineSource,
+  MachineStatus,
+} from "./schema.js";
 import type { JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { InvocationRejection } from "../triggers/invocation.js";
@@ -14,7 +19,7 @@ export type WorkflowDeadlineKind = "step_hard" | "step_idle" | "whole_run";
 export interface ProviderEventReceiptRecord {
   id: string;
   organizationId: string;
-  provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule";
+  provider: "github" | "slack" | "discord" | "linear" | "forgejo" | "manual" | "schedule";
   connectionId: string | null;
   resourceId: string | null;
   deliveryId: string;
@@ -262,6 +267,7 @@ export interface OrganizationConnectionUsage {
   discord: DiscordConnectionRecord[];
   slack: SlackConnectionRecord[];
   linear: LinearConnectionRecord[];
+  forgejo: ForgejoConnectionRecord[];
 }
 
 export interface GitHubRepositoryRecord {
@@ -356,7 +362,10 @@ export interface PendingProjectTriggerMigration {
   revision: ProjectConfigurationRevisionRecord;
 }
 
-export type ConnectionProvider = "github" | "discord" | "slack" | "linear";
+export type ConnectionProvider = "github" | "discord" | "slack" | "linear" | "forgejo";
+
+// forgejo connects from a pasted token and never starts an attempt, so it's absent here
+export type ConnectionAttemptProvider = "github" | "discord" | "slack" | "linear";
 
 export type ConnectionAttemptPhase =
   | "github_setup"
@@ -451,8 +460,37 @@ export interface LinearConnectionRecord {
   scopes: string[];
 }
 
+export interface ForgejoConnectionRecord {
+  id: string;
+  organizationId: string;
+  slug: string;
+  instanceBaseUrl: string;
+  instanceHost: string;
+  webhookSecret: string;
+  accessToken: string;
+  accountLogin: string;
+  accountId: number;
+  instanceFlavor: ForgejoInstanceFlavor;
+  instanceVersion: string;
+}
+
+export interface ForgejoWebhookRecord {
+  id: string;
+  connectionId: string;
+  scope: "user" | "org";
+  owner: string;
+  hookId: number;
+}
+
+export interface RecordForgejoWebhookInput {
+  connectionId: string;
+  scope: "user" | "org";
+  owner: string;
+  hookId: number;
+}
+
 export interface StartConnectionAttemptInput {
-  provider: ConnectionProvider;
+  provider: ConnectionAttemptProvider;
   stateVerifier: string;
   access: ConnectionStartAuthority;
   lifetimeMinutes: number;
@@ -520,6 +558,29 @@ export interface BindLinearConnectionInput extends ReadConnectionAttemptInput {
   scopes: string[];
 }
 
+// no attempt row to read back: the caller is already authenticated by the pasted token
+export interface BindForgejoConnectionInput {
+  access: ConnectionStartAuthority;
+  instanceBaseUrl: string;
+  instanceHost: string;
+  webhookSecret: string;
+  accessToken: string;
+  accountLogin: string;
+  accountId: number;
+  instanceFlavor: ForgejoInstanceFlavor;
+  instanceVersion: string;
+}
+
+// swaps the stored access token without touching id, slug, webhook url or secret; a
+// disconnect+reconnect would change all four and orphan the configured hook
+export interface ReplaceForgejoConnectionTokenInput {
+  connectionId: string;
+  organizationId: string;
+  accessToken: string;
+  instanceFlavor: ForgejoInstanceFlavor;
+  instanceVersion: string;
+}
+
 export interface CompleteLinearProviderApplicationInput extends BindLinearConnectionInput {
   providerConfiguration: {
     configuration: unknown;
@@ -555,6 +616,11 @@ export type DisconnectConnectionResult =
   | {
       provider: "linear";
       linearOrganizationId: string | undefined;
+      accessToken: string | undefined;
+    }
+  | {
+      provider: "forgejo";
+      instanceBaseUrl: string | undefined;
       accessToken: string | undefined;
     };
 
@@ -599,8 +665,18 @@ export interface DurableProviderEvent {
 }
 
 export type ProviderEventAcceptance =
-  | { status: "accepted"; events: DurableProviderEvent[]; receiptId: string }
+  | {
+      status: "accepted";
+      events: DurableProviderEvent[];
+      receiptId: string;
+      // true when this call holds the "enrichment pending" marker (forgejo only); the
+      // holder must call completeForgejoEnrichment once done, see triggers/forgejo/webhook.ts
+      ownsEnrichment?: boolean;
+    }
   | { status: "duplicate"; receiptId: string }
+  // forgejo only: still being enriched by whoever holds the marker, not stale enough to
+  // take over. ageMs lets the caller tell a normal wait from an overdue one.
+  | { status: "pending"; receiptId: string; ageMs: number }
   | { status: "dropped"; receiptId: string; reason: string };
 
 export interface ProviderEventEvidence {
@@ -631,6 +707,15 @@ export interface AcceptSlackEventInput extends ProviderEventEvidence {
 export interface AcceptLinearEventInput extends ProviderEventEvidence {
   linearOrganizationId: string;
   projectId?: string;
+}
+
+// forgejo has no installation, so the connection is the tenancy key itself
+export interface AcceptForgejoEventInput extends ProviderEventEvidence {
+  connectionId: string;
+  repositoryId?: number;
+  // set when the caller is about to enrich this delivery over the network, so a
+  // duplicate arriving meanwhile answers duplicate instead of dispatching un-enriched
+  enrichmentPending?: boolean;
 }
 
 export interface PersistManualEventInput extends InsertProviderEventInput {
@@ -1259,6 +1344,8 @@ export interface Database {
   acceptDiscordEvent(input: AcceptDiscordEventInput): Promise<ProviderEventAcceptance>;
   acceptSlackEvent(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance>;
   acceptLinearEvent(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance>;
+  acceptForgejoEvent(input: AcceptForgejoEventInput): Promise<ProviderEventAcceptance>;
+  completeForgejoEnrichment(providerEventReceiptId: string, payload?: unknown): Promise<void>;
   persistManualEvent(input: PersistManualEventInput): Promise<ManualEventPersistence>;
   claimGitHubLifecycleReceipt(
     input: GitHubLifecycleReceiptClaimInput,
@@ -1563,6 +1650,8 @@ export interface Database {
   bindSlackConnection(input: BindSlackConnectionInput): Promise<void>;
   completeSlackProviderApplication(input: CompleteSlackProviderApplicationInput): Promise<void>;
   bindLinearConnection(input: BindLinearConnectionInput): Promise<void>;
+  bindForgejoConnection(input: BindForgejoConnectionInput): Promise<ForgejoConnectionRecord>;
+  replaceForgejoConnectionToken(input: ReplaceForgejoConnectionTokenInput): Promise<void>;
   completeLinearProviderApplication(input: CompleteLinearProviderApplicationInput): Promise<void>;
   updateLinearConnectionTokens(input: UpdateLinearConnectionTokensInput): Promise<void>;
   /**
@@ -1583,6 +1672,13 @@ export interface Database {
   findDiscordConnection(guildId: string): Promise<DiscordConnectionRecord | undefined>;
   findSlackConnection(teamId: string): Promise<SlackConnectionRecord | undefined>;
   findLinearConnection(linearOrganizationId: string): Promise<LinearConnectionRecord | undefined>;
+  findForgejoConnection(connectionId: string): Promise<ForgejoConnectionRecord | undefined>;
+  // for the multi-account loop guard, triggers/forgejo/loop-guard.ts
+  listForgejoSiblingAccountIds(input: {
+    organizationId: string;
+    instanceBaseUrl: string;
+    excludeConnectionId: string;
+  }): Promise<number[]>;
   findSlackConnectionForOrganization(
     organizationId: string,
     teamId: string,
@@ -1596,5 +1692,16 @@ export interface Database {
     guildId: string,
   ): Promise<DiscordConnectionRecord | undefined>;
   removeDiscordConnection(guildId: string): Promise<void>;
+  // returns the subset of entries this call actually won, see forgejo-claimed-timeline-entries.ts
+  claimForgejoTimelineEntries(
+    connectionId: string,
+    timelineEntryIds: readonly number[],
+    receiptId: string,
+  ): Promise<ReadonlySet<number>>;
+  recordForgejoWebhook(input: RecordForgejoWebhookInput): Promise<ForgejoWebhookRecord>;
+  listForgejoWebhooks(connectionId: string): Promise<ForgejoWebhookRecord[]>;
+  // returns the lease id, or undefined if someone else holds an unexpired lease
+  claimForgejoHookLease(connectionId: string, organizationId: string): Promise<string | undefined>;
+  releaseForgejoHookLease(connectionId: string, leaseId: string): Promise<void>;
   close(): Promise<void>;
 }

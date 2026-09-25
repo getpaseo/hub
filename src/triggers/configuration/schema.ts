@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ContinuationSchema } from "../continuation.js";
 import { eventDefinition, isEditorEvent } from "./events.js";
 import { AuthoredGitHubAuthoritySchema } from "../../config/github-authority.js";
+import { allowedFilterKeysForProvider } from "../../config/filter-keys.js";
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -45,6 +46,8 @@ export const TriggerFilterSchema = z
     states: z.array(z.string().min(1)).min(1).optional(),
     exclude_labels: z.array(z.string().min(1)).min(1).optional(),
     assignees: z.array(z.string().min(1)).min(1).optional(),
+    reviewers: z.array(z.string().min(1)).min(1).optional(),
+    branches: z.array(z.string().min(1)).min(1).optional(),
     channels: z.array(z.string().min(1)).optional(),
     from_users: z.array(z.string().min(1)).optional(),
     inputs: z.record(z.string(), InputValueSchema).optional(),
@@ -116,6 +119,65 @@ export const TriggerRunSchema = z
   })
   .strict();
 
+/** Split out of the document's superRefine to keep its cyclomatic complexity under
+ * the lint cap. Applies filter-keys.ts's table with a per-key issue path. */
+function checkFilterKeysBelongToProvider(input: {
+  event: string;
+  definition: z.infer<typeof TriggerEventSchema>;
+  provider: string;
+  context: z.RefinementCtx;
+}): void {
+  const allowedFilterKeys = allowedFilterKeysForProvider(input.provider);
+  if (allowedFilterKeys === undefined) return;
+  for (const key of Object.keys(input.definition.filters ?? {})) {
+    if (!allowedFilterKeys.has(key)) {
+      input.context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["on", input.event, "filters", key],
+        message: `${key} is not a ${input.provider} filter.`,
+      });
+    }
+  }
+}
+
+/** The editor-document mirror of compiler.ts's validateForgejoEventScopedFilters, with
+ * a per-field issue path instead of a thrown error. */
+function checkForgejoFilterScopedToEvent(input: {
+  event: string;
+  definition: z.infer<typeof TriggerEventSchema>;
+  context: z.RefinementCtx;
+}): void {
+  if (!input.event.startsWith("forgejo.")) return;
+  if (
+    input.definition.filters?.assignees !== undefined &&
+    input.event !== "forgejo.issue_assigned" &&
+    input.event !== "forgejo.pull_request_assigned"
+  ) {
+    input.context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["on", input.event, "filters", "assignees"],
+      message: "assignees only matches forgejo.issue_assigned or forgejo.pull_request_assigned.",
+    });
+  }
+  if (
+    input.definition.filters?.reviewers !== undefined &&
+    input.event !== "forgejo.pull_request_review_requested"
+  ) {
+    input.context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["on", input.event, "filters", "reviewers"],
+      message: "reviewers only matches forgejo.pull_request_review_requested.",
+    });
+  }
+  if (input.definition.filters?.branches !== undefined && input.event !== "forgejo.push") {
+    input.context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["on", input.event, "filters", "branches"],
+      message: "branches only matches forgejo.push.",
+    });
+  }
+}
+
 export const TriggerDocumentSchema = z
   .object({
     name: z.string().regex(IDENTIFIER),
@@ -156,9 +218,15 @@ export const TriggerDocumentSchema = z
         });
       }
       if (!isEditorEvent(event)) continue;
+      const provider = eventDefinition(event).provider;
+      checkFilterKeysBelongToProvider({ event, definition, provider, context });
+      checkForgejoFilterScopedToEvent({ event, definition, context });
       for (const qualifier of eventDefinition(event).qualifiers) {
         const value = definition.filters?.[qualifier.key];
-        if (qualifier.required && (value === undefined || value.trim().length === 0)) {
+        const empty =
+          value === undefined ||
+          (typeof value === "string" ? value.trim().length === 0 : value.length === 0);
+        if (qualifier.required && empty) {
           context.addIssue({
             code: z.ZodIssueCode.custom,
             path: ["on", event, "filters", qualifier.key],
