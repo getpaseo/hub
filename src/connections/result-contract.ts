@@ -14,6 +14,7 @@ export const CONNECTION_PROVIDERS = ["github", "discord", "slack", "linear"] as 
 export type ConnectionProvider = (typeof CONNECTION_PROVIDERS)[number];
 
 export const connectionResultSchema = z.enum([
+  "github_app_created",
   "github_connected",
   "discord_connected",
   "slack_connected",
@@ -137,6 +138,10 @@ function failed(name: string, message: string): ConnectionReturnCopy {
 }
 
 const RETURN_COPY: Readonly<Record<ConnectionResult, (name: string) => ConnectionReturnCopy>> = {
+  github_app_created: (name) => ({
+    tone: "success",
+    message: `${name} App created. Install it on the account or organization you want Hub to use.`,
+  }),
   github_connected: connected,
   discord_connected: connected,
   slack_connected: connected,

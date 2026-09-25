@@ -35,6 +35,7 @@ import {
   type StepSegment,
 } from "./guides.js";
 import {
+  beginGitHubManifestRegistration,
   beginProviderConnection,
   configureSlackSocketApplication,
   retrySlackSocketDelivery,
@@ -45,6 +46,7 @@ import type {
   ProviderApplicationSurface,
   ProviderApplicationView,
 } from "./index.js";
+import type { GitHubManifestRegistration } from "./github-manifest.js";
 
 export interface SectionReturn {
   tone: "success" | "error";
@@ -56,6 +58,7 @@ type Outcome = SectionReturn;
 type SaveResponse = Result<ProviderApplicationSaveResult>;
 type ConnectResponse = Result<{ url: string }>;
 type VoidResponse = Result<void>;
+type ManifestResponse = Result<GitHubManifestRegistration>;
 interface SaveMutationInput {
   data: Record<string, unknown> & { provider: string; transport?: "socket" | "webhook" };
 }
@@ -156,6 +159,19 @@ export function ProviderSection({
     },
     onError: () => setOutcome({ tone: "error", message: unreachable(guide.name) }),
   });
+  const beginManifest = useMutation({
+    mutationFn: useServerFn(beginGitHubManifestRegistration) as (
+      input: Parameters<typeof beginGitHubManifestRegistration>[0],
+    ) => Promise<ManifestResponse>,
+    onSuccess: (response) => {
+      if (response.status === "error") {
+        setOutcome({ tone: "error", message: response.error.message });
+        return;
+      }
+      postGitHubManifest(response.data);
+    },
+    onError: () => setOutcome({ tone: "error", message: unreachable("GitHub") }),
+  });
   const retryDelivery = useMutation({
     mutationFn: useServerFn(retrySlackSocketDelivery) as (input: {}) => Promise<VoidResponse>,
     onSuccess: async (response) => {
@@ -169,7 +185,8 @@ export function ProviderSection({
     onError: () => setOutcome({ tone: "error", message: unreachable("Slack") }),
   });
 
-  const pending = save.isPending || connect.isPending || retryDelivery.isPending;
+  const pending =
+    save.isPending || connect.isPending || retryDelivery.isPending || beginManifest.isPending;
   // A save that resolved into a redirect keeps the section busy until the browser leaves, so the
   // form cannot be submitted twice in the gap.
   const leaving =
@@ -266,6 +283,8 @@ export function ProviderSection({
           phase={phase}
           form={form}
           busy={busy}
+          creatingGitHubApp={beginManifest.isPending}
+          onCreateGitHubApp={() => beginManifest.mutate({ data: { surface } })}
           connecting={connect.isPending || leaving}
           replaceRef={replace}
           onConnect={startConnection}
@@ -344,6 +363,8 @@ function SectionBody({
   phase,
   form,
   busy,
+  creatingGitHubApp,
+  onCreateGitHubApp,
   connecting,
   replaceRef,
   onConnect,
@@ -356,6 +377,8 @@ function SectionBody({
   phase: SectionPhase;
   form: ReactNode;
   busy: boolean;
+  creatingGitHubApp: boolean;
+  onCreateGitHubApp: () => void;
   connecting: boolean;
   replaceRef: React.RefObject<HTMLButtonElement | null>;
   onConnect: () => void;
@@ -368,7 +391,12 @@ function SectionBody({
     // bounded panel beside them, so the form is never a narrow strip under a wide wall of text.
     return (
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,22rem)] lg:items-start lg:gap-8">
-        <Instructions guide={guide} origin={origin} />
+        <div className="grid gap-4">
+          {guide.provider === "github" ? (
+            <GitHubManifestAction busy={creatingGitHubApp} onCreate={onCreateGitHubApp} />
+          ) : null}
+          <Instructions guide={guide} origin={origin} />
+        </div>
         {form}
       </div>
     );
@@ -652,6 +680,41 @@ function ConnectAction({
       {pending ? "Opening…" : label}
     </Button>
   );
+}
+
+function GitHubManifestAction({ busy, onCreate }: { busy: boolean; onCreate: () => void }) {
+  return (
+    <NoticeAlert tone="neutral" title="Create a GitHub App automatically">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <span>
+          Hub fills in the App settings and saves the generated credentials after GitHub creates it.
+          You can still use the manual setup steps below.
+        </span>
+        <Button type="button" disabled={busy} onClick={onCreate}>
+          {busy ? "Opening GitHub…" : "Create GitHub App"}
+        </Button>
+      </div>
+    </NoticeAlert>
+  );
+}
+
+function postGitHubManifest(registration: GitHubManifestRegistration) {
+  const form = document.createElement("form");
+  form.action = registration.action;
+  form.method = "post";
+  const fields: readonly [string, string][] = [
+    ["state", registration.state],
+    ["manifest", JSON.stringify(registration.manifest)],
+  ];
+  for (const [name, value] of fields) {
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = name;
+    input.value = value;
+    form.append(input);
+  }
+  document.body.append(form);
+  form.submit();
 }
 
 /**

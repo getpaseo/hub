@@ -50,6 +50,7 @@ import {
   type ProviderApplications,
   type ProviderApplicationIdentity,
 } from "../../provider-applications/index.js";
+import { createGitHubManifestClient } from "../../provider-applications/github-manifest.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../../http/request-origin.js";
 import { compileHubConfig, compiledConfigurationHash } from "../../config/compiler.js";
 import { ProjectConfigurationStore } from "../../configuration/store.js";
@@ -1247,6 +1248,20 @@ async function composeProviderApplications(input: {
     },
     inventory,
     callbackOrigin: (request) => resolveCallbackOrigin(request, process.env["PASEO_HUB_APP_URL"]),
+    githubManifest: createGitHubManifestClient({
+      apiBaseUrl: input.publicBaseUrl,
+      fetch: async () =>
+        Response.json({
+          id: 42,
+          slug: "paseo",
+          name: "Paseo Hub",
+          owner: { login: "acme-inc" },
+          client_id: "client",
+          client_secret: "secret",
+          webhook_secret: "webhook-secret",
+          pem: "fixture-private-key",
+        }),
+    }),
     beginCandidateConnection: async (request, organizationId, returnRoute, begin) => {
       const organizationSlug = await inventory.organizationSlug(organizationId);
       if (organizationSlug === undefined) throw new Error("organization unavailable");

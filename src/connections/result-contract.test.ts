@@ -59,6 +59,10 @@ describe("connection return contract", () => {
       tone: "success",
       message: "GitHub connected.",
     });
+    assert.deepEqual(connectionReturnCopy({ provider: "github", result: "github_app_created" }), {
+      tone: "success",
+      message: "GitHub App created. Install it on the account or organization you want Hub to use.",
+    });
     const unauthenticated = connectionReturnCopy({
       provider: "github",
       result: "connection_unauthenticated",
