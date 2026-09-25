@@ -174,6 +174,65 @@ export function createProviderApplicationStore(
         }),
       );
     },
+    async startGitHubManifestAttempt(input) {
+      await database.transaction(async (transaction) => {
+        await transaction.query(
+          `delete from github_manifest_attempts
+           where expires_at <= clock_timestamp() or consumed_at is not null`,
+        );
+        await transaction.query(
+          `insert into github_manifest_attempts
+             (state_verifier, user_id, session_id, surface, callback_origin,
+              expected_configuration_version, expires_at)
+           values ($1, $2, $3, $4, $5, $6, clock_timestamp() + interval '1 hour')`,
+          [
+            input.stateVerifier,
+            input.userId,
+            input.sessionId,
+            input.surface,
+            input.callbackOrigin,
+            input.expectedConfigurationVersion ?? null,
+          ],
+        );
+      });
+    },
+    async consumeGitHubManifestAttempt(input) {
+      return database.transaction(async (transaction) => {
+        const result = await transaction.query<{
+          surface: "appSetup" | "apps";
+          callback_origin: string;
+          expected_configuration_version: number | null;
+          expires_at: Date;
+          consumed_at: Date | null;
+        }>(
+          `select surface, callback_origin, expected_configuration_version, expires_at, consumed_at
+           from github_manifest_attempts
+           where state_verifier = $1 and user_id = $2 and session_id = $3 for update`,
+          [input.stateVerifier, input.userId, input.sessionId],
+        );
+        const attempt = result.rows[0];
+        if (
+          attempt === undefined ||
+          attempt.consumed_at !== null ||
+          attempt.expires_at.getTime() <= Date.now()
+        ) {
+          throw new GitHubManifestAttemptUnavailableError();
+        }
+        await transaction.query(
+          `update github_manifest_attempts set consumed_at = clock_timestamp()
+           where state_verifier = $1`,
+          [input.stateVerifier],
+        );
+        return {
+          surface: attempt.surface,
+          callbackOrigin: attempt.callback_origin,
+          expectedConfigurationVersion:
+            attempt.expected_configuration_version === null
+              ? undefined
+              : attempt.expected_configuration_version,
+        };
+      });
+    },
     activate(input) {
       return locks.withLock(`provider-configuration:${input.provider}`, () =>
         database.transaction(async (transaction) => {
@@ -285,6 +344,13 @@ export function createProviderApplicationStore(
       );
     },
   };
+}
+
+export class GitHubManifestAttemptUnavailableError extends Error {
+  constructor() {
+    super("GitHub manifest registration attempt is unavailable");
+    this.name = "GitHubManifestAttemptUnavailableError";
+  }
 }
 
 async function lockProviderActivation(

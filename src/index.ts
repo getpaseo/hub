@@ -42,6 +42,7 @@ import {
   readProviderApplicationEnvironment,
   resolveCallbackOrigin,
 } from "./provider-applications/index.js";
+import { createGitHubManifestClient } from "./provider-applications/github-manifest.js";
 import { createSlackSocketInstallationVerifier } from "./providers/slack/installation.js";
 import { resolveHubDataDirectory } from "./data-directory.js";
 import { createInvitationMailer } from "./invitations/index.js";
@@ -142,6 +143,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
         retry: () => providerRuntime.slackDelivery()?.retry() ?? Promise.resolve(),
       },
       inventory: providerInventory,
+      githubManifest: createGitHubManifestClient(),
       callbackOrigin: (request) => resolveCallbackOrigin(request, identity.explicitAppUrl),
       beginCandidateConnection: async (request, organizationId, returnRoute, begin) => {
         const organizationSlug = await providerInventory.organizationSlug(organizationId);
