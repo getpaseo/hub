@@ -4947,17 +4947,19 @@ class HubUser {
   }
 
   /**
-   * An instance with no provider credentials, seen by someone who cannot supply them. The page
-   * says so once and offers nothing: four provider blocks with no action are four ways to say
-   * the same thing to a reader who can do nothing about any of them.
+   * An instance with no provider apps installed, seen by someone who cannot install one.
+   * Forgejo needs no app (a connection carries its own instance and token), so it stays
+   * connectable even here: the page says the app-based providers aren't set up, and offers
+   * the one thing there still is to do, connecting Forgejo, folded into the same empty state
+   * rather than given its own card.
    */
   async expectNotConfiguredConnections(): Promise<void> {
     await this.openOrganizationSection("Connections");
     await expect(this.page.getByText("No connections", { exact: true })).toBeVisible();
     await expect(this.page.getByText(/no provider apps set up yet/u)).toBeVisible();
-    await expect(this.page.getByRole("button", { name: /Connect|Revoke|Set up the/u })).toHaveCount(
-      0,
-    );
+    const connectButtons = this.page.getByRole("button", { name: /Connect|Revoke|Set up the/u });
+    await expect(connectButtons).toHaveCount(1);
+    await expect(connectButtons).toHaveText("Connect Forgejo");
     await expect(this.page.getByText("Not configured", { exact: true })).toHaveCount(0);
     await expectAccessible(this.page);
   }

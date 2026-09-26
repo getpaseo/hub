@@ -6,6 +6,8 @@ export default defineConfig({
   plugins: [tanstackStart({ server: { entry: "./start-server.ts" } }), react()],
   test: {
     environment: "node",
+    // Points DOCKER_HOST at Podman when testcontainers' own probe would come up empty.
+    globalSetup: ["./src/test-utils/global-setup.ts"],
     testTimeout: 30_000,
     pool: "forks",
     poolOptions: {
