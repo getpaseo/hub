@@ -18,7 +18,7 @@ The expression shape is exactly
 materializing the selected step, after the project and organization connection
 have been verified. The authored expression, not its resolved value, is retained
 in configuration and durable launch data. Resolved values are not placed in logs
-or diagnostics. This works for manual, Discord, Slack, GitHub, and Linear trigger events.
+or diagnostics. This works for manual, Discord, Slack, GitHub, Linear, and Forgejo trigger events.
 
 ## GitHub authority
 
@@ -92,5 +92,92 @@ only until revocation succeeds or the token expires.
 
 When upgrading from a version with process-owned credentials, let active credentialed runs
 finish before restarting Hub. That version cannot hand its in-memory leases to the replacement.
+
+## Forgejo credentials
+
+Forgejo and Gitea have no authority block. A Forgejo connection holds an ordinary access
+token belonging to an operator-chosen account on the instance. Forgejo has no GitHub-App
+analogue: no installation, no app-owned bot identity, no endpoint that mints a
+short-lived token scoped to named repositories and permissions.
+
+|                | GitHub                             | Forgejo                                       |
+| -------------- | ---------------------------------- | --------------------------------------------- |
+| Token lifetime | minted per step, `1h` or less      | as long as the operator's token lives         |
+| Scope          | named repositories and permissions | whatever the token already carries            |
+| Revocation     | Hub revokes at the lease deadline  | only the operator can revoke, on the instance |
+
+Hub cannot revoke a Forgejo token, so it never registers one as a credential lease: a
+lease promises both an expiry and a working revoke, and this token has neither.
+
+A Forgejo token reaches a step only when the author asks for it by name, through the
+generic connection value above:
+
+```yaml
+env:
+  FORGEJO_TOKEN: "${{ paseo.connections.acme-forge.token }}"
+```
+
+Nothing else is injected: no `GH_TOKEN` equivalent, no Git credential helper, no commit
+identity. A step that clones from Forgejo configures Git itself from that variable, so
+the weaker guarantee stays visible in the workflow instead of hidden in Hub.
+
+The same connection also publishes `url` (the instance base URL) and `login` (the
+connected account) as plain, non-secret values:
+
+```yaml
+env:
+  FORGEJO_URL: "${{ paseo.connections.acme-forge.url }}"
+  FORGEJO_LOGIN: "${{ paseo.connections.acme-forge.login }}"
+```
+
+### What connecting costs the operator
+
+Forgejo has no app installation, so Hub asks the instance to create one webhook covering
+every repository instead of one per repository:
+
+- **One webhook per user or organization.** "Repositories owned by
+  &lt;accountLogin&gt;" registers a user-level hook (`POST /user/hooks`), covering only
+  repositories that account owns directly. Choosing an organization instead registers an
+  org-level hook (`POST /orgs/{org}/hooks`) for that org's own repositories. Subscribing
+  again for the same target replaces the old hook instead of adding a second one:
+  Forgejo has no way to tell Hub a hook it finds already carries the right secret, so the
+  new hook is created first and the old one deleted after, which can briefly deliver to
+  both.
+- **CI run events need Forgejo 12 or later.** Hub only asks for
+  `forgejo.action_run_failure` and `forgejo.action_run_success` on such instances. A hook
+  created before the instance was upgraded does not have them, so subscribe again (safe to
+  repeat). Gitea is never asked for them, since nobody tested it.
+- **Scopes needed to subscribe.** Repository and issue read/write cover the events
+  themselves. Subscribing to the account's own repositories also needs `write:user`;
+  subscribing to an organization needs `write:organization` plus the operator owning that
+  org on the instance. A token missing the scope gets a clear refusal, not a hook that
+  silently never arrives.
+- **Disconnecting deletes what Hub created, best effort.** A delete that fails, because
+  the instance is unreachable or the token was already rotated, is logged and does not
+  block the disconnect.
+- **A connection never triggers on its own writes.** A workflow's own comments, labels, or
+  reactions come back to Hub as deliveries sent by that same account. Hub drops them
+  before they reach a trigger. It also drops deliveries sent by any other Forgejo account
+  the organization connected on the same instance, so two bots can't feed each other.
+  Use a dedicated bot account if a human needs to keep triggering workflows.
+- **Two connections on one instance need a `connection` filter.** When more than one
+  connection could route a trigger, Hub refuses to save it until the trigger names one.
+  Otherwise one real event would fire it once per connection.
+- **The manual per-repository path still works.** An operator who does not want to grant
+  the wider scope adds the target URL and secret Hub shows to the repository's own
+  Settings, Webhooks. Both paths can be used side by side.
+- **The token otherwise carries whatever it carried.** Forgejo has no way to narrow a
+  token beyond the scopes above; the rest is whatever the operator granted it on the
+  instance.
+- **Plain http instance addresses are accepted.** A LAN-only instance reached over http is
+  not turned away.
+- **Private or internal addresses need the operator's say-so.** Hub refuses to dial a
+  loopback, RFC1918, link-local, or otherwise non-routable host by default, whether typed
+  literally or reached by DNS. The operator opts a host or network back in with
+  `FORGEJO_ALLOWED_PRIVATE_HOSTS`, a comma-separated list of hostnames and/or IPv4/IPv6
+  CIDRs (see `.env.example`). A blocked address fails with a message naming the variable,
+  on connect and on every later request.
+- **Gogs is refused at connect.** Gogs has no version endpoint to tell it apart from an
+  unrecognized instance, so Hub refuses the connection instead of guessing.
 
 Public workflow-authority guidance lives in the Paseo repository under `public-docs/`.
