@@ -226,7 +226,12 @@ export async function handleConnections(
     | "slackCallback"
     | "linearStart"
     | "linearDisconnect"
-    | "linearCallback",
+    | "linearCallback"
+    | "forgejoCreate"
+    | "forgejoDisconnect"
+    | "forgejoOrgs"
+    | "forgejoSubscribe"
+    | "forgejoReplaceToken",
 ): Promise<Response> {
   const runtime = await getApplication();
   if (operation === "status") return runtime.connectionStatus(request);
@@ -248,6 +253,11 @@ const CONNECTION_ACTIONS = {
   linearStart: { provider: "linear", name: "start" },
   linearDisconnect: { provider: "linear", name: "disconnect" },
   linearCallback: { provider: "linear", name: "callback" },
+  forgejoCreate: { provider: "forgejo", name: "create" },
+  forgejoDisconnect: { provider: "forgejo", name: "disconnect" },
+  forgejoOrgs: { provider: "forgejo", name: "orgs" },
+  forgejoSubscribe: { provider: "forgejo", name: "subscribe" },
+  forgejoReplaceToken: { provider: "forgejo", name: "replaceToken" },
 } as const;
 
 export async function resolveOrganizationResources(

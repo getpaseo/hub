@@ -183,6 +183,24 @@ run:
     ]);
   });
 
+  it("automatically grants an unlimited event-native reply for a Forgejo trigger", () => {
+    const compiled = compileTriggerDocument(`
+name: triage
+on:
+  forgejo.issue_comment_created:
+    connection: acme-forgejo
+    filters: { from_users: ["*"] }
+run:
+  target: { daemon: devbox, cwd: /workspace }
+  agent: { provider: codex, mode: full-access }
+  prompt: Handle it
+`);
+
+    assert.deepEqual(compiled.events[0]?.steps[0]?.allowOutputs, [
+      { type: "forgejo.reply", required: false },
+    ]);
+  });
+
   it("rejects a trigger without events at the document boundary", () => {
     assert.throws(
       () =>

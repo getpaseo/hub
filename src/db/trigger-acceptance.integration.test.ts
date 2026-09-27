@@ -202,6 +202,154 @@ describe("trigger acceptance persistence", () => {
     await client.close();
     await database.close();
   }, 120_000);
+  it("keeps two instances hosting the same repository in their own organizations", async () => {
+    const database = await createDatabase(databaseUrl);
+    const client = await createPostgresQueryRuntime(databaseUrl);
+    const instances = [
+      {
+        organizationId: "forgejo-org-vogon",
+        projectId: "50000000-0000-4000-8000-000000000001",
+        connectionId: "50000000-0000-4000-8000-000000000011",
+        host: "git.vogon.test",
+      },
+      {
+        organizationId: "forgejo-org-magrathea",
+        projectId: "50000000-0000-4000-8000-000000000002",
+        connectionId: "50000000-0000-4000-8000-000000000012",
+        host: "git.magrathea.test",
+      },
+    ] as const;
+
+    for (const instance of instances) {
+      await client.query(`
+        insert into organization (id, name, slug)
+        values ('${instance.organizationId}', '${instance.host}', '${instance.organizationId}');
+        insert into projects (id, organization_id, name, slug)
+        values ('${instance.projectId}', '${instance.organizationId}', 'Default', 'default');
+        insert into forgejo_connections
+          (id, organization_id, slug, instance_base_url, instance_host, webhook_secret,
+           access_token, account_login, account_id, instance_flavor, instance_version)
+        values
+          ('${instance.connectionId}', '${instance.organizationId}', 'forge',
+           'https://${instance.host}', '${instance.host}', 'hook-secret',
+           'forgejo-access-token', 'trillian', 42, 'forgejo', '16.0.5+gitea-1.22.0');
+      `);
+      const revision = await database.insertProjectConfigurationRevision({
+        projectId: instance.projectId,
+        sourceKind: "manual",
+        sourceEvidence: { kind: "test" },
+        normalizedConfiguration: { environments: [], triggers: [] },
+        contentHash: `${instance.organizationId}-config`,
+      });
+      await database.activateProjectConfigurationRevision(instance.projectId, revision.id, [
+        {
+          provider: "forgejo",
+          connectionId: instance.connectionId,
+          resourceId: "9001",
+          triggerName: "forgejo-issue-comment",
+        },
+      ]);
+    }
+
+    for (const instance of instances) {
+      const accepted = await database.acceptForgejoEvent({
+        connectionId: instance.connectionId,
+        repositoryId: 9001,
+        deliveryId: `delivery-on-${instance.host}`,
+        source: "forgejo.issue_comment",
+        repo: "acme/widgets",
+        payload: { repository: { id: 9001, full_name: "acme/widgets" } },
+        receivedAt: new Date(0),
+      });
+      assert.equal(accepted.status, "accepted");
+      if (accepted.status !== "accepted") throw new Error("expected an accepted delivery");
+      assert.equal(accepted.events.length, 1);
+      assert.equal(accepted.events[0]?.projectId, instance.projectId);
+      assert.equal(accepted.events[0]?.organizationId, instance.organizationId);
+    }
+
+    const unbound = await database.acceptForgejoEvent({
+      connectionId: "50000000-0000-4000-8000-0000000000ff",
+      repositoryId: 9001,
+      deliveryId: "delivery-from-nowhere",
+      source: "forgejo.issue_comment",
+      repo: "acme/widgets",
+      payload: {},
+      receivedAt: new Date(1),
+    });
+    assert.equal(unbound.status, "dropped");
+    if (unbound.status !== "dropped") throw new Error("expected an unbound drop");
+    assert.equal(unbound.reason, "forgejo_unbound");
+
+    await client.close();
+    await database.close();
+  }, 120_000);
+  it("gives a pasted-token connection a slug no other provider already holds", async () => {
+    const database = await createDatabase(databaseUrl);
+    const client = await createPostgresQueryRuntime(databaseUrl);
+    const organizationId = "forgejo-slug-org";
+    const userId = "forgejo-slug-user";
+
+    await client.query(`
+      insert into organization (id, name, slug)
+      values ('${organizationId}', 'Forgejo Slug', 'forgejo-slug');
+      insert into "user" (id, name, email, email_verified)
+      values ('${userId}', 'Trillian McMillan', 'trillian@example.test', true);
+      insert into session (id, token, user_id, active_organization_id, expires_at)
+      values ('forgejo-slug-session', 'forgejo-slug-token', '${userId}', '${organizationId}',
+              now() + interval '1 hour');
+      insert into member (id, organization_id, user_id, role)
+      values ('forgejo-slug-membership', '${organizationId}', '${userId}', 'owner');
+    `);
+    const access = {
+      sessionId: "forgejo-slug-session",
+      userId,
+      membershipId: "forgejo-slug-membership",
+      organizationId,
+      returnRoute: "/",
+    };
+
+    const first = await database.bindForgejoConnection({
+      access,
+      instanceBaseUrl: "https://git.vogon.test",
+      instanceHost: "git.vogon.test",
+      webhookSecret: "hook-secret-one",
+      accessToken: "token-one",
+      accountLogin: "trillian",
+      accountId: 1,
+      instanceFlavor: "forgejo",
+      instanceVersion: "16.0.5+gitea-1.22.0",
+    });
+    const second = await database.bindForgejoConnection({
+      access,
+      instanceBaseUrl: "https://git.vogon.test",
+      instanceHost: "git.vogon.test",
+      webhookSecret: "hook-secret-two",
+      accessToken: "token-two",
+      accountLogin: "zaphod",
+      accountId: 2,
+      instanceFlavor: "forgejo",
+      instanceVersion: "16.0.5+gitea-1.22.0",
+    });
+
+    assert.notEqual(first.id, second.id);
+    assert.notEqual(first.slug, second.slug);
+    assert.equal(first.accessToken, "token-one");
+    assert.equal(first.organizationId, organizationId);
+
+    const reloaded = await database.findForgejoConnection(second.id);
+    assert.equal(reloaded?.webhookSecret, "hook-secret-two");
+    assert.equal(reloaded?.accountLogin, "zaphod");
+
+    const usage = await database.organizationConnectionUsage(organizationId);
+    assert.deepEqual(
+      usage.forgejo.map((connection) => connection.slug).sort(),
+      [first.slug, second.slug].sort(),
+    );
+
+    await client.close();
+    await database.close();
+  }, 120_000);
 });
 
 function input(organizationId: string, projectId: string) {

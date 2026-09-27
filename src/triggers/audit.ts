@@ -5,7 +5,7 @@ import { logger } from "../logger.js";
 type EventAuditLogger = Pick<Logger, "info">;
 
 export function logProviderEventIntake(input: {
-  provider: "github" | "slack" | "discord" | "linear";
+  provider: "github" | "slack" | "discord" | "linear" | "forgejo";
   source: string;
   deliveryId: string;
   acceptance: ProviderEventAcceptance;

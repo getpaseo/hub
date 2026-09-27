@@ -359,6 +359,179 @@ describe("workflow compiler", () => {
       /filters\.from_users/iu,
     );
   });
+  it("rejects a filter key foreign to a forgejo trigger", () => {
+    const raw = configuration();
+    const trigger = raw.triggers[0]!;
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...raw,
+          triggers: [
+            {
+              ...trigger,
+              on: "forgejo.issue_comment",
+              filters: { from_users: ["*"], project: "linear-project-id" },
+            },
+          ],
+        }),
+      /filters\.project is not a forgejo filter/iu,
+    );
+  });
+
+  it("does not restrict filter keys foreign to a non-forgejo trigger", () => {
+    const raw = configuration();
+    const trigger = raw.triggers[0]!;
+    assert.doesNotThrow(() =>
+      compileHubConfig({
+        ...raw,
+        triggers: [
+          {
+            ...trigger,
+            on: "github.issue_comment",
+            filters: { from_users: ["*"], assignees: ["maintainer"] },
+          },
+        ],
+      }),
+    );
+    assert.doesNotThrow(() =>
+      compileHubConfig({
+        ...raw,
+        triggers: [
+          {
+            ...trigger,
+            on: "slack.mention",
+            filters: { from_users: ["*"], repo: "acme/widgets" },
+          },
+        ],
+      }),
+    );
+  });
+
+  it("accepts the same key on the providers it actually belongs to", () => {
+    const raw = configuration();
+    const trigger = raw.triggers[0]!;
+    assert.doesNotThrow(() =>
+      compileHubConfig({
+        ...raw,
+        triggers: [
+          {
+            ...trigger,
+            on: "forgejo.issue_assigned",
+            filters: { from_users: ["*"], assignees: ["maintainer"] },
+          },
+        ],
+      }),
+    );
+    assert.doesNotThrow(() =>
+      compileHubConfig({
+        ...raw,
+        triggers: [
+          {
+            ...trigger,
+            on: "linear.issue_assigned",
+            filters: {
+              project: "linear-project-id",
+              assignees: ["user-id"],
+              from_users: ["operator"],
+            },
+          },
+        ],
+      }),
+    );
+  });
+
+  it("rejects the assignees filter on a forgejo event that never populates it", () => {
+    const raw = configuration();
+    const trigger = raw.triggers[0]!;
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...raw,
+          triggers: [
+            {
+              ...trigger,
+              on: "forgejo.issue_created",
+              filters: { from_users: ["*"], assignees: ["maintainer"] },
+            },
+          ],
+        }),
+      /filters\.assignees only matches forgejo\.issue_assigned or forgejo\.pull_request_assigned/iu,
+    );
+  });
+
+  it("accepts the reviewers filter only on forgejo.pull_request_review_requested", () => {
+    const raw = configuration();
+    const trigger = raw.triggers[0]!;
+    assert.doesNotThrow(() =>
+      compileHubConfig({
+        ...raw,
+        triggers: [
+          {
+            ...trigger,
+            on: "forgejo.pull_request_review_requested",
+            filters: { from_users: ["*"], reviewers: ["trillian"] },
+          },
+        ],
+      }),
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...raw,
+          triggers: [
+            {
+              ...trigger,
+              on: "forgejo.pull_request",
+              filters: { from_users: ["*"], reviewers: ["trillian"] },
+            },
+          ],
+        }),
+      /filters\.reviewers only matches forgejo\.pull_request_review_requested/iu,
+    );
+  });
+
+  it("accepts the branches filter only on forgejo.push", () => {
+    const raw = configuration();
+    const trigger = raw.triggers[0]!;
+    assert.doesNotThrow(() =>
+      compileHubConfig({
+        ...raw,
+        triggers: [
+          {
+            ...trigger,
+            on: "forgejo.push",
+            filters: { from_users: ["*"], branches: ["main"] },
+          },
+        ],
+      }),
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...raw,
+          triggers: [
+            {
+              ...trigger,
+              on: "forgejo.issue_comment",
+              filters: { from_users: ["*"], branches: ["main"] },
+            },
+          ],
+        }),
+      /filters\.branches only matches forgejo\.push/iu,
+    );
+  });
+
+  it("does not restrict filter keys for a provider with no filter vocabulary of its own", () => {
+    const raw = configuration();
+    const trigger = raw.triggers[0]!;
+    assert.doesNotThrow(() =>
+      compileHubConfig({
+        ...raw,
+        triggers: [{ ...trigger, on: "manual.run", filters: { from_users: ["*"] } }],
+      }),
+    );
+  });
+
   it("requires explicit repositories for non-GitHub authority", () => {
     const raw = configuration();
     const step = raw.triggers[0]!.steps[0]!;

@@ -32,7 +32,11 @@ export type AgentExecutionStatus = (typeof AGENT_EXECUTION_STATUSES)[number];
 export const PROJECT_STATUSES = ["active", "archived"] as const;
 export const CONFIGURATION_SOURCE_KINDS = ["github", "manual"] as const;
 export const TRIGGER_FORMATS = ["single_run", "legacy_multistep"] as const;
-export const CONNECTION_PROVIDERS = ["github", "slack", "discord", "linear"] as const;
+export const CONNECTION_PROVIDERS = ["github", "slack", "discord", "linear", "forgejo"] as const;
+// gitea shares forgejo's api surface, so a connection works against either; gogs
+// doesn't and is refused at connect time, see instance-flavor.ts's classifier
+export const FORGEJO_INSTANCE_FLAVORS = ["forgejo", "gitea"] as const;
+export type ForgejoInstanceFlavor = (typeof FORGEJO_INSTANCE_FLAVORS)[number];
 
 export type MachineSource =
   | { kind: "manual"; userId?: string }
@@ -40,6 +44,7 @@ export type MachineSource =
 
 export const machineStatus = pgEnum("machine_status", MACHINE_STATUSES);
 export const agentExecutionStatus = pgEnum("agent_execution_status", AGENT_EXECUTION_STATUSES);
+export const forgejoInstanceFlavor = pgEnum("forgejo_instance_flavor", FORGEJO_INSTANCE_FLAVORS);
 
 export const providerEventReceipts = pgTable(
   "provider_event_receipts",
@@ -63,6 +68,9 @@ export const providerEventReceipts = pgTable(
     receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
     droppedReason: text("dropped_reason"),
     acceptedRoutes: jsonb("accepted_routes"),
+    // set while the owning delivery is still enriching over the network (forgejo only);
+    // a duplicate answers without dispatching until it looks old enough to take over
+    enrichmentPendingSince: timestamp("enrichment_pending_since", { withTimezone: true }),
   },
   (table) => [
     uniqueIndex("provider_event_receipts_id_organization_unique").on(
@@ -88,7 +96,7 @@ export const providerEventReceipts = pgTable(
     ),
     check(
       "provider_event_receipts_provider_check",
-      sql`${table.provider} in ('github', 'slack', 'discord', 'linear', 'manual', 'schedule')`,
+      sql`${table.provider} in ('github', 'slack', 'discord', 'linear', 'forgejo', 'manual', 'schedule')`,
     ),
   ],
 );
@@ -256,7 +264,7 @@ export const projectTriggerRoutes = pgTable(
     }).onDelete("cascade"),
     check(
       "project_trigger_routes_provider_check",
-      sql`${table.provider} in ('github', 'slack', 'discord', 'linear')`,
+      sql`${table.provider} in ('github', 'slack', 'discord', 'linear', 'forgejo')`,
     ),
   ],
 );
@@ -861,6 +869,7 @@ export const organizationConnectionAttempts = pgTable(
   "organization_connection_attempts",
   {
     id: uuid().defaultRandom().primaryKey(),
+    // No forgejo arm: it connects from a pasted token, so it never starts an attempt.
     provider: text().$type<"github" | "discord" | "slack" | "linear">().notNull(),
     phase: text()
       .$type<
@@ -1065,6 +1074,109 @@ export const linearConnections = pgTable(
   ],
 );
 
+// a forgejo or gitea instance an organization has connected. unlike github there's no
+// app or installation id to key on, so the connection's own id is the tenancy key: it
+// sits in the webhook url, and webhookSecret verifies deliveries against it.
+export const forgejoConnections = pgTable(
+  "forgejo_connections",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    slug: text().notNull(),
+    // normalized with no trailing slash, API lives at /api/v1 under it
+    instanceBaseUrl: text("instance_base_url").notNull(),
+    // kept separate from instanceBaseUrl so git credential config can be built from it
+    instanceHost: text("instance_host").notNull(),
+    webhookSecret: text("webhook_secret").notNull(),
+    // no credential_kind, refresh_token or expiry: forgejo has no oauth flow, every row
+    // is a pasted token and can't be refreshed. add those columns with the flow that fills them.
+    accessToken: text("access_token").notNull(),
+    accountLogin: text("account_login").notNull(),
+    // forgejo keeps this stable across a rename, unlike accountLogin, so the webhook loop
+    // guard compares a delivery's sender.id against this (see isForgejoOwnAccountEvent)
+    accountId: bigint("account_id", { mode: "number" }).notNull(),
+    // forgejo's version string carries a +gitea-x.y.z suffix (see instance-flavor.ts); a
+    // plain semver is gitea, anything else (commonly gogs) is refused before a row is stored
+    instanceFlavor: forgejoInstanceFlavor("instance_flavor").notNull(),
+    instanceVersion: text("instance_version").notNull(),
+    // serializes subscribe/disconnect for this connection, held while those talk to the
+    // instance so it has to be a row, not a lock on a pooled connection
+    hookLeaseId: uuid("hook_lease_id"),
+    hookLeaseExpiresAt: timestamp("hook_lease_expires_at", { withTimezone: true }),
+    connectedByUserId: text("connected_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    connectedAt: timestamp("connected_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("forgejo_connections_id_organization_unique").on(table.id, table.organizationId),
+    uniqueIndex("forgejo_connections_organization_slug_unique").on(
+      table.organizationId,
+      table.slug,
+    ),
+    index("forgejo_connections_organization_idx").on(table.organizationId),
+    // backstops the connect endpoint's own pre-check against two racing connects both
+    // passing it, see bindForgejoConnection's translation into ConnectionConflictError
+    uniqueIndex("forgejo_connections_organization_instance_account_unique").on(
+      table.organizationId,
+      table.instanceBaseUrl,
+      table.accountId,
+    ),
+  ],
+);
+
+// which issue-timeline entries a label_updated/assigned delivery already turned into a
+// semantic event, so a concurrent duplicate (forgejo fires one webhook per changed label
+// or assignee) can't derive the same add twice. records which receipt won an entry, not
+// merely that one did, so a stale-marker takeover under the same receipt id can reclaim
+// its own entries instead of losing them, see forgejo-claimed-timeline-entries.ts.
+export const forgejoClaimedTimelineEntries = pgTable(
+  "forgejo_claimed_timeline_entries",
+  {
+    connectionId: uuid("connection_id")
+      .notNull()
+      .references(() => forgejoConnections.id, { onDelete: "cascade" }),
+    timelineEntryId: bigint("timeline_entry_id", { mode: "number" }).notNull(),
+    receiptId: uuid("receipt_id")
+      .notNull()
+      .references(() => providerEventReceipts.id, { onDelete: "cascade" }),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.connectionId, table.timelineEntryId] }),
+    index("forgejo_claimed_timeline_entries_claimed_at_idx").on(table.claimedAt),
+  ],
+);
+
+// the webhook Hub created on a connection's behalf, at user or org scope, so subscribe
+// can tell an existing hook apart from one it must create. no repo scope: this is only
+// for the owner-level hook, not the manual per-repository fallback.
+export const forgejoWebhooks = pgTable(
+  "forgejo_webhooks",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    connectionId: uuid("connection_id")
+      .notNull()
+      .references(() => forgejoConnections.id, { onDelete: "cascade" }),
+    scope: text().$type<"user" | "org">().notNull(),
+    // FORGEJO_USER_SCOPE_OWNER constant for a user scope, the org's login for org
+    owner: text().notNull(),
+    hookId: bigint("hook_id", { mode: "number" }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("forgejo_webhooks_connection_scope_owner_unique").on(
+      table.connectionId,
+      table.scope,
+      table.owner,
+    ),
+    check("forgejo_webhooks_scope_check", sql`${table.scope} in ('user', 'org')`),
+  ],
+);
+
 export const projectConfigurationSources = pgTable(
   "project_configuration_sources",
   {
@@ -1258,7 +1370,7 @@ export const runtimeProviderConfiguration = pgTable(
   (table) => [
     check(
       "runtime_provider_configuration_provider_check",
-      sql`${table.provider} in ('github', 'slack', 'discord', 'linear')`,
+      sql`${table.provider} in ('github', 'slack', 'discord', 'linear', 'forgejo')`,
     ),
     check("runtime_provider_configuration_version_check", sql`${table.version} > 0`),
   ],
@@ -1275,7 +1387,7 @@ export const runtimeProviderActivations = pgTable(
   (table) => [
     check(
       "runtime_provider_activation_provider_check",
-      sql`${table.provider} in ('github', 'slack', 'discord', 'linear')`,
+      sql`${table.provider} in ('github', 'slack', 'discord', 'linear', 'forgejo')`,
     ),
     check("runtime_provider_activation_version_check", sql`${table.configurationVersion} >= 0`),
   ],

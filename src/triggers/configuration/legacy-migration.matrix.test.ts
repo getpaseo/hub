@@ -51,18 +51,11 @@ inputs:
     type: number
     default: 2
 filters:
+  # only keys valid for slack.mention: the compiler refuses a foreign filter key.
   connection: acme-slack
   pattern: '^help'
   contains: urgent
-  label: support
-  labels: [bug, urgent]
-  repo: getpaseo/hub
-  guild: paseo
   workspace: acme
-  project: linear-project
-  states: [started]
-  exclude_labels: [wontfix]
-  assignees: [maintainer]
   channels: [support]
   from_users: [U123]
   inputs: { source: slack, trusted: true, priority: 2 }

@@ -43,6 +43,7 @@ import {
   resolveCallbackOrigin,
 } from "./provider-applications/index.js";
 import { createSlackSocketInstallationVerifier } from "./providers/slack/installation.js";
+import { readAllowedPrivateHostsFromEnv } from "./providers/forgejo/instance-guard.js";
 import { resolveHubDataDirectory } from "./data-directory.js";
 import { createInvitationMailer } from "./invitations/index.js";
 import { composeEmailDelivery } from "./email/index.js";
@@ -122,10 +123,13 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     resources.own(() => auth.close());
     await auth.initialize?.();
     const providerEnvironment = await readProviderApplicationEnvironment(process.env);
+    // fail fast on a malformed FORGEJO_ALLOWED_PRIVATE_HOSTS at startup
+    const forgejoAllowedPrivateHosts = readAllowedPrivateHostsFromEnv(process.env);
     const providerStore = createProviderApplicationStore(runtime, locks, database);
     const providerVerifier = createProviderApplicationVerifier();
     const providerInventory = createProviderApplicationInventory(runtime);
     const providerRuntime = new DynamicProviderRuntime({
+      forgejoAllowedPrivateHosts,
       database,
       auth,
       applicationBaseUrl: identity.appUrl,
@@ -161,6 +165,8 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       providerApplications,
       publicBaseUrl: identity.appUrl,
       completionTokenSecret: identity.authSecret,
+      // reuse the guarded client so we don't stand up a second unguarded one
+      forgejoRepositoryResolver: providerRuntime.forgejoApiClient,
       close: () => resources.close(),
     });
     const activationFailures = await activateProviderApplicationsAtStartup({

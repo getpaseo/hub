@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PullRequestPayloadSchema } from "../triggers/forge/payload-schemas.js";
 
 const OptionalStringSchema = z.string().optional().catch(undefined);
 const OptionalNumberSchema = z.number().optional().catch(undefined);
@@ -7,7 +8,6 @@ const UserSchema = z
   .passthrough()
   .optional()
   .catch(undefined);
-const LabelSchema = z.object({ name: OptionalStringSchema }).passthrough();
 
 export const WebhookPayloadSchema = z
   .object({
@@ -105,77 +105,6 @@ function readNestedString(value: unknown, parentKey: string, childKey: string): 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-
-export const IssueCommentPayloadSchema = z
-  .object({
-    action: OptionalStringSchema,
-    issue: z
-      .object({
-        number: OptionalNumberSchema,
-        title: OptionalStringSchema,
-        body: OptionalStringSchema,
-        html_url: OptionalStringSchema,
-        user: UserSchema,
-        labels: z.array(LabelSchema).optional().catch(undefined),
-        pull_request: z.object({}).passthrough().optional().catch(undefined),
-      })
-      .optional()
-      .catch(undefined),
-    comment: z
-      .object({
-        id: OptionalNumberSchema,
-        body: OptionalStringSchema,
-        user: UserSchema,
-      })
-      .optional()
-      .catch(undefined),
-    sender: UserSchema,
-  })
-  .passthrough();
-
-export const IssuesPayloadSchema = z
-  .object({
-    action: OptionalStringSchema,
-    issue: z
-      .object({
-        number: OptionalNumberSchema,
-        title: OptionalStringSchema,
-        body: OptionalStringSchema,
-        html_url: OptionalStringSchema,
-        user: UserSchema,
-        labels: z.array(LabelSchema).optional().catch(undefined),
-      })
-      .optional()
-      .catch(undefined),
-    sender: UserSchema,
-    label: LabelSchema.optional().catch(undefined),
-  })
-  .passthrough();
-
-export const PullRequestPayloadSchema = z
-  .object({
-    action: OptionalStringSchema,
-    pull_request: z
-      .object({
-        number: OptionalNumberSchema,
-        title: OptionalStringSchema,
-        body: OptionalStringSchema,
-        html_url: OptionalStringSchema,
-        user: UserSchema,
-        labels: z.array(LabelSchema).optional().catch(undefined),
-        head: z
-          .object({
-            ref: OptionalStringSchema,
-          })
-          .optional()
-          .catch(undefined),
-      })
-      .optional()
-      .catch(undefined),
-    sender: UserSchema,
-    label: LabelSchema.optional().catch(undefined),
-  })
-  .passthrough();
 
 export const PullRequestReviewPayloadSchema = PullRequestPayloadSchema.extend({
   review: z

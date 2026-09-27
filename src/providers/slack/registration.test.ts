@@ -79,7 +79,13 @@ describe("Slack registration", () => {
       configuration: null,
     });
     assert.deepEqual(
-      registration.connection.status({ github: [], discord: [], slack: [], linear: [] }),
+      registration.connection.status({
+        github: [],
+        discord: [],
+        slack: [],
+        linear: [],
+        forgejo: [],
+      }),
       {
         status: "notConfigured",
       },
@@ -299,6 +305,7 @@ describe("Slack registration", () => {
           },
         ],
         linear: [],
+        forgejo: [],
       }),
       { status: "requiresReauthorization" },
     );

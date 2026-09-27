@@ -2,7 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { type FormEvent, type ReactNode } from "react";
+import { useCallback, useState, type FormEvent, type ReactNode } from "react";
 import { CONNECTION_MUTATION_KEY } from "../auth/tenant-mutation.js";
 import { useActiveAccount } from "../auth/active-account.js";
 import { Card, CardSkeleton } from "../components/app/card.js";
@@ -21,10 +21,14 @@ import { Section } from "../components/app/section.js";
 import { StatusPill, statusLabel } from "../components/app/status-pill.js";
 import { SummaryPanel, type SummaryRow } from "../components/app/summary-panel.js";
 import { TwoLine } from "../components/app/two-line.js";
+import { ForgejoConnectAction } from "../connections/forgejo-connect.js";
+import { ForgejoReplaceTokenDialog } from "../connections/forgejo-replace-token.js";
+import { ForgejoSubscribeDialog } from "../connections/forgejo-subscribe.js";
 import { ProviderGlyph } from "../connections/provider-glyph.js";
 import { useConnectionReturn } from "../connections/result.js";
 import { connectionReturnCopy, type ConnectionReturnCopy } from "../connections/result-contract.js";
 import { Button } from "../components/ui/button.js";
+import { DropdownMenuItem } from "../components/ui/dropdown-menu.js";
 import { DaemonsPanel } from "../daemons/account-daemons.js";
 import type { Result } from "../contract/respond.js";
 import {
@@ -50,8 +54,10 @@ import {
 } from "./panel-state.js";
 import { archiveProject, activityRunSnapshot, updateProjectSlug } from "./functions.js";
 const CONNECTIONS_DESCRIPTION = "Organization provider connections.";
-const CONNECTION_PROVIDERS = ["github", "discord", "slack", "linear"] as const;
+const CONNECTION_PROVIDERS = ["github", "discord", "slack", "linear", "forgejo"] as const;
 type ConnectionProviderName = (typeof CONNECTION_PROVIDERS)[number];
+// forgejo has no redirect to start, startConnection's own validator refuses it
+type RedirectConnectionProviderName = Exclude<ConnectionProviderName, "forgejo">;
 
 function ConnectionsLoading() {
   return (
@@ -78,6 +84,14 @@ export function OrganizationConnectionsPanel() {
     queryFn: () => loadStatus({ data: scope }),
   });
   const [returned, setReturned] = useConnectionReturn();
+  const refreshConnections = async () => {
+    await Promise.all([
+      invalidateOrganization(queryClient, scope.organizationSlug),
+      queryClient.invalidateQueries({
+        queryKey: ["connection-status", tenant.account.id, tenant.organization.id],
+      }),
+    ]);
+  };
   const connect = useMutation({
     mutationKey: CONNECTION_MUTATION_KEY,
     mutationFn: useServerFn(startConnection),
@@ -90,12 +104,7 @@ export function OrganizationConnectionsPanel() {
     onSuccess: async (response, variables) => {
       if (response.status !== "ok") return;
       setReturned({ provider: variables.data.provider, result: response.data.result });
-      await Promise.all([
-        invalidateOrganization(queryClient, scope.organizationSlug),
-        queryClient.invalidateQueries({
-          queryKey: ["connection-status", tenant.account.id, tenant.organization.id],
-        }),
-      ]);
+      await refreshConnections();
     },
   });
   if (!snapshot.ok) return snapshot.element;
@@ -106,7 +115,7 @@ export function OrganizationConnectionsPanel() {
   );
   if (!status.ok) return status.element;
   const data = snapshot.data;
-  const connectProvider = (provider: ConnectionProviderName) => {
+  const connectProvider = (provider: RedirectConnectionProviderName) => {
     connect.mutate(
       { data: { ...scope, provider } },
       {
@@ -149,6 +158,9 @@ export function OrganizationConnectionsPanel() {
         </Button>
       );
     }
+    if (provider === "forgejo") {
+      return <ForgejoConnectAction scope={scope} busy={busy} onConnected={refreshConnections} />;
+    }
     return (
       <Button disabled={busy} variant="outline" size="sm" onClick={() => connectProvider(provider)}>
         {connectionActionLabel(provider)} {providerLabel(provider)}
@@ -163,13 +175,24 @@ export function OrganizationConnectionsPanel() {
     connections: rows.filter((connection) => connection.provider === provider),
     action: providerAction(provider),
   })).filter((block) => block.action !== undefined || block.connections.length > 0);
-  // Whose problem the empty page is: an instance with no provider apps is the operator's, an
-  // organization that has connected nothing is its owners'.
-  const nothingToConnect = CONNECTION_PROVIDERS.every(
+  // forgejo's status is never notConfigured, so exclude it before checking whether every
+  // app-based provider is unconfigured
+  const appProviders = CONNECTION_PROVIDERS.filter((provider) => provider !== "forgejo");
+  const noAppProvidersConfigured = appProviders.every(
     (provider) => status.data[provider].status === "notConfigured",
-  )
-    ? "This Hub has no provider apps set up yet. Ask whoever runs it to add one."
-    : "An organization owner connects the providers this organization can use.";
+  );
+  // fold forgejo's connect action into the empty state instead of its own card
+  const forgejoOnly =
+    noAppProvidersConfigured &&
+    rows.length === 0 &&
+    shown.length === 1 &&
+    shown[0]?.provider === "forgejo"
+      ? shown[0]
+      : undefined;
+  const nothingToConnect = connectionsEmptyStateCopy(
+    noAppProvidersConfigured,
+    forgejoOnly !== undefined,
+  );
   return (
     <>
       <PageHeader title="Connections" description={CONNECTIONS_DESCRIPTION} />
@@ -178,8 +201,10 @@ export function OrganizationConnectionsPanel() {
       )}
       <CommandError mutations={[connect, disconnect]} />
       <Section>
-        {shown.length === 0 ? (
-          <EmptyState title="No connections" description={nothingToConnect} />
+        {shown.length === 0 || forgejoOnly !== undefined ? (
+          <EmptyState title="No connections" description={nothingToConnect}>
+            {forgejoOnly?.action}
+          </EmptyState>
         ) : (
           shown.map(({ provider, connections, action }) => (
             <ProviderConnections
@@ -189,6 +214,7 @@ export function OrganizationConnectionsPanel() {
               canManage={data.capabilities.manageResources}
               busy={busy}
               action={action}
+              organizationSlug={scope.organizationSlug}
               onRevoke={(connectionId) =>
                 disconnect.mutate({ data: { ...scope, provider, connectionId } })
               }
@@ -217,6 +243,7 @@ function ProviderConnections({
   canManage,
   busy,
   action,
+  organizationSlug,
   onRevoke,
 }: {
   provider: ConnectionProviderName;
@@ -224,6 +251,7 @@ function ProviderConnections({
   canManage: boolean;
   busy: boolean;
   action: ReactNode;
+  organizationSlug: string;
   onRevoke: (connectionId: string) => void;
 }) {
   const label = providerLabel(provider);
@@ -236,43 +264,106 @@ function ProviderConnections({
       {connections.length === 0 ? null : (
         <RecordList label={`${label} connections`}>
           {connections.map((connection) => (
-            <RecordRow
+            <ConnectionRow
               key={connection.id}
-              status={
-                <StatusPill
-                  tone={
-                    connection.status === "suspended" ||
-                    connection.status === "requiresReauthorization"
-                      ? "warning"
-                      : "success"
-                  }
-                >
-                  {connectionStatusLabel(connection.status)}
-                </StatusPill>
-              }
-              actions={
-                canManage ? (
-                  <RowActions label={`Actions for ${connection.name}`}>
-                    <ConfirmMenuItem
-                      busy={busy}
-                      destructive
-                      label="Revoke"
-                      title={`Revoke ${connection.name}?`}
-                      description="Projects using this credential will stop receiving new events."
-                      confirmLabel="Revoke connection"
-                      cancelLabel="Cancel"
-                      onConfirm={() => onRevoke(connection.id)}
-                    />
-                  </RowActions>
-                ) : undefined
-              }
-            >
-              <TwoLine primary={connection.name} secondary={connection.externalId} mono />
-            </RecordRow>
+              connection={connection}
+              canManage={canManage}
+              busy={busy}
+              organizationSlug={organizationSlug}
+              onRevoke={onRevoke}
+            />
           ))}
         </RecordList>
       )}
     </Card>
+  );
+}
+
+// its own component, not inline in the map above: the subscribe dialog needs state that
+// survives the row action menu unmounting it, same reason DaemonRow owns its rename dialog
+function ConnectionRow({
+  connection,
+  canManage,
+  busy,
+  organizationSlug,
+  onRevoke,
+}: {
+  connection: ConnectionRecord;
+  canManage: boolean;
+  busy: boolean;
+  organizationSlug: string;
+  onRevoke: (connectionId: string) => void;
+}) {
+  const [subscribing, setSubscribing] = useState(false);
+  const [replacingToken, setReplacingToken] = useState(false);
+  const requestSubscribe = useCallback((event: Event) => {
+    event.preventDefault();
+    setSubscribing(true);
+  }, []);
+  const requestReplaceToken = useCallback((event: Event) => {
+    event.preventDefault();
+    setReplacingToken(true);
+  }, []);
+  const revoke = useCallback(() => onRevoke(connection.id), [connection.id, onRevoke]);
+  return (
+    <RecordRow
+      status={
+        <StatusPill
+          tone={
+            connection.status === "suspended" || connection.status === "requiresReauthorization"
+              ? "warning"
+              : "success"
+          }
+        >
+          {connectionStatusLabel(connection.status)}
+        </StatusPill>
+      }
+      actions={
+        canManage ? (
+          <>
+            <RowActions label={`Actions for ${connection.name}`}>
+              {connection.provider === "forgejo" ? (
+                <DropdownMenuItem onSelect={requestSubscribe}>
+                  Subscribe to repositories
+                </DropdownMenuItem>
+              ) : null}
+              {connection.provider === "forgejo" ? (
+                <DropdownMenuItem onSelect={requestReplaceToken}>Replace token</DropdownMenuItem>
+              ) : null}
+              <ConfirmMenuItem
+                busy={busy}
+                destructive
+                label="Revoke"
+                title={`Revoke ${connection.name}?`}
+                description="Projects using this credential will stop receiving new events."
+                confirmLabel="Revoke connection"
+                cancelLabel="Cancel"
+                onConfirm={revoke}
+              />
+            </RowActions>
+            {connection.provider === "forgejo" ? (
+              <>
+                <ForgejoSubscribeDialog
+                  connectionId={connection.id}
+                  accountLogin={connection.accountLogin}
+                  organizationSlug={organizationSlug}
+                  open={subscribing}
+                  onOpenChange={setSubscribing}
+                />
+                <ForgejoReplaceTokenDialog
+                  connectionId={connection.id}
+                  scope={{ organizationSlug }}
+                  open={replacingToken}
+                  onOpenChange={setReplacingToken}
+                />
+              </>
+            ) : null}
+          </>
+        ) : undefined
+      }
+    >
+      <TwoLine primary={connection.name} secondary={connection.externalId} mono />
+    </RecordRow>
   );
 }
 
@@ -315,10 +406,11 @@ export function ProjectOverviewPanel() {
             data.connections.github.length +
               data.connections.discord.length +
               data.connections.slack.length +
-              data.connections.linear.length >
+              data.connections.linear.length +
+              data.connections.forgejo.length >
             0
           }
-          detail={`${String(data.connections.github.length + data.connections.discord.length + data.connections.slack.length + data.connections.linear.length)} organization connections`}
+          detail={`${String(data.connections.github.length + data.connections.discord.length + data.connections.slack.length + data.connections.linear.length + data.connections.forgejo.length)} organization connections`}
         />
       </Section>
       <Section
@@ -715,12 +807,39 @@ function connectionRows(data: OrganizationSnapshot) {
         ? ("requiresReauthorization" as const)
         : ("connected" as const),
     })),
+    ...data.connections.forgejo.map((connection) => ({
+      provider: "forgejo" as const,
+      id: connection.id,
+      name: connection.slug,
+      externalId: `${connection.instanceHost} · ${forgejoFlavorLabel(connection.instanceFlavor)} ${connection.instanceVersion}`,
+      accountLogin: connection.accountLogin,
+      status: "connected" as const,
+    })),
   ];
 }
 function providerLabel(provider: ConnectionProviderName) {
   if (provider === "github") return "GitHub";
   if (provider === "discord") return "Discord";
-  return provider === "slack" ? "Slack" : "Linear";
+  if (provider === "slack") return "Slack";
+  return provider === "linear" ? "Linear" : "Forgejo";
+}
+
+function forgejoFlavorLabel(flavor: "forgejo" | "gitea") {
+  return flavor === "forgejo" ? "Forgejo" : "Gitea";
+}
+
+// the forgejo sentence only belongs here when there's actually a connect button below it
+function connectionsEmptyStateCopy(
+  noAppProvidersConfigured: boolean,
+  forgejoConnectable: boolean,
+): string {
+  if (!noAppProvidersConfigured) {
+    return "An organization owner connects the providers this organization can use.";
+  }
+  if (forgejoConnectable) {
+    return "This Hub has no provider apps set up yet. Ask whoever runs it to add one. Forgejo needs no app and can still be connected with a token below.";
+  }
+  return "This Hub has no provider apps set up yet. Ask whoever runs it to add one.";
 }
 
 /** The one connection status a sentence-cased machine value gets wrong. */

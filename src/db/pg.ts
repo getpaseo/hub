@@ -15,6 +15,9 @@ import { toDatabaseError } from "./errors.js";
 import { withApiKeySerialization } from "./api-key-serialization.js";
 import { ConnectionRepository } from "./connections.js";
 import { ProviderEventAcceptanceRepository } from "./trigger-acceptance.js";
+import { ForgejoClaimedTimelineEntryRepository } from "./forgejo-claimed-timeline-entries.js";
+import { ForgejoWebhookRepository } from "./forgejo-webhooks.js";
+import { ForgejoHookLeaseRepository } from "./forgejo-hook-leases.js";
 import {
   toAgentExecutionRecord,
   toAttachmentRecord,
@@ -24,7 +27,12 @@ import {
   toProviderEventReceiptSummary,
   toProviderEventReceiptRecord,
 } from "./mappers.js";
-import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
+import type {
+  AgentExecutionStatus,
+  ForgejoInstanceFlavor,
+  MachineSource,
+  MachineStatus,
+} from "./schema.js";
 import type { DatabaseRuntime, QueryHandle, QueryRow } from "./runtime/index.js";
 import type { Locks } from "./runtime/locks/index.js";
 import type {
@@ -59,6 +67,9 @@ import type {
   BindDiscordConnectionInput,
   BindGitHubConnectionInput,
   BindLinearConnectionInput,
+  ForgejoConnectionRecord,
+  BindForgejoConnectionInput,
+  ReplaceForgejoConnectionTokenInput,
   BindSlackConnectionInput,
   CompleteLinearProviderApplicationInput,
   CompleteSlackProviderApplicationInput,
@@ -67,6 +78,7 @@ import type {
   ReadConnectionAttemptInput,
   StartConnectionAttemptInput,
   AcceptDiscordEventInput,
+  AcceptForgejoEventInput,
   AcceptGitHubEventInput,
   AcceptLinearEventInput,
   AcceptSlackEventInput,
@@ -116,6 +128,7 @@ import type {
   SyncBillingPlanInput,
   OrganizationBillingCustomerRecord,
   ReconcileOrganizationBillingInput,
+  RecordForgejoWebhookInput,
 } from "./types.js";
 
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
@@ -138,6 +151,9 @@ class PgDatabase implements Database {
   readonly executionAuthority;
   private readonly connections;
   private readonly triggerAcceptance;
+  private readonly forgejoClaimedTimelineEntries;
+  private readonly forgejoWebhooks;
+  private readonly forgejoHookLeases;
 
   constructor(
     private readonly pool: DatabaseRuntime,
@@ -148,6 +164,33 @@ class PgDatabase implements Database {
     const database = this.pool.drizzle();
     this.connections = new ConnectionRepository(this.pool, locks);
     this.triggerAcceptance = new ProviderEventAcceptanceRepository(database, this.connections);
+    this.forgejoClaimedTimelineEntries = new ForgejoClaimedTimelineEntryRepository(database);
+    this.forgejoWebhooks = new ForgejoWebhookRepository(database);
+    this.forgejoHookLeases = new ForgejoHookLeaseRepository(database);
+  }
+
+  claimForgejoTimelineEntries(
+    connectionId: string,
+    timelineEntryIds: readonly number[],
+    receiptId: string,
+  ) {
+    return this.forgejoClaimedTimelineEntries.claim(connectionId, timelineEntryIds, receiptId);
+  }
+
+  recordForgejoWebhook(input: RecordForgejoWebhookInput) {
+    return this.forgejoWebhooks.record(input);
+  }
+
+  listForgejoWebhooks(connectionId: string) {
+    return this.forgejoWebhooks.list(connectionId);
+  }
+
+  claimForgejoHookLease(connectionId: string, organizationId: string) {
+    return this.forgejoHookLeases.claim(connectionId, organizationId);
+  }
+
+  releaseForgejoHookLease(connectionId: string, leaseId: string) {
+    return this.forgejoHookLeases.release(connectionId, leaseId);
   }
 
   acceptGitHubEvent(input: AcceptGitHubEventInput) {
@@ -164,6 +207,14 @@ class PgDatabase implements Database {
 
   acceptLinearEvent(input: AcceptLinearEventInput) {
     return this.triggerAcceptance.acceptLinear(input);
+  }
+
+  acceptForgejoEvent(input: AcceptForgejoEventInput) {
+    return this.triggerAcceptance.acceptForgejo(input);
+  }
+
+  completeForgejoEnrichment(providerEventReceiptId: string, payload?: unknown) {
+    return this.triggerAcceptance.completeForgejoEnrichment(providerEventReceiptId, payload);
   }
 
   persistManualEvent(input: PersistManualEventInput) {
@@ -3862,7 +3913,7 @@ class PgDatabase implements Database {
        order by connection.account_login, connection.id`,
       [organizationId],
     );
-    const [discord, slack, linear] = await Promise.all([
+    const [discord, slack, linear, forgejo] = await Promise.all([
       query<{
         id: string;
         organization_id: string;
@@ -3916,6 +3967,26 @@ class PgDatabase implements Database {
          order by linear_organization_name, id`,
         [organizationId],
       ),
+      query<{
+        id: string;
+        organization_id: string;
+        slug: string;
+        instance_base_url: string;
+        instance_host: string;
+        webhook_secret: string;
+        access_token: string;
+        account_login: string;
+        account_id: string;
+        instance_flavor: ForgejoInstanceFlavor;
+        instance_version: string;
+      }>(
+        this.pool,
+        `select id, organization_id, slug, instance_base_url, instance_host, webhook_secret,
+                access_token, account_login, account_id, instance_flavor, instance_version
+         from forgejo_connections where organization_id = $1
+         order by instance_host, slug, id`,
+        [organizationId],
+      ),
     ]);
     return {
       github: github.rows.map((row) => ({
@@ -3960,6 +4031,19 @@ class PgDatabase implements Database {
         accessTokenExpiresAt: row.access_token_expires_at,
         scopes: stringArray(row.scopes),
         providerApplicationId: row.provider_application_id,
+      })),
+      forgejo: forgejo.rows.map((row) => ({
+        id: row.id,
+        organizationId: row.organization_id,
+        slug: row.slug,
+        instanceBaseUrl: row.instance_base_url,
+        instanceHost: row.instance_host,
+        webhookSecret: row.webhook_secret,
+        accessToken: row.access_token,
+        accountLogin: row.account_login,
+        accountId: Number(row.account_id),
+        instanceFlavor: row.instance_flavor,
+        instanceVersion: row.instance_version,
       })),
     };
   }
@@ -4172,6 +4256,14 @@ class PgDatabase implements Database {
     return this.connections.bindLinear(input);
   }
 
+  bindForgejoConnection(input: BindForgejoConnectionInput): Promise<ForgejoConnectionRecord> {
+    return this.connections.bindForgejo(input);
+  }
+
+  replaceForgejoConnectionToken(input: ReplaceForgejoConnectionTokenInput): Promise<void> {
+    return this.connections.replaceForgejoToken(input);
+  }
+
   completeLinearProviderApplication(input: CompleteLinearProviderApplicationInput): Promise<void> {
     return this.connections.completeLinearProviderApplication(input);
   }
@@ -4209,6 +4301,18 @@ class PgDatabase implements Database {
 
   findLinearConnection(linearOrganizationId: string) {
     return this.connections.findLinear(linearOrganizationId);
+  }
+
+  findForgejoConnection(connectionId: string) {
+    return this.connections.findForgejo(connectionId);
+  }
+
+  listForgejoSiblingAccountIds(input: {
+    organizationId: string;
+    instanceBaseUrl: string;
+    excludeConnectionId: string;
+  }): Promise<number[]> {
+    return this.connections.listForgejoSiblingAccountIds(input);
   }
 
   findSlackConnectionForOrganization(organizationId: string, teamId: string) {

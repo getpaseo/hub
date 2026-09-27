@@ -27,6 +27,8 @@ import type {
   BindDiscordConnectionInput,
   BindGitHubConnectionInput,
   BindLinearConnectionInput,
+  BindForgejoConnectionInput,
+  ReplaceForgejoConnectionTokenInput,
   BindSlackConnectionInput,
   CompleteLinearProviderApplicationInput,
   CompleteSlackProviderApplicationInput,
@@ -39,6 +41,7 @@ import type {
   RecordConfigurationSyncAttemptInput,
   ConfigurationSyncAttemptRecord,
   AcceptDiscordEventInput,
+  AcceptForgejoEventInput,
   AcceptGitHubEventInput,
   AcceptLinearEventInput,
   AcceptSlackEventInput,
@@ -60,6 +63,7 @@ import type {
   GitHubConfigurationTarget,
   DiscordConnectionRecord,
   SlackConnectionRecord,
+  ForgejoConnectionRecord,
   LinearConnectionRecord,
   GitHubRepositoryRecord,
   OrganizationConnectionUsage,
@@ -96,12 +100,20 @@ import type {
   ReconcileOrganizationBillingInput,
   UpdateLinearConnectionTokensInput,
   LinearConnectionRefreshOperation,
+  ForgejoWebhookRecord,
+  RecordForgejoWebhookInput,
 } from "./types.js";
 import {
   clearOverrideKey,
   entitlementOverridesSchema,
   mergeOverrides,
 } from "../entitlements/catalog.js";
+import {
+  FORGEJO_CLAIMED_TIMELINE_ENTRY_PRUNE_THROTTLE_MS,
+  FORGEJO_CLAIMED_TIMELINE_ENTRY_TTL_MS,
+} from "./forgejo-claimed-timeline-entries.js";
+import { FORGEJO_ENRICHMENT_STALE_MS } from "./forgejo-enrichment.js";
+import { FORGEJO_HOOK_LEASE_MS } from "./forgejo-hook-leases.js";
 import { toProviderEventReceiptRecordSummary } from "./mappers.js";
 import {
   isProviderEventDropReasonCode,
@@ -217,7 +229,17 @@ class MemoryDatabase implements Database {
   private readonly discordConnections = new Map<string, DiscordConnectionRecord>();
   private readonly slackConnections = new Map<string, SlackConnectionRecord>();
   private readonly linearConnections = new Map<string, LinearConnectionRecord>();
+  // keyed by connection id, then timeline entry id
+  private readonly forgejoClaimedTimelineEntries = new Map<
+    string,
+    Map<number, { receiptId: string; claimedAt: Date }>
+  >();
+  private readonly forgejoWebhooks = new Map<string, ForgejoWebhookRecord>();
+  // receipt id -> when its enrichment went pending
+  private readonly forgejoEnrichmentPending = new Map<string, Date>();
+  private readonly forgejoHookLeases = new Map<string, { id: string; expiresAt: Date }>();
   private readonly organizationIds: Set<string>;
+  private lastForgejoClaimedTimelineEntriesPrunedAt = 0;
 
   constructor(private readonly options: MemoryDatabaseOptions = {}) {
     this.organizationIds = new Set(options.organizationIds);
@@ -1037,6 +1059,7 @@ class MemoryDatabase implements Database {
     const binding = await this.findGitHubConnection(input.installationId);
     const reason = githubDropReason(input, binding);
     return this.acceptMemoryEvent(
+      "github",
       input,
       binding?.organizationId,
       binding?.id,
@@ -1049,6 +1072,7 @@ class MemoryDatabase implements Database {
     const binding = await this.findDiscordConnection(input.guildId);
     const reason = discordDropReason(input, binding);
     return this.acceptMemoryEvent(
+      "discord",
       input,
       binding?.organizationId,
       binding?.id,
@@ -1061,6 +1085,7 @@ class MemoryDatabase implements Database {
     const binding = await this.findSlackConnection(input.teamId);
     const reason = slackDropReason(input, binding);
     return this.acceptMemoryEvent(
+      "slack",
       input,
       binding?.organizationId,
       binding?.id,
@@ -1073,11 +1098,39 @@ class MemoryDatabase implements Database {
     const binding = await this.findLinearConnection(input.linearOrganizationId);
     const reason = linearDropReason(input, binding);
     return this.acceptMemoryEvent(
+      "linear",
       input,
       binding?.organizationId,
       binding?.id,
       input.projectId ?? null,
       reason,
+    );
+  }
+
+  async completeForgejoEnrichment(
+    providerEventReceiptId: string,
+    payload?: unknown,
+  ): Promise<void> {
+    // no-op on a missing receipt, matching pg's plain update ... where id = $1
+    const receipt = this.providerEventReceipts.get(providerEventReceiptId);
+    if (receipt === undefined) return;
+    if (payload !== undefined) {
+      this.providerEventReceipts.set(providerEventReceiptId, { ...receipt, payload });
+    }
+    this.forgejoEnrichmentPending.delete(providerEventReceiptId);
+  }
+
+  async acceptForgejoEvent(input: AcceptForgejoEventInput): Promise<ProviderEventAcceptance> {
+    const binding = await this.findForgejoConnection(input.connectionId);
+    const reason = forgejoDropReason(input, binding);
+    return this.acceptMemoryEvent(
+      "forgejo",
+      input,
+      binding?.organizationId,
+      binding?.id,
+      input.repositoryId === undefined ? null : String(input.repositoryId),
+      reason,
+      input.enrichmentPending === true,
     );
   }
 
@@ -2948,6 +3001,9 @@ class MemoryDatabase implements Database {
       linear: Array.from(this.linearConnections.values()).filter(
         (connection) => connection.organizationId === organizationId,
       ),
+      // bindForgejoConnection is dead-ended here, a test that needs a row monkey-patches
+      // findForgejoConnection/organizationConnectionUsage directly, see createForgejoRoutedMemoryDatabase
+      forgejo: [],
     };
   }
 
@@ -3061,6 +3117,8 @@ class MemoryDatabase implements Database {
           receipt.organizationId === organizationId &&
           receipt.droppedReason !== null &&
           isProviderEventDropReasonCode(receipt.droppedReason) &&
+          // not a misconfiguration an operator can fix, so keep it out of "unrouted"
+          receipt.droppedReason !== "own_account" &&
           !routedReceiptIds.has(receipt.id),
       )
       .sort(
@@ -3115,6 +3173,14 @@ class MemoryDatabase implements Database {
     return connectionPersistenceUnavailable();
   }
 
+  bindForgejoConnection(_input: BindForgejoConnectionInput): Promise<ForgejoConnectionRecord> {
+    return connectionPersistenceUnavailable();
+  }
+
+  replaceForgejoConnectionToken(_input: ReplaceForgejoConnectionTokenInput): Promise<void> {
+    return connectionPersistenceUnavailable();
+  }
+
   completeLinearProviderApplication(_input: CompleteLinearProviderApplicationInput): Promise<void> {
     return connectionPersistenceUnavailable();
   }
@@ -3164,6 +3230,109 @@ class MemoryDatabase implements Database {
     return Promise.resolve(this.linearConnections.get(_linearOrganizationId));
   }
 
+  findForgejoConnection(_connectionId: string): Promise<ForgejoConnectionRecord | undefined> {
+    return Promise.resolve(undefined);
+  }
+
+  listForgejoSiblingAccountIds(_input: {
+    organizationId: string;
+    instanceBaseUrl: string;
+    excludeConnectionId: string;
+  }): Promise<number[]> {
+    return Promise.resolve([]);
+  }
+
+  claimForgejoTimelineEntries(
+    connectionId: string,
+    timelineEntryIds: readonly number[],
+    receiptId: string,
+  ): Promise<ReadonlySet<number>> {
+    this.pruneForgejoClaimedTimelineEntries();
+    const claimed =
+      this.forgejoClaimedTimelineEntries.get(connectionId) ??
+      new Map<number, { receiptId: string; claimedAt: Date }>();
+    const won = new Set<number>();
+    const now = this.now();
+    for (const timelineEntryId of timelineEntryIds) {
+      const existing = claimed.get(timelineEntryId);
+      // same receipt reclaims its own prior win, a different receipt loses
+      if (existing !== undefined && existing.receiptId !== receiptId) continue;
+      claimed.set(timelineEntryId, { receiptId, claimedAt: now });
+      won.add(timelineEntryId);
+    }
+    this.forgejoClaimedTimelineEntries.set(connectionId, claimed);
+    return Promise.resolve(won);
+  }
+
+  // no fire-and-forget concern in memory (no network round trip to protect), but still
+  // throttled: every claim call would otherwise walk every connection's whole map
+  private pruneForgejoClaimedTimelineEntries(): void {
+    const now = this.now().getTime();
+    if (
+      now - this.lastForgejoClaimedTimelineEntriesPrunedAt <
+      FORGEJO_CLAIMED_TIMELINE_ENTRY_PRUNE_THROTTLE_MS
+    ) {
+      return;
+    }
+    this.lastForgejoClaimedTimelineEntriesPrunedAt = now;
+    const cutoff = now - FORGEJO_CLAIMED_TIMELINE_ENTRY_TTL_MS;
+    for (const [connectionId, claimed] of this.forgejoClaimedTimelineEntries) {
+      for (const [timelineEntryId, entry] of claimed) {
+        if (entry.claimedAt.getTime() < cutoff) claimed.delete(timelineEntryId);
+      }
+      if (claimed.size === 0) this.forgejoClaimedTimelineEntries.delete(connectionId);
+    }
+  }
+
+  recordForgejoWebhook(input: RecordForgejoWebhookInput): Promise<ForgejoWebhookRecord> {
+    const existing = Array.from(this.forgejoWebhooks.values()).find(
+      (row) =>
+        row.connectionId === input.connectionId &&
+        row.scope === input.scope &&
+        row.owner === input.owner,
+    );
+    const record: ForgejoWebhookRecord = {
+      id: existing?.id ?? randomUUID(),
+      connectionId: input.connectionId,
+      scope: input.scope,
+      owner: input.owner,
+      hookId: input.hookId,
+    };
+    this.forgejoWebhooks.set(record.id, record);
+    return Promise.resolve(record);
+  }
+
+  listForgejoWebhooks(connectionId: string): Promise<ForgejoWebhookRecord[]> {
+    return Promise.resolve(
+      Array.from(this.forgejoWebhooks.values()).filter((row) => row.connectionId === connectionId),
+    );
+  }
+
+  async claimForgejoHookLease(
+    connectionId: string,
+    organizationId: string,
+  ): Promise<string | undefined> {
+    const connection = await this.findForgejoConnection(connectionId);
+    if (connection?.organizationId !== organizationId) return undefined;
+    // no await from here to the set, same guarantee as the pg conditional UPDATE
+    const now = this.now();
+    const held = this.forgejoHookLeases.get(connectionId);
+    if (held !== undefined && held.expiresAt.getTime() > now.getTime()) return undefined;
+    const id = randomUUID();
+    this.forgejoHookLeases.set(connectionId, {
+      id,
+      expiresAt: new Date(now.getTime() + FORGEJO_HOOK_LEASE_MS),
+    });
+    return id;
+  }
+
+  releaseForgejoHookLease(connectionId: string, leaseId: string): Promise<void> {
+    if (this.forgejoHookLeases.get(connectionId)?.id === leaseId) {
+      this.forgejoHookLeases.delete(connectionId);
+    }
+    return Promise.resolve();
+  }
+
   findSlackConnectionForOrganization(
     organizationId: string,
     teamId: string,
@@ -3201,15 +3370,18 @@ class MemoryDatabase implements Database {
   }
 
   private async acceptMemoryEvent(
+    provider: "github" | "discord" | "slack" | "linear" | "forgejo",
     input:
       | AcceptGitHubEventInput
       | AcceptDiscordEventInput
       | AcceptSlackEventInput
-      | AcceptLinearEventInput,
+      | AcceptLinearEventInput
+      | AcceptForgejoEventInput,
     organizationId: string | undefined,
     connectionId: string | undefined,
     resourceId: string | null,
     reason: string | undefined,
+    enrichmentPending = false,
   ): Promise<ProviderEventAcceptance> {
     const receiptId = this.findReceiptId(organizationId, input.deliveryId, input.signatureHash);
     if (receiptId !== undefined) {
@@ -3219,9 +3391,16 @@ class MemoryDatabase implements Database {
         return { status: "dropped", receiptId, reason: receipt.droppedReason };
       }
       if (receipt.acceptedRoutes === null) return { status: "duplicate", receiptId };
+      const enrichment = this.claimStaleEnrichment(receiptId);
+      // still enriching, not stale yet; ageMs lets the caller tell a fresh wait from
+      // an overdue one, see the pg twin in trigger-acceptance.ts's replayProviderReceipt
+      if (enrichment.kind === "pending") {
+        return { status: "pending", receiptId, ageMs: enrichment.ageMs };
+      }
       return {
         status: "accepted",
         receiptId,
+        ...(enrichment.kind === "taken" ? { ownsEnrichment: true } : {}),
         events: receipt.acceptedRoutes.map((route) => ({
           providerEventReceiptId: receipt.id,
           organizationId: receipt.organizationId,
@@ -3245,7 +3424,7 @@ class MemoryDatabase implements Database {
     }
     const receipt = this.insertProviderEventReceipt({
       organizationId,
-      provider: providerForInput(input),
+      provider,
       connectionId,
       resourceId,
       input,
@@ -3258,7 +3437,6 @@ class MemoryDatabase implements Database {
         reason,
       };
     }
-    const provider = providerForInput(input);
     const routes = Array.from(this.projectTriggerRoutes.entries()).flatMap(
       ([projectId, candidates]) => {
         const project = this.projects.get(projectId);
@@ -3305,7 +3483,23 @@ class MemoryDatabase implements Database {
       resourceId: event.resourceId,
     }));
     this.providerEventReceipts.set(receipt.id, { ...receipt, acceptedRoutes });
-    return { status: "accepted", events, receiptId: receipt.id };
+    if (!enrichmentPending) return { status: "accepted", events, receiptId: receipt.id };
+    this.forgejoEnrichmentPending.set(receipt.id, this.now());
+    return { status: "accepted", events, receiptId: receipt.id, ownsEnrichment: true };
+  }
+
+  // same rule as the postgres replay, but synchronous from read to write, so no
+  // equivalent of pg's "cleared between read and takeover" gap
+  private claimStaleEnrichment(
+    receiptId: string,
+  ): { kind: "none" } | { kind: "pending"; ageMs: number } | { kind: "taken" } {
+    const since = this.forgejoEnrichmentPending.get(receiptId);
+    if (since === undefined) return { kind: "none" };
+    const now = this.now();
+    const ageMs = now.getTime() - since.getTime();
+    if (ageMs <= FORGEJO_ENRICHMENT_STALE_MS) return { kind: "pending", ageMs };
+    this.forgejoEnrichmentPending.set(receiptId, now);
+    return { kind: "taken" };
   }
 
   private findReceiptId(
@@ -3396,16 +3590,13 @@ function connectionPersistenceUnavailable(): never {
   throw new Error("connection persistence requires PostgreSQL");
 }
 
-function providerForInput(
-  input:
-    | AcceptGitHubEventInput
-    | AcceptDiscordEventInput
-    | AcceptSlackEventInput
-    | AcceptLinearEventInput,
-): "github" | "discord" | "slack" | "linear" {
-  if ("installationId" in input) return "github";
-  if ("guildId" in input) return "discord";
-  return "teamId" in input ? "slack" : "linear";
+function forgejoDropReason(
+  input: AcceptForgejoEventInput,
+  binding: ForgejoConnectionRecord | undefined,
+): string | undefined {
+  if (input.dropReason !== undefined) return input.dropReason;
+  if (binding === undefined) return "forgejo_unbound";
+  return undefined;
 }
 
 function githubDropReason(

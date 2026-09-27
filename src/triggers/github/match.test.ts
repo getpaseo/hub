@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { compileHubConfig } from "../../config/index.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
-import { matchTriggers, readGitHubInvocationMessage } from "./match.js";
+import { classifyGitHubEvent } from "./classification.js";
+import { matchTriggers } from "./match.js";
 
 describe("GitHub trigger matching", () => {
   it.each([
@@ -175,6 +176,24 @@ describe("GitHub trigger matching", () => {
     assert.equal(matchTriggers(configured, event, connectionId).length, expected);
   });
 
+  it("matches a push by the pusher named in its from_users filter", () => {
+    const config = configFor({ from_users: ["boudra"] });
+    const trigger = config.triggers[0]!;
+    const configured = { ...config, triggers: [{ ...trigger, on: "github.push" }] };
+    const event = eventFor("push", { ref: "refs/heads/main" });
+
+    assert.equal(matchTriggers(configured, event).length, 1);
+    assert.deepEqual(
+      matchTriggers(configured, { ...event, payload: { ...event.payload, sender: undefined } }),
+      [],
+    );
+  });
+
+  it("matches from_users case-insensitively, like the label and labels filters", () => {
+    const config = configFor({ from_users: ["Boudra"] });
+    assert.equal(matchTriggers(config, createEvent()).length, 1);
+  });
+
   it("allows every actor only when the wildcard is explicit", () => {
     const config = configFor({ from_users: ["*"] });
     const event = createEvent({
@@ -236,7 +255,7 @@ describe("GitHub trigger matching", () => {
       const trigger = config.triggers[0]!;
       const configured = { ...config, triggers: [{ ...trigger, on: `github.${event.type}` }] };
 
-      assert.equal(readGitHubInvocationMessage(event), text);
+      assert.equal(classifyGitHubEvent(event).text, text);
       assert.equal(matchTriggers(configured, event).length, 1);
       assert.equal(
         matchTriggers(configured, {

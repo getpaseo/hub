@@ -7,6 +7,9 @@ import { logger } from "../../logger.js";
 import { reportFailure } from "../../failures/index.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
+import { createForgejoRegistration } from "../../providers/forgejo/index.js";
+import { createForgejoApiClient, type ForgejoApiClient } from "../../providers/forgejo/client.js";
+import type { ForgejoAllowedPrivateHosts } from "../../providers/forgejo/instance-guard.js";
 import { createLinearRegistration } from "../../providers/linear/index.js";
 import type {
   ProviderRegistration,
@@ -66,6 +69,9 @@ interface DynamicProviderRuntimeOptions {
   auth: AuthServer;
   applicationBaseUrl: string;
   fetch?: typeof fetch;
+  forgejoAllowedPrivateHosts?: ForgejoAllowedPrivateHosts;
+  /** test seam only, production always builds its own guarded client */
+  apiClient?: ForgejoApiClient;
   registrationFactory?: (input: {
     provider: Provider;
     configuration: ProviderApplicationConfiguration;
@@ -90,10 +96,28 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
   private slackInstallationHandler: SlackInstallationHandler | undefined;
   private linearInstallationHandler: LinearInstallationHandler | undefined;
 
+  private readonly forgejo: ProviderRegistration;
+  /** reused as the save-time repository resolver in src/index.ts */
+  readonly forgejoApiClient: ForgejoApiClient;
+
   constructor(private readonly options: DynamicProviderRuntimeOptions) {
     for (const provider of ["github", "slack", "discord", "linear"] as const) {
       this.stable.set(provider, this.stableRegistration(provider));
     }
+    this.forgejoApiClient =
+      options.apiClient ??
+      createForgejoApiClient({
+        ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+        ...(options.forgejoAllowedPrivateHosts === undefined
+          ? {}
+          : { allowedPrivateHosts: options.forgejoAllowedPrivateHosts }),
+      });
+    this.forgejo = createForgejoRegistration({
+      database: options.database,
+      auth: options.auth,
+      applicationBaseUrl: options.applicationBaseUrl,
+      apiClient: this.forgejoApiClient,
+    });
   }
 
   registrations(): readonly ProviderRegistration[] {
@@ -102,6 +126,8 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       this.stable.get("discord")!,
       this.stable.get("slack")!,
       this.stable.get("linear")!,
+      // no application to reconfigure, so not held in `stable`
+      this.forgejo,
     ];
   }
 

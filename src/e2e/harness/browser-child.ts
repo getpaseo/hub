@@ -16,6 +16,7 @@ import type { ProviderRegistration } from "../../providers/registration.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
 import { createLinearRegistration } from "../../providers/linear/index.js";
+import { createForgejoRegistration } from "../../providers/forgejo/index.js";
 import {
   BrowserDiscordBot,
   BrowserDiscordConnections,
@@ -280,6 +281,12 @@ async function main(): Promise<void> {
             applicationBaseUrl: publicBaseUrl,
             publicBaseUrl,
             configuration: null,
+          }),
+          // No app-level config, like Linear: an operator pastes a token per connection.
+          createForgejoRegistration({
+            database,
+            auth,
+            applicationBaseUrl: publicBaseUrl,
           }),
         ];
   const providers = await providerRuntimeOptions(auth, registrations, {

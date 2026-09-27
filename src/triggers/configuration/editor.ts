@@ -13,6 +13,7 @@ import {
   eventDefinition,
   isEditorEvent,
   type EditorEvent,
+  type QualifierDefinition,
   type QualifierValues,
   type QualifierKey,
 } from "./events.js";
@@ -139,13 +140,19 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   );
   if (value.event === "schedule.tick") deleteIfPresent(document, ["on", value.event, "filters"]);
   const qualifiers = authoredQualifiers(value);
-  const ownedKeys = new Set(
-    [...eventDefinition(previousEvent).qualifiers, ...eventDefinition(value.event).qualifiers].map(
-      (qualifier) => qualifier.key,
-    ),
-  );
-  for (const key of ownedKeys) {
-    setOptional(document, ["on", value.event, "filters", key], qualifiers[key]);
+  const ownedDefinitions = new Map<QualifierKey, QualifierDefinition>();
+  for (const definition of [
+    ...eventDefinition(previousEvent).qualifiers,
+    ...eventDefinition(value.event).qualifiers,
+  ]) {
+    ownedDefinitions.set(definition.key, definition);
+  }
+  for (const [key, definition] of ownedDefinitions) {
+    setOptional(
+      document,
+      ["on", value.event, "filters", key],
+      qualifierDocumentValue(definition, qualifiers[key]),
+    );
   }
 
   setIfChanged(document, ["run", "target", "daemon"], value.daemon);
@@ -240,8 +247,19 @@ function formEventDefinition(value: TriggerFormValue): TriggerDocument["on"][str
   if (eventDefinition(value.event).origin === "hub") return {};
   return {
     connection: value.connection,
-    filters: { from_users: users(value.allowedUsers), ...authoredQualifiers(value) },
+    filters: { from_users: users(value.allowedUsers), ...documentQualifierFilters(value) },
   };
+}
+
+/** Same qualifier values `authoredQualifiers` collects, but shaped for the document: a
+ * `list` qualifier becomes `string[]`, matching what `TriggerFilterSchema` expects. */
+function documentQualifierFilters(value: TriggerFormValue): Record<string, string | string[]> {
+  const filters: Record<string, string | string[]> = {};
+  for (const qualifier of eventDefinition(value.event).qualifiers) {
+    const documentValue = qualifierDocumentValue(qualifier, value.qualifiers[qualifier.key]);
+    if (documentValue !== undefined) filters[qualifier.key] = documentValue;
+  }
+  return filters;
 }
 
 function recurrenceErrors(value: TriggerFormValue): TriggerFieldErrors {
@@ -459,7 +477,8 @@ function readQualifiers(
   const values: QualifierValues = {};
   for (const qualifier of eventDefinition(event).qualifiers) {
     const value = filters?.[qualifier.key];
-    if (value !== undefined) values[qualifier.key] = value;
+    if (value === undefined) continue;
+    values[qualifier.key] = Array.isArray(value) ? value.join(", ") : value;
   }
   return values;
 }
@@ -471,6 +490,18 @@ function authoredQualifiers(value: TriggerFormValue): QualifierValues {
     if (selection !== undefined) filters[qualifier.key] = selection.trim();
   }
   return filters;
+}
+
+/** A `list` qualifier's raw comma text becomes an array in the document, or is dropped
+ * entirely when blank, same as an absent `assignees`/`labels` filter meaning "any". */
+function qualifierDocumentValue(
+  definition: QualifierDefinition,
+  raw: string | undefined,
+): string | string[] | undefined {
+  if (raw === undefined) return undefined;
+  if (definition.list !== true) return raw.trim();
+  const values = commaSeparated(raw);
+  return values.length === 0 ? undefined : values;
 }
 
 function formContinuation(value: TriggerFormValue) {

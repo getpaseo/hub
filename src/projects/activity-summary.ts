@@ -1,21 +1,28 @@
 import { z } from "zod";
 import { reportFailure } from "../failures/index.js";
 import {
-  IssueCommentPayloadSchema,
-  IssuesPayloadSchema,
   NormalizedGitHubEventSchema,
   PullRequestReviewCommentPayloadSchema,
   PullRequestReviewPayloadSchema,
   PushPayloadSchema,
   readGitHubTriggerUrl,
 } from "../auth/github-events.js";
+import {
+  IssueCommentPayloadSchema,
+  IssuesPayloadSchema,
+} from "../triggers/forge/payload-schemas.js";
 import { NormalizedDiscordMessageEventSchema } from "../triggers/discord/events.js";
 import { NormalizedSlackMentionEventSchema } from "../triggers/slack/events.js";
 import { NormalizedLinearEventSchema } from "../triggers/linear/events.js";
 import { classifyGitHubEvent } from "../triggers/github/classification.js";
+import {
+  classifyForgejoEvent,
+  NormalizedForgejoEventSchema,
+  type ForgejoClassifiedEvent,
+} from "../triggers/forgejo/events.js";
 
 export interface TriggerSummary {
-  provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule";
+  provider: "github" | "forgejo" | "slack" | "discord" | "linear" | "manual" | "schedule";
   headline: string;
   actor: string | null;
   externalUrl: string | null;
@@ -33,6 +40,7 @@ const ManualTriggerPayloadSchema = z
 export function summarizeTrigger(source: string, payload: unknown): TriggerSummary {
   const [provider] = source.split(".");
   if (provider === "github") return summarizeGitHub(payload);
+  if (provider === "forgejo") return summarizeForgejo(payload);
   if (provider === "slack") return summarizeSlack(payload);
   if (provider === "discord") return summarizeDiscord(payload);
   if (provider === "linear") return summarizeLinear(payload);
@@ -144,6 +152,50 @@ function summarizePush(payload: unknown): GitHubHeadline {
     headline: `Push to ${branch}${count > 0 ? ` (${String(count)} commit${count === 1 ? "" : "s"})` : ""}`,
     actor: body.sender?.login ?? null,
   };
+}
+
+// builds off classifyForgejoEvent's item/actor instead of a per-type table like github's
+function summarizeForgejo(payload: unknown): TriggerSummary {
+  const event = NormalizedForgejoEventSchema.safeParse(payload);
+  if (!event.success) {
+    return { provider: "forgejo", headline: "Forgejo event", actor: null, externalUrl: null };
+  }
+  let classified: ForgejoClassifiedEvent;
+  try {
+    classified = classifyForgejoEvent(event.data);
+  } catch (error) {
+    reportFailure(error, {
+      operation: "project_activity.summarize",
+      component: "projects",
+      provider: "forgejo",
+    });
+    return {
+      provider: "forgejo",
+      headline: humanize(event.data.type),
+      actor: null,
+      externalUrl: null,
+    };
+  }
+  return {
+    provider: "forgejo",
+    headline: forgejoHeadline(event.data.type, classified),
+    actor: classified.actor.length === 0 ? null : classified.actor,
+    // not classified.item?.url, that's the issue/PR permalink not the comment's; forgejo's
+    // payload shape is close enough to github's that readGitHubTriggerUrl works unchanged
+    externalUrl: readGitHubTriggerUrl(event.data.payload) ?? null,
+  };
+}
+
+function forgejoHeadline(type: string, classified: ForgejoClassifiedEvent): string {
+  const item = classified.item;
+  if (item === null) return humanize(type);
+  // issue_comment fires for both an issue and a pull request comment, same as github's
+  if (type === "issue_comment") {
+    return item.number === null ? "Comment" : `Comment on #${String(item.number)}`;
+  }
+  const kind = item.type === "pull_request" ? "Pull request" : "Issue";
+  const numbered = item.number === null ? kind : `${kind} #${String(item.number)}`;
+  return item.title === null ? numbered : `${numbered}: ${item.title}`;
 }
 
 function summarizeSlack(payload: unknown): TriggerSummary {

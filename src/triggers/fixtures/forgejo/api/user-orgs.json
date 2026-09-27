@@ -1,0 +1,16 @@
+[
+  {
+    "id": 3,
+    "name": "acme",
+    "full_name": "",
+    "email": "",
+    "avatar_url": "https://git.example.test/avatars/53bce4f1dfa0fe8e7ca126f91b35d3a6",
+    "description": "",
+    "website": "",
+    "location": "",
+    "visibility": "public",
+    "repo_admin_change_team_access": false,
+    "created": "2026-09-27T17:41:01Z",
+    "username": "acme"
+  }
+]

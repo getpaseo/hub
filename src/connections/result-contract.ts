@@ -10,7 +10,7 @@ import { withReference } from "../failures/reference.js";
  * nobody mapped cannot leak through as raw text.
  */
 
-export const CONNECTION_PROVIDERS = ["github", "discord", "slack", "linear"] as const;
+export const CONNECTION_PROVIDERS = ["github", "discord", "slack", "linear", "forgejo"] as const;
 export type ConnectionProvider = (typeof CONNECTION_PROVIDERS)[number];
 
 export const connectionResultSchema = z.enum([
@@ -18,10 +18,12 @@ export const connectionResultSchema = z.enum([
   "discord_connected",
   "slack_connected",
   "linear_connected",
+  "forgejo_connected",
   "github_disconnected",
   "discord_disconnected",
   "slack_disconnected",
   "linear_disconnected",
+  "forgejo_disconnected",
   "github_cancelled",
   "discord_cancelled",
   "slack_cancelled",
@@ -112,6 +114,7 @@ const PROVIDER_NAMES: Readonly<Record<ConnectionProvider, string>> = {
   discord: "Discord",
   slack: "Slack",
   linear: "Linear",
+  forgejo: "Forgejo",
 };
 
 export function connectionProviderName(provider: ConnectionProvider): string {
@@ -141,10 +144,12 @@ const RETURN_COPY: Readonly<Record<ConnectionResult, (name: string) => Connectio
   discord_connected: connected,
   slack_connected: connected,
   linear_connected: connected,
+  forgejo_connected: connected,
   github_disconnected: disconnected,
   discord_disconnected: disconnected,
   slack_disconnected: disconnected,
   linear_disconnected: disconnected,
+  forgejo_disconnected: disconnected,
   github_cancelled: (name) => cancelled("Installation", name),
   slack_cancelled: (name) => cancelled("Installation", name),
   discord_cancelled: (name) => cancelled("Authorization", name),

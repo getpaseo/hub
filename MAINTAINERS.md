@@ -20,6 +20,25 @@ npm run test:e2e:browser
 npm run test:e2e:hub:source
 ```
 
+`npm test` needs a container runtime: the integration suites start throwaway PostgreSQL
+containers through Testcontainers. Docker works out of the box. Podman also works, with no
+setup, because `src/test-utils/global-setup.ts` asks a running `podman machine` where its
+socket is and exports `DOCKER_HOST` before the suite starts. Testcontainers only looks for
+sockets named `docker.sock`, and Podman's is not, so without that step every integration test
+fails with "Could not find a working container runtime strategy".
+
+Set `DOCKER_HOST` yourself and it is left untouched. If the whole integration set fails, check
+that the runtime is up (`podman machine start`) before looking at the code.
+
+The Forgejo trigger tests run against real captured deliveries in
+`src/triggers/fixtures/forgejo/`, not hand-written payloads. Re-capture them with
+`node scripts/capture-forgejo-fixtures.mjs` (also needs `podman machine` running) after
+bumping the pinned Forgejo image tag or when a fixture looks stale.
+
+A separate live end to end test drives a real Forgejo container instead of fixtures.
+It's opt-in and skipped by default: `RUN_FORGEJO_LIVE=1 npx vitest run
+src/triggers/forgejo/live.e2e.test.ts`.
+
 The source-built browser and Hub suites use the exact Paseo commit in `PASEO_E2E_COMMIT`.
 When a Hub change depends on a Paseo protocol or CLI change, update that immutable SHA and
 prove the combined contract before merging. Do not replace it with a branch or another mutable

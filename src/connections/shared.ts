@@ -100,11 +100,12 @@ export function connectionResult(
   );
 }
 
+// forgejo connects from a pasted token and never redirects, so never reaches here
 export async function cancelledConnectionResult(input: {
   auth: AuthServer;
   database: Database;
   request: Request;
-  provider: ConnectionProvider;
+  provider: "github" | "discord" | "slack" | "linear";
   phase:
     | "github_user_authorization"
     | "discord_authorization"
@@ -184,7 +185,7 @@ export function connectionCallbackFailure(input: {
 export function connectionActionFailure(
   error: unknown,
   provider: ConnectionProvider,
-  action: "start" | "disconnect",
+  action: "start" | "create" | "disconnect" | "orgs" | "subscribe" | "replaceToken",
 ): Response {
   const accessDenied =
     error instanceof ConnectionAccessDeniedError || error instanceof ProductRequestError;

@@ -1,0 +1,24 @@
+[
+  {
+    "id": 9001,
+    "body": "this loop never terminates on an empty slice",
+    "user": {
+      "id": 1,
+      "login": "trillian",
+      "username": "trillian"
+    },
+    "resolver": null,
+    "pull_request_review_id": 501,
+    "created_at": "2026-09-25T12:04:40Z",
+    "updated_at": "2026-09-25T12:04:40Z",
+    "path": "src/widget.ts",
+    "commit_id": "c0ffee0000000000000000000000000000000001",
+    "original_commit_id": "c0ffee0000000000000000000000000000000001",
+    "diff_hunk": "@@ -1,3 +1,3 @@\n-old\n+new",
+    "position": 3,
+    "original_position": 0,
+    "extra_lines_count": 0,
+    "html_url": "https://git.example.test/acme/widgets/pulls/2/files#issuecomment-9001",
+    "pull_request_url": "https://git.example.test/api/v1/repos/acme/widgets/pulls/2"
+  }
+]
