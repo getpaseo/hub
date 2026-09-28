@@ -69,7 +69,11 @@ describe("public manual-run project resolution", () => {
       slug: "default",
       createdByUserId: null,
     });
-    const trigger = await new OrganizationTriggerStore(database, "org").save({
+    const trigger = await new OrganizationTriggerStore(
+      database,
+      "org",
+      acceptingAgentValidator(),
+    ).save({
       yaml: triggerYaml(true),
       userId: null,
     });
