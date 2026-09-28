@@ -1334,6 +1334,10 @@ class DispatchConnection implements DaemonConnection {
   async refreshProviderSnapshot(): Promise<never> {
     throw new Error("not used");
   }
+
+  async validateAgentConfiguration(): Promise<never> {
+    throw new Error("not used");
+  }
 }
 
 function createLifecycle(
