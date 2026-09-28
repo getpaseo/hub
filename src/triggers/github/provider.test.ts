@@ -30,6 +30,7 @@ describe("GitHub Phase 1 trigger provider", () => {
       const provider = createGitHubTriggerProvider({
         configurationStoreForProject: () => store,
         reactions,
+        teamMemberships: new TestTeamMemberships(),
         billingUrlForOrganization: async () => "https://hub.paseo.sh/o/acme/settings/billing",
         comments: {
           createIssueComment: async (input) => {
