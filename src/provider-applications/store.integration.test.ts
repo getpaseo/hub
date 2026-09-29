@@ -117,6 +117,38 @@ async function exercisePersistence(bundle: DatabaseRuntimeBundle) {
     updatedByUserId: "operator",
   });
   assert.equal(rotated.version, 2);
+
+  await bundle.runtime.query(
+    `insert into session (id, token, user_id, expires_at)
+     values ('manifest-session', 'manifest-session-token', 'operator', now() + interval '1 hour')`,
+  );
+  await store.startGitHubManifestAttempt({
+    stateVerifier: "manifest-state",
+    userId: "operator",
+    sessionId: "manifest-session",
+    surface: "apps",
+    callbackOrigin: "https://hub.test",
+    expectedConfigurationVersion: 2,
+  });
+  assert.deepEqual(
+    await store.consumeGitHubManifestAttempt({
+      stateVerifier: "manifest-state",
+      userId: "operator",
+      sessionId: "manifest-session",
+    }),
+    {
+      surface: "apps",
+      callbackOrigin: "https://hub.test",
+      expectedConfigurationVersion: 2,
+    },
+  );
+  await assert.rejects(() =>
+    store.consumeGitHubManifestAttempt({
+      stateVerifier: "manifest-state",
+      userId: "operator",
+      sessionId: "manifest-session",
+    }),
+  );
 }
 
 async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {

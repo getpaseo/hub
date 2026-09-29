@@ -1,11 +1,22 @@
+import { newConnectionState, stateHash } from "../connections/shared.js";
+import { connectionResult } from "../connections/shared.js";
 import type { AccountAccessValue } from "../auth/organization-access.js";
 import type { BindLinearConnectionInput, BindSlackConnectionInput } from "../db/types.js";
 import type { LinearInstallation } from "../providers/linear/client.js";
 import type { SlackSocketInstallationVerifier } from "../providers/slack/installation.js";
 import type { SlackDeliveryStatus } from "../triggers/slack/source/index.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
-import { parseProviderApplicationConfiguration } from "./internal/store.js";
+import {
+  GitHubManifestAttemptUnavailableError,
+  parseProviderApplicationConfiguration,
+} from "./internal/store.js";
 import { reportFailure } from "../failures/index.js";
+import {
+  createGitHubAppManifest,
+  githubManifestRegistrationAction,
+  type GitHubManifestClient,
+  type GitHubManifestRegistration,
+} from "./github-manifest.js";
 
 export const PROVIDERS = ["github", "slack", "discord", "linear"] as const;
 export type Provider = (typeof PROVIDERS)[number];
@@ -116,6 +127,23 @@ export interface ProviderApplicationStore {
     installation: LinearInstallation;
     binding: BindLinearConnectionInput;
   }): Promise<void>;
+  startGitHubManifestAttempt(input: {
+    stateVerifier: string;
+    userId: string;
+    sessionId: string;
+    surface: ProviderApplicationSurface;
+    callbackOrigin: string;
+    expectedConfigurationVersion: number | undefined;
+  }): Promise<void>;
+  consumeGitHubManifestAttempt(input: {
+    stateVerifier: string;
+    userId: string;
+    sessionId: string;
+  }): Promise<{
+    surface: ProviderApplicationSurface;
+    callbackOrigin: string;
+    expectedConfigurationVersion: number | undefined;
+  }>;
 }
 
 export interface ProviderRuntimeCandidate {
@@ -339,6 +367,11 @@ export interface ProviderApplications {
     organizationId: string,
     surface?: ProviderApplicationSurface,
   ): Promise<{ url: string }>;
+  beginGitHubManifestRegistration(
+    request: Request,
+    input: { organization?: string; surface?: ProviderApplicationSurface },
+  ): Promise<GitHubManifestRegistration>;
+  completeGitHubManifestRegistration(request: Request): Promise<Response>;
   configureSlackSocket(
     request: Request,
     input: { appToken: string; botToken: string; expectedVersion?: number },
@@ -365,6 +398,7 @@ interface ProviderApplicationsOptions {
   ) => Promise<{ url: string }>;
   slackSocketVerifier?: SlackSocketInstallationVerifier;
   slackDelivery?: { status(): SlackDeliveryStatus; retry(): Promise<void> };
+  githubManifest: GitHubManifestClient;
 }
 
 export function createProviderApplications(
@@ -504,6 +538,111 @@ export function createProviderApplications(
           throw new ProviderApplicationError("internal", undefined, { cause: error });
         }
       });
+    },
+    async beginGitHubManifestRegistration(request, input) {
+      rejectMutation(options, request);
+      const account = await requireOperator(options, request);
+      const callbackOrigin = await safeCallbackOrigin(options, request);
+      if (options.environment.github !== undefined) {
+        throw new ProviderApplicationError("managedByEnvironment");
+      }
+      if (
+        input.organization !== undefined &&
+        !/^[a-z\d](?:[a-z\d-]{0,37})?$/iu.test(input.organization)
+      ) {
+        throw new ProviderApplicationError("invalidInput");
+      }
+      return serialize(queues, "github", async () => {
+        const current = await options.store.read("github");
+        const expectedConfigurationVersion = current?.version;
+        const state = newConnectionState();
+        await options.store.startGitHubManifestAttempt({
+          stateVerifier: stateHash(state),
+          userId: account.account.id,
+          sessionId: account.session.id,
+          surface: input.surface ?? "apps",
+          callbackOrigin,
+          expectedConfigurationVersion,
+        });
+        return {
+          action: githubManifestRegistrationAction(input.organization),
+          state,
+          manifest: createGitHubAppManifest(callbackOrigin),
+        };
+      });
+    },
+    async completeGitHubManifestRegistration(request) {
+      const fallback = new URL("/apps", request.url).toString();
+      const url = new URL(request.url);
+      const state = url.searchParams.get("state");
+      const code = url.searchParams.get("code");
+      if (state === null || code === null) {
+        return connectionResult(fallback, "/apps", "connection_invalid", "github");
+      }
+      let credentials: readonly string[] = [code];
+      try {
+        const account = await requireOperator(options, request);
+        const attempt = await options.store.consumeGitHubManifestAttempt({
+          stateVerifier: stateHash(state),
+          userId: account.account.id,
+          sessionId: account.session.id,
+        });
+        const converted = await options.githubManifest.convert(code);
+        credentials = [
+          code,
+          converted.clientSecret,
+          converted.privateKey,
+          ...(converted.webhookSecret === undefined ? [] : [converted.webhookSecret]),
+        ];
+        await serialize(queues, "github", () =>
+          verifyAndActivateProvider(
+            options,
+            account,
+            "github",
+            {
+              provider: "github",
+              appId: converted.appId,
+              appSlug: converted.appSlug,
+              clientId: converted.clientId,
+              clientSecret: converted.clientSecret,
+              privateKey: converted.privateKey,
+              ...(converted.webhookSecret === undefined
+                ? {}
+                : { webhookSecret: converted.webhookSecret }),
+              ...(attempt.expectedConfigurationVersion === undefined
+                ? {}
+                : { expectedVersion: attempt.expectedConfigurationVersion }),
+            },
+            attempt.callbackOrigin,
+          ),
+        );
+        return connectionResult(
+          attempt.callbackOrigin,
+          providerApplicationReturnRoute(attempt.surface),
+          "github_app_created",
+          "github",
+        );
+      } catch (error) {
+        if (error instanceof GitHubManifestAttemptUnavailableError) {
+          return connectionResult(fallback, "/apps", "connection_invalid", "github");
+        }
+        const report = reportFailure(
+          error,
+          {
+            operation: "provider_application.github_manifest.complete",
+            component: "provider_applications",
+            provider: "github",
+          },
+          { scrubValues: credentials },
+        );
+        return connectionResult(
+          fallback,
+          "/apps",
+          "connection_unavailable",
+          "github",
+          report.requestId,
+        );
+      }
     },
     async configureSlackSocket(request, input) {
       rejectMutation(options, request);
@@ -836,6 +975,7 @@ async function startupIdentity(
     if (stored === undefined) throw new Error("stored provider application unavailable");
     return stored.identity;
   }
+
   if (provider === "slack" && environmentConfiguration.provider === "slack") {
     return { provider: "slack", id: environmentConfiguration.appId, name: "Slack app" };
   }

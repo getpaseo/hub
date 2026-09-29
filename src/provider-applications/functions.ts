@@ -9,11 +9,16 @@ import {
   type ProviderApplicationOverview,
   type ProviderApplicationSaveResult,
 } from "./index.js";
+import type { GitHubManifestRegistration } from "./github-manifest.js";
 import { providerApplicationSaveFailure, providerHost, providerName } from "./save-failure.js";
 
 const providerSchema = z.enum(["github", "slack", "discord", "linear"]);
 const surfaceSchema = z.enum(["appSetup", "apps"]).optional();
 const expectedVersionSchema = z.number().int().positive().optional();
+const githubManifestSchema = z.object({
+  organization: z.string().trim().min(1).optional(),
+  surface: surfaceSchema,
+});
 const configurationSchema = z.discriminatedUnion("provider", [
   z.object({
     provider: z.literal("github"),
@@ -106,6 +111,42 @@ export const verifyAndSaveProviderApplication = createServerFn({ method: "POST" 
         data.provider,
         error,
         sensitiveConfigurationValues(data),
+      );
+    }
+  });
+
+export const beginGitHubManifestRegistration = createServerFn({ method: "POST" })
+  .validator(githubManifestSchema)
+  .handler(async ({ data }): Promise<Result<GitHubManifestRegistration>> => {
+    try {
+      const capability = (await getApplication()).providerApplications;
+      if (capability === null) throw new Error("unavailable");
+      return respondOk(
+        await capability.beginGitHubManifestRegistration(getRequest(), {
+          ...(data.organization === undefined ? {} : { organization: data.organization }),
+          ...(data.surface === undefined ? {} : { surface: data.surface }),
+        }),
+      );
+    } catch (error) {
+      return respondWithFailure(
+        error,
+        {
+          operation: "provider_application.github_manifest.begin",
+          component: "provider_applications",
+          provider: "github",
+        },
+        {
+          fallback: "Hub couldn't start GitHub App creation. Nothing was saved. Try again.",
+          forbidden: "Only an instance operator can create a GitHub App.",
+          authentication: "Your session has expired. Sign in again, then create the GitHub App.",
+          validation:
+            "Hub couldn't confirm this address, so GitHub App creation was refused. Reopen Hub at its usual address, then try again.",
+          conflict:
+            "GitHub App setup changed while this was starting. Reload the page, then try again.",
+          network: "Hub couldn't start GitHub App creation. Check your connection, then try again.",
+          timeout: "GitHub App creation took too long to start. Try again.",
+          upstreamUnavailable: "GitHub App creation is unavailable. Try again later.",
+        },
       );
     }
   });
