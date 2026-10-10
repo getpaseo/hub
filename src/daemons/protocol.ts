@@ -21,6 +21,7 @@ export interface DaemonCreateAgentOptions {
   env: Record<string, string>;
   mcpServers?: Record<string, McpHttpServerConfig>;
   worktree?: WorktreeTarget;
+  workspaceId?: string;
 }
 
 export interface McpToolRef {
@@ -75,6 +76,7 @@ export type AgentValidationVerdict =
 
 export interface DaemonConnection {
   agents: import("./agents/index.js").AgentConnection;
+  agentControl?: import("./agents/control.js").AgentControlConnection;
   getProviderSnapshot(options: { cwd?: string }): Promise<HubProviderSnapshot>;
   refreshProviderSnapshot(options: { cwd?: string; providers?: string[] }): Promise<void>;
   /** The daemon's own answer about whether it can run this agent as configured. */

@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { DatabaseRuntime, QueryHandle, QueryRow } from "../db/runtime/index.js";
-import { API_KEY_SCOPES, type ApiKeyScope } from "./api-key-contract.js";
+import { CLI_OPERATION_SCOPES, type ApiKeyScope } from "./api-key-contract.js";
 import type { OperationAuthorizationResult } from "./api-keys.js";
 
 export const CLI_CREDENTIAL_PREFIX = "paseo_cli_";
@@ -19,7 +19,7 @@ export class OrganizationCliCredentials {
 
   async authorize(
     request: Request,
-    _requiredScope: ApiKeyScope,
+    requiredScope: ApiKeyScope,
   ): Promise<OperationAuthorizationResult> {
     const token = bearerToken(request.headers.get("authorization"));
     const parsed = token === undefined ? undefined : parseCliCredential(token);
@@ -44,13 +44,17 @@ export class OrganizationCliCredentials {
       [row.id],
     );
     if (used.rowCount !== 1) return { status: "unauthorized" };
+    // New daemon-control authority requires an explicitly scoped API key.
+    // Existing CLI approvals keep the operations the operator approved.
+    if (!CLI_OPERATION_SCOPES.some((scope) => scope === requiredScope))
+      return { status: "forbidden" };
     return {
       status: "authorized",
       access: {
         kind: "cliCredential",
         credentialId: row.id,
         organizationId: row.organization_id,
-        scopes: API_KEY_SCOPES,
+        scopes: CLI_OPERATION_SCOPES,
       },
     };
   }

@@ -44,10 +44,11 @@ interface AgentValidationIssue {
   path: readonly (string | number)[];
   message: string;
 }
-type PendingRequest =
+type PendingRequest = (
   | PendingAgentValidationRequest
   | PendingProviderSnapshotRequest
-  | PendingProviderRefreshRequest;
+  | PendingProviderRefreshRequest
+) & { timeout?: ReturnType<typeof setTimeout> };
 interface ActiveSocket {
   agents: DaemonAgents;
   generation: number;
@@ -162,6 +163,7 @@ export class ActiveDaemonRegistry {
     if (!active?.ready || !active.daemon.permissions.includes("hub.execute")) return undefined;
     return {
       agents: this.active.get(daemonId)!.agents,
+      agentControl: active.agents,
       getProviderSnapshot: (options) => this.getProviderSnapshot(daemonId, options),
       refreshProviderSnapshot: (options) => this.refreshProviderSnapshot(daemonId, options),
       validateAgentConfiguration: (agent) => this.validateAgentConfiguration(daemonId, agent),
@@ -188,7 +190,7 @@ export class ActiveDaemonRegistry {
       providerOptions: agent.options,
     });
     return new Promise((resolve, reject) => {
-      this.pendingFor(daemonId).set(requestId, {
+      this.addPending(daemonId, requestId, {
         kind: "agent-validation",
         generation: active.generation,
         resolve,
@@ -224,7 +226,10 @@ export class ActiveDaemonRegistry {
     await Promise.all(sockets);
     await Promise.all(this.presenceWrites);
     for (const [daemonId, pending] of this.pendingByDaemon) {
-      for (const request of pending.values()) request.reject(new Error("daemon disconnected"));
+      for (const request of pending.values()) {
+        clearTimeout(request.timeout);
+        request.reject(new Error("daemon disconnected"));
+      }
       this.pendingByDaemon.delete(daemonId);
     }
   }
@@ -241,7 +246,7 @@ export class ActiveDaemonRegistry {
       cwd: options.cwd,
     });
     return new Promise((resolve, reject) => {
-      this.pendingFor(daemonId).set(requestId, {
+      this.addPending(daemonId, requestId, {
         kind: "provider-snapshot",
         generation: active.generation,
         resolve,
@@ -264,7 +269,7 @@ export class ActiveDaemonRegistry {
       providers: options.providers,
     });
     return new Promise((resolve, reject) => {
-      this.pendingFor(daemonId).set(requestId, {
+      this.addPending(daemonId, requestId, {
         kind: "provider-refresh",
         generation: active.generation,
         resolve,
@@ -397,6 +402,7 @@ export class ActiveDaemonRegistry {
       return;
     }
     requests.delete(response.payload.requestId);
+    clearTimeout(pending.timeout);
     if (response.payload.error !== null) {
       pending.reject(new Error(response.payload.error));
       return;
@@ -420,6 +426,7 @@ export class ActiveDaemonRegistry {
       return;
     }
     requests.delete(response.payload.requestId);
+    clearTimeout(pending.timeout);
     pending.resolve(response.payload);
   }
 
@@ -437,6 +444,7 @@ export class ActiveDaemonRegistry {
       return;
     }
     requests.delete(response.payload.requestId);
+    clearTimeout(pending.timeout);
     if (!response.payload.acknowledged) {
       pending.reject(new Error("daemon provider refresh was not acknowledged"));
       return;
@@ -452,7 +460,17 @@ export class ActiveDaemonRegistry {
     const pending = requests.get(payload.requestId);
     if (pending?.generation !== active.generation) return;
     requests.delete(payload.requestId);
+    clearTimeout(pending.timeout);
     pending.reject(new Error(payload.error));
+  }
+
+  private addPending(daemonId: string, requestId: string, pending: PendingRequest): void {
+    const requests = this.pendingFor(daemonId);
+    pending.timeout = setTimeout(() => {
+      requests.delete(requestId);
+      pending.reject(new Error("daemon request timed out"));
+    }, 30_000);
+    requests.set(requestId, pending);
   }
 
   private pendingFor(daemonId: string): Map<string, PendingRequest> {
@@ -468,6 +486,7 @@ export class ActiveDaemonRegistry {
     for (const [requestId, request] of pending) {
       if (request.generation !== generation) continue;
       pending.delete(requestId);
+      clearTimeout(request.timeout);
       request.reject(new Error("daemon disconnected"));
     }
   }

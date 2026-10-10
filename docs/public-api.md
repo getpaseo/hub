@@ -17,11 +17,32 @@ CLI login starts anonymously at `POST /api/v1/cli-authorizations` and polls at `
 
 The canonical, executable operation and schema reference is served by each Hub instance at `/api/reference`; its OpenAPI 3.1 document is `/api/openapi.json`. There are no unversioned operator aliases.
 
-Every canonical `/api/v1` response, including unknown paths and wrong methods, uses RFC 9457 `application/problem+json` on failure and includes `X-Request-ID`; callers may supply that header to correlate a request. Wrong methods return `405` with `Allow`, while unknown paths return `404`. Every `401` response also includes `WWW-Authenticate: Bearer`.
+Every canonical REST `/api/v1` response, including unknown paths and wrong methods, uses RFC 9457 `application/problem+json` on failure and includes `X-Request-ID`; callers may supply that header to correlate a request. Wrong methods return `405` with `Allow`, while unknown paths return `404`. Every `401` response also includes `WWW-Authenticate: Bearer`.
 
 Configuration YAML may include an optional top-level `name` slug as deployment metadata. An explicit request `projectSlug` (including the CLI's `--project`/`-p` option) is authoritative. Otherwise Hub resolves or creates the named project in the authenticated organization; without either field, it resolves or restores that organization's `default` project. Changing `name` targets a different project and leaves the old project's history intact.
 
 Configuration validation and installation accept the same YAML, optional `projectSlug`, and prompt-partial bundle. Both use the same parser, compiler, project selection, daemon/provider resolution, and business validation. Validation returns the resolved `projectSlug` and `wouldCreateProject` without creating a project, recording a revision, or changing active configuration. Installation silently creates a missing bundle-named or default project, then records and activates the revision.
+
+## Organization MCP
+
+`/api/v1/mcp` accepts organization API keys and CLI credentials over Streamable HTTP.
+It exposes ordinary daemon agent control, discovery, persisted status/timeline polling, and
+manual workflow dispatch. Agent read and control use separate `agents:read` and `agents:control`
+scopes. Dispatch and project discovery keep their existing scopes. The daemon must belong to
+the credential's organization and explicitly grant `hub.execute`. Execution completion tokens
+cannot authenticate here. Existing CLI credentials retain project discovery and manual dispatch;
+agent control requires an API key with the new scopes selected explicitly.
+
+Provider permission mode is explicit on creation. New agents use isolated managed worktrees
+unless the caller selects a directory or existing workspace. Turn completion does not archive
+agents or delete worktrees. Agent archival and destructive workspace cleanup are separate tools.
+Creation and message receipt identities are namespaced by organization; retries reuse the same
+key and arguments. This endpoint is stateless, with bounded polling of daemon-owned timelines.
+It does not advertise live notifications or MCP Tasks.
+
+MCP protocol failures follow the MCP transport's JSON-RPC contract. Authentication failures
+use problem details. The OpenAPI document describes the REST operations; MCP tool discovery
+describes this endpoint's tools. Public usage lives in `getpaseo/paseo` under `public-docs/hub/mcp.md`.
 
 ## Workflow MCP tools
 
