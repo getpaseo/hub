@@ -6,6 +6,15 @@ import {
 } from "../../hub/protocol.js";
 import type { DaemonCreateAgentOptions, DaemonAgentStreamEvent } from "../protocol.js";
 import { DaemonResponseLostError } from "../protocol.js";
+import {
+  AgentDetailsSchema,
+  AgentDirectorySchema,
+  WorkspaceDirectorySchema,
+  AgentActivitySchema,
+  type AgentControlConnection,
+  type DirectoryPage,
+  type ActivityQuery,
+} from "./control.js";
 
 const SnapshotSchema = z.object({
   id: z.string(),
@@ -44,7 +53,7 @@ const ResultSchema = z
 export class DaemonAgentError extends Error {}
 
 /** The ordinary daemon protocol. This channel knows nothing about Hub executions or triggers. */
-export class DaemonAgents implements AgentConnection {
+export class DaemonAgents implements AgentConnection, AgentControlConnection {
   private supported = false;
   private readonly pending = new Map<
     string,
@@ -132,6 +141,7 @@ export class DaemonAgents implements AgentConnection {
         },
         env: options.env,
         worktree: options.worktree,
+        workspaceId: options.workspaceId,
       },
       timeoutMs,
     );
@@ -195,6 +205,55 @@ export class DaemonAgents implements AgentConnection {
         ? { type: "archive_workspace_request", workspaceId }
         : { type: "cancel_agent_request", agentId },
     );
+  }
+  async details(agentId: string) {
+    const response = await this.request({ type: "fetch_agent_request", agentId });
+    if (response["agent"] === null) throw new DaemonAgentError("Agent not found");
+    return AgentDetailsSchema.parse(response["agent"]);
+  }
+  async directory(page: DirectoryPage, includeArchived: boolean) {
+    return AgentDirectorySchema.parse(
+      await this.request({
+        type: "fetch_agents_request",
+        page,
+        filter: { includeArchived },
+      }),
+    );
+  }
+  async workspaces(page: DirectoryPage) {
+    return WorkspaceDirectorySchema.parse(
+      await this.request({ type: "fetch_workspaces_request", page }),
+    );
+  }
+  async activity(agentId: string, query: ActivityQuery) {
+    return AgentActivitySchema.parse(
+      await this.request({
+        type: "fetch_agent_timeline_request",
+        agentId,
+        ...query,
+        projection: "projected",
+      }),
+    );
+  }
+  async message(
+    agentId: string,
+    messageId: string,
+    text: string,
+    activeTurnBehavior: "steer" | "interrupt",
+  ) {
+    await this.request({
+      type: "send_agent_message_request",
+      agentId,
+      messageId,
+      text,
+      activeTurnBehavior,
+    });
+  }
+  async archiveAgent(agentId: string) {
+    await this.request({ type: "archive_agent_request", agentId });
+  }
+  async archiveWorkspace(workspaceId: string) {
+    await this.request({ type: "archive_workspace_request", workspaceId });
   }
   async watch(agentId: string, listener: (event: AgentEvent) => void): Promise<() => void> {
     const listeners = this.listeners.get(agentId) ?? new Set();

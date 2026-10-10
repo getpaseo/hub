@@ -48,6 +48,7 @@ import { DaemonRegistration } from "./daemons/registration.js";
 import { CliAuthorizations } from "./cli-authorizations/index.js";
 import type { BrowserOrganizationAccess } from "./auth/browser-organization-access.js";
 import { createPublicApi, type PublicApi, type PublicApiComposition } from "./public-api/index.js";
+import { createHubMcp } from "./hub-mcp/index.js";
 import { createPublicOperations } from "./public-operations/index.js";
 import { createDatabasePublicOperationRepository } from "./public-operations/database-adapter.js";
 import type { EntitlementsService } from "./entitlements/service.js";
@@ -275,7 +276,16 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
     storeForProject,
     agentValidator,
   );
-  const publicApi = createPublicApi(options.publicApi, publicOperations);
+  const publicApi = createPublicApi(
+    options.publicApi,
+    publicOperations,
+    createHubMcp({
+      composition: options.publicApi,
+      database: options.database,
+      connectionForDaemon,
+      operations: publicOperations,
+    }),
+  );
   const operations: HubOperations = {
     handleDaemonEnrollment: (request) =>
       options.database === null

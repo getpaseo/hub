@@ -65,6 +65,7 @@ export type PublicApiComposition =
 export function createPublicApi(
   composition: PublicApiComposition,
   operations: PublicOperations | null,
+  mcp?: { handle(request: Request): Promise<Response> },
 ): PublicApi {
   if (composition.status === "enabled" && operations === null) {
     throw new Error("enabled public API requires application operations");
@@ -72,6 +73,7 @@ export function createPublicApi(
   return {
     handle(request) {
       const url = new URL(request.url);
+      if (url.pathname === "/api/v1/mcp" && mcp !== undefined) return mcp.handle(request);
       const requestId = request.headers.get("x-request-id")?.trim() || randomUUID();
       const pathRoutes = publicOperationManifest.filter((route) => route.path === url.pathname);
       if (pathRoutes.length === 0) {

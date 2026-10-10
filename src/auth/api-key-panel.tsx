@@ -65,6 +65,16 @@ const REVOKE_FAILURE =
 
 const SCOPE_OPTIONS = [
   {
+    value: "agents:read",
+    label: "Read agents",
+    description: "List eligible daemons, workspaces, providers, and agent activity through MCP.",
+  },
+  {
+    value: "agents:control",
+    label: "Control agents",
+    description: "Create, message, interrupt, and archive agents and workspaces through MCP.",
+  },
+  {
     value: "projects:read",
     label: "List projects",
     description: "List active projects in the organization.",

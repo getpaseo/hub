@@ -68,6 +68,45 @@ test("groups organization administration under one Settings entry", async ({ hub
   });
 });
 
+test("creates an MCP key with separate agent scopes", async ({ hub, page }) => {
+  await hub.signUpAs("owner", owner);
+  await hub.createOrganization("owner", "Acme");
+  await projectApp(page).navigation.openOrganizationSettings("API keys");
+  await page.getByRole("button", { name: "Create API key" }).click();
+  const dialog = page.getByRole("dialog");
+  const form = dialog.getByRole("form", { name: "Create API key" });
+  await form.getByLabel("Name", { exact: true }).fill("Chief of staff");
+  await form.getByRole("checkbox", { name: /^Read agents/u }).check();
+  await form.getByRole("checkbox", { name: /^Control agents/u }).check();
+  await page.screenshot({ path: `${SHOTS}/mcp-key-desktop.png`, fullPage: true });
+  await page.setViewportSize({ width: 393, height: 851 });
+  await expect(form.getByRole("checkbox", { name: /^Read agents/u })).toBeVisible();
+  await expect(form.getByRole("checkbox", { name: /^Control agents/u })).toBeVisible();
+  await page.screenshot({ path: `${SHOTS}/mcp-key-mobile.png`, fullPage: true });
+  await form.getByRole("button", { name: "Create API key" }).click();
+  const secret = await dialog.getByLabel("Generated API key").inputValue();
+  const response = await page.request.post(new URL("/api/v1/mcp", page.url()).href, {
+    headers: { authorization: `Bearer ${secret}`, accept: "application/json, text/event-stream" },
+    data: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+  });
+  expect(response.status()).toBe(200);
+  const body: unknown = await response.json();
+  expect(body).toMatchObject({
+    result: {
+      tools: expect.arrayContaining([
+        expect.objectContaining({ name: "get_agent" }),
+        expect.objectContaining({ name: "create_agent" }),
+      ]),
+    },
+  });
+  await dialog.getByRole("button", { name: "Done" }).click();
+  const row = page
+    .getByRole("table", { name: "API keys" })
+    .getByRole("row")
+    .filter({ hasText: "Chief of staff" });
+  await expect(row).toContainText("Read agents, Control agents");
+});
+
 test.describe("instance scope", () => {
   /**
    * The instance is not a tenant: `is_instance_operator` belongs to the user, so no place in the

@@ -226,6 +226,23 @@ describe("daemon socket generations", () => {
     ]);
   });
 
+  it("times out an unanswered provider request and keeps the connection usable", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const pending = await daemon.pendingProviderSnapshot();
+      const rejected = assert.rejects(pending.promise, /daemon request timed out/u);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await rejected;
+      assert.equal(vi.getTimerCount(), 0);
+      const next = await daemon.pendingProviderSnapshot();
+      daemon.respondProviderSnapshot(next);
+      assert.equal((await next.promise).entries[0]?.provider, "codex");
+      assert.equal(vi.getTimerCount(), 0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("waits for offline presence before shutdown completes", async () => {
     daemon.holdOfflinePresence();
 
