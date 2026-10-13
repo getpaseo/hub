@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseRuntime, QueryHandle, QueryRow } from "../../../db/runtime/index.js";
 import { acceptWorkflowRun } from "../../../db/workflow-intake.js";
 import { parseCompiledHubConfig } from "../../../config/compiler.js";
+import { defaultInputs } from "../../invocation.js";
 import { RecurrenceSchema, nextOccurrence, type Recurrence } from "../recurrence.js";
 import type { ScheduleStore } from "../index.js";
 
@@ -132,7 +133,7 @@ async function enqueueOccurrence(
     providerEventReceiptId: receiptId,
     configuredTriggerName: trigger.name,
     prompt: "",
-    inputs: {},
+    inputs: defaultInputs(trigger.inputs),
     triggerContext: context,
     outputContext: { provider: "schedule" },
     conversation: null,

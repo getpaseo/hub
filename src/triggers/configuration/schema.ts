@@ -141,11 +141,13 @@ export const TriggerDocumentSchema = z
             message: "Schedule requires recurrence and does not accept connection or filters.",
           });
         }
-        if (Object.keys(trigger.on).length !== 1 || trigger.inputs !== undefined) {
+        // A tick supplies no inputs; it runs with the declared defaults.
+        for (const [name, input] of Object.entries(trigger.inputs ?? {})) {
+          if (input.required !== true) continue;
           context.addIssue({
             code: "custom",
-            path: ["on", event],
-            message: "A schedule must be the only event and cannot require invocation inputs.",
+            path: ["inputs", name],
+            message: "A trigger with a schedule cannot require an input; give it a default.",
           });
         }
       } else if (definition.recurrence !== undefined) {

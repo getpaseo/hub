@@ -18,6 +18,15 @@ function reportsMissingEvent(error: unknown): boolean {
   );
 }
 
+function reportsScheduledRequiredInput(error: unknown): boolean {
+  return (
+    error instanceof TriggerDocumentError &&
+    error.issues.some(
+      ({ path, message }) => path.join(".") === "inputs.focus" && /schedule/u.test(message),
+    )
+  );
+}
+
 function reportsEmptyTitle(error: unknown): boolean {
   return (
     error instanceof TriggerDocumentError &&
@@ -195,6 +204,31 @@ run:
   prompt: run
 `),
       reportsMissingEvent,
+    );
+  });
+
+  it("refuses a schedule beside an input that a tick cannot supply", () => {
+    const scheduled = (input: string) => `
+name: watch
+inputs:
+  focus: ${input}
+on:
+  schedule.tick:
+    recurrence: { start: "2026-01-01T09:00:00", rule: "FREQ=DAILY", timezone: UTC }
+  manual.run: {}
+run:
+  target: { daemon: local, cwd: /workspace }
+  agent: { provider: codex }
+  prompt: run
+`;
+    assert.equal(
+      Object.keys(parseTriggerDocument(scheduled("{ type: string, default: everything }")).on)
+        .length,
+      2,
+    );
+    assert.throws(
+      () => parseTriggerDocument(scheduled("{ type: string, required: true }")),
+      reportsScheduledRequiredInput,
     );
   });
 });

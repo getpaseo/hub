@@ -18,6 +18,7 @@ import { DurableWorkflowEngine } from "../../workflows/engine.js";
 import { createUnlimitedEntitlementsService } from "../../entitlements/test-utils.js";
 import { scheduleYaml } from "./test-fixture.js";
 import { createScheduleProvider } from "./index.js";
+import { DispatchedManualRunSchema } from "../../public-api/contracts.js";
 
 let postgres: StartedPostgreSqlContainer;
 beforeAll(async () => {
@@ -318,6 +319,72 @@ it("validates, installs, exports and edits scheduled YAML through the existing p
     });
     expect(await fixture.store.list()).toHaveLength(1);
     expect(await fixture.database.schedules.tick(await fixture.due())).toBe(1);
+  } finally {
+    await application.hub.stop();
+    await fixture.close();
+  }
+});
+
+it("runs one trigger from its schedule and from a manual dispatch by the trigger's name", async () => {
+  const fixture = await setup("embedded");
+  const application = createHubApplication({
+    database: fixture.database,
+    entitlements: createUnlimitedEntitlementsService(),
+    daemonConnectionForId: (id) => (id === fixture.daemonId ? new ScheduleTestDaemon() : undefined),
+    publicApi: {
+      status: "enabled",
+      authenticator: {
+        async authorize() {
+          return {
+            status: "authorized",
+            access: {
+              kind: "apiKey",
+              credentialId: randomUUID(),
+              organizationId: "schedule-org",
+              scopes: ["configuration:install", "runs:dispatch"],
+            },
+          };
+        },
+      },
+    },
+  });
+  const post = (path: string, body: unknown) =>
+    application.publicApi.handle(
+      new Request(`http://schedule.test/api/v1/${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    );
+  const yaml = scheduleYaml
+    .replace("on:\n", "inputs:\n  focus: { type: string, default: everything }\non:\n")
+    .replace("run:\n", "  manual.run: {}\nrun:\n");
+  try {
+    expect((await post("triggers/install", { yaml })).status).toBe(201);
+
+    expect(await fixture.database.schedules.tick(await fixture.due())).toBe(1);
+    const [tick] = await fixture.receipts();
+    expect(await fixture.database.findTriggerRunsByProviderEventReceiptId(tick!.id)).toMatchObject([
+      { outcome: "accepted", inputs: { focus: "everything" } },
+    ]);
+
+    // Manual intake hands events to the started hub; the schedule has already advanced past now.
+    await application.hub.start();
+    const manual = await post("manual-runs", {
+      projectSlug: "unused",
+      trigger: "scheduled-scan",
+      actor: "maintainer",
+      deliveryKey: "ask-once",
+      input: "focus=releases what shipped?",
+    });
+    expect(manual.status).toBe(200);
+    const dispatched = DispatchedManualRunSchema.parse(await manual.json());
+    expect(dispatched.configuredTriggerName).toBe("scheduled-scan");
+    expect(
+      await fixture.database.findTriggerRunsByProviderEventReceiptId(
+        dispatched.providerEventReceiptId,
+      ),
+    ).toMatchObject([{ outcome: "accepted", inputs: { focus: "releases" } }]);
   } finally {
     await application.hub.stop();
     await fixture.close();

@@ -52,9 +52,16 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
     allowOutputs.push(grant);
   }
   const triggers: AuthoredTrigger[] = [];
-  for (const [index, [event, definition]] of Object.entries(authored.on).entries()) {
+  const events = Object.entries(authored.on);
+  // A manual dispatch addresses the trigger by its name, so `manual.run` carries it wherever it
+  // is declared; otherwise the first event does.
+  const named = Math.max(
+    0,
+    events.findIndex(([event]) => event === "manual.run"),
+  );
+  for (const [index, [event, definition]] of events.entries()) {
     const compiledTrigger: AuthoredTrigger = {
-      name: internalEventName(authored.name, index),
+      name: internalEventName(authored.name, index, named),
       on: event,
       max_runtime: authored.max_runtime ?? authored.run.max_runtime,
       filters: authoredFilters(event, definition),
@@ -176,6 +183,6 @@ export function serializeTriggerDocument(trigger: TriggerDocument): string {
   return dump(trigger, { noRefs: true, lineWidth: -1, sortKeys: false });
 }
 
-function internalEventName(name: string, index: number): string {
-  return index === 0 ? name : `${name}-event-${String(index + 1)}`;
+function internalEventName(name: string, index: number, named: number): string {
+  return index === named ? name : `${name}-event-${String(index + 1)}`;
 }

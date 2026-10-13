@@ -69,8 +69,13 @@ stored. Rules beyond the simple presets appear in the **Custom schedule** field,
 other execution settings change. Custom intervals, monthly/yearly patterns, and finite rules
 remain fully supported by YAML/API; they are not expanded into extra form controls.
 
-A schedule is the document's sole event and has no connection, filters or invocation inputs.
-Other execution settings work normally, including GitHub authority, provider options, worktrees,
+A schedule has no connection or filters. It can share a document with other events, such as
+`manual.run`, so one prompt runs on the clock and on demand. A tick supplies no inputs: it runs with
+each input's `default`, so a document with a schedule cannot declare a `required` input. A manual
+dispatch addresses the document by its `name` wherever `manual.run` sits under `on`. Only schedule
+occurrences take part in the overlap exclusion below; a manual run neither delays nor is delayed by
+a tick. The form edits a single event, so a document with several events is edited in YAML. Other
+execution settings work normally, including GitHub authority, provider options, worktrees,
 continuation and outputs.
 
 `${{ paseo.context }}` contains a `schedule` object with `trigger_id`, `scheduled_at` (the intended
