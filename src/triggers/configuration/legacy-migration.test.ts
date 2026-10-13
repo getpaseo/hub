@@ -93,4 +93,39 @@ steps:
     assert.equal(trigger.normalized.environments.length, 1);
     assert.deepEqual(trigger.conversionBlockers, ["trigger has multiple steps"]);
   });
+
+  it("preserves Linear team and comment-thread filters in single-run migrations", () => {
+    const migrated = migrateLegacyBundle({
+      files: [
+        { path: ".paseo/hub.yml", content: hub },
+        {
+          path: ".paseo/workflows/linear.yml",
+          content: `
+name: linear-replies
+on: linear.comment_created
+max_runtime: 2h
+filters:
+  team: linear-team
+  replies_only: true
+  thread_with_app: true
+  from_users: ["*"]
+steps:
+  - id: work
+    environment: runner
+    max_runtime: 90m
+    idle_timeout: 10m
+    agent: codex
+    prompt: [{ text: reply }]
+`,
+        },
+      ],
+    });
+
+    const trigger = migrated[0];
+    assert.equal(trigger?.format, "single_run");
+    if (trigger?.format !== "single_run") return;
+    assert.equal(trigger.compiled.events[0]?.filters?.team, "linear-team");
+    assert.equal(trigger.compiled.events[0]?.filters?.replies_only, true);
+    assert.equal(trigger.compiled.events[0]?.filters?.thread_with_app, true);
+  });
 });
