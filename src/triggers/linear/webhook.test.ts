@@ -415,6 +415,25 @@ describe("Linear webhook", () => {
     );
     assert.equal((await endpoint.handle(request(issueEnvelope()))).status, 503);
   });
+
+  it("ignores what the installed app itself authored", async () => {
+    let accepts = 0;
+    const endpoint = createLinearWebhookSource({
+      signingSecret: SECRET,
+      now: () => NOW,
+      appUserId: () => Promise.resolve("app-user"),
+      accept: (input) => {
+        accepts += 1;
+        return Promise.resolve(acceptedEvent(input));
+      },
+    });
+    const ownEvent = { ...issueEnvelope(), actor: { id: "app-user", name: "Paseo" } };
+
+    assert.equal((await endpoint.handle(request(ownEvent))).status, 200);
+    assert.equal(accepts, 0);
+    assert.equal((await endpoint.handle(request(issueEnvelope()))).status, 200);
+    assert.equal(accepts, 1);
+  });
 });
 
 function webhookSource(

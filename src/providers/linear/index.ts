@@ -133,6 +133,8 @@ export function createLinearRegistration(
             const connection = await database.findLinearConnection(linearOrganizationId);
             return connection !== undefined && !linearConnectionRequiresReauthorization(connection);
           },
+          appUserId: async (linearOrganizationId) =>
+            (await database.findLinearConnection(linearOrganizationId))?.appUserId,
         }),
     ...(api === undefined
       ? {}

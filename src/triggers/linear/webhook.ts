@@ -21,6 +21,8 @@ export interface LinearWebhookSourceOptions {
   signingSecret: string;
   now?: () => number;
   canHydrateIssue?(linearOrganizationId: string): Promise<boolean>;
+  /** The installed app's own Linear user, whose events are never a reason to start work. */
+  appUserId?(linearOrganizationId: string): Promise<string | undefined>;
   resolveIssue?(input: {
     linearOrganizationId: string;
     issueId: string;
@@ -119,6 +121,10 @@ async function handoffLinearEvent(
     let event = normalizeLinearEvent(verified.payload, verified.eventName);
     if (event === undefined) {
       logger.info({ deliveryId: verified.deliveryId }, "ignoring unsupported Linear event");
+      return new Response("OK", { status: 200 });
+    }
+    if (await isAuthoredByApp(event, options)) {
+      logger.info({ deliveryId: verified.deliveryId }, "ignoring Linear event authored by Paseo");
       return new Response("OK", { status: 200 });
     }
     const hasCompleteTeamRoute =
@@ -244,4 +250,13 @@ function parseLinearWebhookTimestamp(value: unknown): number | undefined {
   if (typeof value !== "string" || !/^\d+$/u.test(value)) return undefined;
   const timestamp = Number(value);
   return Number.isSafeInteger(timestamp) ? timestamp : undefined;
+}
+
+/** Paseo's own comments would otherwise match a `from_users: ["*"]` trigger and answer themselves. */
+async function isAuthoredByApp(
+  event: NonNullable<ReturnType<typeof normalizeLinearEvent>>,
+  options: Pick<LinearWebhookSourceOptions, "appUserId">,
+): Promise<boolean> {
+  if (event.actor === null || options.appUserId === undefined) return false;
+  return event.actor.id === (await options.appUserId(event.organizationId));
 }

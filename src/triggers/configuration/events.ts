@@ -61,6 +61,7 @@ const EVENTS = {
   "linear.issue_entered_scope": event("linear", "Linear issue entered scope"),
   "linear.issue_assigned": event("linear", "Linear issue assigned"),
   "linear.comment_created": event("linear", "Linear comment created"),
+  "linear.agent_session": event("linear", "Linear agent session"),
   "schedule.tick": event("schedule", "Schedule"),
   "manual.run": event("manual", "Manual run"),
 };
