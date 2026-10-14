@@ -539,7 +539,13 @@ function linearThreadContextLocator(
   issueId: string,
 ): LinearTriggerContext["event"]["linear"]["trigger_thread_context"] {
   if (event.type === "agent_session") {
-    if (event.action === "created") return { status: "embedded" };
+    // Linear's promptContext already carries the discussion. A session Paseo opened for a
+    // delegation has none, so it reads the issue's comments like any other issue event.
+    if (event.action === "created") {
+      return event.promptContext === null
+        ? { status: "deferred", issue: { id: issueId }, before: { created_at: event.occurredAt } }
+        : { status: "embedded" };
+    }
     return {
       status: "deferred",
       agent_session: { id: event.agentSession.id },

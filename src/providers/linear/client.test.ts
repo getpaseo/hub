@@ -444,6 +444,88 @@ describe("Linear connection client", () => {
     });
   });
 
+  it("pages through an issue's agent sessions and opens one as the app", async () => {
+    const requests: string[] = [];
+    const responses = [
+      {
+        data: {
+          issue: {
+            agentSessions: {
+              nodes: [
+                { id: "session-1", createdAt: "2026-01-01T00:00:00.000Z", appUser: { id: "app" } },
+              ],
+              pageInfo: { hasNextPage: true, endCursor: "cursor-1" },
+            },
+          },
+        },
+      },
+      {
+        data: {
+          issue: {
+            agentSessions: {
+              nodes: [
+                {
+                  id: "session-2",
+                  createdAt: "2026-01-02T00:00:00.000Z",
+                  appUser: { id: "other" },
+                },
+              ],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        },
+      },
+      {
+        data: {
+          agentSessionCreateOnIssue: {
+            success: true,
+            agentSession: {
+              id: "session-3",
+              status: "pending",
+              url: null,
+              createdAt: "2026-01-03T00:00:00.000Z",
+            },
+          },
+        },
+      },
+    ];
+    const connection = linearConnection();
+    const api = createLinearApiClient({
+      connectionForLinearOrganization: async () => connection,
+      withLinearConnectionRefresh: withinLinearRefresh(connection, async () => {}),
+      connectionClient: { refresh: async () => ({ accessToken: "unused" }) },
+      fetch: async (_url, init) => {
+        requests.push(readableBody(init?.body));
+        return json(responses[requests.length - 1]);
+      },
+    });
+
+    assert.deepEqual(
+      await api.readIssueAgentSessions({ linearOrganizationId: "linear-org", issueId: "issue-1" }),
+      [
+        { id: "session-1", appUserId: "app", createdAt: "2026-01-01T00:00:00.000Z" },
+        { id: "session-2", appUserId: "other", createdAt: "2026-01-02T00:00:00.000Z" },
+      ],
+    );
+    assert.deepEqual(
+      await api.createAgentSessionOnIssue({
+        linearOrganizationId: "linear-org",
+        issueId: "issue-1",
+      }),
+      { id: "session-3", status: "pending", createdAt: "2026-01-03T00:00:00.000Z" },
+    );
+
+    assert.deepEqual(
+      requests.map((body) => graphqlRequest(body).variables),
+      [
+        { id: "issue-1", after: null },
+        { id: "issue-1", after: "cursor-1" },
+        { issueId: "issue-1" },
+      ],
+    );
+    assert.match(graphqlRequest(requests[2] ?? "{}").query, /agentSessionCreateOnIssue/u);
+  });
+
   it("sends a select elicitation with its signal metadata", async () => {
     const requests: string[] = [];
     const connection = linearConnection();

@@ -201,6 +201,42 @@ const AgentActivityResponseSchema = z.object({
   }),
 });
 
+const IssueAgentSessionsResponseSchema = z.object({
+  data: z.object({
+    issue: z
+      .object({
+        agentSessions: z.object({
+          nodes: z.array(
+            z.object({
+              id: z.string().min(1),
+              createdAt: z.string().datetime(),
+              appUser: z.object({ id: z.string().min(1) }),
+            }),
+          ),
+          pageInfo: z.object({
+            hasNextPage: z.boolean(),
+            endCursor: z.string().min(1).nullable(),
+          }),
+        }),
+      })
+      .nullable(),
+  }),
+});
+
+const AgentSessionCreateResponseSchema = z.object({
+  data: z.object({
+    agentSessionCreateOnIssue: z.object({
+      success: z.literal(true),
+      agentSession: z.object({
+        id: z.string().min(1),
+        status: z.string().min(1),
+        url: z.string().url().nullable().optional(),
+        createdAt: z.string().datetime(),
+      }),
+    }),
+  }),
+});
+
 export interface LinearInstallation {
   linearOrganizationId: string;
   linearOrganizationName: string;
@@ -284,6 +320,19 @@ export interface LinearAgentActivityHistory {
   complete: boolean;
 }
 
+export interface LinearIssueAgentSession {
+  id: string;
+  appUserId: string;
+  createdAt: string;
+}
+
+export interface LinearCreatedAgentSession {
+  id: string;
+  status: string;
+  url?: string;
+  createdAt: string;
+}
+
 export interface LinearAgentActivityContent {
   type: "thought" | "response" | "error" | "elicitation";
   body: string;
@@ -331,6 +380,16 @@ export interface LinearApiClient {
     signal?: LinearAgentActivitySignal;
     signalMetadata?: LinearAgentActivitySignalMetadata;
   }): Promise<void>;
+  /** Every agent session on the issue, of any app; empty when Linear no longer has the issue. */
+  readIssueAgentSessions(input: {
+    linearOrganizationId: string;
+    issueId: string;
+  }): Promise<LinearIssueAgentSession[]>;
+  /** Opens a session on the issue as the installed app, without a mention or delegation. */
+  createAgentSessionOnIssue(input: {
+    linearOrganizationId: string;
+    issueId: string;
+  }): Promise<LinearCreatedAgentSession>;
 }
 
 export function hasRequiredLinearScopes(scopes: readonly string[]): boolean {
@@ -750,6 +809,58 @@ export function createLinearApiClient(options: {
       if (!result.data.agentActivityCreate.success) {
         throw new Error("Linear agent activity was not accepted");
       }
+    },
+    async readIssueAgentSessions(input) {
+      const accessToken = await accessTokenFor(input.linearOrganizationId);
+      const sessions: LinearIssueAgentSession[] = [];
+      let after: string | null = null;
+      for (;;) {
+        const result = IssueAgentSessionsResponseSchema.parse(
+          await graphql(request, accessToken, {
+            query: `query PaseoIssueAgentSessions($id: String!, $after: String) {
+              issue(id: $id) {
+                agentSessions(first: 50, after: $after) {
+                  nodes { id createdAt appUser { id } }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+            }`,
+            variables: { id: input.issueId, after },
+          }),
+        );
+        const page = result.data.issue?.agentSessions;
+        if (page === undefined) return sessions;
+        for (const session of page.nodes) {
+          sessions.push({
+            id: session.id,
+            appUserId: session.appUser.id,
+            createdAt: session.createdAt,
+          });
+        }
+        const next = nextLinearPageCursor(page.pageInfo, "agent-session");
+        if (next === undefined) return sessions;
+        after = next;
+      }
+    },
+    async createAgentSessionOnIssue(input) {
+      const result = AgentSessionCreateResponseSchema.parse(
+        await graphql(request, await accessTokenFor(input.linearOrganizationId), {
+          query: `mutation PaseoAgentSessionCreateOnIssue($issueId: String!) {
+            agentSessionCreateOnIssue(input: { issueId: $issueId }) {
+              success
+              agentSession { id status url createdAt }
+            }
+          }`,
+          variables: { issueId: input.issueId },
+        }),
+      );
+      const session = result.data.agentSessionCreateOnIssue.agentSession;
+      return {
+        id: session.id,
+        status: session.status,
+        ...(session.url === undefined || session.url === null ? {} : { url: session.url }),
+        createdAt: session.createdAt,
+      };
     },
   };
 }

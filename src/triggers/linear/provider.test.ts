@@ -435,6 +435,59 @@ describe("Linear trigger provider", () => {
     ]);
   });
 
+  it("reads the issue discussion for a new session that carries no promptContext", async () => {
+    const { project, revision, store } = await activeConfiguration(agentSessionConfiguration());
+    const client = new RecordingHistoryClient({
+      complete: true,
+      comments: [
+        {
+          id: "earlier-comment",
+          body: "Earlier discussion",
+          createdAt: "2026-01-01T23:00:00.000Z",
+          author: { id: "user-1", name: "Operator" },
+        },
+      ],
+    });
+    const provider = createLinearTriggerProvider({
+      configurationStoreForProject: () => store,
+      client,
+    });
+    const match = (
+      await provider.match(
+        externalAgentSession(
+          project.id,
+          revision.id,
+          agentSessionEvent({
+            action: "created",
+            promptContext: null,
+            prompt: "Ship the feature\n\nUseful context",
+            parserMessage: "Ship the feature\n\nUseful context",
+          }),
+        ),
+      )
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+    assert.equal(match.invocation.prompt, "Ship the feature\n\nUseful context");
+    assert.deepEqual(match.triggerContext.event.linear.trigger_thread_context, {
+      status: "deferred",
+      issue: { id: "issue-1" },
+      before: { created_at: "2026-01-02T00:00:00.000Z" },
+    });
+    const context = await provider.materializeContext!({
+      executionId: "execution-linear-agent-opened",
+      organizationId: "hub-org",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111123",
+      triggerContext: match.triggerContext,
+    });
+    assert.equal(context.linear.thread.status, "available");
+    assert.deepEqual(
+      context.linear.thread.messages.map((message) => message.content),
+      ["Ship the feature\n\nUseful context", "Earlier discussion"],
+    );
+  });
+
   it("closes an agent session explicitly when the workflow ends without a reply", async () => {
     const { match, acceptedState, provider, client } = await acceptedAgentSession();
 
@@ -1905,7 +1958,6 @@ function agentSessionEvent(
       labelIds: [],
     },
     occurredAt: "2026-01-02T00:01:00.000Z",
-    ...overrides,
     ...(overrides.action === "created"
       ? {
           id: "session-1",
@@ -1916,5 +1968,6 @@ function agentSessionEvent(
           occurredAt: "2026-01-02T00:00:00.000Z",
         }
       : {}),
+    ...overrides,
   };
 }

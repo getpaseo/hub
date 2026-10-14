@@ -434,7 +434,155 @@ describe("Linear webhook", () => {
     assert.equal((await endpoint.handle(request(issueEnvelope()))).status, 200);
     assert.equal(accepts, 1);
   });
+
+  it("opens the session Linear skips when the app already had one on the delegated issue", async () => {
+    const harness = delegationHarness([
+      {
+        id: "earlier-session",
+        appUserId: "app-user",
+        createdAt: new Date(NOW - 120_000).toISOString(),
+      },
+      {
+        id: "other-agent-session",
+        appUserId: "other-agent",
+        createdAt: new Date(NOW).toISOString(),
+      },
+    ]);
+
+    assert.equal((await harness.endpoint.handle(request(delegationEnvelope()))).status, 200);
+    assert.deepEqual(
+      harness.accepted.map((input) => input.source),
+      ["linear.issue"],
+    );
+    assert.equal(harness.deferred.length, 1);
+    await harness.deferred[0]!();
+
+    assert.deepEqual(harness.created, [{ linearOrganizationId: "linear-org", issueId: "issue-1" }]);
+    const opened = harness.accepted[1];
+    assert.equal(opened?.source, "linear.agent_session");
+    assert.equal(opened?.deliveryId, "linear-delegation:opened-session");
+    assert.equal(opened?.projectId, "project-1");
+    const event = NormalizedLinearAgentSessionEventSchema.parse(opened?.payload);
+    assert.equal(event.action, "created");
+    assert.equal(event.agentSession.id, "opened-session");
+    assert.deepEqual(event.actor, { id: "user-1", name: "Operator" });
+    assert.equal(event.prompt, "Ship the feature\n\nUseful context");
+    assert.equal(event.promptContext, null);
+    assert.deepEqual(
+      harness.dispatched.map((dispatched) => dispatched.source),
+      ["linear.issue", "linear.agent_session"],
+    );
+
+    // Linear may still announce the session Hub opened; that must not start a second run.
+    const announced = agentSessionEnvelope();
+    announced.agentSession.id = "opened-session";
+    assert.equal(
+      (
+        await harness.endpoint.handle(
+          request(announced, "AgentSessionEvent", { deliveryId: "delivery-2" }),
+        )
+      ).status,
+      200,
+    );
+    assert.equal(harness.accepted.length, 2);
+  });
+
+  it("leaves a delegation alone when Linear opened its session", async () => {
+    const harness = delegationHarness([
+      { id: "linear-session", appUserId: "app-user", createdAt: new Date(NOW).toISOString() },
+    ]);
+
+    await harness.endpoint.handle(request(delegationEnvelope()));
+    await harness.deferred[0]!();
+
+    assert.deepEqual(harness.created, []);
+    assert.deepEqual(
+      harness.accepted.map((input) => input.source),
+      ["linear.issue"],
+    );
+  });
+
+  it("checks only delegations to the app that can open sessions", async () => {
+    const otherAgent = delegationEnvelope();
+    otherAgent.data.delegateId = "other-agent";
+    const unchanged = delegationEnvelope();
+    unchanged.updatedFrom = { delegateId: "app-user" };
+    const assignmentOnly = { ...delegationEnvelope(), updatedFrom: { assigneeId: null } };
+    const byTheApp = { ...delegationEnvelope(), actor: { id: "app-user", name: "Paseo" } };
+
+    const harness = delegationHarness([]);
+    for (const payload of [otherAgent, unchanged, assignmentOnly, byTheApp]) {
+      assert.equal((await harness.endpoint.handle(request(payload))).status, 200);
+    }
+    assert.equal(harness.deferred.length, 0);
+
+    const underScoped = delegationHarness([], false);
+    await underScoped.endpoint.handle(request(delegationEnvelope()));
+    assert.equal(underScoped.deferred.length, 0);
+  });
 });
+
+function delegationHarness(
+  sessions: Array<{ id: string; appUserId: string; createdAt: string }>,
+  canOpen = true,
+) {
+  const accepted: Array<Parameters<Parameters<typeof createLinearWebhookSource>[0]["accept"]>[0]> =
+    [];
+  const dispatched: DurableProviderEvent[] = [];
+  const deferred: Array<() => Promise<void>> = [];
+  const created: Array<{ linearOrganizationId: string; issueId: string }> = [];
+  const endpoint = createLinearWebhookSource({
+    signingSecret: SECRET,
+    now: () => NOW,
+    appUserId: async () => "app-user",
+    canHydrateIssue: async () => true,
+    resolveIssue: async () => ({
+      id: "issue-1",
+      identifier: "ENG-42",
+      title: "Ship the feature",
+      description: "Useful context",
+      projectId: "project-1",
+      teamId: "team-1",
+      stateId: "ready",
+      assigneeId: "user-1",
+      labelIds: [],
+    }),
+    delegatedSessions: {
+      canOpen: async () => canOpen,
+      client: {
+        readIssueAgentSessions: async () => sessions,
+        createAgentSessionOnIssue: async (input) => {
+          created.push(input);
+          return {
+            id: "opened-session",
+            status: "pending",
+            createdAt: new Date(NOW).toISOString(),
+          };
+        },
+      },
+      defer: (task) => deferred.push(task),
+    },
+    accept: async (input) => {
+      accepted.push(input);
+      return acceptedEvent(input);
+    },
+  });
+  void endpoint.start((event) => {
+    dispatched.push(event);
+    return Promise.resolve();
+  });
+  return { endpoint, accepted, dispatched, deferred, created };
+}
+
+function delegationEnvelope() {
+  const issue = issueEnvelope();
+  return {
+    ...issue,
+    action: "update",
+    data: { ...issue.data, assigneeId: "user-1", delegateId: "app-user" },
+    updatedFrom: { delegateId: null } as Record<string, unknown>,
+  };
+}
 
 function webhookSource(
   accept: (
