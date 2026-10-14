@@ -226,7 +226,7 @@ test.each([true, false])(
 );
 
 test.each([undefined, false])(
-  "refuses background creation when backgroundWorkspaces is %s",
+  "creates and sends the prompt when backgroundWorkspaces is %s",
   async (backgroundWorkspaces) => {
     const requests: Record<string, unknown>[] = [];
     const agents = connect(requests);
@@ -243,11 +243,17 @@ test.each([undefined, false])(
         },
       },
     });
-    await expect(agents.create("key", { ...options, background: true })).rejects.toThrow(
-      "run.background requires backgroundWorkspaces support",
-    );
-    expect(requests).toEqual([]);
-    await agents.create("ordinary-key", { ...options, background: false });
-    expect(requests).toHaveLength(1);
+    const created = await agents.create("key", { ...options, background: true });
+    await agents.send(created.id, "message-key", "Run the trigger");
+    expect(requests).toHaveLength(2);
+    expect(requests[0]).toMatchObject({
+      type: "create_agent_request",
+      background: true,
+    });
+    expect(requests[1]).toMatchObject({
+      type: "send_agent_message_request",
+      agentId: created.id,
+      text: "Run the trigger",
+    });
   },
 );

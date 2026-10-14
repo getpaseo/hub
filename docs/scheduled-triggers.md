@@ -52,10 +52,10 @@ The run block also controls the execution workspace:
 - `run.auto_archive` defaults to `true` and archives the workspace after execution.
 - `run.background` defaults to `false`. Set it to `true` in YAML to create a Paseo background
   workspace, hidden from workspace listings unless the client requests background workspaces.
-  This is independent of archiving. Hub refuses background workspace creation unless the target
-  daemon advertises `backgroundWorkspaces`; update the daemon instead of silently creating a
-  visible workspace. Changing this setting for an existing continuation requires a new agent
-  or a different continuation key.
+  This is independent of archiving. Hub always passes the field through. Older daemons without
+  `backgroundWorkspaces` support ignore it: the run proceeds with a visible workspace.
+  Changing this setting for an existing continuation requires a new agent or a different
+  continuation key.
 
 The persisted recurrence has three fields: `start` is a quoted local date-time with seconds and
 no offset; `timezone` gives that clock's IANA timezone; `rule` is one RFC 5545 RRULE value, without
