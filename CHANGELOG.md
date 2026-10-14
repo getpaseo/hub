@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.10.0-pickitoo.1 - 2026-10-14
+
+The Pickitoo build of Hub 0.10.0, with the open upstream Linear follow-up (getpaseo/hub#88).
+
+### Added
+
+- Linear agent sessions: delegate an issue to Paseo or mention it, and the run appears in the issue's agent session, with follow-ups, questions with choices, and Stop. Connect a workspace for Agent Sessions to turn them on.
+- Linear triggers can select issues by team, and comment triggers can take only replies, or only replies in threads Paseo has commented in.
+- Linear setup, triggers, and agent sessions are documented in `docs/linear.md`.
+
+### Changed
+
+- A run whose required reply cannot be delivered now fails instead of succeeding.
+- Linear setup asks for the Agent session events webhook subscription.
+- Release images link to the repository that published them.
+
+### Fixed
+
+- Linear runs receive the issue's earlier comments; Linear had been rejecting the history request.
+- Paseo's own Linear comments no longer start runs.
+
 ## 0.10.0 - 2026-09-29
 
 ### Added
