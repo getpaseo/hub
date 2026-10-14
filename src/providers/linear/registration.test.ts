@@ -319,6 +319,10 @@ describe("Linear registration", () => {
       readCommentThread: async () => undefined,
       createComment: async () => {},
       createAgentActivity: async () => {},
+      readIssueAgentSessions: async () => [],
+      createAgentSessionOnIssue: async () => {
+        throw new Error("under-scoped token must not open sessions");
+      },
     };
     const registration = createLinearRegistration({
       database,

@@ -32,6 +32,7 @@ import type { ProviderConnectionRegistration, ProviderRegistration } from "../re
 import {
   createLinearApiClient,
   createLinearConnectionClient,
+  hasRequiredLinearAgentSessionScopes,
   linearConnectionRequiresReauthorization,
   type LinearAuthorizationMode,
   type LinearApiClient,
@@ -141,6 +142,21 @@ export function createLinearRegistration(
       : {
           resolveIssue: ({ linearOrganizationId, issueId }) =>
             api.readIssue({ linearOrganizationId, issueId }),
+        }),
+    ...(api === undefined || database === null
+      ? {}
+      : {
+          delegatedSessions: {
+            canOpen: async (linearOrganizationId: string) => {
+              const connection = await database.findLinearConnection(linearOrganizationId);
+              return (
+                connection !== undefined &&
+                !linearConnectionRequiresReauthorization(connection) &&
+                hasRequiredLinearAgentSessionScopes(connection.scopes)
+              );
+            },
+            client: api,
+          },
         }),
   });
   if (database === null) {

@@ -305,4 +305,12 @@ class RecordingLinearClient implements LinearApiClient {
   ): Promise<void> {
     this.activities.push(input);
   }
+
+  async readIssueAgentSessions() {
+    return [];
+  }
+
+  async createAgentSessionOnIssue(): Promise<never> {
+    throw new Error("replies never open sessions");
+  }
 }

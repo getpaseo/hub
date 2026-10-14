@@ -77,6 +77,11 @@ issue and Hub matches `linear.agent_session`. For a new session, `${{ paseo.prom
 Linear prepares: the issue, its discussion, and your workspace's agent guidance. For a follow-up, it
 is what the person wrote.
 
+Linear opens no new session when an issue is delegated to Paseo while Paseo already has one on it.
+Hub then opens the session itself, a few seconds after the delegation, and starts the run for the
+person who delegated. Its `${{ paseo.prompt }}` is the issue's title and description, and the
+issue's comments arrive in `thread`. This needs the **Issue** webhook subscription.
+
 Hub acknowledges the session as soon as it accepts the run. The agent answers with its `reply`
 tool: a response closes the session, and a question leaves it waiting for an answer, optionally
 with choices to pick from. The answer arrives as a follow-up and starts a new run that continues
