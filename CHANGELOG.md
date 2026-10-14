@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.0-pickitoo.2 - 2026-10-14
+
+### Fixed
+
+- Delegating a Linear issue to Paseo starts a run even when Paseo already has an agent session on it. Linear opens no new session then, so Hub opens one itself a few seconds after the delegation.
+
 ## 0.10.0-pickitoo.1 - 2026-10-14
 
 The Pickitoo build of Hub 0.10.0, with the open upstream Linear follow-up (getpaseo/hub#88).

@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/hub",
-  "version": "0.10.0-pickitoo.1",
+  "version": "0.10.0-pickitoo.2",
   "description": "Self-hosted automation for Paseo daemons",
   "homepage": "https://paseo.sh/docs/hub",
   "license": "Apache-2.0",
