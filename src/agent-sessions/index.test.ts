@@ -92,6 +92,7 @@ async function fixture(now = Date.now) {
       env,
       allowOutputs: [{ type: "test.reply", max: 1 }],
       autoArchive: true,
+      background: false,
       triggerContext: {},
       outputContext: { arrival: executionId },
       configurationRevisionId: randomUUID(),

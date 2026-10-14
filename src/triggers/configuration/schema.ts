@@ -113,6 +113,7 @@ export const TriggerRunSchema = z
       .optional(),
     outputs: z.record(z.string().regex(EVENT_NAME), TriggerOutputSchema).optional(),
     auto_archive: z.boolean().default(true),
+    background: z.boolean().default(false),
   })
   .strict();
 

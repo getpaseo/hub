@@ -1935,6 +1935,7 @@ async function buildCreateAgentOptions(
 ): Promise<DaemonCreateAgentOptions> {
   return {
     provider: intent.agent.provider,
+    background: intent.background,
     title: EXECUTION_AGENT_TITLE,
     workspaceTitle: executionWorkspaceTitle(intent, hubExecutionEnv.executionId),
     ...(intent.agent.mode === undefined ? {} : { mode: intent.agent.mode }),

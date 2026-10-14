@@ -257,6 +257,7 @@ async function recordRun(
         agent: { provider: "codex", model: "gpt-5.4", mode: "full-access" },
         allowOutputs: [],
         autoArchive: true,
+        background: false,
         triggerContext: {},
         outputContext: {},
         hubConfig: {},

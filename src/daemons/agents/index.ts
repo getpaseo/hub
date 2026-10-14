@@ -46,6 +46,7 @@ export class DaemonAgentError extends Error {}
 /** The ordinary daemon protocol. This channel knows nothing about Hub executions or triggers. */
 export class DaemonAgents implements AgentConnection {
   private supported = false;
+  private backgroundWorkspaces = false;
   private readonly pending = new Map<
     string,
     { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void }
@@ -67,6 +68,9 @@ export class DaemonAgents implements AgentConnection {
         .object({ hubAgentRpc: z.literal(true), agentRequestReceipts: z.literal(true) })
         .safeParse(payload["features"]);
       this.supported = features.success;
+      this.backgroundWorkspaces = z
+        .object({ backgroundWorkspaces: z.literal(true) })
+        .safeParse(payload["features"]).success;
       return false;
     }
     const requestId = payload["requestId"];
@@ -115,6 +119,10 @@ export class DaemonAgents implements AgentConnection {
     options: DaemonCreateAgentOptions,
     timeoutMs?: number,
   ): Promise<AgentSnapshot> {
+    if (options.background === true && !this.backgroundWorkspaces)
+      throw new DaemonAgentError(
+        "Update the Paseo daemon: run.background requires backgroundWorkspaces support",
+      );
     const response = await this.request(
       {
         type: "create_agent_request",
@@ -132,6 +140,7 @@ export class DaemonAgents implements AgentConnection {
         },
         env: options.env,
         worktree: options.worktree,
+        background: options.background,
       },
       timeoutMs,
     );

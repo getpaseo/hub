@@ -962,6 +962,7 @@ function buildStepIntent(
       idleTimeoutMs: step.idleTimeoutMs,
       ...(step.startupTimeoutMs === undefined ? {} : { startupTimeoutMs: step.startupTimeoutMs }),
       autoArchive: step.autoArchive,
+      background: step.background,
       triggerContext: run.triggerContext,
       outputContext: run.outputContext,
       configurationRevisionId: run.configurationRevisionId,
@@ -977,6 +978,8 @@ function buildStepIntent(
             compatibility: {
               agent,
               target: environment,
+              // Preserve existing visible-session fingerprints when using the default.
+              ...(step.background ? { background: true } : {}),
               env: step.env ?? {},
               github: step.github ?? null,
             },

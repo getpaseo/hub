@@ -121,6 +121,7 @@ const ExecutionSessionRequestSchema = z.object({
         .passthrough(),
       env: z.record(z.string(), z.string()).optional(),
       worktree: z.unknown().optional(),
+      background: z.boolean().optional(),
     }),
     z.object({
       type: z.literal("fetch_agent_request"),
@@ -827,6 +828,7 @@ export class HubHarness {
       env: agent["env"],
       mcpServers,
       worktree: agent["worktree"],
+      background: agent["background"],
     };
   }
   async waitForCreatedAgentLaunch() {
@@ -1881,6 +1883,7 @@ export class HubHarness {
       },
       allowOutputs: [{ type: "discord.reply", max: 1 }],
       autoArchive: false,
+      background: false,
       triggerContext: { provider: "manual-discord", deliveryId: randomUUID() },
       outputContext: { channelId: "channel-1" },
       configurationRevisionId: this.configurationRevisionId,
@@ -2590,7 +2593,7 @@ class TestDaemon {
           status: "server_info",
           serverId: this.daemonId,
           permissions: this.permissions,
-          features: { hubAgentRpc: true, agentRequestReceipts: true },
+          features: { hubAgentRpc: true, agentRequestReceipts: true, backgroundWorkspaces: true },
         },
       });
       return;
@@ -2663,6 +2666,7 @@ class TestDaemon {
         modeId: request.config["modeId"],
         env: request.env,
         worktree: request.worktree,
+        background: request.background,
         executionId,
         status: "running",
       });

@@ -74,6 +74,31 @@ run:
 `;
 
 describe("self-contained trigger documents", () => {
+  it.each([undefined, false, true])("compiles and round-trips background %s", (background) => {
+    const yaml =
+      background === undefined
+        ? trigger
+        : trigger.replace(
+            "run:",
+            `run:
+  background: ${background}`,
+          );
+    const compiled = compileTriggerDocument(yaml);
+    assert.equal(compiled.authored.run.background, background ?? false);
+    assert.equal(compiled.events[0]?.steps[0]?.background, background ?? false);
+    assert.equal(
+      parseTriggerDocument(serializeTriggerDocument(compiled.authored)).run.background,
+      background ?? false,
+    );
+  });
+
+  it("rejects a non-boolean background value", () => {
+    assert.throws(
+      () => parseTriggerDocument(trigger.replace("run:", 'run:\n  background: "true"')),
+      /run.background/,
+    );
+  });
+
   it("compiles and preserves a configurable startup timeout", () => {
     const yaml = trigger.replace("  max_runtime: 90m", "  max_runtime: 90m\n  startup_timeout: 3m");
     const compiled = compileTriggerDocument(yaml);

@@ -882,6 +882,16 @@ describe("daemon enrollment and execution", () => {
     },
   );
 
+  it.each([true, false])(
+    "carries background %s from launch intent to daemon creation",
+    async (background) => {
+      await hub.connectDaemon();
+      const result = await hub.dispatch({ background });
+      assert.equal(hub.createdAgentLaunch().background, background);
+      assert.equal((await hub.execution(result.execution.id)).launchIntent?.background, background);
+    },
+  );
+
   it("dispatches after generation replacement through the surviving socket", async () => {
     const daemonId = await hub.connectDaemon();
     await hub.replaceDaemon();
@@ -1421,6 +1431,7 @@ describe("daemon enrollment and execution", () => {
       timeoutMs: 60 * 60_000,
       idleTimeoutMs: 5 * 60_000,
       autoArchive: true,
+      background: false,
     });
 
     await hub.agentBecomesIdle(result.execution.id, result.agentId);

@@ -34,7 +34,11 @@ describe("durable multi-step workflow engine", () => {
     "materializes one reusable environment from each %s execution identity before persistence",
     async (providerName) => {
       const rawConfiguration = executionWorktreeConfiguration();
-      const fixture = await workflowFixture({ rawConfiguration });
+      const compiled = structuredClone(compileHubConfig(rawConfiguration));
+      for (const trigger of compiled.triggers) {
+        for (const step of trigger.steps) step.continuation = { mode: "conversation" };
+      }
+      const fixture = await workflowFixture({ compiledConfiguration: compiled });
       const baseProvider = providerMatch(fixture.configuration, fixture.revisionId);
       const provider = {
         ...baseProvider,
@@ -81,6 +85,14 @@ describe("durable multi-step workflow engine", () => {
           intent.workflowStepRunId!,
         );
         assert.ok(execution);
+        assert.equal(intent.background, intent.triggerName === "first");
+        assert.deepEqual(intent.continuation?.compatibility, {
+          agent: intent.agent,
+          target: fixture.configuration.environments[0],
+          ...(intent.background ? { background: true } : {}),
+          env: {},
+          github: null,
+        });
         assert.equal(
           intent.title,
           intent.triggerName === "first" ? `Intake · ${execution.id}` : undefined,
@@ -2021,7 +2033,7 @@ function executionWorktreeConfiguration(): Record<string, unknown> {
     max_runtime: "10m",
     idle_timeout: "1m",
     agent: { provider: "codex" },
-    ...(title === undefined ? {} : { title }),
+    ...(title === undefined ? {} : { title, background: true }),
     prompt: [{ text: "Do the work." }],
   });
   return {
