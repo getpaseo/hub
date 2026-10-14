@@ -43,7 +43,7 @@ jobs:
           push: true
           tags: ${{ steps.release.outputs.image_tags }}
           labels: |
-            org.opencontainers.image.source=https://github.com/getpaseo/hub
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.release.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=Apache-2.0
