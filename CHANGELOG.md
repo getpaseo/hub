@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.10.0-lastmile.1 - 2026-10-13
+## 0.10.0-pickitoo.1 - 2026-10-14
 
-The Lastmile build of Hub 0.10.0, with the open upstream Linear follow-up (getpaseo/hub#88).
+The Pickitoo build of Hub 0.10.0, with the open upstream Linear follow-up (getpaseo/hub#88).
 
 ### Added
 
