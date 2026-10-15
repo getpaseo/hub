@@ -4152,8 +4152,8 @@ class PgDatabase implements Database {
   ): Promise<OrganizationRunRecord[]> {
     const rows = await query<OrganizationRunRow>(
       this.pool,
-      `select runs.id, runs.configured_trigger_name, runs.status,
-              receipts.provider, receipts.source, receipts.received_at,
+      `select runs.id, coalesce(triggers.name, runs.configured_trigger_name) as trigger_name,
+              runs.status, receipts.provider, receipts.source, receipts.received_at,
               (select executions.launch_intent -> 'agent'
                  from workflow_step_runs steps
                  join agent_executions executions on executions.id = steps.agent_execution_id
@@ -4164,6 +4164,9 @@ class PgDatabase implements Database {
        join provider_event_receipts receipts
          on receipts.id = runs.provider_event_receipt_id
         and receipts.organization_id = runs.organization_id
+       left join organization_triggers triggers
+         on triggers.runtime_project_id = runs.project_id
+        and triggers.organization_id = runs.organization_id
        where runs.organization_id = $1 and runs.created_at >= $2
        order by runs.created_at desc, runs.id desc
        limit $3`,
@@ -4171,7 +4174,7 @@ class PgDatabase implements Database {
     );
     return rows.rows.map((row) => ({
       id: row.id,
-      triggerName: row.configured_trigger_name,
+      triggerName: row.trigger_name,
       provider: row.provider,
       source: row.source,
       status: row.status,
@@ -4562,7 +4565,7 @@ interface ProjectActivityRunRow extends TriggerRunRow {
 
 interface OrganizationRunRow extends QueryRow {
   id: string;
-  configured_trigger_name: string;
+  trigger_name: string;
   status: TriggerRunRecord["status"];
   provider: ProviderEventReceiptRecord["provider"];
   source: string;

@@ -22,6 +22,7 @@ export interface LaunchMachineIntent {
   projectId: string;
   triggerRunId: string;
   workflowStepRunId?: string;
+  /** The trigger's name as the user wrote it; never the internal name of one of its events. */
   triggerName: string;
   environmentName: string;
   environment: DaemonEnvironmentTarget;

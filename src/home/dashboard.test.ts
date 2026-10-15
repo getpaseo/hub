@@ -3,6 +3,7 @@ import { describe, it } from "vitest";
 import type { AuthServer } from "../auth/server.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database } from "../db/types.js";
+import { parseCompiledHubConfig } from "../config/compiler.js";
 import { buildLaunchMachineIntent } from "../dispatcher/index.js";
 import { acceptingAgentValidator } from "../test-utils/agent-validator.js";
 import {
@@ -90,6 +91,36 @@ describe("home read model", () => {
           agent: { provider: "codex", model: "gpt-5.4" },
         },
       ],
+    );
+  });
+
+  it("names a run after its trigger, not after the event within the trigger that started it", async () => {
+    const database = memberDatabase();
+    await enrollTestDaemon(database, "org-1");
+    const trigger = await new OrganizationTriggerStore(
+      database,
+      "org-1",
+      acceptingAgentValidator(),
+    ).save({ yaml: scheduledTriggerYaml, userId: "user-1" });
+    await recordRun(
+      database,
+      trigger.runtimeProjectId,
+      "tick",
+      "succeeded",
+      60_000,
+      "schedule.tick",
+    );
+
+    const snapshot = await new HomeDashboard(
+      database,
+      accountAuth(),
+      APPS_CONFIGURED,
+      () => NOW,
+    ).snapshot(request, "acme");
+
+    assert.deepEqual(
+      snapshot.runs.map(({ triggerName }) => triggerName),
+      ["manual-task"],
     );
   });
 
@@ -195,9 +226,14 @@ async function recordRun(
   deliveryId: string,
   status: "succeeded" | "failed",
   ageMs: number,
+  event = "manual.run",
 ): Promise<void> {
   const revision = await database.findActiveProjectConfiguration(projectId);
   assert.ok(revision);
+  const configured = parseCompiledHubConfig(revision.normalizedConfiguration).triggers.find(
+    ({ on }) => on === event,
+  );
+  assert.ok(configured);
   const receipt = await database.persistManualEvent({
     organizationId: "org-1",
     projectId,
@@ -213,7 +249,7 @@ async function recordRun(
     projectId,
     configurationRevisionId: revision.id,
     providerEventReceiptId: receipt.event.providerEventReceiptId,
-    configuredTriggerName: "manual-task",
+    configuredTriggerName: configured.name,
     prompt: "run it",
     inputs: {},
     triggerContext: {},
@@ -294,6 +330,15 @@ run:
   agent: { provider: codex, model: gpt-5.4, mode: full-access }
   prompt: Handle it
 `;
+
+/** A schedule declared before the manual event, so the schedule compiles under an internal name. */
+const scheduledTriggerYaml = triggerYaml.replace(
+  "on:\n",
+  `on:
+  schedule.tick:
+    recurrence: { start: "2026-01-01T09:00:00", rule: "FREQ=DAILY", timezone: UTC }
+`,
+);
 
 function accountAuth(): AuthServer {
   return {

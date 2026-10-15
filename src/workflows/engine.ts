@@ -13,7 +13,7 @@ import type {
 } from "../db/types.js";
 import type { AgentExecutionStatus } from "../db/schema.js";
 import { parseCompiledHubConfig, type JsonPrimitive, type JsonValue } from "../config/compiler.js";
-import type { CompiledProjectConfiguration } from "../configuration/store.js";
+import { triggerDocumentName, type CompiledProjectConfiguration } from "../configuration/store.js";
 import { logger as defaultLogger } from "../logger.js";
 import { reportFailure } from "../failures/index.js";
 import { durableExecutionId } from "../daemons/lifecycle.js";
@@ -57,6 +57,8 @@ type WorkflowStepRun = Awaited<ReturnType<Database["listWorkflowStepRunsForTrigg
 interface PreparedWorkflowWakeup {
   run: AcceptedWorkflowRun;
   configuration: CompiledProjectConfiguration;
+  /** The trigger's name as its author wrote it, which is what the user sees for this run. */
+  triggerName: string;
   trigger: CompiledProjectConfiguration["triggers"][number];
   steps: WorkflowStepRun[];
   next: WorkflowStepRun;
@@ -247,8 +249,17 @@ export class DurableWorkflowEngine {
     if (database === null) return;
     const prepared = await this.prepareWorkflowWakeup(wakeup);
     if (prepared === undefined) return;
-    const { run, configuration, trigger, steps, next, step, context, recoverPreHandoffDispatch } =
-      prepared;
+    const {
+      run,
+      configuration,
+      triggerName,
+      trigger,
+      steps,
+      next,
+      step,
+      context,
+      recoverPreHandoffDispatch,
+    } = prepared;
     let shouldRun = true;
     try {
       shouldRun =
@@ -290,6 +301,7 @@ export class DurableWorkflowEngine {
     );
     const preparedIntent = await this.buildMaterializedStepIntentOrFail(
       configuration,
+      triggerName,
       trigger,
       step,
       run,
@@ -461,10 +473,7 @@ export class DurableWorkflowEngine {
       await database.deleteWorkflowWakeup(triggerRunId);
       return undefined;
     }
-    const configuration = await this.configurationForRun(
-      run.projectId,
-      run.configurationRevisionId,
-    );
+    const { configuration, triggerName } = await this.configurationForRun(run);
     const trigger = configuration.triggers.find(
       (candidate) => candidate.name === run.configuredTriggerName,
     );
@@ -503,6 +512,7 @@ export class DurableWorkflowEngine {
     return {
       run: reconciledRun,
       configuration,
+      triggerName,
       trigger,
       steps,
       next,
@@ -514,6 +524,7 @@ export class DurableWorkflowEngine {
 
   private async buildStepIntentOrFail(
     configuration: CompiledProjectConfiguration,
+    triggerName: string,
     trigger: CompiledProjectConfiguration["triggers"][number],
     step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
     run: AcceptedWorkflowRun,
@@ -527,6 +538,7 @@ export class DurableWorkflowEngine {
     try {
       return buildStepIntent(
         configuration,
+        triggerName,
         trigger,
         step,
         run,
@@ -594,6 +606,7 @@ export class DurableWorkflowEngine {
 
   private async buildMaterializedStepIntentOrFail(
     configuration: CompiledProjectConfiguration,
+    triggerName: string,
     trigger: CompiledProjectConfiguration["triggers"][number],
     step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
     run: AcceptedWorkflowRun,
@@ -608,13 +621,14 @@ export class DurableWorkflowEngine {
     const executionId = durableExecutionId({
       triggerRunId: run.id,
       configurationRevisionId: run.configurationRevisionId,
-      triggerName: run.configuredTriggerName,
+      triggerName,
       workflowStepRunId: stepRunId,
     });
     const materializedContext = await this.materializeStepContextOrFail(run, step, executionId);
     if (materializedContext === undefined) return undefined;
     const intent = await this.buildStepIntentOrFail(
       configuration,
+      triggerName,
       trigger,
       step,
       run,
@@ -871,15 +885,22 @@ export class DurableWorkflowEngine {
   }
 
   private async configurationForRun(
-    projectId: string,
-    revisionId: string,
-  ): Promise<CompiledProjectConfiguration> {
+    run: AcceptedWorkflowRun,
+  ): Promise<{ configuration: CompiledProjectConfiguration; triggerName: string }> {
     const database = this.options.database;
     if (database === null) throw new DatabaseUnavailableError();
-    const revision = await database.findProjectConfigurationRevision(projectId, revisionId);
+    const revision = await database.findProjectConfigurationRevision(
+      run.projectId,
+      run.configurationRevisionId,
+    );
     if (revision === undefined)
-      throw new Error(`workflow configuration revision not found: ${revisionId}`);
-    return asProjectConfiguration(parseCompiledHubConfig(revision.normalizedConfiguration));
+      throw new Error(`workflow configuration revision not found: ${run.configurationRevisionId}`);
+    return {
+      configuration: asProjectConfiguration(
+        parseCompiledHubConfig(revision.normalizedConfiguration),
+      ),
+      triggerName: triggerDocumentName(revision) ?? run.configuredTriggerName,
+    };
   }
 
   private async dispatch(intent: LaunchMachineIntent): Promise<unknown> {
@@ -907,6 +928,7 @@ export class DurableWorkflowEngine {
 
 function buildStepIntent(
   configuration: CompiledProjectConfiguration,
+  triggerName: string,
   trigger: CompiledProjectConfiguration["triggers"][number],
   step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
   run: Extract<Awaited<ReturnType<Database["findTriggerRunById"]>>, { outcome: "accepted" }>,
@@ -935,7 +957,7 @@ function buildStepIntent(
       organizationId: run.organizationId,
       projectId: run.projectId,
       triggerRunId: run.id,
-      triggerName: run.configuredTriggerName,
+      triggerName,
       environmentName,
       environment: {
         kind: "daemon",

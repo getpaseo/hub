@@ -3107,10 +3107,13 @@ class MemoryDatabase implements Database {
           step?.agentExecutionId == null
             ? undefined
             : this.agentExecutions.get(step.agentExecutionId);
+        const trigger = Array.from(this.organizationTriggers.values()).find(
+          ({ runtimeProjectId }) => runtimeProjectId === run.projectId,
+        );
         return [
           {
             id: run.id,
-            triggerName: run.configuredTriggerName,
+            triggerName: trigger?.name ?? run.configuredTriggerName,
             provider: receipt.provider,
             source: receipt.source,
             status: run.status,

@@ -124,6 +124,44 @@ describe.each(["embedded", "postgres"] as const)("schedule on %s", (kind) => {
       await fixture.close();
     }
   });
+
+  it("names a scheduled run of a trigger with several events after the trigger", async () => {
+    const fixture = await setup(kind);
+    const connection = new ScheduleTestDaemon();
+    let time = new Date();
+    const runtime = createHubRuntime({
+      database: fixture.database,
+      entitlements: createUnlimitedEntitlementsService(),
+      publicApi: { status: "unavailable" },
+      publicBaseUrl: "http://schedule.test",
+      completionTokenSecret: "schedule-test-secret",
+      executionDeadlineClock: { now: () => time.getTime(), schedule: () => () => {} },
+      daemonConnectionForId: (id) => (id === fixture.daemonId ? connection : undefined),
+    });
+    try {
+      // The schedule is declared first, so the manual event is the one compiled under the name.
+      await fixture.store.save({
+        yaml: scheduleYaml.replace("run:\n", "  manual.run: {}\nrun:\n"),
+        userId: null,
+      });
+      time = await fixture.due();
+      expect(await fixture.database.schedules.tick(time)).toBe(1);
+      await runtime.processWorkflowOutbox();
+      await expect.poll(() => connection.launches.length).toBe(1);
+
+      expect(connection.launches[0]!.workspaceTitle).toMatch(
+        /^Hub · scheduled-scan · [0-9a-f]{8}$/,
+      );
+      expect(
+        (await fixture.database.listOrganizationRunsSince("schedule-org", new Date(0), 10)).map(
+          ({ triggerName, source }) => ({ triggerName, source }),
+        ),
+      ).toEqual([{ triggerName: "scheduled-scan", source: "schedule.tick" }]);
+    } finally {
+      await runtime.stop();
+      await fixture.close();
+    }
+  });
 });
 
 it("two independent Hub workers leave queued work for the process with the daemon connection", async () => {
