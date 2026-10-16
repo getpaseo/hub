@@ -15,7 +15,7 @@ const SnapshotSchema = z.object({
 });
 export type AgentSnapshot = z.infer<typeof SnapshotSchema>;
 export type AgentEvent =
-  | { type: "agent_update"; agent: AgentSnapshot; timestamp: string }
+  | { type: "agent_update" | "agent_snapshot"; agent: AgentSnapshot; timestamp: string }
   | { type: "agent_stream"; agentId: string; event: DaemonAgentStreamEvent; timestamp: string };
 export interface AgentConnection {
   create(
@@ -214,6 +214,21 @@ export class DaemonAgents implements AgentConnection {
         type: "agent.timeline.set_subscription.request",
         agentIds: [...this.listeners.keys()],
       });
+      // Subscribe before reading so a state change after the snapshot is still observed.
+      // Fetch individually: the directory is paginated and later watches share its subscription.
+      try {
+        const response = await this.request({ type: "fetch_agent_request", agentId });
+        const agent = SnapshotSchema.safeParse(response["agent"]);
+        if (agent.success && agent.data.id === agentId)
+          listener({
+            type: "agent_snapshot",
+            agent: agent.data,
+            timestamp: this.now().toISOString(),
+          });
+      } catch (error) {
+        // Snapshot reads are best effort; older daemons keep their live subscription usable.
+        this.reportFailure(error, "daemon.agent.watch.snapshot");
+      }
     } catch (error) {
       listeners.delete(listener);
       throw error;

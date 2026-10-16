@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { expect, test, vi } from "vitest";
-import { DaemonAgents } from "./index.js";
+import { DaemonAgents, type AgentEvent } from "./index.js";
 import { DaemonResponseLostError, type DaemonCreateAgentOptions } from "../protocol.js";
 
 const prompt = "Full request context. ".repeat(1_000) + "End.";
@@ -267,6 +267,67 @@ test("observes agents without requiring the background-workspace feature", async
     includeBackground: true,
     subscribe: { subscriptionId: "hub-continuation" },
   });
+  unwatch();
+  agents.close();
+});
+
+test("every watch reads current state even when the directory subscription already exists", async () => {
+  const requests: Record<string, unknown>[] = [];
+  const agents = connect(requests);
+  const first: AgentEvent[] = [];
+  const second: AgentEvent[] = [];
+  const unwatchFirst = await agents.watch("agent", (event) => first.push(event));
+  const unwatchSecond = await agents.watch("agent", (event) => second.push(event));
+  expect(requests.filter((request) => request["type"] === "fetch_agents_request")).toHaveLength(1);
+  expect(requests.filter((request) => request["type"] === "fetch_agent_request")).toHaveLength(2);
+  expect(first).toMatchObject([{ type: "agent_snapshot", agent: { id: "agent", status: "idle" } }]);
+  expect(second).toEqual(first);
+  unwatchFirst();
+  unwatchSecond();
+  agents.close();
+});
+
+test.each([
+  { name: "missing", payload: {} },
+  { name: "null", payload: { agent: null } },
+  { name: "invalid", payload: { agent: { id: "agent", status: "unknown" } } },
+  {
+    name: "other-agent",
+    payload: { agent: { id: "other", workspaceId: "workspace", status: "idle" } },
+  },
+  { name: "rejected", payload: { error: "Unsupported request" } },
+])("keeps live observation when the snapshot response is $name", async (response) => {
+  const events: AgentEvent[] = [];
+  const agents = new DaemonAgents((frame) => {
+    const { message } = z
+      .object({ message: z.record(z.string(), z.unknown()) })
+      .parse(JSON.parse(frame));
+    const snapshot = message["type"] === "fetch_agent_request";
+    agents.receive({
+      type: "session",
+      message: {
+        type: snapshot && response.name === "rejected" ? "rpc_error" : "response",
+        payload: {
+          requestId: message["requestId"],
+          ...(snapshot ? response.payload : {}),
+        },
+      },
+    });
+  });
+  enable(agents);
+  const unwatch = await agents.watch("agent", (event) => events.push(event));
+  expect(events).toEqual([]);
+  agents.receive({
+    type: "session",
+    message: {
+      type: "agent_update",
+      payload: {
+        kind: "upsert",
+        agent: { id: "agent", workspaceId: "workspace", status: "idle" },
+      },
+    },
+  });
+  expect(events).toMatchObject([{ type: "agent_update", agent: { status: "idle" } }]);
   unwatch();
   agents.close();
 });

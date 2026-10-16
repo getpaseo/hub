@@ -1266,6 +1266,38 @@ describe("daemon enrollment and execution", () => {
     assert.notEqual(execution.hubActionCompletedAt, null);
   });
 
+  it.each([false, true])(
+    "recovers archival when a background %s agent became idle during a Hub restart",
+    async (background) => {
+      await hub.connectDaemon();
+      const result = await hub.dispatch({ autoArchive: true, background });
+      assert.equal(await hub.completeExecution(result.execution.id), 200);
+      await hub.completeCurrentTurn(result.agentId, { becomeIdle: false });
+      await hub.waitForTurnAcknowledgement(result.execution.id);
+      const pending = await hub.execution(result.execution.id);
+      assert.equal(pending.status, "succeeded");
+      assert.notEqual(pending.completedByAgentAt, null);
+      assert.equal(pending.hubActionAcknowledgements.finishExecutionCall?.status, "completed");
+      assert.equal(pending.hubActionAcknowledgements.idleAt, null);
+      assert.equal(pending.hubActionReadyAt, null);
+      assert.deepEqual(hub.controlActions(), []);
+
+      await hub.disconnectDaemon();
+      await hub.restartAppWithoutDaemonReconnect();
+      hub.agentBecomesIdleWhileDisconnected(result.agentId);
+      await hub.reconnectDaemon();
+      await hub.waitForControlAction("archive");
+      await hub.completePendingCleanup();
+
+      const recovered = await hub.execution(result.execution.id);
+      assert.notEqual(recovered.hubActionAcknowledgements.idleAt, null);
+      assert.notEqual(recovered.hubActionReadyAt, null);
+      assert.notEqual(recovered.hubActionCompletedAt, null);
+      assert.deepEqual(hub.controlActions(), ["archive"]);
+      await hub.runtimeResources({ executionSubscriptions: 0 });
+    },
+  );
+
   it("recovers a pending archive after restart and a missed provider acknowledgement", async () => {
     await hub.connectDaemon();
     const result = await hub.dispatch({ autoArchive: true });

@@ -641,6 +641,7 @@ export class DaemonDispatchLifecycle {
     executionId: string,
     daemonId: string,
     event: DaemonEvent,
+    source: "live" | "snapshot" = "live",
   ): Promise<void> {
     if (event.type === "agent_stream") {
       const observedAt = new Date(event.timestamp);
@@ -673,6 +674,12 @@ export class DaemonDispatchLifecycle {
         await this.acknowledgeAgentExecutionHubAction(executionId, event.agentId, observedAt);
       }
       return;
+    }
+    if (source === "snapshot") {
+      // Watches read state before delivering a prompt. That state belongs to the previous turn
+      // until this execution has finished; it must not start or fail the new execution.
+      const execution = await this.options.database.findAgentExecutionById(executionId);
+      if (execution === undefined || execution.completedByAgentAt === null) return;
     }
     if (isInterruptedAgentState(event.agent)) {
       await this.options.database.attachAgentToExecution(executionId, daemonId, event.agentId);
@@ -1564,11 +1571,17 @@ export class DaemonDispatchLifecycle {
         ? { ...event, executionId }
         : {
             ...event,
+            type: "agent_update" as const,
             executionId,
             agentId: event.agent.id,
             agent: { ...event.agent, status: event.agent.status },
           };
-    void this.queueDaemonEvent(executionId, daemonId, normalized).catch((error: unknown) => {
+    void this.queueDaemonEvent(
+      executionId,
+      daemonId,
+      normalized,
+      event.type === "agent_snapshot" ? "snapshot" : "live",
+    ).catch((error: unknown) => {
       this.report(error, "daemon.session.event", { executionId });
     });
   }
@@ -1604,11 +1617,12 @@ export class DaemonDispatchLifecycle {
     executionId: string,
     daemonId: string,
     event: DaemonEvent,
+    source: "live" | "snapshot" = "live",
   ): Promise<void> {
     const previous = this.pendingStreamHandlersByExecution.get(executionId) ?? Promise.resolve();
     const current = previous
       .catch(() => undefined)
-      .then(async () => this.handleDaemonEvent(executionId, daemonId, event));
+      .then(async () => this.handleDaemonEvent(executionId, daemonId, event, source));
     this.pendingStreamHandlersByExecution.set(executionId, current);
     const clearCurrent = () => {
       if (this.pendingStreamHandlersByExecution.get(executionId) === current) {

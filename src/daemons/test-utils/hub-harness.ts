@@ -878,8 +878,16 @@ export class HubHarness {
   async emitReplacementTurn(agentId: string): Promise<void> {
     await this.requireDaemon().startsTurn(agentId);
   }
-  async completeCurrentTurn(agentId: string): Promise<void> {
-    await this.requireDaemon().completesTurn(agentId);
+  async completeCurrentTurn(agentId: string, options?: { becomeIdle: boolean }): Promise<void> {
+    await this.requireDaemon().completesTurn(agentId, options);
+  }
+  agentBecomesIdleWhileDisconnected(agentId: string): void {
+    this.requireDaemon().changesStatus(agentId, "idle");
+  }
+  async waitForTurnAcknowledgement(executionId: string): Promise<void> {
+    await waitFor(
+      async () => (await this.execution(executionId)).hubActionAcknowledgements.terminalAt !== null,
+    );
   }
   async completeCurrentTurnWithoutFinishTimeline(agentId: string): Promise<void> {
     await this.requireDaemon().completesTurnWithoutFinishTimeline(agentId);
@@ -2524,7 +2532,7 @@ class TestDaemon {
       },
     });
   }
-  async completesTurn(agentId: string): Promise<void> {
+  async completesTurn(agentId: string, options = { becomeIdle: true }): Promise<void> {
     this.send({
       type: "agent_stream",
       payload: {
@@ -2552,7 +2560,7 @@ class TestDaemon {
         event: { type: "turn_completed", provider: "opencode" },
       },
     });
-    this.changesStatus(agentId, "idle");
+    if (options.becomeIdle) this.changesStatus(agentId, "idle");
   }
   async completesTurnWithoutFinishTimeline(agentId: string): Promise<void> {
     this.send({
