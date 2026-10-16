@@ -1,5 +1,5 @@
 {
-  "id": "83b115de-9c22-458c-a0df-b35274b899cb",
+  "id": "bc467c07-9429-446d-8161-3d59b0a32c79",
   "prevId": "5d38ccc3-86d8-40ad-8f9c-9d1c04669de2",
   "version": "7",
   "dialect": "postgresql",
@@ -2068,6 +2068,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "provider_application_id": {
+          "name": "provider_application_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "installation_id": {
           "name": "installation_id",
           "type": "bigint",
@@ -2155,7 +2161,7 @@
       "checkConstraints": {
         "github_installation_syncs_evidence_check": {
           "name": "github_installation_syncs_evidence_check",
-          "value": "(\n    \"github_installation_syncs\".\"kind\" = 'webhook' AND \"github_installation_syncs\".\"delivery_id\" IS NOT NULL AND \"github_installation_syncs\".\"signature_hash\" IS NOT NULL\n    AND \"github_installation_syncs\".\"source\" IS NOT NULL AND \"github_installation_syncs\".\"source\" IN ('github.installation', 'github.installation_repositories') AND \"github_installation_syncs\".\"payload\" IS NOT NULL\n  ) OR (\n    \"github_installation_syncs\".\"kind\" = 'reconcile' AND \"github_installation_syncs\".\"connection_id\" IS NOT NULL AND \"github_installation_syncs\".\"delivery_id\" IS NULL\n    AND \"github_installation_syncs\".\"signature_hash\" IS NULL AND \"github_installation_syncs\".\"source\" IS NULL AND \"github_installation_syncs\".\"payload\" IS NULL\n  )"
+          "value": "(\n    \"github_installation_syncs\".\"kind\" = 'webhook' AND \"github_installation_syncs\".\"provider_application_id\" IS NOT NULL AND \"github_installation_syncs\".\"delivery_id\" IS NOT NULL AND \"github_installation_syncs\".\"signature_hash\" IS NOT NULL\n    AND \"github_installation_syncs\".\"source\" IS NOT NULL AND \"github_installation_syncs\".\"source\" IN ('github.installation', 'github.installation_repositories') AND \"github_installation_syncs\".\"payload\" IS NOT NULL\n  ) OR (\n    \"github_installation_syncs\".\"kind\" = 'reconcile' AND \"github_installation_syncs\".\"connection_id\" IS NOT NULL AND \"github_installation_syncs\".\"delivery_id\" IS NULL\n    AND \"github_installation_syncs\".\"signature_hash\" IS NULL AND \"github_installation_syncs\".\"source\" IS NULL AND \"github_installation_syncs\".\"payload\" IS NULL\n  )"
         }
       },
       "isRLSEnabled": false

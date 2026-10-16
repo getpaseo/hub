@@ -667,7 +667,13 @@ export type ManualEventPersistence =
   | { status: "accepted"; event: DurableProviderEvent }
   | { status: "duplicate"; providerEventReceiptId: string };
 
+export interface GitHubInstallationSyncOwner {
+  providerApplicationId: string;
+  configurationVersion: number;
+}
+
 export interface GitHubLifecycleReceiptClaimInput {
+  providerApplicationId: string;
   installationId: number;
   deliveryId: string;
   signatureHash: string;
@@ -1302,17 +1308,23 @@ export interface Database {
   acceptLinearEvent(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance>;
   persistManualEvent(input: PersistManualEventInput): Promise<ManualEventPersistence>;
   synchronizeGitHubInstallation<T>(installationId: number, operation: () => Promise<T>): Promise<T>;
-  pendingGitHubInstallationSyncs(): Promise<
+  pendingGitHubInstallationSyncs(
+    owner: GitHubInstallationSyncOwner,
+  ): Promise<
     Array<Extract<GitHubInstallationSyncClaim, { status: "claimed" }> & { removeBinding: boolean }>
   >;
   claimGitHubLifecycleReceipt(
     input: GitHubLifecycleReceiptClaimInput,
   ): Promise<GitHubInstallationSyncClaim>;
   applyGitHubInstallationSync(
+    owner: GitHubInstallationSyncOwner,
     claim: Extract<GitHubInstallationSyncClaim, { status: "claimed" }>,
     result: GitHubInstallationSyncResult,
   ): Promise<void>;
-  retryGitHubInstallationSync(installationSyncId: string): Promise<void>;
+  retryGitHubInstallationSync(
+    owner: GitHubInstallationSyncOwner,
+    installationSyncId: string,
+  ): Promise<void>;
   findProviderEventReceiptByDeliveryId(
     deliveryId: string,
     organizationId?: string,

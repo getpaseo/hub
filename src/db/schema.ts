@@ -950,6 +950,7 @@ export const githubInstallationSyncs = pgTable(
   {
     id: uuid().defaultRandom().primaryKey(),
     kind: text().$type<"webhook" | "reconcile">().notNull(),
+    providerApplicationId: text("provider_application_id"),
     installationId: bigint("installation_id", { mode: "number" }).notNull(),
     // Preserve the original binding after disconnect; work must not follow its replacement.
     connectionId: uuid("connection_id"),
@@ -967,7 +968,7 @@ export const githubInstallationSyncs = pgTable(
     check(
       "github_installation_syncs_evidence_check",
       sql`(
-    ${table.kind} = 'webhook' AND ${table.deliveryId} IS NOT NULL AND ${table.signatureHash} IS NOT NULL
+    ${table.kind} = 'webhook' AND ${table.providerApplicationId} IS NOT NULL AND ${table.deliveryId} IS NOT NULL AND ${table.signatureHash} IS NOT NULL
     AND ${table.source} IS NOT NULL AND ${table.source} IN ('github.installation', 'github.installation_repositories') AND ${table.payload} IS NOT NULL
   ) OR (
     ${table.kind} = 'reconcile' AND ${table.connectionId} IS NOT NULL AND ${table.deliveryId} IS NULL

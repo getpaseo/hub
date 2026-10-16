@@ -8,6 +8,9 @@ import { it } from "vitest";
 import { embeddedDatabaseRuntime } from "../../db/runtime/index.js";
 import { createDatabase } from "../../db/pg.js";
 import { createGitHubRegistration } from "./index.js";
+import { DynamicProviderRuntime } from "../../provider-applications/internal/runtime-owner.js";
+
+const GITHUB_OWNER = { providerApplicationId: "42", configurationVersion: 0 };
 
 it("learns all 143 repositories from an installation webhook without enumerated repositories", async () => {
   await fixture(async ({ github, send, drain, database }) => {
@@ -138,6 +141,7 @@ it("acknowledges a durably accepted webhook while the GitHub request is still bl
 it("does not apply a receipt for a disconnected binding to a replacement connection", async () => {
   await fixture(async ({ database, runtime }) => {
     const claim = await database.claimGitHubLifecycleReceipt({
+      providerApplicationId: "42",
       installationId: 42,
       deliveryId: "old-binding",
       signatureHash: "old",
@@ -149,10 +153,121 @@ it("does not apply a receipt for a disconnected binding to a replacement connect
     if (claim.status !== "claimed") throw new Error("receipt unavailable");
     await runtime.query(`delete from github_connections where installation_id = 42`);
     await runtime.query(
-      `insert into github_connections (organization_id, installation_id, slug, account_id, account_login, account_type, status) values ('org', 42, 'new', '1', 'new', 'Organization', 'active')`,
+      `insert into github_connections (provider_application_id, organization_id, installation_id, slug, account_id, account_login, account_type, status) values ('42', 'org', 42, 'new', '1', 'new', 'Organization', 'active')`,
     );
-    await database.applyGitHubInstallationSync(claim, { status: "absent", removeBinding: true });
+    await database.applyGitHubInstallationSync(GITHUB_OWNER, claim, {
+      status: "absent",
+      removeBinding: true,
+    });
     assert.equal((await database.findGitHubConnection(42))?.accountLogin, "new");
+  });
+});
+
+it("leaves in-flight work pending when its configuration loses activation", async () => {
+  await fixture(async ({ database, runtime, github, send, drain }) => {
+    const gate = deferred();
+    github.wait = gate.promise;
+    await send("installation", "created", "activation-changed");
+    try {
+      while (github.pages.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+      await runtime.query(
+        `update runtime_provider_activation set configuration_version = 1 where provider = 'github'`,
+      );
+    } finally {
+      gate.resolve();
+      await drain();
+    }
+    assert.deepEqual(await database.listGitHubRepositories("org"), []);
+    assert.equal(
+      (await runtime.query(`select * from github_installation_syncs where retry_at is not null`))
+        .rows.length,
+      1,
+    );
+    assert.deepEqual(await database.pendingGitHubInstallationSyncs(GITHUB_OWNER), []);
+    assert.equal(
+      (await database.pendingGitHubInstallationSyncs({ ...GITHUB_OWNER, configurationVersion: 1 }))
+        .length,
+      1,
+    );
+  });
+});
+
+it("does not let an unpublished app candidate consume the active app's pending synchronization", async () => {
+  await fixture(async ({ database, github }) => {
+    await database.claimGitHubLifecycleReceipt({
+      providerApplicationId: "42",
+      installationId: 42,
+      deliveryId: "active-app",
+      signatureHash: "active-app",
+      source: "github.installation",
+      payload: {},
+      receivedAt: new Date(),
+    });
+    let candidateReads = 0;
+    const owner = new DynamicProviderRuntime({
+      database,
+      auth: {
+        handle: async () => new Response(),
+        resources: async () => {
+          throw new Error("unused");
+        },
+        resolveAccount: async () => {
+          throw new Error("unused");
+        },
+        resolveOrganizationAccess: async () => {
+          throw new Error("unused");
+        },
+        rejectCookieMutation: () => undefined,
+        close: async () => undefined,
+      },
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: ({ configuration, configurationVersion }) => {
+        if (configuration.provider !== "github") throw new Error("unexpected provider");
+        return createGitHubRegistration({
+          database,
+          auth: null,
+          applicationBaseUrl: "https://hub.test",
+          publicBaseUrl: "https://hub.test",
+          configuration,
+          configurationVersion,
+          appAuth: {
+            ...github.auth,
+            getInstallation: async () => {
+              candidateReads += 1;
+              return undefined;
+            },
+          },
+        });
+      },
+    });
+    const stable = owner
+      .registrations()
+      .find((registration) => registration.connection.name === "github")!;
+    await stable.sources[0]!.start(async () => undefined);
+    const candidate = await owner.prepare(
+      "github",
+      {
+        provider: "github",
+        appId: "84",
+        appSlug: "other-app",
+        clientId: "client",
+        clientSecret: "secret",
+        privateKey: "unused",
+        webhookSecret: "secret",
+      },
+      "https://hub.test",
+      { provider: "github", id: "84", name: "Other", ownerLogin: "other" },
+      1,
+    );
+    try {
+      await candidate.start();
+    } finally {
+      await candidate.close();
+      await stable.sources[0]!.stop();
+    }
+    assert.ok(await database.findGitHubConnection(42));
+    assert.equal(candidateReads, 0);
+    assert.equal((await database.pendingGitHubInstallationSyncs(GITHUB_OWNER)).length, 1);
   });
 });
 
@@ -216,7 +331,10 @@ async function createFixture() {
   const database = createDatabase(runtime, locks);
   await runtime.query(`insert into organization (id, name, slug) values ('org', 'Org', 'org')`);
   await runtime.query(
-    `insert into github_connections (organization_id, installation_id, slug, account_id, account_login, account_type, status) values ('org', 42, 'acme', '1', 'acme', 'Organization', 'active')`,
+    `insert into github_connections (provider_application_id, organization_id, installation_id, slug, account_id, account_login, account_type, status) values ('42', 'org', 42, 'acme', '1', 'acme', 'Organization', 'active')`,
+  );
+  await runtime.query(
+    `insert into runtime_provider_activation (provider, provider_application_id, configuration_version) values ('github', '42', 0)`,
   );
   const github = new GitHubTransport();
   const register = () =>

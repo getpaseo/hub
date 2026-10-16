@@ -75,6 +75,7 @@ import type {
   AcceptSlackEventInput,
   UpdateLinearConnectionTokensInput,
   LinearConnectionRefreshOperation,
+  GitHubInstallationSyncOwner,
   GitHubInstallationSyncClaim,
   GitHubLifecycleReceiptClaimInput,
   GitHubInstallationSyncResult,
@@ -148,9 +149,12 @@ class PgDatabase implements Database {
   ) {
     this.schedules = new ScheduleRepository(this.pool);
     this.executionAuthority = new ExecutionAuthorityRepository(this.pool);
-    const database = this.pool.drizzle();
     this.connections = new ConnectionRepository(this.pool, locks);
-    this.triggerAcceptance = new ProviderEventAcceptanceRepository(database, this.connections);
+    this.triggerAcceptance = new ProviderEventAcceptanceRepository(
+      this.pool,
+      locks,
+      this.connections,
+    );
   }
 
   acceptGitHubEvent(input: AcceptGitHubEventInput) {
@@ -183,8 +187,8 @@ class PgDatabase implements Database {
     );
   }
 
-  pendingGitHubInstallationSyncs() {
-    return this.triggerAcceptance.pendingGitHubInstallationSyncs();
+  pendingGitHubInstallationSyncs(owner: GitHubInstallationSyncOwner) {
+    return this.triggerAcceptance.pendingGitHubInstallationSyncs(owner);
   }
 
   claimGitHubLifecycleReceipt(input: GitHubLifecycleReceiptClaimInput) {
@@ -192,14 +196,15 @@ class PgDatabase implements Database {
   }
 
   applyGitHubInstallationSync(
+    owner: GitHubInstallationSyncOwner,
     claim: Extract<GitHubInstallationSyncClaim, { status: "claimed" }>,
     result: GitHubInstallationSyncResult,
   ) {
-    return this.triggerAcceptance.applyGitHubInstallationSync(claim, result);
+    return this.triggerAcceptance.applyGitHubInstallationSync(owner, claim, result);
   }
 
-  retryGitHubInstallationSync(installationSyncId: string) {
-    return this.triggerAcceptance.retryGitHubInstallationSync(installationSyncId);
+  retryGitHubInstallationSync(owner: GitHubInstallationSyncOwner, installationSyncId: string) {
+    return this.triggerAcceptance.retryGitHubInstallationSync(owner, installationSyncId);
   }
 
   async markProviderEventDropped(

@@ -32,7 +32,6 @@ import {
   type OrganizationSection,
   type OrganizationSettingsSection,
 } from "./projects/navigation.js";
-import { ProjectConfiguration } from "./projects/configuration.js";
 
 export interface BuiltApplication {
   origin: string;
@@ -1343,31 +1342,6 @@ export class PaseoHub {
       await user.signUp(account);
       await user.createOrganization("Unconfigured");
       await user.expectNotConfiguredConnections();
-    } finally {
-      await context.close();
-    }
-  }
-
-  async proveManualConfigurationWithoutGitHub(account: Account, rawYaml: string): Promise<void> {
-    const application = await this.startApplication({
-      databaseProfile: "fresh",
-      providerScenario: "discord-only",
-    });
-    const context = await this.browser.newContext();
-    try {
-      const page = await context.newPage();
-      const user = new HubUser(application, context, page);
-      const navigation = new ProjectNavigation(page);
-      const configuration = new ProjectConfiguration(page);
-      await user.signUp(account);
-      await user.createOrganization("Discord only");
-      await this.seedDaemonForEmail(application, account.email, "editor-daemon");
-      await navigation.openProject("Default");
-      await navigation.openProjectSection("Configuration");
-      await configuration.saveManualConfiguration(rawYaml);
-      await configuration.expectActiveRevision(1);
-      await page.waitForLoadState("networkidle");
-      expect(application.logs()).not.toContain("github_repositories_unavailable");
     } finally {
       await context.close();
     }

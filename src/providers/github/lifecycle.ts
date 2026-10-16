@@ -1,4 +1,8 @@
-import type { Database, GitHubLifecycleReceiptClaimInput } from "../../db/types.js";
+import type {
+  Database,
+  GitHubLifecycleReceiptClaimInput,
+  GitHubInstallationSyncOwner,
+} from "../../db/types.js";
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import type { GitHubConnectionClient } from "./client.js";
 import { reportFailure } from "../../failures/index.js";
@@ -8,20 +12,21 @@ export function createGitHubLifecycle(
   database: Database,
   client: GitHubConnectionClient,
   repositories: Pick<GitHubConfigurationProvider, "listInstallationRepositories">,
+  owner: GitHubInstallationSyncOwner,
 ) {
   let timer: ReturnType<typeof setInterval> | undefined;
   let running: Promise<void> | undefined;
 
   async function drain(): Promise<void> {
     for (;;) {
-      const pending = await database.pendingGitHubInstallationSyncs();
+      const pending = await database.pendingGitHubInstallationSyncs(owner);
       if (pending.length === 0) return;
       for (const claim of pending) {
         await database.synchronizeGitHubInstallation(claim.installationId, async () => {
           try {
             const evidence = await client.getInstallation(claim.installationId);
             if (evidence.status === "absent") {
-              await database.applyGitHubInstallationSync(claim, {
+              await database.applyGitHubInstallationSync(owner, claim, {
                 status: "absent",
                 removeBinding: claim.removeBinding,
               });
@@ -33,13 +38,13 @@ export function createGitHubLifecycle(
                 : await repositories.listInstallationRepositories({
                     installationId: claim.installationId,
                   });
-            await database.applyGitHubInstallationSync(claim, {
+            await database.applyGitHubInstallationSync(owner, claim, {
               status: "present",
               identity: evidence.identity,
               repositories: available,
             });
           } catch (error) {
-            await database.retryGitHubInstallationSync(claim.installationSyncId);
+            await database.retryGitHubInstallationSync(owner, claim.installationSyncId);
             reportFailure(error, {
               operation: "github.lifecycle.synchronize",
               component: "connections",
@@ -67,8 +72,13 @@ export function createGitHubLifecycle(
   }
 
   return {
-    async accept(input: GitHubLifecycleReceiptClaimInput): Promise<void> {
-      await database.claimGitHubLifecycleReceipt(input);
+    async accept(
+      input: Omit<GitHubLifecycleReceiptClaimInput, "providerApplicationId">,
+    ): Promise<void> {
+      await database.claimGitHubLifecycleReceipt({
+        ...input,
+        providerApplicationId: owner.providerApplicationId,
+      });
       wake();
     },
     start(): void {

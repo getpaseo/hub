@@ -103,7 +103,10 @@ export function createGitHubRegistration(
     });
   const githubConfiguration =
     options.configurationProvider ?? createGitHubConfigurationProvider(appAuth);
-  const lifecycle = createGitHubLifecycle(database, client, githubConfiguration);
+  const lifecycle = createGitHubLifecycle(database, client, githubConfiguration, {
+    providerApplicationId: configuration.appId,
+    configurationVersion: options.configurationVersion ?? 0,
+  });
   const connection =
     options.auth === null
       ? githubConnectionStatus(true)
