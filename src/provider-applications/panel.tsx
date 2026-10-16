@@ -1,5 +1,6 @@
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop -- open/close handlers are bound per rendered provider section */
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSnapshotQuery } from "../queries/index.js";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { completeAppSetup } from "../auth/functions.js";
@@ -26,7 +27,11 @@ const OVERVIEW_KEY = ["provider-applications"] as const;
  */
 function useProviderApplicationsOverview() {
   const load = useServerFn(providerApplicationsOverview);
-  return useQuery({ queryKey: OVERVIEW_KEY, queryFn: () => load(), refetchInterval: 1_000 });
+  return useSnapshotQuery({
+    queryKey: OVERVIEW_KEY,
+    queryFn: () => load(),
+    refetchInterval: 1_000,
+  });
 }
 
 function connectedProviderCount(overview: ProviderApplicationOverview): number {
@@ -55,17 +60,17 @@ function ProviderApplications({
     if (returned !== undefined) section.current?.scrollIntoView({ block: "start" });
   }, [returned]);
 
-  if (query.isPending) return <OverviewLoading />;
-  if (query.isError || query.data.status === "error") {
+  if (query.status === "pending") return <OverviewLoading />;
+  if (query.status === "error") {
     return (
       <FailureAlert
         title="Your apps couldn't be loaded"
-        error={query.data}
+        error={query.error}
         fallback="Hub did not answer. Check your connection, then reload the page."
       />
     );
   }
-  const overview = query.data.data;
+  const overview = query.data;
   return (
     <div className="grid min-w-0 gap-3">
       {PROVIDER_GUIDES.map((guide) => (
@@ -121,7 +126,7 @@ export function AppSetupEntry({
 }) {
   const queryClient = useQueryClient();
   const overview = useProviderApplicationsOverview();
-  const connected = overview.data?.status === "ok" ? connectedProviderCount(overview.data.data) : 0;
+  const connected = overview.status === "success" ? connectedProviderCount(overview.data) : 0;
   const finish = useMutation({
     mutationFn: useServerFn(completeAppSetup) as (
       input: Parameters<typeof completeAppSetup>[0],

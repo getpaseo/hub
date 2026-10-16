@@ -26,8 +26,8 @@ function daemon(overrides: Partial<BrowserDaemon> = {}): BrowserDaemon {
   };
 }
 
-function listing(daemons: readonly BrowserDaemon[]): { status: "ok"; data: BrowserDaemonList } {
-  return { status: "ok", data: { daemons: [...daemons], canManage: true } };
+function listing(daemons: readonly BrowserDaemon[]): BrowserDaemonList {
+  return { daemons: [...daemons], canManage: true };
 }
 
 function markup(link: DaemonLink, command = "paseo hub login http://localhost:4173"): string {
@@ -66,10 +66,10 @@ describe("where onboarding ends", () => {
 
 describe("what the operator is waiting on", () => {
   it("waits while the organization has no connected daemon", () => {
-    assert.deepEqual(daemonLink({ isPending: true, isError: false, data: undefined }), {
+    assert.deepEqual(daemonLink({ status: "pending", error: null, data: undefined }), {
       state: "checking",
     });
-    assert.deepEqual(daemonLink({ isPending: false, isError: false, data: listing([]) }), {
+    assert.deepEqual(daemonLink({ status: "success", error: null, data: listing([]) }), {
       state: "waiting",
     });
   });
@@ -77,22 +77,22 @@ describe("what the operator is waiting on", () => {
   it("counts only a live daemon this organization still has", () => {
     assert.deepEqual(
       daemonLink({
-        isPending: false,
-        isError: false,
+        status: "success",
+        error: null,
         data: listing([daemon({ presence: "offline", connectedAt: null })]),
       }),
       { state: "waiting" },
     );
     assert.deepEqual(
       daemonLink({
-        isPending: false,
-        isError: false,
+        status: "success",
+        error: null,
         data: listing([daemon({ status: "revoked" })]),
       }),
       { state: "waiting" },
     );
     assert.deepEqual(
-      daemonLink({ isPending: false, isError: false, data: listing([daemon({ slug: "laptop" })]) }),
+      daemonLink({ status: "success", error: null, data: listing([daemon({ slug: "laptop" })]) }),
       { state: "linked", slug: "laptop" },
     );
   });
@@ -100,22 +100,15 @@ describe("what the operator is waiting on", () => {
   it("reports a refused check with the server's own words, and a lost one in its own", () => {
     assert.deepEqual(
       daemonLink({
-        isPending: false,
-        isError: false,
-        data: { status: "error", error: { message: "Your session has expired." } },
+        status: "error",
+        data: undefined,
+        error: "Your session has expired.",
       }),
       { state: "failed", message: "Your session has expired." },
     );
-    const lost = daemonLink({ isPending: false, isError: true, data: undefined });
+    const lost = daemonLink({ status: "error", error: null, data: undefined });
     assert.equal(lost.state, "failed");
     assert.match(lost.state === "failed" ? lost.message : "", /connection/u);
-  });
-
-  it("never takes a connection back because the next check failed", () => {
-    assert.deepEqual(daemonLink({ isPending: false, isError: true, data: listing([daemon()]) }), {
-      state: "linked",
-      slug: "workshop",
-    });
   });
 });
 

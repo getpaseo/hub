@@ -1,5 +1,6 @@
+import { useSnapshotQuery } from "../queries/index.js";
 import { useCallback, useState, type FormEvent } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import {
   DataCell,
@@ -95,14 +96,17 @@ function OrganizationPicker({
   onSelect: (slug: string) => void;
 }) {
   const load = useServerFn(operatorOrganizations);
-  const query = useQuery({ queryKey: ["operator", "organizations"], queryFn: () => load() });
+  const query = useSnapshotQuery({
+    queryKey: ["operator", "organizations"],
+    queryFn: () => load(),
+  });
 
-  if (query.isPending) return <OrganizationPickerLoading />;
-  if (query.isError || query.data.status === "error") {
+  if (query.status === "pending") return <OrganizationPickerLoading />;
+  if (query.status === "error") {
     return (
       <FailureAlert
         title="Operator console unavailable"
-        error={query.data}
+        error={query.error}
         fallback="Hub did not receive the organization list. Check your connection and reload the page."
       />
     );
@@ -114,7 +118,7 @@ function OrganizationPicker({
           <SelectValue placeholder="Select an organization" />
         </SelectTrigger>
         <SelectContent>
-          {query.data.data.map((organization) => (
+          {query.data.map((organization) => (
             <SelectItem key={organization.id} value={organization.slug}>
               {organization.name}
             </SelectItem>
@@ -127,22 +131,22 @@ function OrganizationPicker({
 
 function OperatorOrganization({ slug }: { slug: string }) {
   const load = useServerFn(operatorSnapshot);
-  const query = useQuery({
+  const query = useSnapshotQuery({
     queryKey: ["operator", "snapshot", slug],
     queryFn: () => load({ data: { organizationSlug: slug } }),
   });
 
-  if (query.isPending) return <OperatorOrganizationLoading />;
-  if (query.isError || query.data.status === "error") {
+  if (query.status === "pending") return <OperatorOrganizationLoading />;
+  if (query.status === "error") {
     return (
       <FailureAlert
         title="Entitlements unavailable"
-        error={query.data}
+        error={query.error}
         fallback="Hub did not receive this organization's entitlements. Check your connection and reload the page."
       />
     );
   }
-  return <OrganizationContent snapshot={query.data.data} slug={slug} />;
+  return <OrganizationContent snapshot={query.data} slug={slug} />;
 }
 
 function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: string }) {

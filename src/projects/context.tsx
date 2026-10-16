@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useSnapshotQuery } from "../queries/index.js";
 import { useServerFn } from "@tanstack/react-start";
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 import { usePresentedTenantScope } from "../navigation/index.js";
@@ -27,18 +27,18 @@ const RouteTenantStatusContext = createContext<RouteTenantStatus>({ state: "outs
 export function RouteTenantProvider({ children }: { children: ReactNode }) {
   const scope = usePresentedTenantScope();
   const load = useServerFn(tenantContext);
-  const snapshot = useQuery({
+  const snapshot = useSnapshotQuery({
     queryKey: ["tenant", scope?.organizationSlug, scope?.projectSlug],
     queryFn: () => load({ data: scope! }),
     enabled: scope !== undefined,
   });
-  const tenant = scope !== undefined && snapshot.data?.status === "ok" ? snapshot.data.data : null;
+  const tenant = scope !== undefined && snapshot.status === "success" ? snapshot.data : null;
   // The status is recomputed only when the read moves, so the whole dashboard below does not
   // rerender because something else in the tree did.
   const outside = scope === undefined;
   const projectScoped = scope?.projectSlug !== undefined;
-  const pending = snapshot.isPending;
-  const failure = readFailure(snapshot);
+  const pending = snapshot.status === "pending";
+  const failure = snapshot.status === "error" ? (snapshot.error ?? "") : undefined;
   const status = useMemo(
     () => tenantStatus({ outside, projectScoped, pending, failure }),
     [outside, projectScoped, pending, failure],
@@ -48,15 +48,6 @@ export function RouteTenantProvider({ children }: { children: ReactNode }) {
       <ProjectTenantContext.Provider value={tenant}>{children}</ProjectTenantContext.Provider>
     </RouteTenantStatusContext.Provider>
   );
-}
-
-/** The server's message, the empty string when the request never arrived, undefined when it worked. */
-function readFailure(snapshot: {
-  isError: boolean;
-  data: { status: "ok" } | { status: "error"; error: { message: string } } | undefined;
-}): string | undefined {
-  if (snapshot.data?.status === "error") return snapshot.data.error.message;
-  return snapshot.isError ? "" : undefined;
 }
 
 /** `failure` is the server's message, the empty string for a request that never arrived. */

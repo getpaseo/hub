@@ -1,5 +1,5 @@
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- the generated route type cannot express a server-resolved organization slug */
-import { useQuery } from "@tanstack/react-query";
+import { useSnapshotQuery, type Snapshot } from "../queries/index.js";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useCallback } from "react";
@@ -8,7 +8,6 @@ import { CopyField } from "../components/app/copy-field.js";
 import { FailureAlert } from "../components/app/failure-alert.js";
 import { LoadingLine } from "../components/app/loading.js";
 import { Button } from "../components/ui/button.js";
-import type { Result } from "../contract/respond.js";
 import { daemonList, type BrowserDaemonList } from "./functions.js";
 import { daemonsQueryKey } from "./status.js";
 
@@ -51,29 +50,17 @@ export type DaemonLink =
   | { state: "failed"; message: string }
   | { state: "linked"; slug: string };
 
-export function daemonLink(snapshot: {
-  isPending: boolean;
-  isError: boolean;
-  data: Result<BrowserDaemonList> | undefined;
-}): DaemonLink {
-  const connected =
-    snapshot.data?.status === "ok"
-      ? snapshot.data.data.daemons.find(
-          (daemon) => daemon.status === "active" && daemon.presence === "connected",
-        )
-      : undefined;
-  if (connected !== undefined) return { state: "linked", slug: connected.slug };
-  if (snapshot.data?.status === "error") {
-    return { state: "failed", message: snapshot.data.error.message };
-  }
-  if (snapshot.isError) {
+export function daemonLink(snapshot: Snapshot<BrowserDaemonList>): DaemonLink {
+  if (snapshot.status === "pending") return { state: "checking" };
+  if (snapshot.status === "error")
     return {
       state: "failed",
-      message: "Hub didn't answer. Check your connection, then check again.",
+      message: snapshot.error ?? "Hub didn't answer. Check your connection, then check again.",
     };
-  }
-  if (snapshot.isPending) return { state: "checking" };
-  return { state: "waiting" };
+  const connected = snapshot.data.daemons.find(
+    (daemon) => daemon.status === "active" && daemon.presence === "connected",
+  );
+  return connected === undefined ? { state: "waiting" } : { state: "linked", slug: connected.slug };
 }
 
 /**
@@ -93,13 +80,12 @@ export function DaemonHandoffEntry({
   onContinue: () => void;
 }) {
   const load = useServerFn(daemonList);
-  const snapshot = useQuery({
+  const snapshot = useSnapshotQuery({
     queryKey: daemonsQueryKey(accountId, organizationId),
     queryFn: () => load({ data: { organizationSlug } }),
     refetchInterval: POLL_INTERVAL_MS,
   });
-  const refetch = snapshot.refetch;
-  const retry = useCallback(() => void refetch(), [refetch]);
+  const retry = snapshot.refetch;
   const navigate = useNavigate();
   /**
    * Connecting and skipping end the same way: at organization Home. The route has to be

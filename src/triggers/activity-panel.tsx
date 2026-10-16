@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useSnapshotQuery } from "../queries/index.js";
 import { useServerFn } from "@tanstack/react-start";
 import { DataCell, DataRow, DataTable, DataTableSkeleton } from "../components/app/data-table.js";
 import { FailureAlert } from "../components/app/failure-alert.js";
@@ -23,11 +23,11 @@ export function TriggerActivityPanel() {
   const tenant = useRouteTenant();
   const load = useServerFn(triggerSnapshot);
   const organizationSlug = tenant.organization.slug;
-  const snapshot = useQuery({
+  const snapshot = useSnapshotQuery({
     queryKey: ["triggers", organizationSlug],
     queryFn: () => load({ data: { organizationSlug } }),
   });
-  if (snapshot.isPending) {
+  if (snapshot.status === "pending") {
     return (
       <>
         <PageHeader title="Activity" description={ACTIVITY_DESCRIPTION} />
@@ -35,16 +35,16 @@ export function TriggerActivityPanel() {
       </>
     );
   }
-  if (snapshot.isError || snapshot.data.status === "error") {
+  if (snapshot.status === "error") {
     return (
       <FailureAlert
         title="Activity unavailable"
-        error={snapshot.data}
+        error={snapshot.error}
         fallback="Hub couldn't load trigger activity."
       />
     );
   }
-  const activity = snapshot.data.data.activity;
+  const activity = snapshot.data.activity;
   return (
     <>
       <PageHeader title="Activity" description={ACTIVITY_DESCRIPTION} />

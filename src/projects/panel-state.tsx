@@ -1,5 +1,6 @@
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- server functions are erased to a generic call signature at the boundary */
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSnapshotQuery, type Snapshot } from "../queries/index.js";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import type { ReactNode } from "react";
 import { FailureAlert } from "../components/app/failure-alert.js";
@@ -21,7 +22,7 @@ export type ProjectSnapshot = Awaited<ReturnType<ProjectDashboard["projectSnapsh
 export function useOrganizationSnapshot(pending?: ReactNode) {
   const tenant = useRouteTenant();
   const load = useServerFn(organizationSnapshot);
-  const query = useQuery({
+  const query = useSnapshotQuery({
     queryKey: ["organization", tenant.account.id, tenant.organization.id],
     queryFn: () => load({ data: { organizationSlug: tenant.organization.slug } }),
   });
@@ -32,7 +33,7 @@ export function useProjectSnapshot() {
   const tenant = useRouteTenant();
   const load = useServerFn(projectSnapshot);
   const scope = projectScope(tenant);
-  const query = useQuery({
+  const query = useSnapshotQuery({
     queryKey: ["project", tenant.account.id, tenant.organization.id, tenant.project?.id],
     queryFn: () => load({ data: scope }),
   });
@@ -45,17 +46,17 @@ export function useProjectSnapshot() {
  * cannot yet say what it is.
  */
 export function queryState<T>(
-  query: { isPending: boolean; isError: boolean; data: Result<T> | undefined },
+  query: Snapshot<T>,
   title: string,
   pending?: ReactNode,
 ): { ok: true; data: T } | { ok: false; element: ReactNode } {
-  if (query.isPending) return { ok: false, element: pending ?? <PanelSkeleton /> };
-  if (query.isError || query.data?.status !== "ok")
+  if (query.status === "pending") return { ok: false, element: pending ?? <PanelSkeleton /> };
+  if (query.status === "error")
     return {
       ok: false,
-      element: <FailureAlert title={title} error={query.data} fallback={`${title}.`} />,
+      element: <FailureAlert title={title} error={query.error} fallback={`${title}.`} />,
     };
-  return { ok: true, data: query.data.data };
+  return { ok: true, data: query.data };
 }
 
 export function useProjectCommand<TInput, TOutput = { state: "complete" }>(

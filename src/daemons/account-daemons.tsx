@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSnapshotQuery } from "../queries/index.js";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { BookOpen } from "lucide-react";
 import { useCallback, useState, type FormEvent } from "react";
@@ -87,7 +88,7 @@ export function DaemonsPanel({
   const queryClient = useQueryClient();
   const queryKey = daemonsQueryKey(accountId, organizationId);
   const loadDaemons = useServerFn(daemonList);
-  const snapshot = useQuery({
+  const snapshot = useSnapshotQuery({
     queryKey,
     queryFn: () => loadDaemons({ data: { organizationSlug } }),
   });
@@ -141,17 +142,17 @@ export function DaemonsPanel({
     (daemonId: string) => revoke.mutate({ data: { organizationSlug, daemonId } }),
     [organizationSlug, revoke],
   );
-  if (snapshot.isPending) return <DaemonLoading />;
-  if (snapshot.isError || snapshot.data.status === "error") {
+  if (snapshot.status === "pending") return <DaemonLoading />;
+  if (snapshot.status === "error") {
     return (
       <FailureAlert
         title="Daemons unavailable"
-        error={snapshot.data}
+        error={snapshot.error}
         fallback="Hub did not receive the daemon list. Check your connection and reload the page."
       />
     );
   }
-  const daemons = snapshot.data.data;
+  const daemons = snapshot.data;
   const revokeFailed = revoke.isError || revoke.data?.status === "error";
   const busy = rename.isPending || revoke.isPending;
   return (
