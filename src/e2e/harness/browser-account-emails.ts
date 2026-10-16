@@ -21,10 +21,13 @@ export class BrowserAccountEmails implements AccountMailer {
     return Promise.resolve();
   }
 
-  latestLink(email: string, kind: BrowserAccountEmailKind): string {
+  latestLink(email: string, kind: BrowserAccountEmailKind): { url: string; count: number } {
     const messages = kind === "verification" ? this.verifications : this.passwordResets;
     const match = messages.findLast((message) => message.email === email.toLowerCase());
     if (match === undefined) throw new Error(`${kind} email unavailable for ${email}`);
-    return match.url;
+    return {
+      url: match.url,
+      count: messages.filter((message) => message.email === email.toLowerCase()).length,
+    };
   }
 }

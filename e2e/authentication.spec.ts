@@ -55,3 +55,23 @@ test("verifies signup email and recovers a forgotten password without account di
     "replacement-user-password",
   );
 });
+
+test("unverified sign-in sends a new link without pressing resend", async ({ hub }) => {
+  await hub.proveUnverifiedSignInJourney("pending-user", {
+    name: "Pending User",
+    email: "pending-user@example.com",
+    password: "pending-user-password",
+  });
+});
+
+test.describe("mobile unverified account", () => {
+  test.use({ viewport: { width: 393, height: 851 }, isMobile: true, hasTouch: true });
+
+  test("unverified sign-in sends a new link without pressing resend", async ({ hub }) => {
+    await hub.proveUnverifiedSignInJourney("pending-mobile-user", {
+      name: "Pending Mobile User",
+      email: "pending-mobile-user@example.com",
+      password: "pending-mobile-user-password",
+    });
+  });
+});

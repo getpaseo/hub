@@ -18,6 +18,7 @@ const credentialsSchema = z.object({
   email: z.string().email(),
   password: z.string().min(PASSWORD_MIN_LENGTH),
 });
+const signInSchema = credentialsSchema.extend({ invitation: z.string().min(1).optional() });
 const signUpSchema = credentialsSchema.extend({
   name: z.string().trim().min(1),
   invitation: z.string().min(1).optional(),
@@ -101,7 +102,7 @@ export const accountState = createServerFn({ method: "GET" })
   });
 
 export const signIn = createServerFn({ method: "POST" })
-  .validator(credentialsSchema)
+  .validator(signInSchema)
   .handler(async ({ data }): Promise<Result<{ state: "complete" | "verificationRequired" }>> => {
     try {
       const application = await getApplication();

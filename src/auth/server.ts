@@ -43,7 +43,10 @@ import type { AccountMailer } from "./account-emails.js";
 export interface AuthServer {
   handle(request: Request): Promise<Response>;
   browserAccount?(request: Request): Promise<Response>;
-  signInEmail?(data: { email: string; password: string }, headers: Headers): Promise<"complete">;
+  signInEmail?(
+    data: { email: string; password: string; invitation?: string | undefined },
+    headers: Headers,
+  ): Promise<"complete">;
   signUpEmail?(
     data: { name: string; email: string; password: string },
     headers: Headers,
@@ -177,6 +180,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
       : {
           emailVerification: {
             autoSignInAfterVerification: true,
+            sendOnSignIn: true,
             sendVerificationEmail: (email: Parameters<AccountMailer["sendVerificationEmail"]>[0]) =>
               accountMailer.sendVerificationEmail(email),
           },
@@ -286,7 +290,14 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     },
     async signInEmail(data, headers) {
       requireBrowserOrigin(headers, headersBrowserOrigin(headers, browserOrigin));
-      await auth.api.signInEmail({ body: data, headers });
+      await auth.api.signInEmail({
+        body: {
+          email: data.email,
+          password: data.password,
+          callbackURL: accountCallback(options.baseURL, data.invitation),
+        },
+        headers,
+      });
       return "complete";
     },
     async signUpEmail(data, headers, invitationId) {
