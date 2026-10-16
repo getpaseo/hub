@@ -857,6 +857,26 @@ export const organizations = pgTable("organization", {
   metadata: text(),
 });
 
+export const githubManifestAttempts = pgTable(
+  "github_manifest_attempts",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    stateVerifier: text("state_verifier").notNull().unique(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    surface: text().$type<"appSetup" | "apps">().notNull(),
+    callbackOrigin: text("callback_origin").notNull(),
+    expectedConfigurationVersion: integer("expected_configuration_version"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  },
+  (table) => [index("github_manifest_attempts_expiry_idx").on(table.expiresAt)],
+);
+
 export const organizationConnectionAttempts = pgTable(
   "organization_connection_attempts",
   {

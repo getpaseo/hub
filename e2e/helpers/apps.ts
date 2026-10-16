@@ -1,5 +1,5 @@
 import { expect, type Locator, type Page } from "@playwright/test";
-import AxeBuilder from "@axe-core/playwright";
+import DefaultAxeBuilder from "@axe-core/playwright";
 import { DaemonHandoffSurface } from "./daemon-handoff.js";
 
 export type AppProvider = "GitHub" | "Slack" | "Discord" | "Linear";
@@ -206,16 +206,15 @@ export class AppSection {
   }
 
   async save(): Promise<void> {
-    await this.body()
-      .getByRole("button", {
-        name:
-          this.provider === "Slack"
-            ? /^(?:Connect Slack|Save and continue to Slack)$/u
-            : this.provider === "Linear"
-              ? "Save and continue to Linear"
-              : "Verify and save",
-      })
-      .click();
+    let name: string | RegExp;
+    if (this.provider === "Slack") {
+      name = /^(?:Connect Slack|Save and continue to Slack)$/u;
+    } else if (this.provider === "Linear") {
+      name = "Save and continue to Linear";
+    } else {
+      name = "Verify and save";
+    }
+    await this.body().getByRole("button", { name }).click();
   }
 
   async chooseSlackTransport(transport: "Socket Mode" | "Webhooks"): Promise<void> {
@@ -441,7 +440,7 @@ export class AppSection {
   }
 
   /** HTTPS exposes every user action needed to create and install the Slack app. */
-  async expectSlackSetupActionable(origin: string): Promise<void> {
+  async expectSlackSetupActionable(): Promise<void> {
     await this.expectExpanded();
     await expect(this.body().getByRole("link", { name: "Create a Slack app" })).toBeVisible();
     await expect(this.body().getByRole("list")).toBeVisible();
@@ -573,6 +572,7 @@ export class AppSetupSurface {
     // hydration cannot replace the currently focused node halfway through the journey.
     await expect(github.form()).toBeVisible();
     await github.header().focus();
+    await this.tabTo(github.body().getByRole("button", { name: "Create GitHub App" }));
     await this.tabTo(github.body().getByRole("link", { name: "Create a GitHub App" }));
     // The copy controls come in the order their URLs are read off the page, and on a plain-HTTP
     // origin the webhook URL is not one of them.
@@ -594,7 +594,7 @@ export class AppSetupSurface {
   }
 
   async accessible(): Promise<void> {
-    const results = await new AxeBuilder({ page: this.page })
+    const results = await new DefaultAxeBuilder({ page: this.page })
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
       .analyze();
     expect(results.violations).toEqual([]);

@@ -13,6 +13,8 @@ import {
   type ProviderRuntimeCandidate,
   type ProviderRuntimeOwner,
 } from "./index.js";
+import type { GitHubManifestClient } from "./github-manifest.js";
+import { GitHubManifestAttemptUnavailableError } from "./internal/store.js";
 
 const githubConfiguration: ProviderApplicationConfiguration = {
   provider: "github",
@@ -59,6 +61,63 @@ describe("provider applications", () => {
 
     assert.equal(fixture.store.reads, 0);
     assert.equal(fixture.runtime.prepareCount("github"), 0);
+  });
+
+  it("creates and consumes a single-use GitHub manifest registration through the existing save path", async () => {
+    const fixture = createFixture();
+    const registration = await fixture.applications.beginGitHubManifestRegistration(
+      request("POST"),
+      {
+        surface: "appSetup",
+      },
+    );
+
+    assert.equal(registration.action, "https://github.com/settings/apps/new");
+    assert.equal(
+      registration.manifest.redirect_url,
+      "https://hub.test/api/integrations/github/manifest/callback",
+    );
+    const response = await fixture.applications.completeGitHubManifestRegistration(
+      new Request(
+        `https://hub.test/api/integrations/github/manifest/callback?state=${registration.state}&code=code`,
+        { headers: { cookie: "session=operator" } },
+      ),
+    );
+
+    assert.equal(response.status, 303);
+    assert.equal(
+      response.headers.get("location"),
+      "https://hub.test/?app=github&result=github_app_created",
+    );
+    assert.deepEqual(fixture.store.values.get("github")?.configuration, {
+      provider: "github",
+      appId: "42",
+      appSlug: "paseo",
+      clientId: "client",
+      clientSecret: "manifest-client-secret",
+      privateKey: "manifest-private-key",
+      webhookSecret: "manifest-webhook-secret",
+    });
+    assert.equal(fixture.runtime.active("github")?.configurationId, "42");
+
+    const replay = await fixture.applications.completeGitHubManifestRegistration(
+      new Request(
+        `https://hub.test/api/integrations/github/manifest/callback?state=${registration.state}&code=code`,
+        { headers: { cookie: "session=operator" } },
+      ),
+    );
+    assert.match(replay.headers.get("location") ?? "", /result=connection_invalid/u);
+    assert.equal(fixture.store.values.get("github")?.version, 1);
+  });
+
+  it("refuses manifest registration when GitHub is environment managed", async () => {
+    const fixture = createFixture({ environment: { github: githubConfiguration } });
+
+    await assert.rejects(
+      fixture.applications.beginGitHubManifestRegistration(request("POST"), {}),
+      (error: unknown) =>
+        error instanceof ProviderApplicationError && error.code === "managedByEnvironment",
+    );
   });
 
   it("keeps secrets write-only in every overview projection", async () => {
@@ -644,6 +703,7 @@ function createFixture(
       returnRoutes.push(returnRoute);
       return begin(incoming);
     },
+    githubManifest: manifestClient(),
   });
   return {
     applications,
@@ -656,6 +716,22 @@ function createFixture(
     set verificationIdentity(identity: ProviderApplicationIdentity) {
       verificationIdentity = identity;
     },
+  };
+}
+
+function manifestClient(): GitHubManifestClient {
+  return {
+    convert: () =>
+      Promise.resolve({
+        appId: "42",
+        appSlug: "paseo",
+        name: "Paseo",
+        ownerLogin: "acme",
+        clientId: "client",
+        clientSecret: "manifest-client-secret",
+        privateKey: "manifest-private-key",
+        webhookSecret: "manifest-webhook-secret",
+      }),
   };
 }
 
@@ -694,6 +770,10 @@ class MemoryStore implements ProviderApplicationStore {
   reads = 0;
   private failSlackCompletion = false;
   socketOrganizationId: string | undefined;
+  private readonly manifestAttempts = new Map<
+    string,
+    Parameters<ProviderApplicationStore["startGitHubManifestAttempt"]>[0] & { consumed: boolean }
+  >();
 
   failNextSlackCompletion() {
     this.failSlackCompletion = true;
@@ -725,9 +805,35 @@ class MemoryStore implements ProviderApplicationStore {
     this.values.set(input.provider, value);
     return Promise.resolve(value);
   }
-
   activate(_input: Parameters<ProviderApplicationStore["activate"]>[0]) {
     return Promise.resolve();
+  }
+
+  startGitHubManifestAttempt(
+    input: Parameters<ProviderApplicationStore["startGitHubManifestAttempt"]>[0],
+  ) {
+    this.manifestAttempts.set(input.stateVerifier, { ...input, consumed: false });
+    return Promise.resolve();
+  }
+
+  consumeGitHubManifestAttempt(
+    input: Parameters<ProviderApplicationStore["consumeGitHubManifestAttempt"]>[0],
+  ) {
+    const attempt = this.manifestAttempts.get(input.stateVerifier);
+    if (
+      attempt === undefined ||
+      attempt.consumed ||
+      attempt.userId !== input.userId ||
+      attempt.sessionId !== input.sessionId
+    ) {
+      return Promise.reject(new GitHubManifestAttemptUnavailableError());
+    }
+    attempt.consumed = true;
+    return Promise.resolve({
+      surface: attempt.surface,
+      callbackOrigin: attempt.callbackOrigin,
+      expectedConfigurationVersion: attempt.expectedConfigurationVersion,
+    });
   }
 
   async completeSlackInstallation(

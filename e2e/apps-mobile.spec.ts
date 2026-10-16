@@ -139,7 +139,7 @@ test("Slack Socket Mode and Discord read correctly on a phone", async ({ hub }) 
   try {
     const { surface } = session;
     await surface.slack.expand();
-    await surface.slack.expectSlackSetupActionable(session.origin);
+    await surface.slack.expectSlackSetupActionable();
     await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-08-slack-socket-local.mobile");
     await surface.slack.collapse();
