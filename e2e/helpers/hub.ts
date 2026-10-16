@@ -1489,6 +1489,29 @@ export class PaseoHub {
     }
   }
 
+  /** An active GitHub installation the trigger editor can name, without the OAuth journey. */
+  async seedGitHubConnection(organizationName: string, slug: string): Promise<void> {
+    await this.queryDatabase(
+      this.primary,
+      `insert into github_connections
+         (organization_id, installation_id, slug, account_id, account_login, account_type, status)
+       select id, 4242, $2, '4242', $2, 'Organization', 'active'
+       from organization where name = $1`,
+      [organizationName, slug],
+    );
+  }
+
+  /** A Discord guild the trigger editor can name, without the OAuth journey. */
+  async seedDiscordConnection(organizationName: string, slug: string): Promise<void> {
+    await this.queryDatabase(
+      this.primary,
+      `insert into discord_connections (organization_id, guild_id, slug, guild_name)
+       select id, 'browser-guild', $2, 'Acme Community'
+       from organization where name = $1`,
+      [organizationName, slug],
+    );
+  }
+
   async seedSuspendedGitHubConnection(organizationName: string): Promise<void> {
     await this.queryDatabase(
       this.primary,
@@ -1916,6 +1939,38 @@ export class PaseoHub {
   async connectProviderDaemon(alias: string, organizationName: string): Promise<string> {
     const daemon = await this.connectBrowserDaemon(alias, organizationName, "devbox");
     return daemon.slug;
+  }
+
+  /** A finished or running run of a saved trigger, received `minutesAgo` minutes ago. */
+  async seedTriggerRun(
+    triggerName: string,
+    run: { minutesAgo: number; status: "running" | "succeeded" | "failed" },
+  ): Promise<void> {
+    const receivedAt = `now() - make_interval(mins => $3)`;
+    await this.queryDatabase(
+      this.primary,
+      `with trigger as (
+         select t.organization_id, t.runtime_project_id as project_id,
+                (select r.id from project_configuration_revisions r
+                 where r.project_id = t.runtime_project_id
+                 order by r.created_at desc limit 1) as revision_id
+         from organization_triggers t where t.name = $1
+       ), receipt as (
+         insert into provider_event_receipts
+           (organization_id, provider, delivery_id, source, payload, received_at)
+         select organization_id, 'manual', gen_random_uuid()::text, 'manual.run', '{}'::jsonb,
+                ${receivedAt}
+         from trigger
+         returning id, organization_id
+       )
+       insert into trigger_runs
+         (organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
+          configured_trigger_name, status, prompt, deadline_at, created_at)
+       select receipt.organization_id, trigger.project_id, trigger.revision_id, receipt.id, $1, $2,
+              'Handle the event.', now() + interval '1 hour', ${receivedAt}
+       from receipt, trigger`,
+      [triggerName, run.status, run.minutesAgo],
+    );
   }
 
   /** A connected app precondition for trigger-editor journeys; OAuth itself has separate specs. */

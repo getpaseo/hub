@@ -1,5 +1,5 @@
 /* oxlint-disable eslint-plugin-jsx-a11y/prefer-tag-over-role, eslint-plugin-react-perf/jsx-no-new-function-as-prop -- a table row cannot itself be a <button>, and its onKeyDown handler is scoped per rendered row */
-import type { ReactNode } from "react";
+import { Children, createContext, isValidElement, useContext, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils.js";
 import { Skeleton } from "../ui/skeleton.js";
@@ -13,13 +13,16 @@ export interface DataColumn {
   /**
    * The column holds values that can be cut — a name, a summary, a path — so it shares the width
    * the other columns leave and truncates when that is not enough. Every other column is as wide
-   * as its widest value and never truncates. Every table has at least one; mark its cells `fill`
-   * too.
+   * as its widest value and never truncates. Every table has at least one.
    */
   fill?: boolean;
-  /** Responsive visibility for this column's header. Its cells repeat it. */
+  /** Responsive visibility for the column, header and cells alike. */
   className?: string;
 }
+
+/** The columns of the table a cell is drawn in, and which of them the cell sits under. */
+const TableColumns = createContext<readonly DataColumn[]>([]);
+const CellIndex = createContext(-1);
 
 /**
  * The one table shell: bordered card, quiet header row, one body-row height, and — when there is
@@ -75,17 +78,13 @@ export function DataTableSkeleton({
     <div aria-busy="true">
       <TableShell label={label} columns={columns}>
         {Array.from({ length: rows }, (_, row) => (
-          <TableRow key={row}>
+          <DataRow key={row}>
             {columns.map((column, index) => (
-              <DataCell
-                key={column.header === "" ? `actions-${String(index)}` : column.header}
-                {...(column.align === undefined ? {} : { align: column.align })}
-                {...(column.fill === true ? { fill: true } : {})}
-              >
+              <DataCell key={columnKey(column, index)}>
                 <Skeleton className={cn("h-4", placeholderWidth(columns, index))} />
               </DataCell>
             ))}
-          </TableRow>
+          </DataRow>
         ))}
       </TableShell>
     </div>
@@ -122,7 +121,7 @@ function TableShell({
           <TableRow>
             {columns.map((column, index) => (
               <TableHead
-                key={column.header === "" ? `actions-${String(index)}` : column.header}
+                key={columnKey(column, index)}
                 className={cn(
                   // A fitted column is a 1px request the browser widens to its widest value and
                   // never past it, so fitted columns stay next to each other on a wide screen.
@@ -143,10 +142,16 @@ function TableShell({
             ))}
           </TableRow>
         </TableHeader>
-        <TableBody>{children}</TableBody>
+        <TableBody>
+          <TableColumns.Provider value={columns}>{children}</TableColumns.Provider>
+        </TableBody>
       </Table>
     </div>
   );
+}
+
+function columnKey(column: DataColumn, index: number): string {
+  return column.header === "" ? `actions-${String(index)}` : column.header;
 }
 
 /**
@@ -161,34 +166,37 @@ function TableShell({
  * `onSelect` requires one.
  */
 export function DataRow({ children, onSelect }: { children: ReactNode; onSelect?: () => void }) {
-  if (onSelect === undefined) return <TableRow>{children}</TableRow>;
+  // Each cell learns its column from its position, so a cell never restates how its column
+  // reads. A cell left out with `cond ? <DataCell /> : null` drops out here too.
+  const cells = Children.toArray(children).map((cell, index) => (
+    <CellIndex.Provider key={isValidElement(cell) ? cell.key : index} value={index}>
+      {cell}
+    </CellIndex.Provider>
+  ));
+  if (onSelect === undefined) return <TableRow>{cells}</TableRow>;
   return (
     <TableRow data-navigates="true" className="cursor-pointer" onClick={onSelect}>
-      {children}
+      {cells}
     </TableRow>
   );
 }
 
-export function DataCell({
-  children,
-  align = "start",
-  muted = false,
-  fill = false,
-  className,
-}: {
-  children: ReactNode;
-  align?: "start" | "end";
-  muted?: boolean;
-  /** The cell sits in a `fill` column: its value truncates when the column is narrower. */
-  fill?: boolean;
-  /** Responsive visibility only, repeating its column's. Never used to change how a cell reads. */
-  className?: string;
-}) {
+/** A value in a row. Its alignment, visibility, and whether it truncates are its column's. */
+export function DataCell({ children, muted = false }: { children: ReactNode; muted?: boolean }) {
+  const index = useContext(CellIndex);
+  const column = useContext(TableColumns)[index];
+  if (column === undefined) {
+    throw new Error(`DataCell ${String(index)} has no column: a row holds one cell per column.`);
+  }
   return (
     <TableCell
-      className={cn(align === "end" && "text-right", muted && "text-muted-foreground", className)}
+      className={cn(
+        column.align === "end" && "text-right",
+        muted && "text-muted-foreground",
+        column.className,
+      )}
     >
-      {fill ? (
+      {column.fill === true ? (
         // A grid item that clips has no minimum width, so the column can give way, while its
         // widest value still sets the column's share of the spare width. Anything that is not a
         // grid item — a flex row, a block — would hold the column open at its full width.

@@ -37,7 +37,7 @@ const DAEMON_COLUMNS: readonly DataColumn[] = [
   { header: "Slug", fill: true },
   { header: "ID" },
   { header: "Status" },
-  { header: "Access" },
+  { header: "Access", fill: true },
   { header: "Last seen" },
   { header: "Registered" },
   { header: "", align: "end" },
@@ -208,7 +208,7 @@ function DaemonRow({
 
   return (
     <DataRow>
-      <DataCell fill>
+      <DataCell>
         <TwoLine primary={daemon.slug} />
       </DataCell>
       <DataCell muted>
@@ -230,7 +230,7 @@ function DaemonRow({
       <DataCell muted>
         <RelativeTime value={daemon.registeredAt} />
       </DataCell>
-      <DataCell align="end">
+      <DataCell>
         {canManage ? (
           <>
             <RowActions label={`Actions for ${daemon.slug}`}>

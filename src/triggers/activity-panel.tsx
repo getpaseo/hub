@@ -56,7 +56,7 @@ export function TriggerActivityPanel() {
       >
         {activity.map((run) => (
           <DataRow key={run.id}>
-            <DataCell fill>
+            <DataCell>
               <TwoLine
                 primary={run.triggerName}
                 {...(run.repo === null ? {} : { secondary: run.repo })}

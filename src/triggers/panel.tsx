@@ -60,7 +60,7 @@ type TriggerTextField = Exclude<
 const TRIGGER_COLUMNS = [
   { header: "Trigger", fill: true },
   { header: "Event", fill: true, className: "hidden md:table-cell" },
-  { header: "Target", fill: true, className: "hidden lg:table-cell" },
+  { header: "Target", fill: true, className: "hidden xl:table-cell" },
   { header: "Last triggered", className: "hidden xl:table-cell" },
   { header: "Status" },
 ] as const;
@@ -138,7 +138,7 @@ export function TriggersPanel() {
                 void navigate({ to: triggerPath(trigger.id) });
               }}
             >
-              <DataCell fill>
+              <DataCell>
                 <span className="flex items-center gap-3">
                   <span
                     className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-muted text-foreground"
@@ -166,17 +166,17 @@ export function TriggersPanel() {
                   />
                 </span>
               </DataCell>
-              <DataCell fill className="hidden md:table-cell">
+              <DataCell>
                 <TriggerEvent trigger={trigger} />
               </DataCell>
-              <DataCell fill className="hidden lg:table-cell">
+              <DataCell>
                 {trigger.draft === null ? (
                   <span className="text-muted-foreground">Advanced configuration</span>
                 ) : (
                   <TwoLine path primary={trigger.draft.daemon} secondary={trigger.draft.cwd} />
                 )}
               </DataCell>
-              <DataCell className="hidden xl:table-cell">
+              <DataCell>
                 {trigger.lastTriggered === null ? (
                   <span className="text-muted-foreground">Never</span>
                 ) : (

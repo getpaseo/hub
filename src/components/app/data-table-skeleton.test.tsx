@@ -4,8 +4,8 @@ import { describe, it } from "vitest";
 import { DataCell, DataRow, DataTable, DataTableSkeleton, type DataColumn } from "./data-table.js";
 
 const COLUMNS: readonly DataColumn[] = [
-  { header: "Trigger" },
-  { header: "Event" },
+  { header: "Trigger", fill: true },
+  { header: "Event", fill: true, className: "hidden md:table-cell" },
   { header: "Status" },
   { header: "", align: "end" },
 ];
@@ -50,6 +50,41 @@ describe("data table skeleton", () => {
     const markup = renderToStaticMarkup(<DataTableSkeleton label="Triggers" columns={COLUMNS} />);
 
     assert.doesNotMatch(markup, /No triggers/u);
+  });
+
+  it("lays each cell out the way its column says, so no cell restates it", () => {
+    const markup = renderToStaticMarkup(
+      <DataTable label="Triggers" columns={COLUMNS} isEmpty={false} empty={EMPTY}>
+        <DataRow>
+          <DataCell>nightly-audit</DataCell>
+          <DataCell>Schedule</DataCell>
+          <DataCell>Enabled</DataCell>
+          <DataCell>Actions</DataCell>
+        </DataRow>
+      </DataTable>,
+    );
+    const cells = markup.slice(markup.indexOf("<tbody")).split("<td").slice(1);
+
+    assert.match(cells[0] ?? "", /data-slot="fill-cell"[\s\S]*title="nightly-audit"/u);
+    assert.match(cells[1] ?? "", /hidden md:table-cell[\s\S]*data-slot="fill-cell"/u);
+    assert.doesNotMatch(cells[2] ?? "", /fill-cell|hidden/u);
+    assert.match(cells[3] ?? "", /text-right/u);
+  });
+
+  it("refuses a cell that has no column to sit under", () => {
+    const overfull = (
+      <DataTable label="Triggers" columns={COLUMNS} isEmpty={false} empty={EMPTY}>
+        <DataRow>
+          <DataCell>nightly-audit</DataCell>
+          <DataCell>Schedule</DataCell>
+          <DataCell>Enabled</DataCell>
+          <DataCell>Actions</DataCell>
+          <DataCell>Extra</DataCell>
+        </DataRow>
+      </DataTable>
+    );
+
+    assert.throws(() => renderToStaticMarkup(overfull), /has no column/u);
   });
 
   it("drops the table entirely when there is nothing to list", () => {

@@ -400,7 +400,7 @@ export function ProjectActivityRunPanel({ runId }: { runId: string }) {
         >
           {activity.steps.map((step) => (
             <DataRow key={step.id}>
-              <DataCell fill>
+              <DataCell>
                 <span>
                   {step.ordinal + 1}. {step.stepId}
                 </span>
@@ -434,9 +434,7 @@ export function ProjectActivityRunPanel({ runId }: { runId: string }) {
               <DataCell>
                 <JsonValue value={step.output} />
               </DataCell>
-              <DataCell muted fill>
-                {step.failureReason ?? "—"}
-              </DataCell>
+              <DataCell muted>{step.failureReason ?? "—"}</DataCell>
             </DataRow>
           ))}
         </DataTable>
@@ -623,7 +621,7 @@ function ActivityTable({
         const status = "status" in event ? event.status : "dropped";
         return (
           <DataRow key={event.id}>
-            <DataCell fill>
+            <DataCell>
               <TwoLine
                 primary={
                   detailBasePath &&
@@ -646,9 +644,7 @@ function ActivityTable({
             <DataCell>
               <StatusPill tone={executionTone(status)}>{statusLabel(status)}</StatusPill>
             </DataCell>
-            {showReason ? (
-              <DataCell fill>{event.failureReason ?? "Unknown reason"}</DataCell>
-            ) : null}
+            {showReason ? <DataCell>{event.failureReason ?? "Unknown reason"}</DataCell> : null}
             <DataCell muted>
               <RelativeTime value={event.receivedAt} />
             </DataCell>

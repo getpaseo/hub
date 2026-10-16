@@ -325,7 +325,7 @@ function CliCredentialRow({
   const revoke = useCallback(() => onRevoke({ data: { id: record.id } }), [onRevoke, record.id]);
   return (
     <DataRow>
-      <DataCell fill>
+      <DataCell>
         <span className="font-mono text-xs">{record.prefix}</span>
       </DataCell>
       <DataCell muted>
@@ -339,7 +339,7 @@ function CliCredentialRow({
           {record.revokedAt === null ? "Active" : "Revoked"}
         </StatusPill>
       </DataCell>
-      <DataCell align="end">
+      <DataCell>
         {record.revokedAt === null ? (
           <RowActions label={`Actions for ${record.prefix}`}>
             <ConfirmMenuItem
@@ -373,13 +373,11 @@ function ApiKeyRow({
   const revoke = useCallback(() => onRevoke({ data: { id: record.id } }), [onRevoke, record.id]);
   return (
     <DataRow>
-      <DataCell fill>{record.name}</DataCell>
+      <DataCell>{record.name}</DataCell>
       <DataCell>
         <span className="font-mono text-xs">{record.prefix}</span>
       </DataCell>
-      <DataCell muted fill>
-        {record.scopes.map(scopeLabel).join(", ")}
-      </DataCell>
+      <DataCell muted>{record.scopes.map(scopeLabel).join(", ")}</DataCell>
       <DataCell muted>
         <RelativeTime value={record.createdAt} />
       </DataCell>
@@ -391,7 +389,7 @@ function ApiKeyRow({
           {record.revokedAt === null ? "Active" : "Revoked"}
         </StatusPill>
       </DataCell>
-      <DataCell align="end">
+      <DataCell>
         {record.revokedAt === null && canManage ? (
           <RowActions label={`Actions for ${record.name}`}>
             <ConfirmMenuItem

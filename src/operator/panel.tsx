@@ -198,14 +198,14 @@ function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: str
           empty={ENTITLEMENTS_EMPTY}
         >
           <DataRow>
-            <DataCell fill>Seats</DataCell>
+            <DataCell>Seats</DataCell>
             <DataCell muted>{seatLimitLabel(granted.seats.max)}</DataCell>
             <DataCell muted>
               {overrides.seats?.max === undefined ? "—" : seatLimitLabel(overrides.seats.max)}
             </DataCell>
             <DataCell>{seatLimitLabel(effective.seats.max)}</DataCell>
             <DataCell muted>{snapshot.seatsInUse}</DataCell>
-            <DataCell align="end">
+            <DataCell>
               <Button
                 type="button"
                 variant="outline"
@@ -218,7 +218,7 @@ function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: str
             </DataCell>
           </DataRow>
           <DataRow>
-            <DataCell fill>Members can invite</DataCell>
+            <DataCell>Members can invite</DataCell>
             <DataCell muted>
               <InviteState canInvite={granted.canInviteMembers} />
             </DataCell>
@@ -233,7 +233,7 @@ function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: str
               <InviteState canInvite={effective.canInviteMembers} />
             </DataCell>
             <DataCell muted>—</DataCell>
-            <DataCell align="end">
+            <DataCell>
               <Button
                 type="button"
                 variant="outline"
@@ -246,7 +246,7 @@ function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: str
             </DataCell>
           </DataRow>
           <DataRow>
-            <DataCell fill>Executions this month</DataCell>
+            <DataCell>Executions this month</DataCell>
             <DataCell muted>{meterLimitLabel(granted.meters["executions.monthly"].limit)}</DataCell>
             <DataCell muted>
               {overrides.meters?.["executions.monthly"]?.limit === undefined
@@ -255,7 +255,7 @@ function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: str
             </DataCell>
             <DataCell>{meterLimitLabel(effectiveExecutionsLimit)}</DataCell>
             <DataCell>{meterUsageLabel(snapshot.usage)}</DataCell>
-            <DataCell align="end">
+            <DataCell>
               <Button
                 type="button"
                 variant="outline"
@@ -460,10 +460,8 @@ function AuditTrail({ history }: { history: Snapshot["history"] }) {
             />
           </DataCell>
           <DataCell muted>{entry.actorName ?? "System"}</DataCell>
-          <DataCell muted fill>
-            {entry.reason ?? "—"}
-          </DataCell>
-          <DataCell align="end" muted>
+          <DataCell muted>{entry.reason ?? "—"}</DataCell>
+          <DataCell muted>
             <RelativeTime value={entry.createdAt} />
           </DataCell>
         </DataRow>

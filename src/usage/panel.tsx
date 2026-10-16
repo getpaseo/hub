@@ -81,25 +81,23 @@ function UsageContent({ snapshot }: { snapshot: Snapshot }) {
       <Section title={LIMITS_TITLE} description={LIMITS_DESCRIPTION}>
         <DataTable label="Limits" columns={LIMIT_COLUMNS} isEmpty={false} empty={LIMITS_EMPTY}>
           <DataRow>
-            <DataCell fill>Seats</DataCell>
+            <DataCell>Seats</DataCell>
             <DataCell muted>{limitLabel(limits.seats.limit)}</DataCell>
-            <DataCell align="end">{limits.seats.used}</DataCell>
+            <DataCell>{limits.seats.used}</DataCell>
           </DataRow>
           <DataRow>
-            <DataCell fill>Members can invite</DataCell>
+            <DataCell>Members can invite</DataCell>
             <DataCell muted>
               <StatusPill tone={limits.canInviteMembers ? "success" : "neutral"} dot={false}>
                 {limits.canInviteMembers ? "Allowed" : "Not allowed"}
               </StatusPill>
             </DataCell>
-            <DataCell align="end" muted>
-              —
-            </DataCell>
+            <DataCell muted>—</DataCell>
           </DataRow>
           <DataRow>
-            <DataCell fill>Executions this month</DataCell>
+            <DataCell>Executions this month</DataCell>
             <DataCell muted>{limitLabel(limits.executionsMonthly.limit)}</DataCell>
-            <DataCell align="end">{measureUsage(limits.executionsMonthly)}</DataCell>
+            <DataCell>{measureUsage(limits.executionsMonthly)}</DataCell>
           </DataRow>
         </DataTable>
       </Section>
@@ -144,11 +142,9 @@ function History({ history }: { history: Snapshot["history"] }) {
       {history.map((entry) => (
         <DataRow key={entry.id}>
           <DataCell>{SOURCE_LABELS[entry.source]}</DataCell>
-          <DataCell muted fill>
-            {entry.reason ?? "—"}
-          </DataCell>
+          <DataCell muted>{entry.reason ?? "—"}</DataCell>
           <DataCell muted>{entry.actorName ?? "System"}</DataCell>
-          <DataCell align="end" muted>
+          <DataCell muted>
             <RelativeTime value={entry.createdAt} />
           </DataCell>
         </DataRow>
