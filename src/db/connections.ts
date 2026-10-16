@@ -161,7 +161,7 @@ export class ConnectionRepository {
         .for("update");
       if (existing !== undefined && existing.organizationId !== attempt.organizationId)
         throw new ConnectionConflictError();
-      const [_connection] =
+      const [connection] =
         existing === undefined
           ? await transaction
               .insert(schema.githubConnections)
@@ -195,6 +195,13 @@ export class ConnectionRepository {
               })
               .where(eq(schema.githubConnections.id, existing.id))
               .returning({ id: schema.githubConnections.id });
+      if (connection === undefined) throw new Error("GitHub connection unavailable");
+      await replaceGitHubRepositories(
+        transaction,
+        attempt.organizationId,
+        connection.id,
+        input.repositories,
+      );
       await consumeLockedAttempt(transaction, attempt.id);
     });
   }
@@ -1162,4 +1169,40 @@ async function uniqueConnectionSlug(
   let suffix = 2;
   while (used.has(`${base}-${suffix}`)) suffix += 1;
   return `${base}-${suffix}`;
+}
+
+/** @package Complete snapshots are committed with the connection lifecycle transaction. */
+export async function replaceGitHubRepositories(
+  transaction: DrizzleHandle,
+  organizationId: string,
+  connectionId: string,
+  repositories: import("./types.js").GitHubRepositorySnapshot,
+): Promise<void> {
+  const ids = repositories.map((repository) => repository.repositoryId);
+  await transaction
+    .delete(schema.githubRepositories)
+    .where(
+      and(
+        eq(schema.githubRepositories.connectionId, connectionId),
+        ids.length === 0 ? undefined : sql`${schema.githubRepositories.repositoryId} not in ${ids}`,
+      ),
+    );
+  if (repositories.length === 0) return;
+  await transaction
+    .insert(schema.githubRepositories)
+    .values(
+      repositories.map((repository) => ({
+        organizationId,
+        connectionId,
+        ...repository,
+      })),
+    )
+    .onConflictDoUpdate({
+      target: [schema.githubRepositories.connectionId, schema.githubRepositories.repositoryId],
+      set: {
+        fullName: sql`excluded.full_name`,
+        defaultBranch: sql`excluded.default_branch`,
+        updatedAt: sql`clock_timestamp()`,
+      },
+    });
 }

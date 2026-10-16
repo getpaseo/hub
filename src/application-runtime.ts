@@ -126,12 +126,6 @@ async function createOwnedApplicationRuntime(
     }
     requests.set(request.name, (incoming) => request.handle(incoming));
   }
-  const githubConfigurations = registrations.flatMap((registration) =>
-    registration.githubConfiguration === undefined ? [] : [registration.githubConfiguration],
-  );
-  if (githubConfigurations.length > 1) {
-    throw new Error("GitHub configuration registrations must be unique");
-  }
   return {
     hub: application.hub,
     operations: application.operations,
@@ -142,12 +136,7 @@ async function createOwnedApplicationRuntime(
     projectDashboard:
       options.database === null || options.auth === null
         ? null
-        : new ProjectDashboard(
-            options.database,
-            options.auth,
-            githubConfigurations[0],
-            (projectId) => application.configurationForProject(projectId),
-          ),
+        : new ProjectDashboard(options.database, options.auth),
     triggerDashboard: triggerDashboardFor(options, application.hub),
     daemonProviderCatalog: daemonProviderCatalogFor(options, application.hub),
     homeDashboard: homeDashboardFor(options, connections),

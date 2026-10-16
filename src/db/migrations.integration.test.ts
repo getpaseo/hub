@@ -309,7 +309,7 @@ describe("database migration application", () => {
     assert.deepEqual(after, before);
     assert.deepEqual(await historicalShape(fixture.url), {
       authTables: 7,
-      drizzleMigrations: 49,
+      drizzleMigrations: 50,
       legacyArtifacts: null,
       legacyOperatorPrincipals: null,
       bootstrapOrganizationId: fixture.organizationId,
@@ -892,6 +892,66 @@ describe("database migration application", () => {
     }
   }, 120_000);
 
+  it("queues every existing installation when upgrading repository discovery", async () => {
+    const url = await createHistoricalBaseline({
+      postgres,
+      prefix: "installation_repository_sync",
+      through: "0048_execution_authority",
+    });
+    const connectionId = randomUUID();
+    await poolQuery(url, `insert into organization (id, name, slug) values ('org', 'Org', 'org')`);
+    await poolQuery(
+      url,
+      `insert into github_connections (id, organization_id, installation_id, slug, account_id, account_login, account_type, status) values ($1, 'org', 42, 'acme', '1', 'acme', 'Organization', 'active')`,
+      [connectionId],
+    );
+    await poolQuery(
+      url,
+      `insert into github_connections (organization_id, installation_id, slug, account_id, account_login, account_type, status) values ('org', 43, 'no-receipt', '2', 'no-receipt', 'Organization', 'active')`,
+    );
+    for (const [deliveryId, receivedAt] of [
+      ["old", "2026-01-01"],
+      ["latest", "2026-01-02"],
+    ]) {
+      await poolQuery(
+        url,
+        `insert into provider_event_receipts (organization_id, provider, connection_id, delivery_id, signature_hash, source, payload, received_at, dropped_reason) values ('org', 'github', $1, $2, $2, 'github.installation', '{}', $3, 'github_lifecycle')`,
+        [connectionId, deliveryId, receivedAt],
+      );
+    }
+    const database = await createDatabase(url);
+    try {
+      const pending = await database.pendingGitHubInstallationSyncs();
+      assert.deepEqual(
+        pending.map((work) => work.installationId).sort((a, b) => a - b),
+        [42, 43],
+      );
+      for (const work of pending) {
+        await database.applyGitHubInstallationSync(work, {
+          status: "present",
+          identity: {
+            accountId: "1",
+            accountLogin: "acme",
+            accountType: "Organization",
+            status: "active",
+          },
+          repositories: [
+            {
+              repositoryId: work.installationId + 100,
+              fullName: `acme/repo-${work.installationId}`,
+              defaultBranch: "main",
+            },
+          ],
+        });
+      }
+      assert.equal((await database.listGitHubRepositories("org")).length, 2);
+      assert.deepEqual(await database.pendingGitHubInstallationSyncs(), []);
+      assert.equal((await poolQuery(url, `select * from provider_event_receipts`)).rows.length, 2);
+    } finally {
+      await database.close();
+    }
+  }, 120_000);
+
   it("claims concurrent lifecycle receipts without unique-index failures", async () => {
     const url = databaseUrl(postgres, "concurrent_lifecycle_receipts");
     const database = await createDatabase(url);
@@ -973,7 +1033,7 @@ describe("database migration application", () => {
       assert.equal(claim.status, "claimed");
       if (claim.status !== "claimed") return;
 
-      await database.applyGitHubLifecycle(claim, { status: "absent", removeBinding: true });
+      await database.applyGitHubInstallationSync(claim, { status: "absent", removeBinding: true });
 
       const state = await poolQuery<{
         connections: number;

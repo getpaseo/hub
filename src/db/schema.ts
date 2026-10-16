@@ -945,6 +945,38 @@ export const githubConnections = pgTable(
   ],
 );
 
+export const githubInstallationSyncs = pgTable(
+  "github_installation_syncs",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    kind: text().$type<"webhook" | "reconcile">().notNull(),
+    installationId: bigint("installation_id", { mode: "number" }).notNull(),
+    // Preserve the original binding after disconnect; work must not follow its replacement.
+    connectionId: uuid("connection_id"),
+    deliveryId: text("delivery_id").unique(),
+    signatureHash: text("signature_hash").unique(),
+    source: text(),
+    payload: jsonb(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
+    retryAt: timestamp("retry_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => [
+    index("github_installation_syncs_pending_idx")
+      .on(table.retryAt)
+      .where(sql`${table.retryAt} is not null`),
+    check(
+      "github_installation_syncs_evidence_check",
+      sql`(
+    ${table.kind} = 'webhook' AND ${table.deliveryId} IS NOT NULL AND ${table.signatureHash} IS NOT NULL
+    AND ${table.source} IS NOT NULL AND ${table.source} IN ('github.installation', 'github.installation_repositories') AND ${table.payload} IS NOT NULL
+  ) OR (
+    ${table.kind} = 'reconcile' AND ${table.connectionId} IS NOT NULL AND ${table.deliveryId} IS NULL
+    AND ${table.signatureHash} IS NULL AND ${table.source} IS NULL AND ${table.payload} IS NULL
+  )`,
+    ),
+  ],
+);
+
 export const githubRepositories = pgTable(
   "github_repositories",
   {

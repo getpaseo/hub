@@ -1,26 +1,6 @@
 import type { AuthServer } from "../auth/server.js";
 import { capabilitiesFor } from "../auth/organization-policy.js";
-import {
-  ConfigurationActivationValidationError,
-  ProjectConfigurationStore,
-  revisionBundleFiles,
-} from "../configuration/store.js";
-import {
-  configurationValidationMessages,
-  promptPartialValidationErrors,
-  type ConfigurationValidationErrors,
-} from "../configuration/validation-errors.js";
-import { rawConfigurationHash } from "../config/compiler.js";
-import {
-  compileHubBundle,
-  HUB_RESOURCE_PATH,
-  HubBundleError,
-  type HubBundleFile,
-} from "../config/bundle.js";
-import {
-  synchronizeGitHubDefaultBranch,
-  type GitHubConfigurationProvider,
-} from "../configuration/github-sync.js";
+import { revisionBundleFiles } from "../configuration/store.js";
 import type {
   Database,
   AgentExecutionRecord,
@@ -28,7 +8,6 @@ import type {
   ProjectActivityRunRecord,
   ProviderEventReceiptSummary,
 } from "../db/types.js";
-import { reportFailure } from "../failures/index.js";
 import { formatInvocationRejection } from "../triggers/invocation.js";
 import { providerEventDropReasonSummary } from "../triggers/drop-reason.js";
 import {
@@ -54,23 +33,10 @@ export interface ProjectRouteScope {
   projectSlug?: string | undefined;
 }
 
-export type ManualConfigurationSaveResult =
-  | { outcome: "activated"; revision: { id: string; version: number } }
-  | { outcome: "invalid"; revision: { id: string; version: number }; errors: string[] };
-
-/** One save: the YAML and every partial file it includes, activated together. */
-export interface ManualConfigurationInput {
-  files: readonly HubBundleFile[];
-}
-
 export class ProjectDashboard {
   constructor(
     private readonly database: Database,
     private readonly auth: AuthServer,
-    private readonly github: GitHubConfigurationProvider | undefined,
-    private readonly configurationForProject: (projectId: string) => ProjectConfigurationStore = (
-      projectId,
-    ) => new ProjectConfigurationStore(database, projectId),
   ) {}
 
   async tenantContext(request: Request, scope: ProjectRouteScope) {
@@ -196,142 +162,6 @@ export class ProjectDashboard {
     );
   }
 
-  async availableGitHubRepositories(request: Request, scope: ProjectRouteScope) {
-    const { tenant } = await this.resolveProject(request, scope);
-    const connections = (await this.database.organizationConnectionUsage(tenant.organization.id))
-      .github;
-    if (connections.length === 0) return [];
-    if (this.github === undefined) {
-      throw new ProjectCommandError("github_repositories_unavailable");
-    }
-    for (const connection of connections) {
-      const available = await this.github.listInstallationRepositories({
-        installationId: connection.installationId,
-      });
-      await this.database.upsertGitHubRepositories(
-        tenant.organization.id,
-        connection.id,
-        available,
-      );
-    }
-    return this.database.listGitHubRepositories(tenant.organization.id);
-  }
-
-  async useGitHubConfiguration(
-    request: Request,
-    scope: ProjectRouteScope,
-    input: { connectionId: string; repositoryId: number },
-  ) {
-    const { account, tenant } = await this.resolveProjectManager(request, scope);
-    const repository = (await this.availableGitHubRepositories(request, scope)).find(
-      (candidate) =>
-        candidate.connectionId === input.connectionId &&
-        candidate.repositoryId === input.repositoryId,
-    );
-    if (repository === undefined) throw new ProjectCommandError("repository_unavailable");
-    await this.database.setProjectGitHubConfigurationSource({
-      projectId: tenant.project.id,
-      githubConnectionId: repository.connectionId,
-      githubRepositoryId: repository.repositoryId,
-      githubRepositoryFullName: repository.fullName,
-      githubDefaultBranch: repository.defaultBranch,
-      automaticDeploymentEnabled: true,
-      userId: account.account.id,
-    });
-  }
-
-  async switchConfigurationToManual(request: Request, scope: ProjectRouteScope) {
-    const { account, tenant } = await this.resolveProjectManager(request, scope);
-    return this.configurationForProject(tenant.project.id).switchToManual(account.account.id);
-  }
-
-  async saveManualConfiguration(
-    request: Request,
-    scope: ProjectRouteScope,
-    input: ManualConfigurationInput,
-  ): Promise<ManualConfigurationSaveResult> {
-    const { account, tenant } = await this.resolveProjectManager(request, scope);
-    const status = await this.database.projectConfigurationReadModel(tenant.project.id);
-    if (status.authority !== "manual") throw new ProjectCommandError("configuration_read_only");
-    const authored = await authorManualConfiguration(input);
-    if (!authored.success) {
-      return invalidManualConfiguration(
-        await this.recordRejectedManualConfiguration({
-          projectId: tenant.project.id,
-          userId: account.account.id,
-          files: input.files,
-          validationErrors: authored.validationErrors,
-        }),
-      );
-    }
-    const store = this.configurationForProject(tenant.project.id);
-    const revision = await store.insertManualBundleRevision({
-      files: input.files,
-      userId: account.account.id,
-    });
-    if (revision.validationErrors !== null) return invalidManualConfiguration(revision);
-    try {
-      await store.activate(revision.id);
-    } catch (error) {
-      if (!(error instanceof ConfigurationActivationValidationError)) throw error;
-      reportFailure(
-        error,
-        {
-          operation: "project.configuration.activate",
-          component: "projects",
-          projectId: tenant.project.id,
-        },
-        { kind: "validation" },
-      );
-      return {
-        outcome: "invalid",
-        revision: { id: revision.id, version: revision.version },
-        errors: configurationValidationMessages(error.validationErrors),
-      };
-    }
-    return {
-      outcome: "activated",
-      revision: { id: revision.id, version: revision.version },
-    };
-  }
-
-  /** Saves the operator rejected: recorded as a revision so the attempt stays in history. */
-  private recordRejectedManualConfiguration(input: {
-    projectId: string;
-    userId: string;
-    files: readonly HubBundleFile[];
-    validationErrors: ConfigurationValidationErrors;
-  }) {
-    return this.database.insertProjectConfigurationRevision({
-      projectId: input.projectId,
-      sourceKind: "manual",
-      sourceEvidence: {
-        kind: "manual",
-        userId: input.userId,
-        bundle: { files: input.files, authoredHash: rawConfigurationHash(input.files) },
-      },
-      rawYaml: input.files.find(({ path }) => path === HUB_RESOURCE_PATH)?.content ?? null,
-      normalizedConfiguration: null,
-      validationErrors: input.validationErrors,
-      contentHash: rawConfigurationHash(input.files),
-      createdByUserId: input.userId,
-    });
-  }
-
-  async syncConfiguration(request: Request, scope: ProjectRouteScope) {
-    const { tenant } = await this.resolveProjectManager(request, scope);
-    if (this.github === undefined) throw new ProjectCommandError("github_sync_unavailable");
-    const result = await synchronizeGitHubDefaultBranch({
-      database: this.database,
-      client: this.github,
-      projectId: tenant.project.id,
-      webhookDeliveryId: null,
-      configurationForProject: this.configurationForProject,
-    });
-    if (result === undefined) throw new ProjectCommandError("github_sync_unavailable");
-    return result;
-  }
-
   private resolve(request: Request, scope: ProjectRouteScope) {
     return resolveRouteTenant(this.auth, this.database, request, {
       organizationSlug: scope.organizationSlug,
@@ -369,40 +199,6 @@ export class ProjectDashboard {
     }
     return resolved;
   }
-}
-
-type AuthoredManualConfiguration =
-  | { success: true }
-  | { success: false; validationErrors: ConfigurationValidationErrors };
-
-/** Validates the complete authored bundle before handing it to storage. */
-async function authorManualConfiguration(
-  input: ManualConfigurationInput,
-): Promise<AuthoredManualConfiguration> {
-  try {
-    compileHubBundle(input.files);
-    return { success: true };
-  } catch (error) {
-    if (error instanceof HubBundleError) {
-      reportFailure(
-        error,
-        { operation: "project.configuration.validate", component: "projects" },
-        { kind: "validation" },
-      );
-      return { success: false, validationErrors: promptPartialValidationErrors(error.issues) };
-    }
-    throw error;
-  }
-}
-
-function invalidManualConfiguration(
-  revision: Awaited<ReturnType<Database["insertProjectConfigurationRevision"]>>,
-): ManualConfigurationSaveResult {
-  return {
-    outcome: "invalid",
-    revision: { id: revision.id, version: revision.version },
-    errors: configurationValidationMessages(revision.validationErrors),
-  };
 }
 
 function organizationScope(scope: ProjectRouteScope): ProjectRouteScope {

@@ -75,9 +75,9 @@ import type {
   AcceptSlackEventInput,
   UpdateLinearConnectionTokensInput,
   LinearConnectionRefreshOperation,
-  GitHubLifecycleReceiptClaim,
+  GitHubInstallationSyncClaim,
   GitHubLifecycleReceiptClaimInput,
-  GitHubLifecycleResult,
+  GitHubInstallationSyncResult,
   PersistManualEventInput,
   ProjectConfigurationReadModel,
   ProjectConfigurationRevisionRecord,
@@ -173,19 +173,33 @@ class PgDatabase implements Database {
     return this.triggerAcceptance.persistManual(input);
   }
 
+  synchronizeGitHubInstallation<T>(
+    installationId: number,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return this.locks.withLock(
+      JSON.stringify(["github-installation-sync", installationId]),
+      operation,
+    );
+  }
+
+  pendingGitHubInstallationSyncs() {
+    return this.triggerAcceptance.pendingGitHubInstallationSyncs();
+  }
+
   claimGitHubLifecycleReceipt(input: GitHubLifecycleReceiptClaimInput) {
     return this.triggerAcceptance.claimGitHubLifecycleReceipt(input);
   }
 
-  applyGitHubLifecycle(
-    claim: Extract<GitHubLifecycleReceiptClaim, { status: "claimed" }>,
-    result: GitHubLifecycleResult,
+  applyGitHubInstallationSync(
+    claim: Extract<GitHubInstallationSyncClaim, { status: "claimed" }>,
+    result: GitHubInstallationSyncResult,
   ) {
-    return this.triggerAcceptance.applyGitHubLifecycle(claim, result);
+    return this.triggerAcceptance.applyGitHubInstallationSync(claim, result);
   }
 
-  releaseGitHubLifecycleReceipt(providerEventReceiptId: string) {
-    return this.triggerAcceptance.releaseGitHubLifecycleReceipt(providerEventReceiptId);
+  retryGitHubInstallationSync(installationSyncId: string) {
+    return this.triggerAcceptance.retryGitHubInstallationSync(installationSyncId);
   }
 
   async markProviderEventDropped(
@@ -4015,34 +4029,6 @@ class PgDatabase implements Database {
     );
     if (rows.rows.length > 1) throw new Error("github repository resource is ambiguous");
     return rows.rows[0] === undefined ? undefined : toGitHubRepositoryRecord(rows.rows[0]);
-  }
-
-  async upsertGitHubRepositories(
-    organizationId: string,
-    connectionId: string,
-    repositories: Array<
-      Pick<GitHubRepositoryRecord, "repositoryId" | "fullName" | "defaultBranch">
-    >,
-  ): Promise<void> {
-    for (const repository of repositories) {
-      await query(
-        this.pool,
-        `insert into github_repositories
-           (organization_id, connection_id, repository_id, full_name, default_branch)
-         values ($1, $2, $3, $4, $5)
-         on conflict (connection_id, repository_id) do update
-           set full_name = excluded.full_name,
-               default_branch = excluded.default_branch,
-               updated_at = clock_timestamp()`,
-        [
-          organizationId,
-          connectionId,
-          repository.repositoryId,
-          repository.fullName,
-          repository.defaultBranch,
-        ],
-      );
-    }
   }
 
   async findGitHubConfigurationTarget(

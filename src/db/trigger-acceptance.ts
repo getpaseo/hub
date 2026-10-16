@@ -1,16 +1,16 @@
-import { and, eq, isNull, or } from "drizzle-orm";
+import { and, eq, isNull, or, lte, sql, isNotNull } from "drizzle-orm";
 import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
 import type { DrizzleHandle } from "./runtime/index.js";
 import * as schema from "./schema.js";
-import { ConnectionRepository } from "./connections.js";
+import { ConnectionRepository, replaceGitHubRepositories } from "./connections.js";
 import type {
   AcceptDiscordEventInput,
   AcceptGitHubEventInput,
   AcceptLinearEventInput,
   AcceptSlackEventInput,
-  GitHubLifecycleReceiptClaim,
+  GitHubInstallationSyncClaim,
   GitHubLifecycleReceiptClaimInput,
-  GitHubLifecycleResult,
+  GitHubInstallationSyncResult,
   ManualEventPersistence,
   PersistManualEventInput,
   ProviderEventAcceptance,
@@ -228,59 +228,84 @@ export class ProviderEventAcceptanceRepository {
 
   claimGitHubLifecycleReceipt(
     input: GitHubLifecycleReceiptClaimInput,
-  ): Promise<GitHubLifecycleReceiptClaim> {
+  ): Promise<GitHubInstallationSyncClaim> {
     return this.database.transaction(async (transaction) => {
       const [connection] = await transaction
-        .select({
-          id: schema.githubConnections.id,
-          organizationId: schema.githubConnections.organizationId,
-        })
+        .select()
         .from(schema.githubConnections)
         .where(eq(schema.githubConnections.installationId, input.installationId));
-      if (connection === undefined) {
-        return { status: "duplicate", providerEventReceiptId: input.deliveryId };
+      const [receipt] = await transaction
+        .insert(schema.githubInstallationSyncs)
+        .values({
+          ...input,
+          kind: "webhook",
+          connectionId: connection?.id ?? null,
+        })
+        .onConflictDoNothing()
+        .returning();
+      if (receipt === undefined) {
+        const [existing] = await transaction
+          .select()
+          .from(schema.githubInstallationSyncs)
+          .where(
+            or(
+              eq(schema.githubInstallationSyncs.deliveryId, input.deliveryId),
+              eq(schema.githubInstallationSyncs.signatureHash, input.signatureHash),
+            ),
+          );
+        if (existing === undefined) throw new Error("GitHub lifecycle receipt unavailable");
+        return { status: "duplicate", installationSyncId: existing.id };
       }
-      const receipt = await claimProviderReceipt(transaction, {
-        organizationId: connection.organizationId,
-        provider: "github",
-        connectionId: connection.id,
-        resourceId: null,
-        input: { ...input, dropReason: GITHUB_LIFECYCLE },
-      });
-      if (!receipt.inserted) {
-        return { status: "duplicate", providerEventReceiptId: receipt.id };
-      }
+      if (connection !== undefined) await auditGitHubLifecycle(transaction, receipt, connection);
       return {
         status: "claimed",
-        providerEventReceiptId: receipt.id,
+        installationSyncId: receipt.id,
         installationId: input.installationId,
       };
     });
   }
 
-  applyGitHubLifecycle(
-    claim: Extract<GitHubLifecycleReceiptClaim, { status: "claimed" }>,
-    result: GitHubLifecycleResult,
+  applyGitHubInstallationSync(
+    claim: Extract<GitHubInstallationSyncClaim, { status: "claimed" }>,
+    result: GitHubInstallationSyncResult,
   ): Promise<void> {
     return this.database.transaction(async (transaction) => {
-      const [evidence] = await transaction
-        .select({ id: schema.providerEventReceipts.id })
-        .from(schema.providerEventReceipts)
+      const [receipt] = await transaction
+        .select()
+        .from(schema.githubInstallationSyncs)
         .where(
           and(
-            eq(schema.providerEventReceipts.id, claim.providerEventReceiptId),
-            eq(schema.providerEventReceipts.droppedReason, GITHUB_LIFECYCLE),
+            eq(schema.githubInstallationSyncs.id, claim.installationSyncId),
+            isNotNull(schema.githubInstallationSyncs.retryAt),
           ),
         )
         .for("update");
-      if (evidence === undefined) return;
+      if (receipt === undefined) return;
+      const [connection] = await transaction
+        .select()
+        .from(schema.githubConnections)
+        .where(
+          and(
+            eq(schema.githubConnections.installationId, receipt.installationId),
+            receipt.connectionId === null
+              ? undefined
+              : eq(schema.githubConnections.id, receipt.connectionId),
+          ),
+        )
+        .for("update");
+      if (connection === undefined && receipt.connectionId === null) return;
+      await transaction
+        .update(schema.githubInstallationSyncs)
+        .set({ retryAt: null, connectionId: connection?.id ?? receipt.connectionId })
+        .where(eq(schema.githubInstallationSyncs.id, receipt.id));
+      if (connection === undefined) return;
+      await auditGitHubLifecycle(transaction, receipt, connection);
       if (result.status === "absent") {
-        if (result.removeBinding) {
+        if (result.removeBinding)
           await this.connections.removeGitHubByInstallationInTransaction(
             transaction,
-            claim.installationId,
+            receipt.installationId,
           );
-        }
         return;
       }
       await transaction
@@ -293,14 +318,58 @@ export class ProviderEventAcceptanceRepository {
           suspendedAt: result.identity.status === "suspended" ? new Date() : null,
           updatedAt: new Date(),
         })
-        .where(eq(schema.githubConnections.installationId, claim.installationId));
+        .where(eq(schema.githubConnections.id, connection.id));
+      await replaceGitHubRepositories(
+        transaction,
+        connection.organizationId,
+        connection.id,
+        result.repositories,
+      );
     });
   }
 
-  async releaseGitHubLifecycleReceipt(providerEventReceiptId: string): Promise<void> {
+  async pendingGitHubInstallationSyncs() {
+    const rows = await this.database
+      .select({
+        installationSyncId: schema.githubInstallationSyncs.id,
+        installationId: schema.githubInstallationSyncs.installationId,
+        source: schema.githubInstallationSyncs.source,
+        kind: schema.githubInstallationSyncs.kind,
+      })
+      .from(schema.githubInstallationSyncs)
+      .leftJoin(
+        schema.githubConnections,
+        eq(schema.githubConnections.installationId, schema.githubInstallationSyncs.installationId),
+      )
+      .where(
+        and(
+          lte(schema.githubInstallationSyncs.retryAt, new Date()),
+          or(
+            isNotNull(schema.githubConnections.id),
+            isNotNull(schema.githubInstallationSyncs.connectionId),
+          ),
+        ),
+      )
+      .orderBy(schema.githubInstallationSyncs.retryAt)
+      .limit(20);
+    return rows.map((row) => ({
+      status: "claimed" as const,
+      installationSyncId: row.installationSyncId,
+      installationId: row.installationId,
+      removeBinding: row.kind === "reconcile" || row.source === "github.installation",
+    }));
+  }
+
+  async retryGitHubInstallationSync(installationSyncId: string): Promise<void> {
     await this.database
-      .delete(schema.providerEventReceipts)
-      .where(eq(schema.providerEventReceipts.id, providerEventReceiptId));
+      .update(schema.githubInstallationSyncs)
+      .set({ retryAt: sql`clock_timestamp() + interval '30 seconds'` })
+      .where(
+        and(
+          eq(schema.githubInstallationSyncs.id, installationSyncId),
+          isNotNull(schema.githubInstallationSyncs.retryAt),
+        ),
+      );
   }
 }
 
@@ -521,4 +590,28 @@ async function claimProviderReceipt(
   const existing = await findReceipt(transaction, input.input, input.organizationId);
   if (existing === undefined) throw new Error("provider receipt unavailable");
   return { id: existing.id, inserted: false };
+}
+
+async function auditGitHubLifecycle(
+  transaction: HubTransaction,
+  receipt: typeof schema.githubInstallationSyncs.$inferSelect,
+  connection: typeof schema.githubConnections.$inferSelect,
+): Promise<void> {
+  if (receipt.kind === "reconcile") return;
+  if (receipt.deliveryId === null || receipt.signatureHash === null || receipt.source === null)
+    throw new Error("GitHub webhook receipt evidence unavailable");
+  await claimProviderReceipt(transaction, {
+    organizationId: connection.organizationId,
+    provider: "github",
+    connectionId: connection.id,
+    resourceId: null,
+    input: {
+      deliveryId: receipt.deliveryId,
+      signatureHash: receipt.signatureHash,
+      source: receipt.source,
+      payload: receipt.payload,
+      receivedAt: receipt.receivedAt,
+      dropReason: GITHUB_LIFECYCLE,
+    },
+  });
 }

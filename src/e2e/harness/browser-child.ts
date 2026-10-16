@@ -140,7 +140,6 @@ interface InstallProviderDispatchFixtureCommand {
   id: string;
   type: "install-provider-dispatch-fixture";
   organizationId: string;
-  repositoryId: number;
   repository: string;
   guildId: string;
   files: readonly HubBundleFile[];
@@ -637,21 +636,21 @@ async function acceptInstallProviderDispatchFixture(
       )
     ).rows;
     if (owner === undefined) throw new Error("organization owner unavailable");
-    const github = await database.findGitHubConnection(message.repositoryId);
+    const repository = await database.findGitHubRepositoryForOrganization(
+      message.organizationId,
+      message.repository,
+    );
+    if (repository === undefined) throw new Error("GitHub repository unavailable");
+    const github = (await database.organizationConnectionUsage(message.organizationId)).github.find(
+      (connection) => connection.id === repository.connectionId,
+    );
     if (github === undefined || github.organizationId !== message.organizationId) {
       throw new Error("GitHub connection unavailable");
     }
-    await database.upsertGitHubRepositories(message.organizationId, github.id, [
-      {
-        repositoryId: message.repositoryId,
-        fullName: message.repository,
-        defaultBranch: "main",
-      },
-    ]);
     await database.setProjectGitHubConfigurationSource({
       projectId: project.id,
       githubConnectionId: github.id,
-      githubRepositoryId: message.repositoryId,
+      githubRepositoryId: repository.repositoryId,
       githubRepositoryFullName: message.repository,
       githubDefaultBranch: "main",
       automaticDeploymentEnabled: true,
@@ -955,7 +954,6 @@ function isInstallProviderDispatchFixtureCommand(
     Reflect.get(value, "type") === "install-provider-dispatch-fixture" &&
     typeof Reflect.get(value, "id") === "string" &&
     typeof Reflect.get(value, "organizationId") === "string" &&
-    typeof Reflect.get(value, "repositoryId") === "number" &&
     typeof Reflect.get(value, "repository") === "string" &&
     typeof Reflect.get(value, "guildId") === "string" &&
     isBundleFileList(Reflect.get(value, "files"))
