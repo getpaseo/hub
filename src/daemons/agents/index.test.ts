@@ -257,3 +257,16 @@ test.each([undefined, false])(
     });
   },
 );
+
+test("observes agents without requiring the background-workspace feature", async () => {
+  const requests: Record<string, unknown>[] = [];
+  const agents = connect(requests);
+  const unwatch = await agents.watch("agent", () => {});
+  expect(requests[0]).toMatchObject({
+    type: "fetch_agents_request",
+    includeBackground: true,
+    subscribe: { subscriptionId: "hub-continuation" },
+  });
+  unwatch();
+  agents.close();
+});

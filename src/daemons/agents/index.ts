@@ -205,6 +205,7 @@ export class DaemonAgents implements AgentConnection {
       if (!this.observing) {
         await this.request({
           type: "fetch_agents_request",
+          includeBackground: true,
           subscribe: { subscriptionId: "hub-continuation" },
         });
         this.observing = true;

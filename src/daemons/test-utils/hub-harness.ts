@@ -134,7 +134,11 @@ const ExecutionSessionRequestSchema = z.object({
       workspaceId: z.string(),
       title: z.string().nullable(),
     }),
-    z.object({ type: z.literal("fetch_agents_request"), requestId: z.string() }),
+    z.object({
+      type: z.literal("fetch_agents_request"),
+      requestId: z.string(),
+      includeBackground: z.boolean().optional(),
+    }),
     z.object({ type: z.literal("agent.timeline.set_subscription.request"), requestId: z.string() }),
     z.object({
       type: z.literal("send_agent_message_request"),
@@ -2155,6 +2159,7 @@ class TestDaemon {
   private permissions: string[] = [];
   private readonly agents = new Map<string, Record<string, unknown>>();
   private createRequests = 0;
+  private includeBackground = false;
   private readonly controls: HubExecutionControlAction[] = [];
   private readonly pendingControlActions = new Map<
     string,
@@ -2276,6 +2281,7 @@ class TestDaemon {
   }
   async connectExisting(): Promise<void> {
     if (!this.webSocketUrl) throw new Error("Daemon has no socket URL");
+    this.includeBackground = false;
     const socket = new WebSocket(this.webSocketUrl, {
       headers: {
         authorization: `Bearer ${this.credential}`,
@@ -2435,6 +2441,7 @@ class TestDaemon {
     const agent = this.agents.get(agentId);
     if (!agent) throw new Error("Unknown agent");
     agent["status"] = status;
+    if (agent["background"] === true && !this.includeBackground) return;
     this.send({
       type: "agent_update",
       payload: {
@@ -2620,13 +2627,7 @@ class TestDaemon {
       request.type === "fetch_agents_request" ||
       request.type === "agent.timeline.set_subscription.request"
     ) {
-      this.send({
-        type:
-          request.type === "fetch_agents_request"
-            ? "fetch_agents_response"
-            : "agent.timeline.set_subscription.response",
-        payload: { requestId: request.requestId },
-      });
+      this.subscribe(request);
       return;
     }
     if (request.type === "send_agent_message_request") {
@@ -2674,6 +2675,22 @@ class TestDaemon {
     this.resolveSpawn();
     if (this.holdAck) this.pendingCreate = pending;
     else this.acknowledge(pending);
+  }
+
+  private subscribe(request: {
+    type: "fetch_agents_request" | "agent.timeline.set_subscription.request";
+    requestId: string;
+    includeBackground?: boolean | undefined;
+  }): void {
+    if (request.type === "fetch_agents_request")
+      this.includeBackground = request.includeBackground === true;
+    this.send({
+      type:
+        request.type === "fetch_agents_request"
+          ? "fetch_agents_response"
+          : "agent.timeline.set_subscription.response",
+      payload: { requestId: request.requestId },
+    });
   }
 
   private fetchAgent(request: { requestId: string; agentId: string }): void {

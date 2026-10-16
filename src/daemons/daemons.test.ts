@@ -1163,26 +1163,29 @@ describe("daemon enrollment and execution", () => {
     assert.equal((await hub.execution(result.execution.id)).status, "succeeded");
   });
 
-  it("archives an associated run after successful auto-archive completion", async () => {
-    await hub.connectDaemon();
-    const result = await hub.dispatch({ autoArchive: true });
+  it.each([false, true])(
+    "archives a background %s run after successful auto-archive completion",
+    async (background) => {
+      await hub.connectDaemon();
+      const result = await hub.dispatch({ autoArchive: true, background });
 
-    assert.equal(await hub.completeExecution(result.execution.id), 200);
-    assert.equal(await hub.completeExecution(result.execution.id), 409);
-    assert.deepEqual(hub.controlActions(), []);
-    assert.equal((await hub.execution(result.execution.id)).hubActionReadyAt, null);
-    await hub.completeCurrentTurn(result.agentId);
-    await hub.pendingControlAction(result.execution.id);
-    await hub.completePendingCleanup();
-    await hub.completeCurrentTurn(result.agentId);
-    await hub.waitForCompletionHookCount(1);
+      assert.equal(await hub.completeExecution(result.execution.id), 200);
+      assert.equal(await hub.completeExecution(result.execution.id), 409);
+      assert.deepEqual(hub.controlActions(), []);
+      assert.equal((await hub.execution(result.execution.id)).hubActionReadyAt, null);
+      await hub.completeCurrentTurn(result.agentId);
+      await hub.pendingControlAction(result.execution.id);
+      await hub.completePendingCleanup();
+      await hub.completeCurrentTurn(result.agentId);
+      await hub.waitForCompletionHookCount(1);
 
-    const execution = await hub.execution(result.execution.id);
-    assert.deepEqual(hub.controlActions(), ["archive"]);
-    assert.equal(hub.hookContexts().completed.length, 1);
-    assert.equal(execution.hubAction, "archive");
-    assert.notEqual(execution.hubActionCompletedAt, null);
-  });
+      const execution = await hub.execution(result.execution.id);
+      assert.deepEqual(hub.controlActions(), ["archive"]);
+      assert.equal(hub.hookContexts().completed.length, 1);
+      assert.equal(execution.hubAction, "archive");
+      assert.notEqual(execution.hubActionCompletedAt, null);
+    },
+  );
 
   it("waits for the provider turn acknowledgement after the MCP completion response", async () => {
     await hub.connectDaemon();
@@ -1425,21 +1428,27 @@ describe("daemon enrollment and execution", () => {
     assert.deepEqual(hub.controlActions(), ["interrupt"]);
   });
 
-  it("archives an auto-archive run after idle timeout", async () => {
-    await hub.connectDaemon();
-    const result = await hub.dispatch({
-      timeoutMs: 60 * 60_000,
-      idleTimeoutMs: 5 * 60_000,
-      autoArchive: true,
-      background: false,
-    });
+  it.each([false, true])(
+    "archives an auto-archive run in a background %s workspace after idle timeout",
+    async (background) => {
+      await hub.connectDaemon();
+      const result = await hub.dispatch({
+        timeoutMs: 60 * 60_000,
+        idleTimeoutMs: 5 * 60_000,
+        autoArchive: true,
+        background,
+      });
 
-    await hub.agentBecomesIdle(result.execution.id, result.agentId);
-    await hub.advanceDispatchTime(5 * 60_000);
+      await hub.agentBecomesIdle(result.execution.id, result.agentId);
+      await hub.advanceDispatchTime(5 * 60_000);
 
-    assert.deepEqual(hub.controlActions(), ["archive"]);
-    assert.notEqual((await hub.execution(result.execution.id)).hubActionCompletedAt, null);
-  });
+      const execution = await hub.execution(result.execution.id);
+      assert.equal(execution.status, "failed");
+      assert.deepEqual(execution.result, { status: "failed", reason: "idle_timeout" });
+      assert.deepEqual(hub.controlActions(), ["archive"]);
+      assert.notEqual(execution.hubActionCompletedAt, null);
+    },
+  );
 
   it("archives an auto-archive run after hard timeout", async () => {
     await hub.connectDaemon();
