@@ -59,7 +59,7 @@ const ORGANIZATION_ROLE_LABELS = {
 type ActiveAccount = ActiveAccountState & { busy: boolean };
 
 const MEMBER_COLUMNS: readonly DataColumn[] = [
-  { header: "Member" },
+  { header: "Member", fill: true },
   { header: "Role" },
   { header: "", align: "end" },
 ];
@@ -68,7 +68,7 @@ const MEMBERS_EMPTY = {
   description: "This organization has no members yet.",
 };
 const INVITATION_COLUMNS: readonly DataColumn[] = [
-  { header: "Invitee" },
+  { header: "Invitee", fill: true },
   { header: "Role" },
   { header: "", align: "end" },
 ];
@@ -277,7 +277,7 @@ function MemberRow({ account, member }: { account: ActiveAccount; member: TeamMe
 
   return (
     <DataRow>
-      <DataCell className="min-w-0">
+      <DataCell fill>
         <TwoLine primary={member.name} secondary={member.email} />
       </DataCell>
       <DataCell>
@@ -348,7 +348,7 @@ function InvitationList({
       >
         {invitations.map((invitation) => (
           <DataRow key={invitation.id}>
-            <DataCell className="min-w-0">
+            <DataCell fill>
               <TwoLine primary={invitation.email} />
             </DataCell>
             <DataCell>

@@ -10,7 +10,14 @@ export interface DataColumn {
   /** Visible header text. Empty for a trailing action column. */
   header: string;
   align?: "start" | "end";
-  /** Width or emphasis overrides for this column's cells. */
+  /**
+   * The column holds values that can be cut — a name, a summary, a path — so it shares the width
+   * the other columns leave and truncates when that is not enough. Every other column is as wide
+   * as its widest value and never truncates. Every table has at least one; mark its cells `fill`
+   * too.
+   */
+  fill?: boolean;
+  /** Responsive visibility for this column's header. Its cells repeat it. */
   className?: string;
 }
 
@@ -73,6 +80,7 @@ export function DataTableSkeleton({
               <DataCell
                 key={column.header === "" ? `actions-${String(index)}` : column.header}
                 {...(column.align === undefined ? {} : { align: column.align })}
+                {...(column.fill === true ? { fill: true } : {})}
               >
                 <Skeleton className={cn("h-4", placeholderWidth(columns, index))} />
               </DataCell>
@@ -85,13 +93,13 @@ export function DataTableSkeleton({
 }
 
 /**
- * The identifying column carries the long value, the rest are short facts, and a trailing
- * action column is a button-sized square.
+ * A filling column carries the long value, the rest are short facts, and a trailing action
+ * column is a button-sized square.
  */
 function placeholderWidth(columns: readonly DataColumn[], index: number): string {
   const column = columns[index];
   if (column?.header === "" && index === columns.length - 1) return "ml-auto size-8";
-  return index === 0 ? "w-48" : "w-16";
+  return column?.fill === true ? "w-48" : "w-16";
 }
 
 /** The bordered card and quiet header row both the table and its skeleton are drawn in. */
@@ -116,12 +124,16 @@ function TableShell({
               <TableHead
                 key={column.header === "" ? `actions-${String(index)}` : column.header}
                 className={cn(
-                  // The identifying column absorbs the spare width; everything after it
-                  // shrinks to its content, so columns stay next to each other instead of
-                  // drifting apart on a wide screen. The floor keeps that column readable once
-                  // there is room for it; on a phone there is not, and a table that scrolls
-                  // sideways is worse than a name that truncates.
-                  index === 0 ? "w-full sm:min-w-48" : "w-px",
+                  // A fitted column is a 1px request the browser widens to its widest value and
+                  // never past it, so fitted columns stay next to each other on a wide screen.
+                  // Filling columns share what is left by how much each holds, and give it back
+                  // the same way when there is not enough. A floor keeps a filling column
+                  // readable once there is room for one; on a phone there is not, and a table
+                  // that scrolls sideways is worse than a name that truncates. The first column
+                  // names the record, so its floor is higher: it is the last column a reader can
+                  // afford to lose.
+                  column.fill === true && (index === 0 ? "sm:min-w-48" : "sm:min-w-32"),
+                  column.fill !== true && "w-px",
                   column.align === "end" && "text-right",
                   column.className,
                 )}
@@ -161,19 +173,34 @@ export function DataCell({
   children,
   align = "start",
   muted = false,
+  fill = false,
   className,
 }: {
   children: ReactNode;
   align?: "start" | "end";
   muted?: boolean;
-  /** Column width or wrapping only. Never used to change how a cell reads. */
+  /** The cell sits in a `fill` column: its value truncates when the column is narrower. */
+  fill?: boolean;
+  /** Responsive visibility only, repeating its column's. Never used to change how a cell reads. */
   className?: string;
 }) {
   return (
     <TableCell
       className={cn(align === "end" && "text-right", muted && "text-muted-foreground", className)}
     >
-      {children}
+      {fill ? (
+        // A grid item that clips has no minimum width, so the column can give way, while its
+        // widest value still sets the column's share of the spare width. Anything that is not a
+        // grid item — a flex row, a block — would hold the column open at its full width.
+        // `TwoLine` reads the slot: here its secondary line gives way first.
+        <div data-slot="fill-cell" className="grid">
+          <div className="truncate" title={typeof children === "string" ? children : undefined}>
+            {children}
+          </div>
+        </div>
+      ) : (
+        children
+      )}
     </TableCell>
   );
 }

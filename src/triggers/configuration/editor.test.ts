@@ -5,6 +5,7 @@ import { TriggerDocumentSchema } from "./schema.js";
 import {
   changeTriggerEvent,
   createTriggerYaml,
+  describeTriggerEvent,
   mergeTriggerForm,
   patchTriggerYaml,
   projectTriggerForm,
@@ -448,4 +449,31 @@ test("continuation policies round-trip through the form and YAML", () => {
     expect(next).toMatchObject({ status: "editable", value: { continuationMode: mode } });
     expect(yaml).toContain("# keep this heading");
   }
+});
+
+test("a trigger row names the event kind before what narrows it", () => {
+  const projection = projectTriggerForm(ADVANCED);
+  if (projection.status !== "editable") throw new Error(projection.reason);
+  const slack = projection.value;
+  expect(describeTriggerEvent(slack, "slack.mention")).toEqual({
+    kind: "Slack mention",
+    detail: "company",
+  });
+  // The recurrence used to stand in for the kind, so a schedule's row never said "Schedule".
+  const schedule = {
+    ...slack,
+    event: "schedule.tick" as const,
+    connection: "",
+    recurrence: { start: "2026-01-01T08:15:00", rule: "FREQ=DAILY", timezone: "UTC" },
+  };
+  expect(describeTriggerEvent(schedule, "schedule.tick")).toEqual({
+    kind: "Schedule",
+    detail: "Every day at 08:15 (UTC)",
+  });
+  expect(
+    describeTriggerEvent({ ...slack, event: "manual.run", connection: "" }, "manual.run"),
+  ).toEqual({
+    kind: "Manual run",
+  });
+  expect(describeTriggerEvent(null, "github.push")).toEqual({ kind: "GitHub push" });
 });

@@ -25,13 +25,13 @@ const LIMITS_DESCRIPTION = "What this organization is allowed, and how much is i
 const HISTORY_TITLE = "History";
 const HISTORY_DESCRIPTION = "Every change to this organization's limits, most recent first.";
 const LIMIT_COLUMNS: readonly DataColumn[] = [
-  { header: "Resource" },
+  { header: "Resource", fill: true },
   { header: "Limit" },
   { header: "In use", align: "end" },
 ];
 const HISTORY_COLUMNS: readonly DataColumn[] = [
   { header: "Change" },
-  { header: "Reason" },
+  { header: "Reason", fill: true },
   { header: "Who" },
   { header: "When", align: "end" },
 ];
@@ -81,12 +81,12 @@ function UsageContent({ snapshot }: { snapshot: Snapshot }) {
       <Section title={LIMITS_TITLE} description={LIMITS_DESCRIPTION}>
         <DataTable label="Limits" columns={LIMIT_COLUMNS} isEmpty={false} empty={LIMITS_EMPTY}>
           <DataRow>
-            <DataCell>Seats</DataCell>
+            <DataCell fill>Seats</DataCell>
             <DataCell muted>{limitLabel(limits.seats.limit)}</DataCell>
             <DataCell align="end">{limits.seats.used}</DataCell>
           </DataRow>
           <DataRow>
-            <DataCell>Members can invite</DataCell>
+            <DataCell fill>Members can invite</DataCell>
             <DataCell muted>
               <StatusPill tone={limits.canInviteMembers ? "success" : "neutral"} dot={false}>
                 {limits.canInviteMembers ? "Allowed" : "Not allowed"}
@@ -97,7 +97,7 @@ function UsageContent({ snapshot }: { snapshot: Snapshot }) {
             </DataCell>
           </DataRow>
           <DataRow>
-            <DataCell>Executions this month</DataCell>
+            <DataCell fill>Executions this month</DataCell>
             <DataCell muted>{limitLabel(limits.executionsMonthly.limit)}</DataCell>
             <DataCell align="end">{measureUsage(limits.executionsMonthly)}</DataCell>
           </DataRow>
@@ -144,10 +144,8 @@ function History({ history }: { history: Snapshot["history"] }) {
       {history.map((entry) => (
         <DataRow key={entry.id}>
           <DataCell>{SOURCE_LABELS[entry.source]}</DataCell>
-          <DataCell muted className="max-w-xs">
-            <span className="block truncate" title={entry.reason ?? undefined}>
-              {entry.reason ?? "—"}
-            </span>
+          <DataCell muted fill>
+            {entry.reason ?? "—"}
           </DataCell>
           <DataCell muted>{entry.actorName ?? "System"}</DataCell>
           <DataCell align="end" muted>

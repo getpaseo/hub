@@ -10,7 +10,7 @@ import { useRouteTenant } from "../projects/context.js";
 import { triggerSnapshot } from "./functions.js";
 
 const ACTIVITY_COLUMNS = [
-  { header: "Trigger" },
+  { header: "Trigger", fill: true },
   { header: "Provider" },
   { header: "Source" },
   { header: "Status" },
@@ -56,7 +56,7 @@ export function TriggerActivityPanel() {
       >
         {activity.map((run) => (
           <DataRow key={run.id}>
-            <DataCell>
+            <DataCell fill>
               <TwoLine
                 primary={run.triggerName}
                 {...(run.repo === null ? {} : { secondary: run.repo })}

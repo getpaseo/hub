@@ -31,7 +31,7 @@ import { CodeEditor } from "../projects/configuration/code-editor.js";
 import { useRouteTenant } from "../projects/context.js";
 import type { Result } from "../contract/respond.js";
 import {
-  summarizeTriggerEvent,
+  describeTriggerEvent,
   changeTriggerEvent,
   mergeTriggerForm,
   projectTriggerForm,
@@ -59,9 +59,9 @@ type TriggerTextField = Exclude<
 >;
 
 const TRIGGER_COLUMNS = [
-  { header: "Trigger" },
-  { header: "Event", className: "hidden md:table-cell" },
-  { header: "Target", className: "hidden lg:table-cell" },
+  { header: "Trigger", fill: true },
+  { header: "Event", fill: true, className: "hidden md:table-cell" },
+  { header: "Target", fill: true, className: "hidden lg:table-cell" },
   { header: "Last triggered", className: "hidden xl:table-cell" },
   { header: "Status" },
 ] as const;
@@ -139,8 +139,8 @@ export function TriggersPanel() {
                 void navigate({ to: triggerPath(trigger.id) });
               }}
             >
-              <DataCell>
-                <span className="flex min-w-52 items-center gap-3">
+              <DataCell fill>
+                <span className="flex items-center gap-3">
                   <span
                     className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-muted text-foreground"
                     role="img"
@@ -152,6 +152,7 @@ export function TriggersPanel() {
                     primary={
                       <Link
                         to={triggerPath(trigger.id)}
+                        title={trigger.name}
                         className="hover:underline"
                         onClick={(event) => event.stopPropagation()}
                       >
@@ -166,22 +167,17 @@ export function TriggersPanel() {
                   />
                 </span>
               </DataCell>
-              <DataCell className="hidden whitespace-nowrap md:table-cell">
-                <TwoLine
-                  primary={summarizeTriggerEvent(trigger.draft, trigger.event)}
-                  {...(trigger.draft?.connection === "" || trigger.draft?.connection === undefined
-                    ? {}
-                    : { secondary: trigger.draft.connection })}
-                />
+              <DataCell fill className="hidden md:table-cell">
+                <TriggerEvent trigger={trigger} />
               </DataCell>
-              <DataCell className="hidden whitespace-nowrap lg:table-cell">
+              <DataCell fill className="hidden lg:table-cell">
                 {trigger.draft === null ? (
                   <span className="text-muted-foreground">Advanced configuration</span>
                 ) : (
-                  <TwoLine mono primary={trigger.draft.daemon} secondary={trigger.draft.cwd} />
+                  <TwoLine path primary={trigger.draft.daemon} secondary={trigger.draft.cwd} />
                 )}
               </DataCell>
-              <DataCell className="hidden whitespace-nowrap xl:table-cell">
+              <DataCell className="hidden xl:table-cell">
                 {trigger.lastTriggered === null ? (
                   <span className="text-muted-foreground">Never</span>
                 ) : (
@@ -202,6 +198,11 @@ export function TriggersPanel() {
       </div>
     </>
   );
+}
+
+function TriggerEvent({ trigger }: { trigger: BrowserTrigger }) {
+  const { kind, detail } = describeTriggerEvent(trigger.draft, trigger.event);
+  return <TwoLine primary={kind} {...(detail === undefined ? {} : { secondary: detail })} />;
 }
 
 export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
