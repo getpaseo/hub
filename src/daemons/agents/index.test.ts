@@ -280,8 +280,15 @@ test("every watch reads current state even when the directory subscription alrea
   const unwatchSecond = await agents.watch("agent", (event) => second.push(event));
   expect(requests.filter((request) => request["type"] === "fetch_agents_request")).toHaveLength(1);
   expect(requests.filter((request) => request["type"] === "fetch_agent_request")).toHaveLength(2);
-  expect(first).toMatchObject([{ type: "agent_snapshot", agent: { id: "agent", status: "idle" } }]);
-  expect(second).toEqual(first);
+  const expected = [
+    {
+      type: "agent_snapshot",
+      agent: { id: "agent", workspaceId: "workspace", status: "idle" },
+      timestamp: expect.any(String) as unknown,
+    },
+  ];
+  expect(first).toEqual(expected);
+  expect(second).toEqual(expected);
   unwatchFirst();
   unwatchSecond();
   agents.close();
