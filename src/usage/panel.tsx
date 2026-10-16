@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useSnapshotQuery } from "../queries/index.js";
 import { useServerFn } from "@tanstack/react-start";
 import {
   DataCell,
@@ -51,22 +51,22 @@ const SOURCE_LABELS: Record<EntitlementChangeSource, string> = {
 export function OrganizationUsagePanel() {
   const tenant = useRouteTenant();
   const load = useServerFn(usageSnapshot);
-  const query = useQuery({
+  const query = useSnapshotQuery({
     queryKey: ["usage", tenant.account.id, tenant.organization.id],
     queryFn: () => load({ data: { organizationSlug: tenant.organization.slug } }),
   });
 
-  if (query.isPending) return <UsageLoading name={tenant.organization.name} />;
-  if (query.isError || query.data.status === "error") {
+  if (query.status === "pending") return <UsageLoading name={tenant.organization.name} />;
+  if (query.status === "error") {
     return (
       <FailureAlert
         title="Usage unavailable"
-        error={query.data}
+        error={query.error}
         fallback="Hub did not receive the usage snapshot. Check your connection and reload the page."
       />
     );
   }
-  return <UsageContent snapshot={query.data.data} />;
+  return <UsageContent snapshot={query.data} />;
 }
 
 function UsageContent({ snapshot }: { snapshot: Snapshot }) {

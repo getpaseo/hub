@@ -1,5 +1,6 @@
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-array-as-prop, eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop, typescript-eslint/no-unsafe-type-assertion -- controls are scoped to the rendered project snapshot */
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSnapshotQuery } from "../../queries/index.js";
+import { useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useState } from "react";
 import { Combobox, type ComboboxOption } from "../../components/app/combobox.js";
@@ -77,7 +78,7 @@ function ProjectConfigurationScreen() {
   >(saveManualConfiguration, queryClient, scope);
   const configure = useProjectCommand(useGitHubConfiguration, queryClient, scope);
   const loadRepositories = useServerFn(availableGitHubRepositories);
-  const repositories = useQuery({
+  const repositories = useSnapshotQuery({
     queryKey: ["github-repositories", tenant.organization.id, tenant.project?.id],
     queryFn: () => loadRepositories({ data: scope }),
   });
@@ -117,8 +118,8 @@ function ProjectConfigurationScreen() {
             mode={mode}
             onSelectMode={selectMode}
             switchToManualPending={manual.isPending}
-            repositories={repositories.data?.status === "ok" ? repositories.data.data : []}
-            repositoriesLoading={repositories.isPending}
+            repositories={repositories.status === "success" ? repositories.data : []}
+            repositoriesLoading={repositories.status === "pending"}
             stagedRepository={stagedRepository}
             onStageRepository={setStagedRepository}
             onSaveRepository={() => {

@@ -1,7 +1,8 @@
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- the generated route type cannot express a server-resolved organization slug */
+import { useSnapshotQuery } from "../../queries/index.js";
 import { useCallback, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { Card, CardSkeleton } from "../../components/app/card.js";
 import { FailureAlert } from "../../components/app/failure-alert.js";
@@ -28,27 +29,23 @@ type PortalResult = Awaited<ReturnType<typeof billingPortal>>;
 export function BillingPanel({ openPlans }: { openPlans: boolean }) {
   const tenant = useRouteTenant();
   const load = useServerFn(billingOverview);
-  const query = useQuery({
+  const query = useSnapshotQuery({
     queryKey: ["billing", tenant.account.id, tenant.organization.id],
     queryFn: () => load({ data: { organizationSlug: tenant.organization.slug } }),
   });
 
-  if (query.isPending) return <BillingLoading name={tenant.organization.name} />;
-  if (query.isError || query.data.status === "error") {
+  if (query.status === "pending") return <BillingLoading name={tenant.organization.name} />;
+  if (query.status === "error") {
     return (
       <FailureAlert
         title="Billing unavailable"
-        error={query.data}
+        error={query.error}
         fallback="Hub did not receive the billing state. Check your connection and reload the page."
       />
     );
   }
   return (
-    <BillingContent
-      overview={query.data.data}
-      slug={tenant.organization.slug}
-      openPlans={openPlans}
-    />
+    <BillingContent overview={query.data} slug={tenant.organization.slug} openPlans={openPlans} />
   );
 }
 
