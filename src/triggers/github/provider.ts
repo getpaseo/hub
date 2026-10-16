@@ -6,7 +6,6 @@ import {
   type TriggerProviderReactionState,
 } from "../index.js";
 import type { GitHubAuth } from "../../auth/github.js";
-import { reportFailure } from "../../failures/index.js";
 import {
   agentFailureNotice,
   isExecutionLimitDenial,
@@ -31,12 +30,13 @@ import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
 import { classifyGitHubEvent, GITHUB_TRIGGER_SOURCE_NAMES } from "./classification.js";
 
 export interface GitHubReactionClient {
+  /** Returns null when the installation or reaction target is unavailable (GitHub 404). */
   createReaction(input: {
     installationId: number;
     repo: string;
     subject: GitHubReactionSubject;
     content: GitHubReactionContent;
-  }): Promise<GitHubCreatedReaction>;
+  }): Promise<GitHubCreatedReaction | null>;
   deleteReaction(input: {
     installationId: number;
     repo: string;
@@ -82,49 +82,65 @@ export function createGitHubReactionClient(
 ): GitHubReactionClient {
   return {
     async createReaction(input) {
-      const [owner, repo] = splitRepo(input.repo);
-      const octokit = await auth.createInstallationOctokit(input.installationId);
-      if (input.subject.kind === "item") {
+      try {
+        const [owner, repo] = splitRepo(input.repo);
+        const octokit = await auth.createInstallationOctokit(input.installationId);
+        if (input.subject.kind === "item") {
+          const response = await octokit.request(
+            "POST /repos/{owner}/{repo}/issues/{issue_number}/reactions",
+            { owner, repo, issue_number: input.subject.issueNumber, content: input.content },
+          );
+          return { id: response.data.id };
+        }
+        if (input.subject.kind === "issue_comment") {
+          const response = await octokit.request(
+            "POST /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions",
+            { owner, repo, comment_id: input.subject.commentId, content: input.content },
+          );
+          return { id: response.data.id };
+        }
         const response = await octokit.request(
-          "POST /repos/{owner}/{repo}/issues/{issue_number}/reactions",
-          { owner, repo, issue_number: input.subject.issueNumber, content: input.content },
-        );
-        return { id: response.data.id };
-      }
-      if (input.subject.kind === "issue_comment") {
-        const response = await octokit.request(
-          "POST /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions",
+          "POST /repos/{owner}/{repo}/pulls/comments/{comment_id}/reactions",
           { owner, repo, comment_id: input.subject.commentId, content: input.content },
         );
         return { id: response.data.id };
+      } catch (error) {
+        // GitHub also uses 404 when this installation can no longer access the target.
+        // A cosmetic reaction cannot be delivered there; settle it without retrying.
+        if (isUnavailableReactionTarget(error)) return null;
+        throw error;
       }
-      const response = await octokit.request(
-        "POST /repos/{owner}/{repo}/pulls/comments/{comment_id}/reactions",
-        { owner, repo, comment_id: input.subject.commentId, content: input.content },
-      );
-      return { id: response.data.id };
     },
     async deleteReaction(input) {
-      const [owner, repo] = splitRepo(input.repo);
-      const octokit = await auth.createInstallationOctokit(input.installationId);
-      if (input.subject.kind === "item") {
-        await octokit.request(
-          "DELETE /repos/{owner}/{repo}/issues/{issue_number}/reactions/{reaction_id}",
-          { owner, repo, issue_number: input.subject.issueNumber, reaction_id: input.reactionId },
-        );
-      } else if (input.subject.kind === "issue_comment") {
-        await octokit.request(
-          "DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}",
-          { owner, repo, comment_id: input.subject.commentId, reaction_id: input.reactionId },
-        );
-      } else {
-        await octokit.request(
-          "DELETE /repos/{owner}/{repo}/pulls/comments/{comment_id}/reactions/{reaction_id}",
-          { owner, repo, comment_id: input.subject.commentId, reaction_id: input.reactionId },
-        );
+      try {
+        const [owner, repo] = splitRepo(input.repo);
+        const octokit = await auth.createInstallationOctokit(input.installationId);
+        if (input.subject.kind === "item") {
+          await octokit.request(
+            "DELETE /repos/{owner}/{repo}/issues/{issue_number}/reactions/{reaction_id}",
+            { owner, repo, issue_number: input.subject.issueNumber, reaction_id: input.reactionId },
+          );
+        } else if (input.subject.kind === "issue_comment") {
+          await octokit.request(
+            "DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}",
+            { owner, repo, comment_id: input.subject.commentId, reaction_id: input.reactionId },
+          );
+        } else {
+          await octokit.request(
+            "DELETE /repos/{owner}/{repo}/pulls/comments/{comment_id}/reactions/{reaction_id}",
+            { owner, repo, comment_id: input.subject.commentId, reaction_id: input.reactionId },
+          );
+        }
+      } catch (error) {
+        if (isUnavailableReactionTarget(error)) return;
+        throw error;
       }
     },
   };
+}
+
+function isUnavailableReactionTarget(error: unknown): boolean {
+  return typeof error === "object" && error !== null && Reflect.get(error, "status") === 404;
 }
 
 export type GitHubReactionSubject =
@@ -231,7 +247,7 @@ export function createGitHubTriggerProvider(options: {
         subject: triggerContext.reactionSubject,
         content: "eyes",
       });
-      return { reactionId: reaction.id } satisfies GitHubReactionState;
+      return reaction === null ? null : ({ reactionId: reaction.id } satisfies GitHubReactionState);
     },
     async onAgentExecutionCompleted(triggerContext, _outputContext, _result, reactionState) {
       return reactToLifecycle(options.reactions, triggerContext, "+1", reactionState);
@@ -240,6 +256,11 @@ export function createGitHubTriggerProvider(options: {
       if (isExecutionLimitDenial(reason) && triggerContext.event.github.item?.number != null) {
         if (options.comments === undefined) throw new Error("GitHub comment client unavailable");
         const [owner, repo] = splitRepo(triggerContext.target.repository);
+        await deletePreviousReaction(
+          options.reactions,
+          triggerContext,
+          githubReactionId(reactionState),
+        );
         await options.comments.createIssueComment({
           installationId: triggerContext.target.installationId,
           owner,
@@ -251,11 +272,6 @@ export function createGitHubTriggerProvider(options: {
             options.billingUrlForOrganization ?? missingBillingUrl,
           ),
         });
-        await deleteReactionSafely(
-          options.reactions,
-          triggerContext,
-          githubReactionId(reactionState),
-        );
         return null;
       }
       return reactToLifecycle(options.reactions, triggerContext, "-1", reactionState);
@@ -288,7 +304,7 @@ async function reactToLifecycle(
     return null;
   }
 
-  await deleteReactionSafely(reactions, triggerContext, githubReactionId(reactionState));
+  await deletePreviousReaction(reactions, triggerContext, githubReactionId(reactionState));
 
   const reaction = await reactions.createReaction({
     installationId: triggerContext.target.installationId,
@@ -296,10 +312,10 @@ async function reactToLifecycle(
     subject: triggerContext.reactionSubject,
     content,
   });
-  return { reactionId: reaction.id } satisfies GitHubReactionState;
+  return reaction === null ? null : ({ reactionId: reaction.id } satisfies GitHubReactionState);
 }
 
-async function deleteReactionSafely(
+async function deletePreviousReaction(
   reactions: GitHubReactionClient,
   triggerContext: GitHubTriggerContext,
   reactionId: number | undefined,
@@ -308,20 +324,12 @@ async function deleteReactionSafely(
     return;
   }
 
-  try {
-    await reactions.deleteReaction({
-      installationId: triggerContext.target.installationId,
-      repo: triggerContext.target.repository,
-      subject: triggerContext.reactionSubject,
-      reactionId,
-    });
-  } catch (error) {
-    reportFailure(
-      error,
-      { operation: "github.reaction.cleanup", component: "triggers", provider: "github" },
-      { diagnostic: { repository: triggerContext.target.repository, reactionId } },
-    );
-  }
+  await reactions.deleteReaction({
+    installationId: triggerContext.target.installationId,
+    repo: triggerContext.target.repository,
+    subject: triggerContext.reactionSubject,
+    reactionId,
+  });
 }
 
 function githubReactionId(state: TriggerProviderReactionState | undefined): number | undefined {

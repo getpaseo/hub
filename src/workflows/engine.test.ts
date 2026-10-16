@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { describe, it, vi } from "vitest";
 import {
   compileHubConfig,
@@ -26,6 +26,14 @@ import { UNLIMITED_TEMPLATE } from "../entitlements/catalog.js";
 import { EntitlementsService } from "../entitlements/service.js";
 import { createDurableWorkflowHandler } from "./engine.js";
 import { currentProjectConfigurationFiles } from "../test-utils/current-project-configuration.js";
+import { createGitHubAuth } from "../auth/github.js";
+import {
+  createGitHubReactionClient,
+  createGitHubTriggerProvider,
+  type GitHubTriggerContext,
+} from "../triggers/github/provider.js";
+import { notifyAgentExecutionCompleted } from "../triggers/lifecycle.js";
+import { runWithFailureTracking } from "../failures/index.js";
 import { createLogger } from "../logger.js";
 import { assertOneFailure, FailureLogStream } from "../test-utils/failure-logs.js";
 
@@ -302,6 +310,158 @@ describe("durable multi-step workflow engine", () => {
       await engine.processAvailable();
       assert.deepEqual(terminalStatuses, [expected]);
     },
+  );
+
+  it.each([
+    "missing comment",
+    "missing installation",
+    "missing reaction",
+    "transport",
+    "429",
+    "500",
+    "401",
+    "403",
+    "cleanup 500",
+  ])(
+    "settles GitHub terminal reactions across leases and restart: %s",
+    async (scenario) => {
+      const fixture = await workflowFixture({ rawConfiguration: allSkippedConfiguration() });
+      let now = new Date(Date.now() + 60_000);
+      let unavailable = true;
+      const requests: string[] = [];
+      const logs = new FailureLogStream();
+      const logger = createLogger(logs);
+      const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+      const auth = createGitHubAuth({
+        appId: "123",
+        privateKey: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
+        now: () => now.getTime(),
+        fetch: async (input, init) => {
+          const path = new URL(input instanceof Request ? input.url : input).pathname;
+          const method = init?.method ?? "GET";
+          requests.push(`${method} ${path}`);
+          const token = path.endsWith("/access_tokens");
+          let status = 200;
+          if (token) {
+            status = scenario === "missing installation" ? 404 : 201;
+          } else if (method === "DELETE") {
+            status = scenario === "cleanup 500" && unavailable ? 500 : 404;
+          } else if (scenario === "missing comment") {
+            status = 404;
+          } else if (unavailable && scenario === "transport") {
+            throw new TypeError("fetch failed");
+          } else if (unavailable && ["429", "500", "401", "403"].includes(scenario)) {
+            status = Number(scenario);
+          } else {
+            status = 201;
+          }
+          let body: unknown = { id: 2 };
+          if (status >= 400) body = { message: "unavailable" };
+          else if (token)
+            body = {
+              token: "test-token",
+              expires_at: new Date(now.getTime() + 3_600_000).toISOString(),
+            };
+          return Response.json(body, { status, headers: { "retry-after": "0" } });
+        },
+      });
+      const provider = createGitHubTriggerProvider({
+        configurationStoreForProject: () => {
+          throw new Error("not used for terminal delivery");
+        },
+        reactions: createGitHubReactionClient(auth),
+      });
+      const context: GitHubTriggerContext = {
+        provider: "github",
+        organizationId: "org-1",
+        target: { installationId: 42, repository: "example/project" },
+        reactionSubject: { kind: "issue_comment", commentId: 99 },
+        event: {
+          github: {
+            delivery_id: "test",
+            event_name: "issue_comment",
+            repository: { full_name: "example/project" },
+            received_at: now.toISOString(),
+            item: null,
+          },
+        },
+      };
+      const start = () =>
+        createDurableWorkflowHandler({
+          database: fixture.database,
+          entitlements: fixture.entitlements,
+          providers: [providerMatch(fixture.configuration, fixture.revisionId)],
+          now: () => now,
+          leaseMs: 1_000,
+          logger,
+          dispatchLaunchMachineIntent: async () => {
+            throw new Error("all steps skipped");
+          },
+          onWorkflowRunAccepted: async () => ({ reactionId: 1 }),
+          onWorkflowRunTerminal: (run) =>
+            runWithFailureTracking(
+              () =>
+                notifyAgentExecutionCompleted({
+                  provider,
+                  triggerContext: context,
+                  outputContext: context,
+                  result: { status: "succeeded" },
+                  reactionState: run.outcome === "accepted" ? run.reactionState : null,
+                }),
+              logger,
+            ),
+        });
+      let { handler, engine } = start();
+      const drain = async () => {
+        await engine.processAvailable();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        await engine.processAvailable();
+        await engine.stop();
+        ({ engine } = start());
+      };
+      try {
+        await handler(fixture.trigger("run"));
+        await drain();
+        const [run] = await fixture.database.findTriggerRunsByProviderEventReceiptId(
+          fixture.providerEventReceiptId,
+        );
+        assert.ok(run);
+        const retryable = !scenario.startsWith("missing");
+        if (retryable) {
+          const pending = await fixture.database.findTriggerRunById(run.id);
+          assert.ok(pending?.outcome === "accepted");
+          assert.equal(pending.terminalNotificationDeliveredAt, null);
+          assert.ok(logs.records().length > 0);
+          const failedRequests = requests.length;
+          await drain();
+          assert.equal(requests.length, failedRequests);
+          unavailable = false;
+          now = new Date(now.getTime() + 1_001);
+          await drain();
+          assert.ok(requests.length > failedRequests);
+        }
+        const delivered = await fixture.database.findTriggerRunById(run.id);
+        assert.ok(delivered?.outcome === "accepted");
+        assert.notEqual(delivered.terminalNotificationDeliveredAt, null);
+        assert.deepEqual(
+          delivered.reactionState,
+          ["missing comment", "missing installation"].includes(scenario) ? null : { reactionId: 2 },
+        );
+        if (!retryable) assert.deepEqual(logs.records(), []);
+        const settledRequests = requests.length;
+        await engine.stop();
+        ({ engine } = start());
+        for (let lease = 0; lease < 4; lease += 1) {
+          now = new Date(now.getTime() + 1_001);
+          await drain();
+        }
+        assert.equal(requests.length, settledRequests);
+        if (!retryable) assert.deepEqual(logs.records(), []);
+      } finally {
+        await engine.stop();
+      }
+    },
+    60_000,
   );
 
   it("retries a failed workflow terminal outbox delivery", async () => {
