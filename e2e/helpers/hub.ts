@@ -51,7 +51,10 @@ export interface BuiltApplication {
   reportedSeatQuantity(organizationId: string): Promise<number | null>;
   /** Arms one account-setup failure inside the built application, for the error/retry journey. */
   failNextAccountSetup(): Promise<void>;
-  accountEmailLink(email: string, kind: "verification" | "password-reset"): Promise<string>;
+  accountEmail(
+    email: string,
+    kind: "verification" | "password-reset",
+  ): Promise<{ url: string; count: number }>;
   /** Records a daemon enrollment token for this instance's organization. */
   issueDaemonEnrollment(verifier: string): Promise<void>;
   /** Arms one project snapshot read failure inside the disposable built application. */
@@ -186,7 +189,10 @@ export class PaseoHub {
       data: account,
     });
     expect(response.status()).toBe(200);
-    const verificationLink = await this.primary.accountEmailLink(account.email, "verification");
+    const { url: verificationLink } = await this.primary.accountEmail(
+      account.email,
+      "verification",
+    );
     expect((await this.requests.get(verificationLink)).ok()).toBe(true);
   }
 
@@ -262,6 +268,10 @@ export class PaseoHub {
   async signUpAs(alias: string, account: Account): Promise<void> {
     const user = await this.user(alias);
     await user.signUp(account);
+  }
+
+  async proveUnverifiedSignInJourney(alias: string, account: Account): Promise<void> {
+    await (await this.user(alias)).verifyFromSignIn(account);
   }
 
   async provePasswordRecoveryJourney(
@@ -463,7 +473,7 @@ export class PaseoHub {
         .getByLabel("Email");
       await expect(invitationEmail).toHaveValue(account.email);
       await expect(invitationEmail).toHaveAttribute("readonly", "");
-      await user.signUpForInvitation(account);
+      await user.signUpForInvitationViaSignIn(account);
       await user.acceptInvitation();
       await user.expectActiveOrganization("Invited Organization");
     } finally {
@@ -2316,7 +2326,7 @@ export class PaseoHub {
     });
     const signedOutSession = await this.requests.get(`${application.origin}/api/auth/get-session`);
     expect(await signedOutSession.text()).toBe("null");
-    const verificationLink = await application.accountEmailLink(account.email, "verification");
+    const { url: verificationLink } = await application.accountEmail(account.email, "verification");
     const verification = await this.requests.get(verificationLink, { maxRedirects: 0 });
     expect(verification.status()).toBe(302);
     expect(verification.headers()["set-cookie"]).toContain("better-auth.session_token=");
@@ -2608,6 +2618,40 @@ class HubUser {
     await expect(this.page.getByRole("heading", { name: "Choose an organization" })).toBeVisible();
   }
 
+  async verifyFromSignIn(account: Account): Promise<void> {
+    await this.page.goto(this.origin);
+    await this.submitSignUp(account);
+    await expect(this.page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+    expect((await this.application.accountEmail(account.email, "verification")).count).toBe(1);
+    await this.page.getByRole("button", { name: "Back to sign in" }).click();
+    await this.submitSignUp(account);
+    await expect(this.page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+    await expect(
+      this.page.getByText(
+        `Check ${account.email} for a verification link. If you receive one, open it to finish signing in. If you already verified your email, go back to sign in.`,
+      ),
+    ).toBeVisible();
+    expect((await this.application.accountEmail(account.email, "verification")).count).toBe(1);
+    await this.signInPendingAccount(account);
+    await this.completeEmailVerification(account.email);
+    await expect(this.page.getByRole("heading", { name: "Choose an organization" })).toBeVisible();
+  }
+
+  private async signInPendingAccount(account: Account): Promise<void> {
+    await this.page.getByRole("button", { name: "Back to sign in" }).click();
+    const form = this.page.getByRole("form", { name: "Sign in" });
+    await form.getByLabel("Email").fill(account.email);
+    await this.submitPendingSignIn(account);
+  }
+
+  private async submitPendingSignIn(account: Account): Promise<void> {
+    const form = this.page.getByRole("form", { name: "Sign in" });
+    await form.getByLabel("Password").fill(account.password);
+    await form.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(this.page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+    expect((await this.application.accountEmail(account.email, "verification")).count).toBe(2);
+  }
+
   async completeBootstrapJourney(
     account: Account,
     replacementPassword: string,
@@ -2647,7 +2691,7 @@ class HubUser {
     await this.page.getByRole("button", { name: "Back to sign in" }).click();
     await requestReset(account.email);
 
-    const link = await this.application.accountEmailLink(account.email, "password-reset");
+    const { url: link } = await this.application.accountEmail(account.email, "password-reset");
     await this.page.goto(link);
     const reset = this.page.getByRole("form", { name: "Choose a new password" });
     await reset.getByLabel("New password", { exact: true }).fill(replacementPassword);
@@ -2963,9 +3007,22 @@ class HubUser {
     await expect(this.page.getByRole("button", { name: "Accept invitation" })).toBeVisible();
   }
 
+  async signUpForInvitationViaSignIn(account: Account): Promise<void> {
+    this.email = account.email.toLowerCase();
+    await this.submitInvitationSignUp(account);
+    await expect(this.page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+    await this.page.getByRole("button", { name: "Back to sign in" }).click();
+    await expect(this.page.getByRole("form", { name: "Sign in" }).getByLabel("Email")).toHaveValue(
+      account.email,
+    );
+    await this.submitPendingSignIn(account);
+    await this.completeEmailVerification(account.email);
+    await expect(this.page.getByRole("button", { name: "Accept invitation" })).toBeVisible();
+  }
+
   private async completeEmailVerification(email: string): Promise<void> {
     await expect(this.page.getByRole("heading", { name: "Check your email" })).toBeVisible();
-    const link = await this.application.accountEmailLink(email, "verification");
+    const { url: link } = await this.application.accountEmail(email, "verification");
     await this.page.goto(link);
     await expect(this.page.getByRole("heading", { name: "Email verified" })).toBeVisible();
     await this.page.getByRole("button", { name: "Continue" }).click();
