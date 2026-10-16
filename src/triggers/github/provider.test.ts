@@ -13,6 +13,49 @@ import { isAcceptedTriggerProviderMatch } from "../index.js";
 import { createUnlimitedEntitlementsService } from "../../entitlements/test-utils.js";
 
 describe("GitHub Phase 1 trigger provider", () => {
+  it("retries reaction cleanup before posting an execution-limit notice", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    let deletions = 0;
+    let comments = 0;
+    class RecoveringReactions extends TestReactions {
+      override async deleteReaction(input: Parameters<GitHubReactionClient["deleteReaction"]>[0]) {
+        deletions += 1;
+        if (deletions === 1) throw new Error("GitHub temporarily unavailable");
+        await super.deleteReaction(input);
+      }
+    }
+    const provider = createGitHubTriggerProvider({
+      configurationStoreForProject: () => store,
+      reactions: new RecoveringReactions(),
+      billingUrlForOrganization: async () => "https://example.com/billing",
+      comments: {
+        createIssueComment: async () => {
+          comments += 1;
+        },
+      },
+    });
+    const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    const deliver = () =>
+      provider.onAgentExecutionFailed!(
+        match.triggerContext,
+        match.outputContext,
+        JSON.stringify({
+          error: "entitlement_denied",
+          entitlement: "executions.monthly",
+          kind: "meter",
+          limit: 50,
+          current: 50,
+        }),
+        { reactionId: 1 },
+      );
+    await assert.rejects(deliver, /GitHub temporarily unavailable/);
+    assert.equal(comments, 0);
+    assert.equal(await deliver(), null);
+    assert.equal(comments, 1);
+    assert.equal(deletions, 2);
+  });
+
   it("comments with the monthly execution denial on the issue", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-28T23:00:00Z"));
