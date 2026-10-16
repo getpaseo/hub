@@ -34,7 +34,7 @@ import { daemonLoginCommand, GRANT_EXECUTE_COMMAND } from "./handoff.js";
 import { daemonsQueryKey, refreshDaemons } from "./status.js";
 
 const DAEMON_COLUMNS: readonly DataColumn[] = [
-  { header: "Slug" },
+  { header: "Slug", fill: true },
   { header: "ID" },
   { header: "Status" },
   { header: "Access" },
@@ -208,7 +208,7 @@ function DaemonRow({
 
   return (
     <DataRow>
-      <DataCell className="min-w-0">
+      <DataCell fill>
         <TwoLine primary={daemon.slug} />
       </DataCell>
       <DataCell muted>

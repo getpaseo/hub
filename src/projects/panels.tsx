@@ -388,19 +388,19 @@ export function ProjectActivityRunPanel({ runId }: { runId: string }) {
         <DataTable
           label="Run steps"
           columns={[
-            { header: "Step" },
+            { header: "Step", fill: true },
             { header: "Status" },
             { header: "Deadline" },
             { header: "Agent" },
             { header: "Structured output" },
-            { header: "Failure reason" },
+            { header: "Failure reason", fill: true },
           ]}
           isEmpty={activity.steps.length === 0}
           empty={{ title: "No steps" }}
         >
           {activity.steps.map((step) => (
             <DataRow key={step.id}>
-              <DataCell>
+              <DataCell fill>
                 <span>
                   {step.ordinal + 1}. {step.stepId}
                 </span>
@@ -434,7 +434,9 @@ export function ProjectActivityRunPanel({ runId }: { runId: string }) {
               <DataCell>
                 <JsonValue value={step.output} />
               </DataCell>
-              <DataCell muted>{step.failureReason ?? "—"}</DataCell>
+              <DataCell muted fill>
+                {step.failureReason ?? "—"}
+              </DataCell>
             </DataRow>
           ))}
         </DataTable>
@@ -607,11 +609,11 @@ function ActivityTable({
     <DataTable
       label={label}
       columns={[
-        { header: "Run" },
+        { header: "Run", fill: true },
         { header: "Provider" },
         { header: "Source" },
         { header: "Status" },
-        ...(showReason ? [{ header: "Reason" }] : []),
+        ...(showReason ? [{ header: "Reason", fill: true }] : []),
         { header: "Received" },
       ]}
       isEmpty={activity.length === 0}
@@ -621,7 +623,7 @@ function ActivityTable({
         const status = "status" in event ? event.status : "dropped";
         return (
           <DataRow key={event.id}>
-            <DataCell>
+            <DataCell fill>
               <TwoLine
                 primary={
                   detailBasePath &&
@@ -644,7 +646,9 @@ function ActivityTable({
             <DataCell>
               <StatusPill tone={executionTone(status)}>{statusLabel(status)}</StatusPill>
             </DataCell>
-            {showReason ? <DataCell>{event.failureReason ?? "Unknown reason"}</DataCell> : null}
+            {showReason ? (
+              <DataCell fill>{event.failureReason ?? "Unknown reason"}</DataCell>
+            ) : null}
             <DataCell muted>
               <RelativeTime value={event.receivedAt} />
             </DataCell>

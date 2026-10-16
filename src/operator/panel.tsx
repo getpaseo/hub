@@ -49,7 +49,7 @@ const PICKER_DESCRIPTION = "Pick an organization to manage its entitlements.";
 const AUDIT_TITLE = "Audit trail";
 const AUDIT_DESCRIPTION = "Every provisioning, plan stamp, and override, most recent first.";
 const ENTITLEMENT_COLUMNS: readonly DataColumn[] = [
-  { header: "Entitlement" },
+  { header: "Entitlement", fill: true },
   { header: "Granted" },
   { header: "Override" },
   { header: "Effective" },
@@ -60,7 +60,7 @@ const ENTITLEMENTS_EMPTY = { title: "No entitlements" };
 const AUDIT_COLUMNS: readonly DataColumn[] = [
   { header: "Change" },
   { header: "Actor" },
-  { header: "Reason" },
+  { header: "Reason", fill: true },
   { header: "When", align: "end" },
 ];
 const AUDIT_EMPTY = {
@@ -198,7 +198,7 @@ function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: str
           empty={ENTITLEMENTS_EMPTY}
         >
           <DataRow>
-            <DataCell>Seats</DataCell>
+            <DataCell fill>Seats</DataCell>
             <DataCell muted>{seatLimitLabel(granted.seats.max)}</DataCell>
             <DataCell muted>
               {overrides.seats?.max === undefined ? "—" : seatLimitLabel(overrides.seats.max)}
@@ -218,7 +218,7 @@ function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: str
             </DataCell>
           </DataRow>
           <DataRow>
-            <DataCell>Members can invite</DataCell>
+            <DataCell fill>Members can invite</DataCell>
             <DataCell muted>
               <InviteState canInvite={granted.canInviteMembers} />
             </DataCell>
@@ -246,7 +246,7 @@ function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: str
             </DataCell>
           </DataRow>
           <DataRow>
-            <DataCell>Executions this month</DataCell>
+            <DataCell fill>Executions this month</DataCell>
             <DataCell muted>{meterLimitLabel(granted.meters["executions.monthly"].limit)}</DataCell>
             <DataCell muted>
               {overrides.meters?.["executions.monthly"]?.limit === undefined
@@ -460,10 +460,8 @@ function AuditTrail({ history }: { history: Snapshot["history"] }) {
             />
           </DataCell>
           <DataCell muted>{entry.actorName ?? "System"}</DataCell>
-          <DataCell muted className="max-w-xs">
-            <span className="block truncate" title={entry.reason ?? undefined}>
-              {entry.reason ?? "—"}
-            </span>
+          <DataCell muted fill>
+            {entry.reason ?? "—"}
           </DataCell>
           <DataCell align="end" muted>
             <RelativeTime value={entry.createdAt} />

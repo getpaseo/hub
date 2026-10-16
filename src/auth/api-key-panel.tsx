@@ -92,9 +92,9 @@ const SCOPE_OPTIONS = [
 ] as const;
 
 const TABLE_COLUMNS = [
-  { header: "Name" },
+  { header: "Name", fill: true },
   { header: "Prefix" },
-  { header: "Scopes" },
+  { header: "Scopes", fill: true },
   { header: "Created" },
   { header: "Last used" },
   { header: "Status" },
@@ -111,7 +111,7 @@ const EMPTY_CLI_TABLE = {
   description: "Run paseo hub login to create one.",
 };
 const CLI_COLUMNS = [
-  { header: "Prefix" },
+  { header: "Prefix", fill: true },
   { header: "Created" },
   { header: "Last used" },
   { header: "Status" },
@@ -325,7 +325,7 @@ function CliCredentialRow({
   const revoke = useCallback(() => onRevoke({ data: { id: record.id } }), [onRevoke, record.id]);
   return (
     <DataRow>
-      <DataCell>
+      <DataCell fill>
         <span className="font-mono text-xs">{record.prefix}</span>
       </DataCell>
       <DataCell muted>
@@ -373,11 +373,13 @@ function ApiKeyRow({
   const revoke = useCallback(() => onRevoke({ data: { id: record.id } }), [onRevoke, record.id]);
   return (
     <DataRow>
-      <DataCell>{record.name}</DataCell>
+      <DataCell fill>{record.name}</DataCell>
       <DataCell>
         <span className="font-mono text-xs">{record.prefix}</span>
       </DataCell>
-      <DataCell muted>{record.scopes.map(scopeLabel).join(", ")}</DataCell>
+      <DataCell muted fill>
+        {record.scopes.map(scopeLabel).join(", ")}
+      </DataCell>
       <DataCell muted>
         <RelativeTime value={record.createdAt} />
       </DataCell>

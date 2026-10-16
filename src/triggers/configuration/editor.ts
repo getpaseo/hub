@@ -491,8 +491,19 @@ function continuationErrors(value: TriggerFormValue): TriggerFieldErrors {
     : { continuationKey: "Enter a continuation key or expression." };
 }
 
-export function summarizeTriggerEvent(value: TriggerFormValue | null, event: string): string {
-  if (value?.event === "schedule.tick")
-    return recurrenceSummary(value.recurrence ?? DEFAULT_RECURRENCE);
-  return isEditorEvent(event) ? eventDefinition(event).label : event;
+/**
+ * A trigger's event as a list row reads it: the kind first, so a schedule never passes for a
+ * manual run, then what narrows it — when a schedule fires, or which connection an event
+ * arrives through.
+ */
+export function describeTriggerEvent(
+  value: TriggerFormValue | null,
+  event: string,
+): { kind: string; detail?: string } {
+  const kind = isEditorEvent(event) ? eventDefinition(event).label : event;
+  if (value?.event === "schedule.tick") {
+    return { kind, detail: recurrenceSummary(value.recurrence ?? DEFAULT_RECURRENCE) };
+  }
+  if (value === null || value.connection === "") return { kind };
+  return { kind, detail: value.connection };
 }
