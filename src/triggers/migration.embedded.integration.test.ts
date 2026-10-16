@@ -8,6 +8,7 @@ import { compileHubBundle } from "../config/bundle.js";
 import { createDatabase } from "../db/pg.js";
 import { embeddedDatabaseRuntime } from "../db/runtime/index.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
+import { enrollTestDaemon, TEST_DAEMON_ID } from "../test-utils/project-configuration.js";
 import { migrateLegacyProjectTriggers } from "./migration.js";
 
 describe("embedded startup trigger migration", () => {
@@ -25,6 +26,8 @@ describe("embedded startup trigger migration", () => {
     await first.runtime.query(
       `insert into organization (id, name, slug) values ('org', 'Org', 'org')`,
     );
+    await enrollTestDaemon(database, "org");
+    await database.renameDaemonForOrganization("org", TEST_DAEMON_ID, "devbox");
     const project = await database.createProject({
       organizationId: "org",
       name: "Project",

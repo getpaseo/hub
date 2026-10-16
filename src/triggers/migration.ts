@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { revisionBundleFiles } from "../configuration/store.js";
+import {
+  resolveTriggerConfigurationForOrganization,
+  revisionBundleFiles,
+} from "../configuration/store.js";
 import type { Database, MigrateProjectTriggerInput } from "../db/types.js";
 import { migrateLegacyBundle } from "./configuration/index.js";
 
@@ -32,42 +35,56 @@ export async function migrateLegacyProjectTriggers(
         files,
         normalizedConfiguration: revision.normalizedConfiguration,
       });
-      const triggers = migrated.map((trigger): MigrateProjectTriggerInput => {
-        const normalizedConfiguration =
-          trigger.format === "single_run"
-            ? {
-                environments: [trigger.compiled.environment],
-                triggers: trigger.compiled.events,
-              }
-            : {
-                environments: trigger.normalized.environments,
-                triggers: [trigger.normalized.trigger],
-              };
-        return {
-          name: trigger.name,
-          format: trigger.format,
-          enabled: true,
-          yaml: trigger.yaml,
-          normalizedConfiguration,
-          contentHash: createHash("sha256").update(trigger.yaml).digest("hex"),
-          sourceEvidence: {
-            kind: "project_migration",
-            legacyProjectId: project.id,
-            legacyProjectSlug: project.slug,
-            legacyConfigurationRevisionId: revision.id,
-            legacyConfigurationVersion: revision.version,
-            legacySourceKind: revision.sourceKind,
-            legacySourceFile: trigger.legacySourceFile,
-            legacyStepIds: trigger.legacyStepIds,
-            ...(trigger.format === "legacy_multistep"
+      const triggers = await Promise.all(
+        migrated.map(async (trigger): Promise<MigrateProjectTriggerInput> => {
+          const configuration =
+            trigger.format === "single_run"
               ? {
-                  conversionBlockers: trigger.conversionBlockers,
-                  authoredYaml: trigger.authoredYaml,
+                  environments: [trigger.compiled.environment],
+                  triggers: trigger.compiled.events,
                 }
-              : {}),
-          },
-        };
-      });
+              : {
+                  environments: trigger.normalized.environments,
+                  triggers: [trigger.normalized.trigger],
+                };
+          const resolved = await resolveTriggerConfigurationForOrganization(
+            database,
+            project.organizationId,
+            configuration,
+          );
+          if (!resolved.success) {
+            throw new Error(
+              `cannot migrate project ${project.slug}: ${resolved.issues
+                .map(({ message }) => message)
+                .join("; ")}`,
+            );
+          }
+          return {
+            name: trigger.name,
+            format: trigger.format,
+            enabled: true,
+            yaml: trigger.yaml,
+            normalizedConfiguration: resolved.configuration,
+            contentHash: createHash("sha256").update(trigger.yaml).digest("hex"),
+            sourceEvidence: {
+              kind: "project_migration",
+              legacyProjectId: project.id,
+              legacyProjectSlug: project.slug,
+              legacyConfigurationRevisionId: revision.id,
+              legacyConfigurationVersion: revision.version,
+              legacySourceKind: revision.sourceKind,
+              legacySourceFile: trigger.legacySourceFile,
+              legacyStepIds: trigger.legacyStepIds,
+              ...(trigger.format === "legacy_multistep"
+                ? {
+                    conversionBlockers: trigger.conversionBlockers,
+                    authoredYaml: trigger.authoredYaml,
+                  }
+                : {}),
+            },
+          };
+        }),
+      );
       const created = await database.migrateProjectTriggers({
         projectId: project.id,
         organizationId: project.organizationId,
