@@ -163,6 +163,33 @@ it("does not apply a receipt for a disconnected binding to a replacement connect
   });
 });
 
+it("retires legacy upgrade reconciliation after its original binding is replaced", async () => {
+  await fixture(async ({ database, runtime }) => {
+    await runtime.query(
+      `update github_connections set provider_application_id = null where installation_id = 42`,
+    );
+    await runtime.query(
+      `insert into github_installation_syncs (kind, provider_application_id, installation_id, connection_id) select 'reconcile', provider_application_id, installation_id, id from github_connections`,
+    );
+    // Startup adopts the old connection before a user disconnects and reconnects it.
+    await runtime.query(
+      `update github_connections set provider_application_id = '42' where provider_application_id is null`,
+    );
+    await runtime.query(`delete from github_connections where installation_id = 42`);
+    await runtime.query(
+      `insert into github_connections (provider_application_id, organization_id, installation_id, slug, account_id, account_login, account_type, status) values ('42', 'org', 42, 'new', '1', 'new', 'Organization', 'active')`,
+    );
+    const [claim] = await database.pendingGitHubInstallationSyncs(GITHUB_OWNER);
+    assert.ok(claim);
+    await database.applyGitHubInstallationSync(GITHUB_OWNER, claim, {
+      status: "absent",
+      removeBinding: true,
+    });
+    assert.equal((await database.findGitHubConnection(42))?.accountLogin, "new");
+    assert.deepEqual(await database.pendingGitHubInstallationSyncs(GITHUB_OWNER), []);
+  });
+});
+
 it("leaves in-flight work pending when its configuration loses activation", async () => {
   await fixture(async ({ database, runtime, github, send, drain }) => {
     const gate = deferred();

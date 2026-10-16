@@ -321,11 +321,7 @@ export class ProviderEventAcceptanceRepository {
         connection.providerApplicationId !== owner.providerApplicationId
       )
         return;
-      if (
-        connection === undefined &&
-        (receipt.connectionId === null || receipt.providerApplicationId === null)
-      )
-        return;
+      if (connection === undefined && receipt.connectionId === null) return;
       await transaction
         .update(schema.githubInstallationSyncs)
         .set({
