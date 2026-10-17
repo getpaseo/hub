@@ -3,6 +3,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { cn } from "../../lib/utils.js";
 import { Skeleton } from "../ui/skeleton.js";
 import { FieldSkeleton } from "./form-field.js";
+import { ThemePicker } from "./theme-picker.js";
 
 /**
  * The frame for every surface reached before the dashboard: sign-in, the organization
@@ -33,6 +34,7 @@ export function AuthLayout({
     >
       <ProductMark />
       <div className={cn("min-w-0 w-full", LAYOUT_WIDTHS[width])}>{children}</div>
+      <ThemePicker />
     </main>
   );
 }

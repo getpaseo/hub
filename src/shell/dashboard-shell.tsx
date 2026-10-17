@@ -10,6 +10,7 @@ import {
   Settings,
   ShieldCheck,
   SlidersHorizontal,
+  SunMoon,
   Zap,
 } from "lucide-react";
 import { Outlet } from "@tanstack/react-router";
@@ -20,6 +21,7 @@ import { usePageContext } from "../navigation/index.js";
 import { Page } from "../components/app/page.js";
 import { FailureAlert } from "../components/app/failure-alert.js";
 import { PanelSkeleton } from "../components/app/loading.js";
+import { ThemePicker } from "../components/app/theme-picker.js";
 import {
   Sidebar,
   SidebarContent,
@@ -27,6 +29,7 @@ import {
   SidebarHeader,
   SidebarInset,
   SidebarMenu,
+  SidebarMenuButton,
   SidebarMenuItem,
   SidebarProvider,
   SidebarRail,
@@ -290,6 +293,14 @@ function AppSidebar({
           {/* The meter belongs to the organization the URL is in, so it waits for the tenant the
               switchers above can show from the account alone. */}
           {instance || tenant === undefined ? null : <ExecutionMeter />}
+          <SidebarMenuItem>
+            <ThemePicker>
+              <SidebarMenuButton tooltip="Appearance">
+                <SunMoon aria-hidden="true" />
+                <span>Appearance</span>
+              </SidebarMenuButton>
+            </ThemePicker>
+          </SidebarMenuItem>
           <SidebarHelp />
           <SidebarMenuItem>
             <AccountMenu
