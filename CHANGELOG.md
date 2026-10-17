@@ -5,6 +5,7 @@
 ### Added
 
 - Light and dark appearance options, with a saved browser preference and automatic system theme support.
+- Status filters on the Triggers table, with the selected status remembered for each organization.
 
 ## 0.10.0 - 2026-09-29
 
