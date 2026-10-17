@@ -181,6 +181,7 @@ export const PullRequestReviewPayloadSchema = PullRequestPayloadSchema.extend({
   review: z
     .object({
       body: OptionalStringSchema,
+      state: OptionalStringSchema,
       user: UserSchema,
     })
     .optional()
