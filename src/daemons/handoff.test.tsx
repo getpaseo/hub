@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, it } from "vitest";
+import { ThemeProvider } from "../theme.js";
 import {
   daemonLink,
   daemonLoginCommand,
@@ -32,7 +33,9 @@ function listing(daemons: readonly BrowserDaemon[]): BrowserDaemonList {
 
 function markup(link: DaemonLink, command = "paseo hub login http://localhost:4173"): string {
   return renderToStaticMarkup(
-    <DaemonHandoffView link={link} command={command} onRetry={NOOP} onContinue={NOOP} />,
+    <ThemeProvider>
+      <DaemonHandoffView link={link} command={command} onRetry={NOOP} onContinue={NOOP} />
+    </ThemeProvider>,
   );
 }
 

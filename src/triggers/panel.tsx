@@ -46,6 +46,7 @@ import { EventFields } from "./event-fields.js";
 import { EDITOR_EVENTS, eventDefinition, parseEditorEvent } from "./configuration/events.js";
 import { selectedProviderModel } from "./provider-catalog.js";
 import { supportsUnattendedRuns } from "./configuration/unattended.js";
+import { useTriggerStatusFilter } from "./status-filter.js";
 
 type BrowserTrigger = TriggerSnapshot["triggers"][number];
 type EditorMode = "form" | "yaml";
@@ -79,17 +80,34 @@ const EVENT_OPTIONS: readonly ComboboxOption[] = EDITOR_EVENTS.map((value) => {
 
 const TRIGGERS_DESCRIPTION = "Launch agents on your compute when organization events arrive.";
 const TRIGGER_EDITOR_DESCRIPTION = "One event launches one agent on your compute.";
+const STATUS_FILTER_OPTIONS: readonly SegmentedOption[] = [
+  { value: "all", label: "All" },
+  { value: "enabled", label: "Enabled" },
+  { value: "disabled", label: "Disabled" },
+];
 
 export function TriggersPanel() {
   const tenant = useRouteTenant();
   const scope = { organizationSlug: tenant.organization.slug };
   const snapshot = useTriggerSnapshot(scope.organizationSlug);
+  const { filter, setFilter, ready } = useTriggerStatusFilter(tenant.organization.id);
   const navigate = useNavigate();
-  if (snapshot.status === "pending") {
+  const statusFilter = (
+    <SegmentedControl
+      label="Trigger status"
+      value={filter}
+      options={STATUS_FILTER_OPTIONS}
+      onChange={setFilter}
+    />
+  );
+  if (snapshot.status === "pending" || !ready) {
     return (
       <>
         <PageHeader title="Triggers" description={TRIGGERS_DESCRIPTION} />
-        <DataTableSkeleton label="Triggers" columns={TRIGGER_COLUMNS} />
+        <div className="grid gap-6">
+          {statusFilter}
+          <DataTableSkeleton label="Triggers" columns={TRIGGER_COLUMNS} />
+        </div>
       </>
     );
   }
@@ -97,6 +115,9 @@ export function TriggersPanel() {
     return <TriggerLoadError error={snapshot.error} />;
   }
   const data = snapshot.data;
+  const visibleTriggers = data.triggers.filter(
+    (trigger) => filter === "all" || trigger.enabled === (filter === "enabled"),
+  );
   const triggerPath = (triggerId: string) =>
     `/o/${scope.organizationSlug}/triggers/${triggerId}` as never;
   return (
@@ -123,16 +144,24 @@ export function TriggersPanel() {
             <p>Triggers need a daemon that can run agents.</p>
           </WarningAlert>
         ) : null}
+        {statusFilter}
         <DataTable
           label="Triggers"
           columns={TRIGGER_COLUMNS}
-          isEmpty={data.triggers.length === 0}
-          empty={{
-            title: "No triggers",
-            description: "Connect a provider and daemon, then create your first trigger.",
-          }}
+          isEmpty={visibleTriggers.length === 0}
+          empty={
+            data.triggers.length === 0
+              ? {
+                  title: "No triggers",
+                  description: "Connect a provider and daemon, then create your first trigger.",
+                }
+              : {
+                  title: filter === "enabled" ? "No enabled triggers" : "No disabled triggers",
+                  description: "Choose All to view every trigger.",
+                }
+          }
         >
-          {data.triggers.map((trigger) => (
+          {visibleTriggers.map((trigger) => (
             <DataRow
               key={trigger.id}
               onSelect={() => {

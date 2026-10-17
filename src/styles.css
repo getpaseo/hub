@@ -10,11 +10,12 @@
  * a surface rather than text: a dark teal fill under a pale mint label, dark enough that the
  * label clears AA at every size the filled button is drawn.
  *
- * The app renders dark (`<html class="dark">`). The light column is kept correct so switching
- * is a one-line change, not a re-derivation.
+ * The root's `dark` class follows the saved appearance preference or the system colour scheme.
+ * Both palettes also set the native control and scrollbar colour scheme.
  */
 
 :root {
+  color-scheme: light;
   --background: #ffffff;
   --foreground: #282a30;
   --card: #f8f8f8;
@@ -68,6 +69,7 @@
 }
 
 .dark {
+  color-scheme: dark;
   --background: #08090a;
   --foreground: #f7f8f8;
   --card: #0f1011;

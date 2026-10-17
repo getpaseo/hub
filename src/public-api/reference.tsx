@@ -1,4 +1,6 @@
 import { ApiReferenceReact, type AnyApiReferenceConfiguration } from "@scalar/api-reference-react";
+import { useMemo } from "react";
+import { useTheme } from "../theme.js";
 // @ts-expect-error Vite resolves the package-exported CSS as inline text at build time.
 import scalarStyles from "@scalar/api-reference-react/style.css?inline";
 
@@ -59,9 +61,7 @@ const referenceConfiguration = {
   theme: "default",
   layout: "modern",
   showSidebar: true,
-  // The app renders dark only, and both Scalar modes now resolve to the same tokens, so the
-  // toggle would be a control that changes nothing.
-  forceDarkModeState: "dark",
+  // The app owns the preference so the reference stays in sync with the rest of Hub.
   hideDarkModeToggle: true,
   hideModels: false,
   hideClientButton: true,
@@ -81,9 +81,15 @@ const referenceConfiguration = {
 } satisfies AnyApiReferenceConfiguration;
 
 export function PublicApiReference() {
+  const { resolvedTheme } = useTheme();
+  const configuration = useMemo(
+    () => ({ ...referenceConfiguration, forceDarkModeState: resolvedTheme }),
+    [resolvedTheme],
+  );
   return (
     <main aria-label="Paseo Hub API reference" className="min-h-screen">
-      <ApiReferenceReact configuration={referenceConfiguration} />
+      {/* Scalar reads its forced colour mode on mount rather than on configuration updates. */}
+      <ApiReferenceReact key={resolvedTheme} configuration={configuration} />
     </main>
   );
 }
