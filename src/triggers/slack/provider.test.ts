@@ -235,11 +235,13 @@ describe("Slack Phase 1 trigger provider", () => {
     });
     const match = (await provider.match(external(project.id, revision.id)))[0];
     if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext);
     await provider.onAgentExecutionStarted?.(match.triggerContext, match.outputContext);
     await provider.onAgentExecutionCompleted?.(match.triggerContext, match.outputContext, {
       status: "succeeded",
     });
     assert.deepEqual(client.reactions, [
+      "org-1:T1:add:eyes",
       "org-1:T1:remove:eyes",
       "org-1:T1:add:hourglass_flowing_sand",
       "org-1:T1:remove:hourglass_flowing_sand",
