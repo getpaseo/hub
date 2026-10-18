@@ -42,6 +42,7 @@ describe("workflow-owned provider reactions", () => {
 
     assert.deepEqual(result.visible(), ["white_check_mark"]);
     assert.deepEqual(result.calls(), [
+      "add:eyes",
       "remove:eyes",
       "add:hourglass_flowing_sand",
       "remove:hourglass_flowing_sand",
@@ -108,6 +109,7 @@ describe("workflow-owned provider reactions", () => {
 
       assert.deepEqual(result.visible(), ["x"]);
       assert.deepEqual(result.calls(), [
+        "add:eyes",
         "remove:eyes",
         "add:hourglass_flowing_sand",
         "remove:hourglass_flowing_sand",
