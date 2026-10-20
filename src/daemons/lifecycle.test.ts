@@ -776,6 +776,7 @@ describe("durable Hub action acknowledgement state", () => {
         timeoutMs: 60_000,
         idleTimeoutMs: IDLE_TIMEOUT_MS,
         autoArchive: false,
+        background: false,
         triggerContext: run.triggerContext,
         outputContext: run.outputContext,
         configurationRevisionId: revision.id,
