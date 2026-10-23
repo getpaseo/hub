@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import { Link, createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
 import { Button } from "../components/ui/button.js";
+import { ThemePicker } from "../components/app/theme-picker.js";
+import { ThemeProvider, themeScript } from "../theme.js";
 import "../styles.entry.js";
 
 export const Route = createRootRoute({
@@ -45,6 +47,7 @@ function NotFound() {
               <Link to="/">Return home</Link>
             </Button>
           </div>
+          <ThemePicker />
         </div>
       </main>
     </Document>
@@ -53,12 +56,13 @@ function NotFound() {
 
 function Document({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" suppressHydrationWarning>
       <head>
+        <script>{themeScript}</script>
         <HeadContent />
       </head>
       <body>
-        {children}
+        <ThemeProvider>{children}</ThemeProvider>
         <Scripts />
       </body>
     </html>

@@ -54,8 +54,10 @@ as the link and focus hue.
 Status tones (`success`, `warning`, `danger`, `neutral`) and their `-surface` pairs are unchanged and
 are only ever read through `StatusPill`.
 
-Light values mirror Linear's light ramp in the same file. The app currently renders dark only; keep the
-light column correct anyway so a toggle is a one-line change.
+Light values mirror Linear's light ramp in the same file. Appearance follows the system by default;
+users can choose System, Light, or Dark from the sidebar or a pre-auth screen. The preference is
+stored in the browser and applied before the first paint. Both palettes use the same semantic tokens,
+including in the code editor and API reference.
 
 ### Type scale
 
@@ -149,6 +151,7 @@ missing app component.
 | `StatusLine`                                                            | A polite live region with reserved height.                                          |
 | `Spinner`, `LoadingLine`, `PanelSkeleton`                               | Wait. Skeletons for pages, a spinner for one fact.                                  |
 | `SegmentedControl`                                                      | Pick one of a few modes, with radio semantics.                                      |
+| `ThemePicker`                                                           | Choose the browser's appearance preference.                                         |
 | `TabNav`, `TabNavSkeleton`                                              | Navigate between sibling routes under one page.                                     |
 | `Combobox`                                                              | Pick one of many with search.                                                       |
 | `CopyField`, `CopyButton`, `CopyBlock`, `CodeBlock`                     | Show a value to copy, or a block of code.                                           |

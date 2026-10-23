@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Light and dark appearance options, with a saved browser preference and automatic system theme support.
+
 ## 0.10.0 - 2026-09-29
 
 ### Added
