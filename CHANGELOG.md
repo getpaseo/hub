@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.0-pickitoo.3 - 2026-10-23
+
+### Fixed
+
+- Hub replaces a Slack Socket Mode connection that dies without a close frame, so Slack mentions keep reaching it. It pings the connection every 30 s and reconnects when Slack stays silent for a whole interval.
+
 ## 0.10.0-pickitoo.2 - 2026-10-14
 
 ### Fixed
