@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Status filters on the Triggers table, with the selected status remembered for each organization.
+
 ## 0.10.0 - 2026-09-29
 
 ### Added
