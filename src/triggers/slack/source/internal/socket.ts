@@ -22,6 +22,7 @@ import {
 } from "./socket-protocol.js";
 
 const MAX_FRAME_BYTES = 1_048_576;
+const DEFAULT_PING_INTERVAL_MS = 30_000;
 
 export type SlackDeliveryStatus =
   | { state: "connecting" | "reconnecting" | "connected" }
@@ -41,6 +42,7 @@ export interface SlackSocketSourceOptions extends SlackEventIntakeOptions {
   apiUrl?: string;
   random?: () => number;
   timeoutMs?: number;
+  pingIntervalMs?: number;
 }
 
 export function createSlackSocketSource(options: SlackSocketSourceOptions): SlackSocketSource {
@@ -99,7 +101,12 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
               connection.socket.close();
             });
         });
+        const stopKeepAlive = keepAlive(
+          connection.socket,
+          options.pingIntervalMs ?? DEFAULT_PING_INTERVAL_MS,
+        );
         const closed = await connection.closed;
+        stopKeepAlive();
         current = undefined;
         if (stopped) return;
         if (terminalDisconnect !== undefined) {
@@ -277,6 +284,33 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       "validation",
     );
   }
+}
+
+// A connection can die without a close frame (a half-open TCP connection), and then `close`
+// never fires. Terminate a socket that stayed silent for a whole ping interval so it reconnects.
+function keepAlive(socket: WebSocket, intervalMs: number): () => void {
+  let alive = true;
+  const markAlive = () => {
+    alive = true;
+  };
+  socket.on("pong", markAlive);
+  socket.on("ping", markAlive);
+  socket.on("message", markAlive);
+  const timer = setInterval(() => {
+    if (!alive) {
+      socket.terminate();
+      return;
+    }
+    alive = false;
+    socket.ping();
+  }, intervalMs);
+  timer.unref();
+  return () => {
+    clearInterval(timer);
+    socket.off("pong", markAlive);
+    socket.off("ping", markAlive);
+    socket.off("message", markAlive);
+  };
 }
 
 function boundedEnvelopeId(value: unknown): string | undefined {
