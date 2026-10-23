@@ -134,6 +134,21 @@ describe("Slack Socket Mode source", () => {
     await source.stop();
   });
 
+  it("replaces a connection that stops answering pings and keeps a healthy one", async () => {
+    const slack = await startSlackSocketFixture([{ kind: "socket", ignoreClose: true }]);
+    closers.push(() => slack.close());
+    const stream = new FailureLogStream();
+    const source = socketSource(slack, accepted, undefined, 20);
+    await runWithFailureTracking(() => source.start(ignoreTrigger), createLogger(stream));
+
+    await waitFor(() => slack.openCount === 2 && source.status().state === "connected");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    assert.equal(slack.openCount, 2);
+    assertSlackFailure(stream, "slack.socket.connect", "network", "xapp-fixture-secret");
+    await source.stop();
+  });
+
   it("acknowledges a poison envelope once and never records its payload", async () => {
     const payloadCanary = "payload-canary-440";
     const slack = await startSlackSocketFixture();
@@ -171,10 +186,16 @@ function socketSource(
   slack: { openUrl: string },
   accept: Parameters<typeof createSlackEventSource>[0]["accept"],
   appToken = "xapp-fixture-secret",
+  pingIntervalMs?: number,
 ) {
   return createSlackEventSource({
     configuration: { provider: "slack", transport: "socket", appId: "A123", appToken },
-    socket: { apiUrl: slack.openUrl, random: () => 0, timeoutMs: 250 },
+    socket: {
+      apiUrl: slack.openUrl,
+      random: () => 0,
+      timeoutMs: 250,
+      ...(pingIntervalMs === undefined ? {} : { pingIntervalMs }),
+    },
     accept,
   });
 }
