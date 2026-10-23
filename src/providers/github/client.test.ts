@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import type { GitHubAuth } from "../../auth/github.js";
-import type { GitHubInstallation } from "../../auth/github-events.js";
+import { GitHubProviderPort, githubInstallation } from "../../test-utils/github-connection.js";
 import { createGitHubConnectionClient } from "./client.js";
 
 describe("GitHub connection client", () => {
@@ -23,6 +22,41 @@ describe("GitHub connection client", () => {
       status: "active",
     });
     assert.deepEqual(github.userInstallationPages, [1, 2]);
+  });
+
+  for (const membership of [
+    { role: "member", state: "active" },
+    { role: "admin", state: "pending" },
+    { role: "admin", state: "active", status: 404 },
+    { role: "admin", state: "active", status: 403 },
+  ]) {
+    it(`rejects installation access without active organization admin authority: ${JSON.stringify(membership)}`, async () => {
+      const github = new GitHubProviderPort({ installation: githubInstallation(142), membership });
+      assert.equal(
+        await createGitHubConnectionClient(github.options()).verifyUserInstallation({
+          code: "code",
+          verifier: "verifier",
+          installationId: 142,
+        }),
+        undefined,
+      );
+    });
+  }
+
+  it("requires the authenticated user to own a user-account installation", async () => {
+    const installation = {
+      ...githubInstallation(142),
+      account: { id: 501, login: "owner", type: "User" },
+    };
+    for (const userId of [501, 999]) {
+      const github = new GitHubProviderPort({ installation, userId });
+      const result = await createGitHubConnectionClient(github.options()).verifyUserInstallation({
+        code: "code",
+        verifier: "verifier",
+        installationId: 142,
+      });
+      assert.equal(result?.accountId, userId === 501 ? "501" : undefined);
+    }
   });
 
   it("returns exact App absence without converting transient failure to absence", async () => {
@@ -47,82 +81,3 @@ describe("GitHub connection client", () => {
     );
   });
 });
-
-class GitHubProviderPort implements GitHubAuth {
-  readonly userInstallationPages: number[] = [];
-  private readonly installation: GitHubInstallation | undefined;
-  private readonly appFailure: Error | undefined;
-
-  constructor(options: {
-    installation?: GitHubInstallation | undefined;
-    appFailure?: Error | undefined;
-  }) {
-    this.installation = options.installation;
-    this.appFailure = options.appFailure;
-  }
-
-  options() {
-    return {
-      publicBaseUrl: "https://hub.example.test",
-      appSlug: "paseo",
-      clientId: "client",
-      clientSecret: "secret",
-      appAuth: this,
-      fetch: this.request,
-    };
-  }
-
-  getInstallation(): Promise<GitHubInstallation | undefined> {
-    if (this.appFailure !== undefined) return Promise.reject(this.appFailure);
-    return Promise.resolve(this.installation);
-  }
-
-  getInstallationToken(): Promise<string> {
-    return Promise.reject(new Error("unused"));
-  }
-
-  mintInstallationToken(): Promise<never> {
-    return Promise.reject(new Error("unused"));
-  }
-
-  mintInstallationAccessToken(): Promise<never> {
-    return Promise.reject(new Error("unused"));
-  }
-
-  getAppBotIdentity(): Promise<never> {
-    return Promise.reject(new Error("unused"));
-  }
-
-  revokeInstallationToken(): Promise<void> {
-    return Promise.resolve();
-  }
-
-  createInstallationOctokit(): Promise<never> {
-    return Promise.reject(new Error("unused"));
-  }
-
-  private readonly request: typeof fetch = (input) => {
-    const url = requestUrl(input);
-    if (url.pathname === "/login/oauth/access_token") {
-      return Promise.resolve(Response.json({ access_token: "user-token" }));
-    }
-    const page = Number(url.searchParams.get("page"));
-    this.userInstallationPages.push(page);
-    const installations =
-      page === 1 ? Array.from({ length: 100 }, (_, index) => ({ id: index + 1 })) : [{ id: 142 }];
-    return Promise.resolve(Response.json({ installations }));
-  };
-}
-
-function githubInstallation(id: number): GitHubInstallation {
-  return {
-    id,
-    account: { id: 501, login: "acme", type: "Organization" },
-    suspended_at: null,
-  };
-}
-
-function requestUrl(input: RequestInfo | URL): URL {
-  if (input instanceof URL) return input;
-  return new URL(input instanceof Request ? input.url : input);
-}

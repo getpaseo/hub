@@ -99,6 +99,7 @@ test("GitHub repository access is set up on plain HTTP while event triggers wait
       Issues: "Read and write",
       "Pull requests": "Read and write",
       Metadata: "Read-only",
+      Members: "Read-only",
     });
 
     // Event triggers are a separate, deferred job here — and repository access is not blocked.

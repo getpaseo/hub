@@ -24,6 +24,8 @@ export interface GitHubConnectionClient {
   getInstallation(installationId: number): Promise<GitHubInstallationEvidence>;
 }
 
+const userSchema = z.object({ id: z.number().int().positive() });
+const membershipSchema = z.object({ role: z.string(), state: z.string() });
 const tokenSchema = z.object({ access_token: z.string().min(1) }).passthrough();
 const userInstallationsSchema = z
   .object({ installations: z.array(z.object({ id: z.number().int().positive() }).passthrough()) })
@@ -82,7 +84,11 @@ export function createGitHubConnectionClient(input: {
       if (!(await userCanAccessInstallation(request, apiBaseUrl, token, installationId))) {
         return undefined;
       }
-      return readInstallation(input.appAuth, installationId);
+      const identity = await readInstallation(input.appAuth, installationId);
+      if (identity === undefined) return undefined;
+      return (await userAdministersAccount(request, apiBaseUrl, token, identity))
+        ? identity
+        : undefined;
     },
     async getInstallation(installationId) {
       const identity = await readInstallation(input.appAuth, installationId);
@@ -126,4 +132,27 @@ async function userCanAccessInstallation(
       return true;
     if (listed.installations.length < 100) return false;
   }
+}
+
+async function userAdministersAccount(
+  request: typeof fetch,
+  apiBaseUrl: string,
+  token: string,
+  identity: GitHubInstallationIdentity,
+): Promise<boolean> {
+  const headers = { accept: "application/vnd.github+json", authorization: `Bearer ${token}` };
+  if (identity.accountType === "User") {
+    const response = await request(new URL("/user", apiBaseUrl), { headers });
+    if (!response.ok) throw new Error(`github authenticated user failed: ${response.status}`);
+    return String(userSchema.parse(await response.json()).id) === identity.accountId;
+  }
+  if (identity.accountType !== "Organization") return false;
+  const response = await request(
+    new URL(`/user/memberships/orgs/${encodeURIComponent(identity.accountLogin)}`, apiBaseUrl),
+    { headers },
+  );
+  if (response.status === 403 || response.status === 404) return false;
+  if (!response.ok) throw new Error(`github organization membership failed: ${response.status}`);
+  const membership = membershipSchema.parse(await response.json());
+  return membership.role === "admin" && membership.state === "active";
 }
