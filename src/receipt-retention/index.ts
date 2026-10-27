@@ -1,4 +1,5 @@
 import type { QueryHandle } from "../db/runtime/index.js";
+import { PROVIDER_EVENT_DROP_REASON_CODES } from "../triggers/drop-reason.js";
 import { reportFailure } from "../failures/index.js";
 import { logger } from "../logger.js";
 
@@ -8,7 +9,7 @@ const BATCH_DELAY_MS = 250;
 const SWEEP_DELAY_MS = 60 * 60_000;
 const RETRY_DELAY_MS = 60_000;
 
-/** Owns automatic expiry of finalized, unrouted receipts and its bounded database sweep. */
+/** Owns automatic expiry of finalized, unhandled receipts and its bounded database sweep. */
 export class ReceiptRetention {
   private cursor: string | null = null;
   private cutoff: Date | undefined;
@@ -47,8 +48,7 @@ export class ReceiptRetention {
          using candidates
          where receipts.id = candidates.id
            and receipts.received_at < $2
-           and receipts.dropped_reason is not null
-           and (receipts.accepted_routes is null or receipts.accepted_routes = '[]'::jsonb)
+           and receipts.dropped_reason = any($4::text[])
            and not exists (
              select 1 from trigger_runs runs where runs.provider_event_receipt_id = receipts.id
            )
@@ -61,7 +61,7 @@ export class ReceiptRetention {
        select (select count(*)::int from candidates) as scanned,
               (select count(*)::int from deleted) as deleted,
               (select id from candidates order by id desc limit 1) as cursor`,
-      [this.cursor, this.cutoff, BATCH_SIZE],
+      [this.cursor, this.cutoff, BATCH_SIZE, PROVIDER_EVENT_DROP_REASON_CODES],
     );
     const batch = result.rows[0]!;
     const complete = batch.scanned < BATCH_SIZE;

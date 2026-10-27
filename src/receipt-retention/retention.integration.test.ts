@@ -45,7 +45,9 @@ describe("unhandled receipt retention", () => {
         values
           ('retention', 'github', 'young', 'github.push', '{}', '2026-10-26T00:00:00Z', 'no_project_route', null),
           ('retention', 'github', 'boundary', 'github.push', '{}', '2026-10-20T00:00:00Z', 'no_project_route', null),
-          ('retention', 'github', 'routed', 'github.push', '{}', '2026-10-01T00:00:00Z', 'no_trigger_for_source', '[{"projectId":"kept"}]'),
+          ('retention', 'github', 'admitted-unhandled', 'github.push', '{}', '2026-10-01T00:00:00Z', 'no_trigger_for_source', '[{"projectId":"kept"}]'),
+          ('retention', 'github', 'routed', 'github.push', '{}', '2026-10-01T00:00:00Z', null, '[{"projectId":"kept"}]'),
+          ('retention', 'github', 'lifecycle', 'github.installation', '{}', '2026-10-01T00:00:00Z', 'github_lifecycle', null),
           ('retention', 'github', 'pending', 'github.push', '{}', '2026-10-01T00:00:00Z', null, null),
           ('retention', 'github', 'run', 'github.push', '{}', '2026-10-01T00:00:00Z', 'no_project_route', null),
           ('retention', 'slack', 'attachment', 'slack.message', '{}', '2026-10-01T00:00:00Z', 'no_project_route', null);
@@ -83,14 +85,14 @@ describe("unhandled receipt retention", () => {
           if (batch.complete) break;
           assert.ok(passes < 10, "cleanup must advance beyond retained receipts");
         }
-        assert.equal(deleted, 1201);
+        assert.equal(deleted, 1202);
         assert.ok(passes >= 4);
         const remaining = await runtime.query<{ delivery_id: string }>(
           "select delivery_id from provider_event_receipts where delivery_id not like 'retained-%' order by delivery_id",
         );
         assert.deepEqual(
           remaining.rows.map((row) => row.delivery_id),
-          ["attachment", "boundary", "pending", "routed", "run", "young"],
+          ["attachment", "boundary", "lifecycle", "pending", "routed", "run", "young"],
         );
         // A later sweep revisits retained rows as they cross the seven-day boundary.
         let laterDeleted = 0;
