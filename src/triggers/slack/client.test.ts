@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { createSlackBotClient } from "./client.js";
+import { createSlackBotClient, SlackApiError } from "./client.js";
 
 describe("Slack Web API client", () => {
   it("looks up an authored username with the workspace bot token", async () => {
@@ -71,7 +71,10 @@ describe("Slack Web API client", () => {
           messageTs: "1.1",
           name: "eyes",
         }),
-      /Slack API ratelimited/u,
+      (error: unknown) =>
+        error instanceof SlackApiError &&
+        error.code === "ratelimited" &&
+        error.message === "Slack API ratelimited",
     );
   });
 

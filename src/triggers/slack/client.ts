@@ -102,6 +102,18 @@ export interface SlackBotClient {
   }): Promise<Response>;
 }
 
+/** Carries Slack's error code, which Hub logs; the message is never logged. */
+export class SlackApiError extends Error {
+  readonly code: string;
+
+  constructor(error: string | undefined) {
+    const code = error ?? "unknown_error";
+    super(`Slack API ${code}`);
+    this.name = "SlackApiError";
+    this.code = code;
+  }
+}
+
 export function createSlackBotClient(options: {
   tokenForWorkspace(organizationId: string, teamId: string): Promise<string | undefined>;
   fetch?: typeof fetch;
@@ -130,7 +142,7 @@ export function createSlackBotClient(options: {
     if (!response.ok) throw new Error(`Slack API HTTP ${response.status}`);
     const result = SlackApiResponseSchema.parse(await response.json());
     if (!result.ok && result.error !== alreadyDoneError) {
-      throw new Error(`Slack API ${result.error ?? "unknown_error"}`);
+      throw new SlackApiError(result.error);
     }
   }
 
@@ -200,7 +212,7 @@ export function createSlackBotClient(options: {
             ...(cursor === undefined ? {} : { cursor }),
           }),
         );
-        if (!result.ok) throw new Error(`Slack API ${result.error ?? "unknown_error"}`);
+        if (!result.ok) throw new SlackApiError(result.error);
       } catch (error) {
         if (root === undefined && selectedReplies.length === 0) throw error;
         reportFailure(
@@ -278,7 +290,7 @@ export function createSlackBotClient(options: {
     const result = SlackUserInfoSchema.parse(
       await callJson(input.organizationId, input.teamId, "users.info", { user: input.userId }),
     );
-    if (!result.ok) throw new Error(`Slack API ${result.error ?? "unknown_error"}`);
+    if (!result.ok) throw new SlackApiError(result.error);
     return result.user?.name;
   }
 
