@@ -40,6 +40,7 @@ const SlackUserInfoSchema = SlackApiResponseSchema.extend({
 const SLACK_API_TIMEOUT_MS = 10_000;
 const SLACK_THREAD_REPLIES_MAX_PAGES = 10;
 const SLACK_THREAD_CONTEXT_LIMIT = 50;
+const SLACK_REACTION_TARGET_GONE = ["message_not_found", "channel_not_found"] as const;
 
 export interface SlackAttachmentMetadata {
   id: string;
@@ -126,7 +127,7 @@ export function createSlackBotClient(options: {
     teamId: string,
     method: string,
     body: Record<string, string>,
-    alreadyDoneError?: string,
+    settledErrors: readonly string[] = [],
   ): Promise<void> {
     const token = await options.tokenForWorkspace(organizationId, teamId);
     if (token === undefined) throw new Error("Slack workspace is not connected");
@@ -141,7 +142,7 @@ export function createSlackBotClient(options: {
     });
     if (!response.ok) throw new Error(`Slack API HTTP ${response.status}`);
     const result = SlackApiResponseSchema.parse(await response.json());
-    if (!result.ok && result.error !== alreadyDoneError) {
+    if (!result.ok && !settledErrors.includes(result.error ?? "")) {
       throw new SlackApiError(result.error);
     }
   }
@@ -301,14 +302,16 @@ export function createSlackBotClient(options: {
         thread_ts: input.threadTs,
         text: input.content,
       }),
-    // A retried delivery finds the reaction already in place, or already gone.
+    // A retried delivery finds the reaction already in place, or already gone. When the
+    // message or its channel is gone there is nothing left to react to, and retrying
+    // cannot succeed.
     addReaction: (input) =>
       call(
         input.organizationId,
         input.teamId,
         "reactions.add",
         { channel: input.channelId, timestamp: input.messageTs, name: input.name },
-        "already_reacted",
+        ["already_reacted", ...SLACK_REACTION_TARGET_GONE],
       ),
     removeReaction: (input) =>
       call(
@@ -316,7 +319,7 @@ export function createSlackBotClient(options: {
         input.teamId,
         "reactions.remove",
         { channel: input.channelId, timestamp: input.messageTs, name: input.name },
-        "no_reaction",
+        ["no_reaction", ...SLACK_REACTION_TARGET_GONE],
       ),
     readThreadMessages,
     lookupUserName,

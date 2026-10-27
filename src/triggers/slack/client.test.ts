@@ -132,7 +132,7 @@ describe("Slack Web API client", () => {
     assert.equal(requestSignal?.aborted, true);
   });
 
-  it("treats a reaction that is already added or already removed as done", async () => {
+  it("treats a reaction that is already in place, or whose message is gone, as done", async () => {
     const client = createSlackBotClient({
       tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
       fetch: async (input) =>
@@ -151,6 +151,15 @@ describe("Slack Web API client", () => {
 
     await client.addReaction(reaction);
     await client.removeReaction(reaction);
+
+    for (const error of ["message_not_found", "channel_not_found"]) {
+      const gone = createSlackBotClient({
+        tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+        fetch: async () => Response.json({ ok: false, error }),
+      });
+      await gone.addReaction(reaction);
+      await gone.removeReaction(reaction);
+    }
 
     const mismatched = createSlackBotClient({
       tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
