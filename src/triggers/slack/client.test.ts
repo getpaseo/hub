@@ -129,6 +129,38 @@ describe("Slack Web API client", () => {
     assert.equal(requestSignal?.aborted, true);
   });
 
+  it("treats a reaction that is already added or already removed as done", async () => {
+    const client = createSlackBotClient({
+      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      fetch: async (input) =>
+        Response.json({
+          ok: false,
+          error: requestUrl(input).endsWith("reactions.add") ? "already_reacted" : "no_reaction",
+        }),
+    });
+    const reaction = {
+      organizationId: "org-1",
+      teamId: "T1",
+      channelId: "C1",
+      messageTs: "1.1",
+      name: "white_check_mark",
+    };
+
+    await client.addReaction(reaction);
+    await client.removeReaction(reaction);
+
+    const mismatched = createSlackBotClient({
+      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      fetch: async (input) =>
+        Response.json({
+          ok: false,
+          error: requestUrl(input).endsWith("reactions.add") ? "no_reaction" : "already_reacted",
+        }),
+    });
+    await assert.rejects(() => mismatched.addReaction(reaction), /Slack API no_reaction/u);
+    await assert.rejects(() => mismatched.removeReaction(reaction), /Slack API already_reacted/u);
+  });
+
   it("keeps the root with the latest 49 preceding Slack replies, oldest first", async () => {
     const requests: Array<{ method: string; url: string; body: BodyInit | null | undefined }> = [];
     const messages = [

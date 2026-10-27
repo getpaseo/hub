@@ -114,6 +114,7 @@ export function createSlackBotClient(options: {
     teamId: string,
     method: string,
     body: Record<string, string>,
+    alreadyDoneError?: string,
   ): Promise<void> {
     const token = await options.tokenForWorkspace(organizationId, teamId);
     if (token === undefined) throw new Error("Slack workspace is not connected");
@@ -128,7 +129,9 @@ export function createSlackBotClient(options: {
     });
     if (!response.ok) throw new Error(`Slack API HTTP ${response.status}`);
     const result = SlackApiResponseSchema.parse(await response.json());
-    if (!result.ok) throw new Error(`Slack API ${result.error ?? "unknown_error"}`);
+    if (!result.ok && result.error !== alreadyDoneError) {
+      throw new Error(`Slack API ${result.error ?? "unknown_error"}`);
+    }
   }
 
   async function callJson(
@@ -286,18 +289,23 @@ export function createSlackBotClient(options: {
         thread_ts: input.threadTs,
         text: input.content,
       }),
+    // A retried delivery finds the reaction already in place, or already gone.
     addReaction: (input) =>
-      call(input.organizationId, input.teamId, "reactions.add", {
-        channel: input.channelId,
-        timestamp: input.messageTs,
-        name: input.name,
-      }),
+      call(
+        input.organizationId,
+        input.teamId,
+        "reactions.add",
+        { channel: input.channelId, timestamp: input.messageTs, name: input.name },
+        "already_reacted",
+      ),
     removeReaction: (input) =>
-      call(input.organizationId, input.teamId, "reactions.remove", {
-        channel: input.channelId,
-        timestamp: input.messageTs,
-        name: input.name,
-      }),
+      call(
+        input.organizationId,
+        input.teamId,
+        "reactions.remove",
+        { channel: input.channelId, timestamp: input.messageTs, name: input.name },
+        "no_reaction",
+      ),
     readThreadMessages,
     lookupUserName,
     downloadAttachment,
