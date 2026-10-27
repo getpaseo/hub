@@ -4,19 +4,20 @@ import { setTimeout as delay } from "node:timers/promises";
 import { Writable } from "node:stream";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, it } from "vitest";
+import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { runWithFailureTracking } from "../../../failures/index.js";
+import { reportFailure, runWithFailureTracking } from "../../../failures/index.js";
 import { createLogger } from "../../../logger.js";
-import { createPool } from "./postgres.js";
+import { createPool, createPostgresRuntime } from "./postgres.js";
 
+const diagnosticSchema = z.object({
+  phase: z.enum(["acquire", "query", "idle"]),
+  elapsedMs: z.number().nonnegative(),
+  pool: z.object({ total: z.number(), idle: z.number(), waiting: z.number() }),
+});
 const recordSchema = z.object({
   operation: z.string(),
-  err: z.object({ message: z.string(), code: z.string().nullable() }),
-  diagnostic: z.object({
-    phase: z.enum(["acquire", "query", "idle"]),
-    elapsedMs: z.number().nonnegative(),
-    pool: z.object({ total: z.number(), idle: z.number(), waiting: z.number() }),
-  }),
+  err: z.object({ message: z.string(), code: z.string().nullable(), diagnostic: diagnosticSchema }),
 });
 
 function capture() {
@@ -31,6 +32,20 @@ function capture() {
   );
   return {
     logger,
+    async rejects(operation: Promise<unknown>, message?: RegExp) {
+      await assert.rejects(operation, (error: unknown) => {
+        if (message !== undefined) {
+          assert.ok(error instanceof Error);
+          assert.match(error.message, message);
+        }
+        reportFailure(
+          error,
+          { operation: "consumer.database.query", component: "database" },
+          { logger },
+        );
+        return true;
+      });
+    },
     text: () => output,
     records: () =>
       output
@@ -59,19 +74,16 @@ describe("PostgreSQL failure diagnostics", () => {
     const log = capture();
     try {
       await runWithFailureTracking(async () => {
-        await assert.rejects(
-          pool.query("select $1::text", ["private-query-parameter"]),
-          /timeout/u,
-        );
+        await log.rejects(pool.query("select $1::text", ["private-query-parameter"]), /timeout/u);
       }, log.logger);
       const [record] = log.records();
       assert.ok(record);
-      assert.equal(record.operation, "database.postgres.acquire");
+      assert.equal(record.operation, "consumer.database.query");
       assert.match(record.err.message, /timeout/u);
       assert.equal(record.err.code, null);
-      assert.equal(record.diagnostic.phase, "acquire");
-      assert.ok(record.diagnostic.elapsedMs >= 2900);
-      assert.deepEqual(record.diagnostic.pool, { total: 1, idle: 0, waiting: 0 });
+      assert.equal(record.err.diagnostic.phase, "acquire");
+      assert.ok(record.err.diagnostic.elapsedMs >= 2900);
+      assert.deepEqual(record.err.diagnostic.pool, { total: 1, idle: 0, waiting: 0 });
       assert.equal(log.text().includes("private-query-parameter"), false);
       assert.equal(log.text().includes(postgres.getConnectionUri()), false);
       assert.equal(log.text().includes("private-db-password-canary"), false);
@@ -87,16 +99,16 @@ describe("PostgreSQL failure diagnostics", () => {
     try {
       await pool.query("set statement_timeout = 0");
       await runWithFailureTracking(async () => {
-        await assert.rejects(pool.query("select pg_sleep(5)"), /timeout/u);
+        await log.rejects(pool.query("select pg_sleep(5)"), /timeout/u);
       }, log.logger);
       const [record] = log.records();
       assert.ok(record);
-      assert.equal(record.operation, "database.postgres.query");
+      assert.equal(record.operation, "consumer.database.query");
       assert.match(record.err.message, /timeout/u);
       assert.equal(record.err.code, null);
-      assert.equal(record.diagnostic.phase, "query");
-      assert.ok(record.diagnostic.elapsedMs >= 2900);
-      assert.deepEqual(record.diagnostic.pool, { total: 1, idle: 0, waiting: 0 });
+      assert.equal(record.err.diagnostic.phase, "query");
+      assert.ok(record.err.diagnostic.elapsedMs >= 2900);
+      assert.deepEqual(record.err.diagnostic.pool, { total: 1, idle: 0, waiting: 0 });
     } finally {
       await pool.end();
     }
@@ -109,11 +121,11 @@ describe("PostgreSQL failure diagnostics", () => {
     try {
       await client.query("set statement_timeout = 100");
       await runWithFailureTracking(async () => {
-        await assert.rejects(client.query("select pg_sleep(5)"));
-        await assert.rejects(client.query("select $1::integer", ["private-query-parameter"]));
+        await log.rejects(client.query("select pg_sleep(5)"));
+        await log.rejects(client.query("select $1::integer", ["private-query-parameter"]));
         await client.query(`create function pg_temp.reject_parameter(value text) returns void
           language plpgsql as $$ begin raise exception 'rejected %', value; end $$`);
-        await assert.rejects(
+        await log.rejects(
           client.query({
             text: "select pg_temp.reject_parameter($1)",
             values: ["private-unquoted-parameter"],
@@ -124,7 +136,7 @@ describe("PostgreSQL failure diagnostics", () => {
       assert.ok(timeout && invalid && unquoted);
       assert.equal(timeout.err.code, "57014");
       assert.equal(timeout.err.message, "canceling statement due to statement timeout");
-      assert.equal(timeout.diagnostic.phase, "query");
+      assert.equal(timeout.err.diagnostic.phase, "query");
       assert.equal(invalid.err.code, "22P02");
       assert.equal(log.text().includes("private-query-parameter"), false);
       assert.equal(log.text().includes("private-unquoted-parameter"), false);
@@ -148,11 +160,11 @@ describe("PostgreSQL failure diagnostics", () => {
       }, log.logger);
       const [record] = log.records();
       assert.ok(record);
-      assert.equal(record.operation, "database.postgres.idle");
+      assert.equal(record.operation, "database.postgres.pool");
       assert.equal(record.err.message, "terminating connection due to administrator command");
       assert.equal(record.err.code, "57P01");
-      assert.equal(record.diagnostic.phase, "idle");
-      assert.deepEqual(record.diagnostic.pool, { total: 0, idle: 0, waiting: 0 });
+      assert.equal(record.err.diagnostic.phase, "idle");
+      assert.deepEqual(record.err.diagnostic.pool, { total: 0, idle: 0, waiting: 0 });
     } finally {
       await pool.end();
       await admin.end();
@@ -166,7 +178,7 @@ describe("PostgreSQL failure diagnostics", () => {
     const log = capture();
     try {
       await runWithFailureTracking(async () => {
-        const failed = assert.rejects(
+        const failed = log.rejects(
           pool.runQuery(undefined, "select pg_sleep(5)", []),
           /database query timed out/u,
         );
@@ -177,10 +189,36 @@ describe("PostgreSQL failure diagnostics", () => {
       const [record] = log.records();
       assert.ok(record);
       assert.equal(record.err.message, "database query timed out");
-      assert.equal(record.diagnostic.phase, "query");
-      assert.deepEqual(record.diagnostic.pool, { total: 1, idle: 0, waiting: 0 });
+      assert.equal(record.err.diagnostic.phase, "query");
+      assert.deepEqual(record.err.diagnostic.pool, { total: 1, idle: 0, waiting: 0 });
     } finally {
       await pool.end();
+    }
+  });
+  it("preserves caller operation and diagnostics through a Drizzle error cause", async () => {
+    const { runtime } = await createPostgresRuntime(postgres.getConnectionUri());
+    const log = capture();
+    try {
+      await log.rejects(runtime.drizzle().execute(sql`select ${"private-drizzle-value"}::integer`));
+      const record = z
+        .object({
+          operation: z.string(),
+          err: z.object({
+            cause: z.object({
+              message: z.string(),
+              code: z.string(),
+              diagnostic: diagnosticSchema,
+            }),
+          }),
+        })
+        .parse(JSON.parse(log.text()));
+      assert.equal(record.operation, "consumer.database.query");
+      assert.equal(record.err.cause.code, "22P02");
+      assert.equal(record.err.cause.diagnostic.phase, "query");
+      assert.equal(log.text().includes("private-drizzle-value"), false);
+      assert.equal(log.text().includes("select $1"), false);
+    } finally {
+      await runtime.close();
     }
   });
 });

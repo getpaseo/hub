@@ -41,6 +41,7 @@ export class PostgresPool extends Pool {
     this.on("acquire", (client) => idleSince.delete(client));
     this.on("error", (error, client) => {
       this.failure(error, "idle", idleSince.get(client) ?? performance.now());
+      reportFailure(error, { operation: "database.postgres.pool", component: "database" });
     });
   }
 
@@ -56,19 +57,16 @@ export class PostgresPool extends Pool {
       const diagnosticMessage = error.message
         .replace(/\b(?:postgres(?:ql)?):\/\/\S+/giu, "[Redacted]")
         .replace(/"(?:[^"\\]|\\.|"")*"|'(?:[^'\\]|\\.|'')*'/gu, "[Redacted]");
-      errorForLog(error, { diagnosticMessage, scrubValues: [...this.scrubValues, ...scrubValues] });
-    }
-    reportFailure(
-      error,
-      { operation: `database.postgres.${phase}`, component: "database" },
-      {
+      errorForLog(error, {
+        diagnosticMessage,
+        scrubValues: [...this.scrubValues, ...scrubValues],
         diagnostic: {
           phase,
           elapsedMs: Math.round(performance.now() - started),
           pool: { total: this.totalCount, idle: this.idleCount, waiting: this.waitingCount },
         },
-      },
-    );
+      });
+    }
   }
 
   async runQuery<Row extends QueryResultRow>(

@@ -49,6 +49,8 @@ export interface RedactionOptions {
   scrubValues?: readonly string[];
   /** A message sanitized by the owning boundary; arbitrary Error messages stay private. */
   diagnosticMessage?: string;
+  /** Structured diagnostics supplied by the owning boundary, redacted before serialization. */
+  diagnostic?: Record<string, unknown>;
 }
 
 export function createLogger(destination?: pino.DestinationStream): pino.Logger {
@@ -114,6 +116,9 @@ export function serializeError(
           message: redactString(options.diagnosticMessage, undefined, scrubValues),
           code: code ?? null,
         }),
+    ...(options.diagnostic === undefined
+      ? {}
+      : { diagnostic: redact(options.diagnostic, options) }),
     ...(frames === undefined ? {} : { stack: frames }),
     ...(value.cause === undefined
       ? {}
