@@ -25,6 +25,7 @@ import {
   NormalizedGitHubEventSchema,
   PullRequestPayloadSchema,
   PullRequestReviewCommentPayloadSchema,
+  PullRequestReviewPayloadSchema,
 } from "../../auth/github-events.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
 import { classifyGitHubEvent, GITHUB_TRIGGER_SOURCE_NAMES } from "./classification.js";
@@ -199,7 +200,7 @@ export function createGitHubTriggerProvider(options: {
           organizationId: externalTrigger.organizationId,
           target: { installationId: event.installationId, repository: event.repo },
           event: buildGitHubMergeData(event),
-          reactionSubject: reactionSubjectForEvent(event),
+          reactionSubject: reactionSubjectForEvent(event, compiledTrigger.on),
         };
         const invocation = parseInvocation(
           readGitHubInvocationMessage(event),
@@ -340,7 +341,10 @@ function githubReactionId(state: TriggerProviderReactionState | undefined): numb
     : undefined;
 }
 
-function reactionSubjectForEvent(event: NormalizedGitHubEvent): GitHubReactionSubject | null {
+function reactionSubjectForEvent(
+  event: NormalizedGitHubEvent,
+  triggerSource: string,
+): GitHubReactionSubject | null {
   if (event.type === "issues") {
     const payload = IssuesPayloadSchema.parse(event.payload);
     return payload.issue?.number === undefined
@@ -367,6 +371,16 @@ function reactionSubjectForEvent(event: NormalizedGitHubEvent): GitHubReactionSu
     return payload.comment?.id === undefined
       ? null
       : { kind: "pull_request_review_comment", commentId: payload.comment.id };
+  }
+
+  if (
+    event.type === "pull_request_review" &&
+    triggerSource === "github.pull_request_review_changes_requested"
+  ) {
+    const payload = PullRequestReviewPayloadSchema.parse(event.payload);
+    return payload.pull_request?.number === undefined
+      ? null
+      : { kind: "item", issueNumber: payload.pull_request.number };
   }
 
   return null;
