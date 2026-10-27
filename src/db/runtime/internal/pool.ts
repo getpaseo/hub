@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Pool } from "pg";
 import type { PoolClient, QueryResultRow } from "pg";
 import { DatabaseUnavailableError } from "../../errors.js";
@@ -14,6 +15,7 @@ export function createPool(connectionString: string): PostgresPool {
 /** @package */
 export class PostgresPool extends Pool {
   private readonly scrubValues: string[];
+  private readonly queryPhase = new AsyncLocalStorage<{ value: "acquire" | "query" }>();
 
   constructor(connectionString: string) {
     super({
@@ -28,14 +30,18 @@ export class PostgresPool extends Pool {
 
     // The observer forwards pg's receiver through Reflect.apply.
     // oxlint-disable-next-line typescript-eslint/unbound-method
-    this.connect = observe(this.connect, (error, started) =>
-      this.failure(error, "acquire", started),
-    );
+    this.connect = observe(this.connect, (started) => {
+      const phase = this.queryPhase.getStore();
+      return (error) => {
+        if (error) this.failure(error, "acquire", started);
+        else if (phase !== undefined) phase.value = "query";
+      };
+    });
     this.on("connect", (client) => {
       // oxlint-disable-next-line typescript-eslint/unbound-method
-      client.query = observe(client.query, (error, started, args) =>
-        this.failure(error, "query", started, queryScrubValues(args)),
-      );
+      client.query = observe(client.query, (started, args) => (error) => {
+        if (error) this.failure(error, "query", started, queryScrubValues(args));
+      });
     });
     this.on("release", (_error, client) => idleSince.set(client, performance.now()));
     this.on("acquire", (client) => idleSince.delete(client));
@@ -75,28 +81,20 @@ export class PostgresPool extends Pool {
     params: readonly unknown[],
   ) {
     const started = performance.now();
-    let phase: "acquire" | "query" = client === undefined ? "acquire" : "query";
-    let timeout: NodeJS.Timeout | undefined;
-    const operation = async () => {
-      const connection = client ?? (await this.connect());
-      phase = "query";
-      let failure: Error | undefined;
-      try {
-        return await connection.query<Row>(sql, [...params]);
-      } catch (error) {
-        if (error instanceof Error) failure = error;
-        throw error;
-      } finally {
-        if (client === undefined) connection.release(failure);
-      }
+    const phase: { value: "acquire" | "query" } = {
+      value: client === undefined ? "acquire" : "query",
     };
+    let timeout: NodeJS.Timeout | undefined;
+    const operation = this.queryPhase.run(phase, () =>
+      (client ?? this).query<Row>(sql, [...params]),
+    );
     try {
       return await Promise.race([
-        operation(),
+        operation,
         new Promise<never>((_, reject) => {
           timeout = setTimeout(() => {
             const error = new DatabaseUnavailableError("database query timed out");
-            this.failure(error, phase, started);
+            this.failure(error, phase.value, started);
             reject(error);
           }, QUERY_DEADLINE_MS);
         }),
@@ -110,15 +108,15 @@ export class PostgresPool extends Pool {
 /** Preserve pg's callback and promise overloads, including pool.query's internal callbacks. */
 function observe<T extends (...args: never[]) => unknown>(
   operation: T,
-  failure: (error: unknown, started: number, args: unknown[]) => void,
+  onStart: (started: number, args: unknown[]) => (error: unknown) => void,
 ): T {
   return new Proxy(operation, {
     apply(target, receiver: unknown, args: unknown[]) {
-      const started = performance.now();
+      const settled = onStart(performance.now(), args);
       const callback = args.at(-1);
       if (typeof callback === "function") {
         args[args.length - 1] = (...results: unknown[]) => {
-          if (results[0]) failure(results[0], started, args);
+          settled(results[0]);
           const result: unknown = Reflect.apply(callback, undefined, results);
           return result;
         };
@@ -126,14 +124,20 @@ function observe<T extends (...args: never[]) => unknown>(
       try {
         const result: unknown = Reflect.apply(target, receiver, args);
         if (result instanceof Promise) {
-          return result.catch((error: unknown) => {
-            failure(error, started, args);
-            throw error;
-          });
+          return result.then(
+            (value: unknown) => {
+              settled(undefined);
+              return value;
+            },
+            (error: unknown) => {
+              settled(error);
+              throw error;
+            },
+          );
         }
         return result;
       } catch (error) {
-        failure(error, started, args);
+        settled(error);
         throw error;
       }
     },
