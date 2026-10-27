@@ -49,6 +49,9 @@ export class PostgresPool extends Pool {
       this.failure(error, "idle", idleSince.get(client) ?? performance.now());
       reportFailure(error, { operation: "database.postgres.pool", component: "database" });
     });
+    // Release async context tracking when the owning pool finishes closing.
+    // oxlint-disable-next-line typescript-eslint/unbound-method
+    this.end = observe(this.end, () => () => this.queryPhase.disable());
   }
 
   private failure(
