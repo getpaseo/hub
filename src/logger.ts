@@ -91,7 +91,13 @@ export function redact(value: unknown, options: RedactionOptions = {}): unknown 
 
 /** Associates scrub provenance with an Error without putting the sensitive values on the record. */
 export function errorForLog(error: Error, options: RedactionOptions = {}): Error {
-  errorRedaction.set(error, { ...errorRedaction.get(error), ...options });
+  const previous = errorRedaction.get(error);
+  const scrubValues = [...(previous?.scrubValues ?? []), ...(options.scrubValues ?? [])];
+  errorRedaction.set(error, {
+    ...previous,
+    ...options,
+    ...(scrubValues.length === 0 ? {} : { scrubValues }),
+  });
   return error;
 }
 
@@ -107,6 +113,7 @@ export function serializeError(
   const scrubValues = normalizedScrubValues(options.scrubValues);
   const code = safeErrorCode(value, scrubValues);
   const frames = safeStackFrames(value.stack, scrubValues);
+  const causeOptions = errorRedactionOptions(value.cause);
   return safeErrorDiagnostic({
     type: safeErrorType(value),
     ...(code === undefined ? {} : { code }),
@@ -124,8 +131,8 @@ export function serializeError(
       ? {}
       : {
           cause: serializeError(value.cause, {
-            scrubValues,
-            ...errorRedactionOptions(value.cause),
+            ...causeOptions,
+            scrubValues: [...scrubValues, ...(causeOptions.scrubValues ?? [])],
           }),
         }),
   });
