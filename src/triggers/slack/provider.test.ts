@@ -414,8 +414,12 @@ describe("Slack Phase 1 trigger provider", () => {
       providerEventReceiptId: "11111111-1111-4111-8111-111111111119",
       triggerContext: rootMatch.triggerContext,
     });
+    // A root mention has no earlier messages, but still says where it was posted.
     assert.deepEqual(rootContext, {
-      slack: { thread: { status: "not_applicable", messages: [] } },
+      slack: {
+        trigger_message: { ts: "1700000000.000001", channel: { id: "C1" }, thread: null },
+        thread: { status: "not_applicable", messages: [] },
+      },
     });
     assert.deepEqual(client.threadReads, ["1700000000.000001"]);
   });
@@ -486,6 +490,11 @@ describe("Slack Phase 1 trigger provider", () => {
 
     assert.deepEqual(context, {
       slack: {
+        trigger_message: {
+          ts: "1700000000.000001",
+          channel: { id: "C1" },
+          thread: { ts: "1700000000.000001" },
+        },
         thread: {
           status: "available",
           messages: [
@@ -551,7 +560,14 @@ describe("Slack Phase 1 trigger provider", () => {
       triggerContext: emptyMatch.triggerContext,
     });
     assert.deepEqual(emptyContext, {
-      slack: { thread: { status: "available", messages: [] } },
+      slack: {
+        trigger_message: {
+          ts: "1700000000.000001",
+          channel: { id: "C1" },
+          thread: { ts: "1700000000.000001" },
+        },
+        thread: { status: "available", messages: [] },
+      },
     });
 
     const match = (await provider.match(external(project.id, revision.id)))[0];
@@ -570,7 +586,14 @@ describe("Slack Phase 1 trigger provider", () => {
       triggerContext: match.triggerContext,
     });
     assert.deepEqual(context, {
-      slack: { thread: { status: "unavailable", messages: [] } },
+      slack: {
+        trigger_message: {
+          ts: "1700000000.000001",
+          channel: { id: "C1" },
+          thread: { ts: "1700000000.000001" },
+        },
+        thread: { status: "unavailable", messages: [] },
+      },
     });
   });
 

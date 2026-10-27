@@ -75,8 +75,16 @@ interface SlackContextPayload {
   messages: SlackMergeMessage[];
 }
 
+/** Where the mention was posted, so an agent can address that message or its thread. */
+interface SlackTriggerMessageLocation {
+  ts: string;
+  channel: { id: string };
+  thread: { ts: string } | null;
+}
+
 export interface SlackMaterializedContext {
   slack: {
+    trigger_message: SlackTriggerMessageLocation;
     thread: SlackContextPayload;
   };
 }
@@ -203,11 +211,22 @@ export function createSlackTriggerProvider(options: {
     },
     async materializeContext(launch): Promise<SlackMaterializedContext> {
       const locator = launch.triggerContext.event.slack.trigger_thread_context;
+      const triggerMessage = triggerMessageLocation(launch.triggerContext.event);
       if (locator.status === "not_applicable") {
-        return { slack: { thread: { status: "not_applicable", messages: [] } } };
+        return {
+          slack: {
+            trigger_message: triggerMessage,
+            thread: { status: "not_applicable", messages: [] },
+          },
+        };
       }
       if (options.client.readThreadMessages === undefined) {
-        return { slack: { thread: { status: "unavailable", messages: [] } } };
+        return {
+          slack: {
+            trigger_message: triggerMessage,
+            thread: { status: "unavailable", messages: [] },
+          },
+        };
       }
       let history;
       try {
@@ -229,7 +248,12 @@ export function createSlackTriggerProvider(options: {
             },
           },
         );
-        return { slack: { thread: { status: "unavailable", messages: [] } } };
+        return {
+          slack: {
+            trigger_message: triggerMessage,
+            thread: { status: "unavailable", messages: [] },
+          },
+        };
       }
       const messages = await Promise.all(
         history.messages.map(async (message) => ({
@@ -251,6 +275,7 @@ export function createSlackTriggerProvider(options: {
       );
       return {
         slack: {
+          trigger_message: triggerMessage,
           thread: {
             status: history.complete ? "available" : "incomplete",
             messages,
@@ -405,6 +430,11 @@ function buildSlackMergeData(
             },
     },
   };
+}
+
+function triggerMessageLocation(event: SlackMergeData): SlackTriggerMessageLocation {
+  const { ts, channel, thread } = event.slack.trigger_message;
+  return { ts, channel: { id: channel.id }, thread: thread === null ? null : { ts: thread.ts } };
 }
 
 async function registerAttachments(
