@@ -91,9 +91,25 @@ Hub generates and stores its authentication secret in the database. Advanced dep
 Billing is optional: leave `STRIPE_SECRET_KEY` unset and Hub runs with no billing surface at all. See [docs/billing.md](docs/billing.md).
 
 Email delivery is optional too: set `RESEND_API_KEY` and `RESEND_FROM` to email organization
-invitations, signup verification links, and password-reset links through Resend. Configured
+invitations, signup verification links, and password-reset links through Resend, or set `SES_FROM`
+to send them through Amazon SES instead. When both are configured, Resend is used. Configured
 instances require new password accounts to verify their email before sign-in. Without delivery
 configuration, managers retain the existing copy-and-share invitation workflow.
+
+Amazon SES needs:
+
+- `SES_FROM`: the sender, such as `Paseo <hub@example.com>`. Its address or domain must be a
+  verified identity in the SES region. While the account is in the SES sandbox, recipients must be
+  verified too; request production access before inviting real users.
+- `SES_REGION`, or `AWS_REGION` when `SES_REGION` is unset: the SES region, such as `eu-west-1`.
+- `SES_ACCESS_KEY_ID` and `SES_SECRET_ACCESS_KEY`, or `AWS_ACCESS_KEY_ID` and
+  `AWS_SECRET_ACCESS_KEY` when neither SES variable is set. Temporary credentials also need
+  `SES_SESSION_TOKEN` or `AWS_SESSION_TOKEN`, matching the pair in use. The IAM principal needs
+  `ses:SendEmail` on the sender identity, and on the configuration set when one is named.
+- `SES_CONFIGURATION_SET`, optionally, to send through an SES configuration set.
+
+Hub calls the SES v2 HTTP API directly and does not read AWS profiles or instance roles. SES has no
+idempotency key, so a send retried after a lost response may be delivered twice.
 
 Then start Hub and PostgreSQL:
 
