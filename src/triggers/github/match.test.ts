@@ -175,6 +175,28 @@ describe("GitHub trigger matching", () => {
     assert.equal(matchTriggers(configured, event, connectionId).length, expected);
   });
 
+  it.each([
+    ["ready_for_review", false, "boudra", 1],
+    ["opened", true, "boudra", 0],
+    ["opened", false, "boudra", 0],
+    ["synchronize", true, "boudra", 0],
+    ["synchronize", false, "boudra", 0],
+    ["converted_to_draft", true, "boudra", 0],
+    ["ready_for_review", false, "stranger", 0],
+  ])("ready-for-review matches %s draft=%s actor=%s", (action, draft, actor, expected) => {
+    const config = configFor({ from_users: ["boudra"], repo: "boudra/faro" });
+    const configured = {
+      ...config,
+      triggers: [{ ...config.triggers[0]!, on: "github.pull_request_ready_for_review" }],
+    };
+    const event = eventFor("pull_request", {
+      action,
+      pull_request: pullRequest({ draft, head: { sha: "head-sha", ref: "topic" } }),
+    });
+    event.payload["sender"] = { login: actor };
+    assert.equal(matchTriggers(configured, event).length, expected);
+  });
+
   it("allows every actor only when the wildcard is explicit", () => {
     const config = configFor({ from_users: ["*"] });
     const event = createEvent({

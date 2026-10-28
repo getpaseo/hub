@@ -238,6 +238,7 @@ describe("GitHub Phase 1 trigger provider", () => {
     ["issues", "opened", "github.issue_created", 211],
     ["issues", "labeled", "github.issue_label_added", 211],
     ["pull_request", "opened", "github.pull_request_created", 312],
+    ["pull_request", "ready_for_review", "github.pull_request_ready_for_review", 312],
     ["pull_request", "labeled", "github.pull_request_label_added", 312],
   ] as const)("derives an item reaction target for %s %s", async (type, action, source, number) => {
     const configuration = githubConfiguration();
@@ -252,6 +253,36 @@ describe("GitHub Phase 1 trigger provider", () => {
     assert.deepEqual(matches[0]?.triggerContext.reactionSubject, {
       kind: "item",
       issueNumber: number,
+    });
+  });
+
+  it("passes the ready event head and draft status into the reviewer context", async () => {
+    const configuration = githubConfiguration();
+    configuration.triggers[0] = {
+      ...configuration.triggers[0]!,
+      on: "github.pull_request_ready_for_review",
+    };
+    const { project, revision, store } = await activeConfiguration(configuration);
+    const provider = createProvider(store, new TestReactions());
+    const event = createItemEvent("pull_request", "ready_for_review", 312);
+    event.payload["pull_request"] = {
+      body: "Review @paseo",
+      number: 312,
+      draft: false,
+      head: { sha: "event-head", ref: "topic" },
+    };
+    const matches = await provider.match(external(project.id, revision.id, event));
+    if (typeof matches === "string") throw new Error("expected ready match");
+    const context = await provider.materializeContext!({
+      executionId: "ready-context",
+      organizationId: "org_1",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111111",
+      triggerContext: matches[0]!.triggerContext,
+    });
+    assert.deepEqual(Reflect.get(Reflect.get(context!, "github"), "pull_request"), {
+      draft: false,
+      head_sha: "event-head",
     });
   });
 
@@ -373,6 +404,7 @@ describe("GitHub Phase 1 trigger provider", () => {
       github: {
         delivery_id: "github-delivery-1",
         event_name: "issue_comment",
+        pull_request: null,
         repository: { full_name: "boudra/faro" },
         received_at: "2026-05-19T00:00:00.000Z",
         item: {
@@ -464,71 +496,84 @@ describe("GitHub Phase 1 trigger provider", () => {
     });
   });
 
-  it("hands every matching configured GitHub trigger to the durable fan-out boundary", async () => {
-    const database = createMemoryDatabase();
-    const { project, revision, store } = await activeFanoutConfiguration(database);
-    const provider = createProvider(store, new TestReactions());
-    const matches = await provider.match(external(project.id, revision.id, createEvent()));
-    if (typeof matches === "string") throw new Error("expected matches");
-    assert.deepEqual(
-      matches.map((match) => match.triggerName),
-      ["github-mention", "github-mention-secondary"],
-    );
+  it.each([false, true])(
+    "deduplicates durable GitHub dispatch (ready transition=%s)",
+    async (ready) => {
+      const database = createMemoryDatabase();
+      const configuration = githubConfiguration();
+      configuration.triggers[0] = {
+        ...configuration.triggers[0]!,
+        on: "github.pull_request_ready_for_review",
+      };
+      const { project, revision, store } = ready
+        ? await createActiveProjectConfiguration(database, configuration)
+        : await activeFanoutConfiguration(database);
+      const event = ready
+        ? createItemEvent("pull_request", "ready_for_review", 312)
+        : createEvent();
+      const provider = createProvider(store, new TestReactions());
+      const matches = await provider.match(external(project.id, revision.id, event));
+      if (typeof matches === "string") throw new Error("expected matches");
+      assert.deepEqual(
+        matches.map((match) => match.triggerName),
+        ready ? ["github-mention"] : ["github-mention", "github-mention-secondary"],
+      );
 
-    let dispatches = 0;
-    const { handler, engine } = createDurableWorkflowHandler({
-      database,
-      entitlements: createUnlimitedEntitlementsService(),
-      providers: [provider],
-      dispatchLaunchMachineIntent: async (intent) => {
-        dispatches += 1;
-        if (intent.workflowStepRunId === undefined) throw new Error("workflow step is required");
-        const execution = await database.findAgentExecutionByWorkflowStepRunId(
-          intent.workflowStepRunId,
-        );
-        if (execution === undefined) throw new Error("workflow execution was not persisted");
-        return {
-          execution,
-        };
-      },
-    });
-    const trigger = {
-      providerEventReceiptId: "github-fanout-trigger",
-      organizationId: "org_1",
-      projectId: project.id,
-      configurationRevisionId: revision.id,
-      source: "github.issue_comment",
-      deliveryId: "github-fanout-delivery",
-      receivedAt: new Date(),
-      payload: createEvent(),
-      connectionId: null,
-      resourceId: null,
-    } satisfies DurableProviderEvent;
+      let dispatches = 0;
+      const { handler, engine } = createDurableWorkflowHandler({
+        database,
+        entitlements: createUnlimitedEntitlementsService(),
+        providers: [provider],
+        dispatchLaunchMachineIntent: async (intent) => {
+          dispatches += 1;
+          if (intent.workflowStepRunId === undefined) throw new Error("workflow step is required");
+          const execution = await database.findAgentExecutionByWorkflowStepRunId(
+            intent.workflowStepRunId,
+          );
+          if (execution === undefined) throw new Error("workflow execution was not persisted");
+          return {
+            execution,
+          };
+        },
+      });
+      const trigger = {
+        providerEventReceiptId: "github-fanout-trigger",
+        organizationId: "org_1",
+        projectId: project.id,
+        configurationRevisionId: revision.id,
+        source: ready ? "github.pull_request" : "github.issue_comment",
+        deliveryId: "github-fanout-delivery",
+        receivedAt: new Date(),
+        payload: event,
+        connectionId: null,
+        resourceId: null,
+      } satisfies DurableProviderEvent;
 
-    await handler(trigger);
-    await handler(trigger);
-    await engine.processAvailable();
+      await handler(trigger);
+      await handler(trigger);
+      await engine.processAvailable();
 
-    const runs = await database.findTriggerRunsByProviderEventReceiptId(
-      trigger.providerEventReceiptId,
-    );
-    assert.equal(runs.length, 2);
-    assert.equal(dispatches, 2);
-    assert.equal(
-      new Set(
-        await Promise.all(
-          runs.map(async (run) => {
-            const step = await database.findWorkflowStepRunByTriggerRun(run.id);
-            assert.ok(step);
-            const execution = await database.findAgentExecutionByWorkflowStepRunId(step.id);
-            assert.ok(execution);
-            return execution.id;
-          }),
-        ),
-      ).size,
-      2,
-    );
-  });
+      const runs = await database.findTriggerRunsByProviderEventReceiptId(
+        trigger.providerEventReceiptId,
+      );
+      assert.equal(runs.length, ready ? 1 : 2);
+      assert.equal(dispatches, ready ? 1 : 2);
+      assert.equal(
+        new Set(
+          await Promise.all(
+            runs.map(async (run) => {
+              const step = await database.findWorkflowStepRunByTriggerRun(run.id);
+              assert.ok(step);
+              const execution = await database.findAgentExecutionByWorkflowStepRunId(step.id);
+              assert.ok(execution);
+              return execution.id;
+            }),
+          ),
+        ).size,
+        ready ? 1 : 2,
+      );
+    },
+  );
 });
 
 function createProvider(
@@ -665,7 +710,7 @@ function createEvent(
 
 function createItemEvent(
   type: "issues" | "pull_request",
-  action: "opened" | "labeled",
+  action: "opened" | "labeled" | "ready_for_review",
   number: number,
 ): NormalizedGitHubEvent {
   return {

@@ -379,6 +379,7 @@ describe("durable multi-step workflow engine", () => {
         event: {
           github: {
             delivery_id: "test",
+            pull_request: null,
             event_name: "issue_comment",
             repository: { full_name: "example/project" },
             received_at: now.toISOString(),

@@ -10,6 +10,7 @@ import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
 export const GITHUB_SEMANTIC_TRIGGER_EVENT_NAMES = [
   "github.issue_created",
   "github.pull_request_created",
+  "github.pull_request_ready_for_review",
   "github.issue_comment_created",
   "github.pull_request_comment_created",
   "github.issue_label_added",
@@ -29,6 +30,7 @@ export const GITHUB_TRIGGER_SOURCE_NAMES = [
 
 export interface GitHubClassifiedEvent {
   readonly semanticEvent: GitHubSemanticEvent | undefined;
+  readonly pullRequest: { readonly draft: boolean | null; readonly headSha: string | null } | null;
   readonly actor: string;
   readonly text: string;
   readonly labels: readonly string[];
@@ -60,6 +62,7 @@ function classifyIssue(event: NormalizedGitHubEvent): GitHubClassifiedEvent {
   const item = payload.issue === undefined ? null : itemFor("issue", payload.issue);
   return {
     semanticEvent: issueSemanticEvent(payload.action),
+    pullRequest: null,
     actor: payload.sender?.login ?? "",
     text: textFor(item),
     labels: labelsFor(payload.issue?.labels),
@@ -74,6 +77,13 @@ function classifyPullRequest(event: NormalizedGitHubEvent): GitHubClassifiedEven
     payload.pull_request === undefined ? null : itemFor("pull_request", payload.pull_request);
   return {
     semanticEvent: pullRequestSemanticEvent(payload.action),
+    pullRequest:
+      payload.pull_request === undefined
+        ? null
+        : {
+            draft: payload.pull_request.draft ?? null,
+            headSha: payload.pull_request.head?.sha ?? null,
+          },
     actor: payload.sender?.login ?? "",
     text: textFor(item),
     labels: labelsFor(payload.pull_request?.labels),
@@ -87,6 +97,7 @@ function classifyIssueComment(event: NormalizedGitHubEvent): GitHubClassifiedEve
   const isPullRequest = payload.issue?.pull_request !== undefined;
   return {
     semanticEvent: commentSemanticEvent(payload.action, isPullRequest),
+    pullRequest: null,
     actor: payload.sender?.login ?? payload.comment?.user?.login ?? "",
     text: payload.comment?.body ?? "",
     labels: labelsFor(payload.issue?.labels),
@@ -123,6 +134,7 @@ function classifyReviewComment(event: NormalizedGitHubEvent): GitHubClassifiedEv
 function emptyClassification(): GitHubClassifiedEvent {
   return {
     semanticEvent: undefined,
+    pullRequest: null,
     actor: "",
     text: "",
     labels: [],
@@ -139,6 +151,7 @@ function issueSemanticEvent(action: string | undefined): GitHubSemanticEvent | u
 
 function pullRequestSemanticEvent(action: string | undefined): GitHubSemanticEvent | undefined {
   if (action === "opened") return "github.pull_request_created";
+  if (action === "ready_for_review") return "github.pull_request_ready_for_review";
   if (action === "labeled") return "github.pull_request_label_added";
   return undefined;
 }

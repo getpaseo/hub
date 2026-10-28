@@ -62,13 +62,18 @@ function summarizeGitHub(payload: unknown): TriggerSummary {
   }
   const externalUrl = readGitHubTriggerUrl(event.data.payload) ?? null;
   const classified = classifyGitHubEvent(event.data);
-  if (classified.semanticEvent === "github.pull_request_created") {
+  if (
+    classified.semanticEvent === "github.pull_request_created" ||
+    classified.semanticEvent === "github.pull_request_ready_for_review"
+  ) {
+    const action =
+      classified.semanticEvent === "github.pull_request_created" ? "created" : "ready for review";
     return {
       provider: "github",
       headline:
         classified.item?.number === null || classified.item === null
-          ? "Pull request created"
-          : `Pull request #${String(classified.item.number)} created${classified.item.title === null ? "" : `: ${classified.item.title}`}`,
+          ? `Pull request ${action}`
+          : `Pull request #${String(classified.item.number)} ${action}${classified.item.title === null ? "" : `: ${classified.item.title}`}`,
       actor: classified.actor.length === 0 ? null : classified.actor,
       externalUrl,
     };

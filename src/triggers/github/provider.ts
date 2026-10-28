@@ -65,6 +65,7 @@ export interface GitHubMergeData {
     repository: { full_name: string };
     received_at: string;
     item: GitHubContextItem | null;
+    pull_request: { draft: boolean | null; head_sha: string | null } | null;
   };
 }
 
@@ -283,13 +284,21 @@ export function createGitHubTriggerProvider(options: {
 }
 
 function buildGitHubMergeData(event: NormalizedGitHubEvent): GitHubMergeData {
+  const classified = classifyGitHubEvent(event);
   return {
     github: {
       delivery_id: event.id,
       event_name: event.type,
       repository: { full_name: event.repo },
       received_at: event.createdAt,
-      item: classifyGitHubEvent(event).item,
+      item: classified.item,
+      pull_request:
+        classified.pullRequest === null
+          ? null
+          : {
+              draft: classified.pullRequest.draft,
+              head_sha: classified.pullRequest.headSha,
+            },
     },
   };
 }

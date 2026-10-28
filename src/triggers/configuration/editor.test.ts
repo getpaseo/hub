@@ -332,6 +332,7 @@ describe("what the form still needs", () => {
 
 test.each([
   "github.pull_request_created",
+  "github.pull_request_ready_for_review",
   "github.issue_created",
   "linear.issue_assigned",
   "linear.comment_created",

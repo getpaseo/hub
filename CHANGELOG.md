@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- `github.pull_request_ready_for_review` triggers a workflow when a draft pull request is marked ready for review, without running on creation or later pushes. GitHub pull request deliveries expose the draft status and head SHA in the agent context for revision checks.
+
 ### Changed
 
 - Unhandled provider event receipts expire automatically after seven days on every instance. Receipts routed to a trigger or still referenced by a run or attachment remain available.
