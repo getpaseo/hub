@@ -221,12 +221,27 @@ function requestBody(incoming: IncomingMessage): ReadableStream<Uint8Array> {
         controller.error(error);
       }
     },
-    async cancel() {
-      await iterator?.return?.();
-      incoming.destroy();
+    // Discard the rest instead of destroying the request: that closes the socket before an early
+    // response such as 413 is written, and Cloud Run then stops routing to the instance.
+    cancel() {
+      if (iterator === undefined) {
+        incoming.resume();
+        return;
+      }
+      void discardRest(iterator);
     },
   } satisfies UnderlyingByteSource;
   return new ReadableStream(source);
+}
+
+async function discardRest(iterator: AsyncIterator<unknown>): Promise<void> {
+  try {
+    for (;;) {
+      if ((await iterator.next()).done) return;
+    }
+  } catch {
+    // The caller went away; nothing left to discard.
+  }
 }
 
 function readChunk(value: unknown): Uint8Array<ArrayBuffer> {

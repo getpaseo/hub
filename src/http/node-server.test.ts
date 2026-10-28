@@ -1,4 +1,9 @@
-import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  Agent,
+  request as httpRequest,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import assert from "node:assert/strict";
 import { Writable } from "node:stream";
 import { describe, it } from "vitest";
@@ -10,6 +15,7 @@ import { createPublicApi } from "../public-api/index.js";
 import type { PublicOperations } from "../public-operations/index.js";
 import { createSlackWebhookSource } from "../triggers/slack/webhook.js";
 import { createFetchServer } from "./node-server.js";
+import { readBoundedRequestBody } from "./request-body.js";
 import { registerResponseFinishCleanup } from "./response-lifecycle.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "./request-origin.js";
 
@@ -191,6 +197,35 @@ describe("fetch response lifecycle", () => {
   });
 });
 
+describe("oversized request bodies", () => {
+  it.each([
+    ["a declared length", { "content-length": String(2_000_000) }],
+    ["a chunked body", { "transfer-encoding": "chunked" }],
+  ])("answers 413 for %s instead of dropping the connection", async (_case, headers) => {
+    const server = createFetchServer(async (request) => {
+      const body = await readBoundedRequestBody(request, 1024);
+      return body instanceof Response ? body : new Response("ok");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("server did not bind");
+    const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+    try {
+      assert.equal(
+        await postStatus(agent, address.port, Buffer.alloc(2_000_000, "a"), headers),
+        413,
+      );
+      assert.equal(
+        await postStatus(agent, address.port, Buffer.from("{}"), { "content-length": "2" }),
+        200,
+      );
+    } finally {
+      agent.destroy();
+      await closeServer(server);
+    }
+  });
+});
+
 describe("HTTP failure ownership", () => {
   it("emits exactly one record for a reported expected 4xx response", async () => {
     const stream = new CaptureStream();
@@ -316,6 +351,22 @@ async function requestOnce(
   } finally {
     await closeServer(server);
   }
+}
+
+function postStatus(
+  agent: Agent,
+  port: number,
+  body: Buffer,
+  headers: Record<string, string>,
+): Promise<number | undefined> {
+  return new Promise((resolve, reject) => {
+    const outgoing = httpRequest(
+      { agent, host: "127.0.0.1", port, path: "/", method: "POST", headers },
+      (incoming) => drainIncomingResponse(incoming, () => resolve(incoming.statusCode)),
+    );
+    outgoing.once("error", reject);
+    outgoing.end(body);
+  });
 }
 
 function drainIncomingResponse(incoming: IncomingMessage, resolve: () => void): void {
