@@ -1285,16 +1285,19 @@ describe("daemon enrollment and execution", () => {
       await hub.disconnectDaemon();
       await hub.restartAppWithoutDaemonReconnect();
       hub.agentBecomesIdleWhileDisconnected(result.agentId);
+      hub.holdControlAcknowledgements();
       await hub.reconnectDaemon();
       await hub.waitForControlAction("archive");
-      await hub.completePendingCleanup();
+      // Let recovery establish observation before the fake daemon completes archival.
+      await hub.runtimeResources({ executionSubscriptions: 1 });
+      hub.releaseControl(result.execution.id);
+      await hub.runtimeResources({ executionSubscriptions: 0 });
 
       const recovered = await hub.execution(result.execution.id);
       assert.notEqual(recovered.hubActionAcknowledgements.idleAt, null);
       assert.notEqual(recovered.hubActionReadyAt, null);
       assert.notEqual(recovered.hubActionCompletedAt, null);
       assert.deepEqual(hub.controlActions(), ["archive"]);
-      await hub.runtimeResources({ executionSubscriptions: 0 });
     },
   );
 
