@@ -48,7 +48,7 @@ wildcard is an explicit allow-everyone policy for Slack, Discord, and GitHub; an
 allowlist still fails closed.
 
 The visual form requires concrete provider/model and execution-mode selections and saves those values explicitly. A daemon-advertised preferred mode can be preselected as a concrete mode ID. YAML retains optional model/mode fields; existing documents are not required to add them. Explicitly authored settings remain validated by the daemon.
-Existing migrated YAML keeps its authored provider defaults until it is edited. Legacy output
+Existing migrated YAML retains its authored fields when edited as YAML. Legacy output
 grants and limits remain enforceable, but newly-authored conversational triggers automatically
 receive an unlimited provider-native `hub.reply`; `hub.finish_execution` remains available to every
 execution. GitHub replies are posted to the issue or pull request that originated the event.
