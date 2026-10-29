@@ -601,12 +601,14 @@ export class HubE2E {
     const dispatch = await this.dispatchManualRun({ trigger, actor, deliveryKey, input });
     const run = await this.waitForManualRun(dispatch);
     const source = this.requireSource();
-    const provider = await source.agentProvider(run.agentId);
+    const provider = z
+      .enum(["claude", "codex", "opencode", "pi"])
+      .parse(await source.agentProvider(run.agentId));
     let processDescriptions: string[] = [];
     await this.observe(async () => {
       processDescriptions = await source.processDescriptions();
       return processDescriptions.some((description) =>
-        realAgentProcessPattern(provider as RealAgentProvider).test(description),
+        realAgentProcessPattern(provider).test(description),
       );
     }, "provider runtime to start for the dispatched turn");
     this.realAgentLaunchEvidence.set(deliveryKey, {

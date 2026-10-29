@@ -365,7 +365,7 @@ test.each([true, false])(
           : options.toolPolicy,
       },
     });
-    const config = requests[0]!["config"] as Record<string, unknown>;
+    const config = z.record(z.string(), z.unknown()).parse(requests[0]!["config"]);
     expect(config["mcpServerRequirements"]).toEqual(capable ? { hub: "optional" } : undefined);
   },
 );
