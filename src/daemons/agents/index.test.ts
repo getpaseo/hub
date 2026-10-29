@@ -9,7 +9,6 @@ const options: DaemonCreateAgentOptions = {
   cwd: "/workspace",
   env: { REQUEST_ENV: "configured" },
   providerOptions: { sandbox_mode: "workspace-write" },
-  toolPolicy: { preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }] },
 };
 
 function connect(
@@ -65,7 +64,6 @@ test("ordinary creation keeps prompt delivery separate from creation and preserv
       provider: options.provider,
       cwd: options.cwd,
       providerOptions: options.providerOptions,
-      toolPolicy: options.toolPolicy,
     },
     env: options.env,
   });
@@ -339,33 +337,20 @@ test.each([
   agents.close();
 });
 
-test.each([true, false])(
-  "negotiates optional MCP support with capable host %s",
-  async (capable) => {
-    const requests: Record<string, unknown>[] = [];
-    const agents = connect(requests);
-    agents.receive({
-      type: "session",
-      message: {
-        type: "server_info",
-        payload: {
-          features: { hubAgentRpc: true, agentRequestReceipts: true, optionalMcpSupport: capable },
-        },
-      },
-    });
-    await agents.create("key", {
-      ...options,
-      toolPolicy: { ...options.toolPolicy, enforcement: "if-supported" },
-      mcpServerRequirements: { hub: "optional" },
-    });
-    expect(requests[0]).toMatchObject({
-      config: {
-        toolPolicy: capable
-          ? { ...options.toolPolicy, enforcement: "if-supported" }
-          : options.toolPolicy,
-      },
-    });
-    const config = z.record(z.string(), z.unknown()).parse(requests[0]!["config"]);
-    expect(config["mcpServerRequirements"]).toEqual(capable ? { hub: "optional" } : undefined);
-  },
-);
+test("launches arbitrary daemon providers with MCP servers and no Hub tool policy", async () => {
+  const requests: Record<string, unknown>[] = [];
+  const agents = connect(requests);
+  await agents.create("key", {
+    ...options,
+    provider: "provider-from-daemon",
+    mcpServers: { hub: { type: "http", url: "https://hub.test/mcp" } },
+  });
+  expect(requests[0]).toMatchObject({
+    config: {
+      provider: "provider-from-daemon",
+      mcpServers: { hub: { type: "http", url: "https://hub.test/mcp" } },
+    },
+  });
+  expect(requests[0]).not.toHaveProperty("config.toolPolicy");
+  expect(requests[0]).not.toHaveProperty("config.mcpServerRequirements");
+});

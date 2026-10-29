@@ -15,6 +15,7 @@ import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
 import { dump } from "js-yaml";
 import type { SourcePaseo } from "./source-paseo.js";
+import type { HubProviderSnapshotEntry } from "../../src/hub/protocol.js";
 import type { HubBundleFile } from "../../src/config/bundle.js";
 import type { BrowserDiscordEvent } from "../../src/e2e/harness/browser-providers.js";
 import type { BrowserProviderScenario } from "../../src/e2e/harness/browser-providers.js";
@@ -164,6 +165,7 @@ export class PaseoHub {
   private readonly users = new Map<string, HubUser>();
   private readonly hubCredentials = new Map<string, string>();
   private sourcePaseo: SourcePaseo | undefined;
+  private readonly providerDaemons = new Map<string, ContractDaemon>();
 
   constructor(
     private readonly primary: BuiltApplication,
@@ -1920,9 +1922,43 @@ export class PaseoHub {
   }
 
   /** A connected session-v1 daemon that serves the trigger editor's provider catalog. */
-  async connectProviderDaemon(alias: string, organizationName: string): Promise<string> {
-    const daemon = await this.connectBrowserDaemon(alias, organizationName, "devbox");
+  async connectProviderDaemon(
+    alias: string,
+    organizationName: string,
+    catalog: HubProviderSnapshotEntry[] = browserProviderSnapshot,
+  ): Promise<string> {
+    const daemon = await this.connectBrowserDaemon(alias, organizationName, "devbox", catalog);
+    this.providerDaemons.set(daemon.slug, daemon);
     return daemon.slug;
+  }
+
+  async launchSavedTrigger(name: string, apiKey: string): Promise<void> {
+    const rows = z
+      .array(z.object({ slug: z.string() }))
+      .parse(
+        await this.queryDatabaseRows(
+          this.primary,
+          `select p.slug from organization_triggers t join projects p on p.id = t.runtime_project_id where t.name = $1`,
+          [name],
+        ),
+      );
+    const response = await this.requests.post(`${this.primary.origin}/api/v1/manual-runs`, {
+      headers: { authorization: `Bearer ${apiKey}` },
+      data: {
+        projectSlug: rows[0]!.slug,
+        trigger: name,
+        actor: "alice",
+        deliveryKey: randomUUID(),
+        input: "run it",
+      },
+    });
+    expect(response.status()).toBe(200);
+  }
+
+  async expectProviderLaunch(daemon: string, expected: Record<string, unknown>): Promise<void> {
+    const connection = this.providerDaemons.get(daemon);
+    if (connection === undefined) throw new Error("Provider daemon is not connected");
+    await connection.expectCreatedConfiguration(expected);
   }
 
   /** A finished or running run of a saved trigger, received `minutesAgo` minutes ago. */
@@ -2154,6 +2190,7 @@ export class PaseoHub {
     _alias: string,
     organizationName: string,
     _displayName: string,
+    catalog: HubProviderSnapshotEntry[] = browserProviderSnapshot,
   ): Promise<ContractDaemon> {
     const enrollmentToken = randomUUID();
     const verifier = createHash("sha256").update(enrollmentToken).digest("base64url");
@@ -2163,7 +2200,7 @@ export class PaseoHub {
        select $1, $2, id, now() + interval '10 minutes' from organization where name = $3`,
       [randomUUID(), verifier, organizationName],
     );
-    const daemon = new ContractDaemon(this.primary, this.requests);
+    const daemon = new ContractDaemon(this.primary, this.requests, undefined, catalog);
     await daemon.enroll(enrollmentToken);
     await daemon.connect();
     return daemon;
@@ -5410,6 +5447,7 @@ function roleLabel(role: "owner" | "admin" | "member"): string {
 }
 
 class ContractDaemon {
+  private readonly createdConfigurations: Record<string, unknown>[] = [];
   readonly daemonId = randomUUID();
   readonly slug: string;
   private readonly credential = randomUUID();
@@ -5425,6 +5463,7 @@ class ContractDaemon {
     private readonly application: BuiltApplication,
     private readonly requests: APIRequestContext,
     friendlyName?: string,
+    private readonly providerCatalog: HubProviderSnapshotEntry[] = browserProviderSnapshot,
   ) {
     const fallback = `daemon-${this.daemonId.slice(0, 8)}`;
     this.slug = friendlyName === undefined ? fallback : slugify(friendlyName, fallback);
@@ -5463,6 +5502,11 @@ class ContractDaemon {
       socket.once("open", resolve);
       socket.once("error", reject);
     });
+  }
+
+  async expectCreatedConfiguration(expected: Record<string, unknown>): Promise<void> {
+    await expect.poll(() => this.createdConfigurations.at(-1)).toMatchObject(expected);
+    expect(this.createdConfigurations.at(-1)).not.toHaveProperty("toolPolicy");
   }
 
   async executionCapability(executionId: string): Promise<ExecutionCapability> {
@@ -5523,6 +5567,7 @@ class ContractDaemon {
     }
     const request = envelope.data.message;
     if (request.type === "create_agent_request") {
+      this.createdConfigurations.push(request.config);
       const capability = request.config.mcpServers["hub"];
       if (!capability) throw new Error("Hub execution capability is missing");
       const executionId = new URL(capability.url).pathname.split("/")[2];
@@ -5629,15 +5674,17 @@ class ContractDaemon {
       .safeParse(value);
     if (!envelope.success) return false;
     const request = envelope.data.message;
-    const provider = browserProviderSnapshot.find((entry) => entry.provider === request.provider);
+    const provider = this.providerCatalog.find((entry) => entry.provider === request.provider);
     const issues: { path: string[]; message: string }[] = [];
     if (provider === undefined) {
       issues.push({ path: ["provider"], message: `Provider '${request.provider}' is unavailable` });
     } else {
       const model =
         request.model === undefined
-          ? provider.models.find((candidate) => "isDefault" in candidate && candidate.isDefault)
-          : provider.models.find((candidate) => candidate.id === request.model);
+          ? (provider.models ?? []).find(
+              (candidate) => "isDefault" in candidate && candidate.isDefault,
+            )
+          : (provider.models ?? []).find((candidate) => candidate.id === request.model);
       if (request.model !== undefined && model === undefined) {
         issues.push({
           path: ["model"],
@@ -5646,7 +5693,7 @@ class ContractDaemon {
       }
       if (
         request.modeId !== undefined &&
-        !provider.modes.some((candidate) => candidate.id === request.modeId)
+        !(provider.modes ?? []).some((candidate) => candidate.id === request.modeId)
       ) {
         issues.push({
           path: ["modeId"],
@@ -5655,7 +5702,7 @@ class ContractDaemon {
       }
       if (
         request.thinkingOptionId !== undefined &&
-        !model?.thinkingOptions.some((candidate) => candidate.id === request.thinkingOptionId)
+        !model?.thinkingOptions?.some((candidate) => candidate.id === request.thinkingOptionId)
       ) {
         issues.push({
           path: ["thinkingOptionId"],
@@ -5710,7 +5757,7 @@ class ContractDaemon {
             payload: {
               requestId: request.requestId,
               ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
-              entries: browserProviderSnapshot,
+              entries: this.providerCatalog,
               generatedAt: new Date().toISOString(),
             },
           };
@@ -5720,23 +5767,7 @@ class ContractDaemon {
 }
 
 // Provider choices and optional modes belong to the daemon catalog.
-const browserProviderSnapshot = [
-  {
-    provider: "custom-provider",
-    status: "ready",
-    enabled: true,
-    label: "Custom provider",
-    models: [
-      {
-        provider: "custom-provider",
-        id: "test-model",
-        label: "Custom Model",
-        isDefault: true,
-        thinkingOptions: [],
-      },
-    ],
-    modes: [],
-  },
+const browserProviderSnapshot: HubProviderSnapshotEntry[] = [
   {
     provider: "opencode",
     status: "ready",
@@ -5782,7 +5813,7 @@ const browserProviderSnapshot = [
     modes: [{ id: "full-access", label: "Full access" }],
     defaultModeId: "full-access",
   },
-] as const;
+];
 
 type ExecutionCapability = { url: string; headers: Record<string, string> };
 
@@ -6090,16 +6121,18 @@ const ExecutionRequestSchema = z.object({
     z.object({
       type: z.literal("create_agent_request"),
       requestId: z.string(),
-      config: z.object({
-        mcpServers: z.record(
-          z.string(),
-          z.object({
-            type: z.literal("http"),
-            url: z.string().url(),
-            headers: z.record(z.string(), z.string()).default({}),
-          }),
-        ),
-      }),
+      config: z
+        .object({
+          mcpServers: z.record(
+            z.string(),
+            z.object({
+              type: z.literal("http"),
+              url: z.string().url(),
+              headers: z.record(z.string(), z.string()).default({}),
+            }),
+          ),
+        })
+        .passthrough(),
     }),
     z.object({
       type: z.literal("fetch_agent_request"),

@@ -17,23 +17,10 @@ export interface DaemonCreateAgentOptions {
   model?: string;
   thinkingOptionId?: string;
   providerOptions?: Readonly<Record<string, JsonValue>>;
-  toolPolicy: ToolPolicy;
   cwd: string;
   env: Record<string, string>;
   mcpServers?: Record<string, McpHttpServerConfig>;
-  mcpServerRequirements?: Record<string, "optional" | "required">;
   worktree?: WorktreeTarget;
-}
-
-export interface McpToolRef {
-  kind: "mcp";
-  server: "hub";
-  tool: string;
-}
-
-export interface ToolPolicy {
-  enforcement?: "required" | "if-supported";
-  preapproved: readonly McpToolRef[];
 }
 
 export interface McpHttpServerConfig {

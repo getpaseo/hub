@@ -2612,7 +2612,6 @@ class TestDaemon {
             hubAgentRpc: true,
             agentRequestReceipts: true,
             backgroundWorkspaces: true,
-            optionalMcpSupport: true,
           },
         },
       });
