@@ -128,7 +128,6 @@ export class DaemonAgents implements AgentConnection {
           thinkingOptionId: options.thinkingOptionId,
           providerOptions: options.providerOptions,
           mcpServers: options.mcpServers,
-          toolPolicy: options.toolPolicy,
         },
         env: options.env,
         worktree: options.worktree,

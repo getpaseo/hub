@@ -153,7 +153,7 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   const agent = splitAgentId(value.agent);
   setIfChanged(document, ["run", "agent", "provider"], agent.provider);
   setOptional(document, ["run", "agent", "model"], agent.model);
-  setIfChanged(document, ["run", "agent", "mode"], value.mode.trim());
+  setOptional(document, ["run", "agent", "mode"], blankToUndefined(value.mode));
   setOptional(
     document,
     ["run", "agent", "thinkingOptionId"],
@@ -217,7 +217,7 @@ export function createTriggerYaml(value: TriggerFormValue): string {
         agent: {
           provider: agent.provider,
           ...(agent.model === undefined ? {} : { model: agent.model }),
-          mode: value.mode.trim(),
+          ...(value.mode.trim() ? { mode: value.mode.trim() } : {}),
           ...(blankToUndefined(value.thinkingOptionId) === undefined
             ? {}
             : { thinkingOptionId: value.thinkingOptionId.trim() }),
@@ -298,7 +298,7 @@ export type TriggerFieldErrors = Partial<
  * `mergeTriggerForm` reports when the document cannot be written at all. Insertion order is the
  * order the fields appear on screen, so "the first problem" is the topmost one.
  */
-export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
+function triggerFormDocumentErrors(value: TriggerFormValue): TriggerFieldErrors {
   const errors: TriggerFieldErrors = {};
   const name = value.name.trim();
   if (name.length === 0) errors.name = "Trigger name is required.";
@@ -324,7 +324,6 @@ export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
   if (value.idleTimeout.trim().length === 0) errors.idleTimeout = "Idle timeout is required.";
   const agent = refused(() => splitAgentId(value.agent));
   if (agent !== undefined) errors.agent = agent;
-  if (value.mode.trim().length === 0) errors.mode = "Execution mode is required.";
   const options = refused(() => parseProviderOptions(value.providerOptions));
   if (options !== undefined) errors.providerOptions = options;
   if (value.githubConnection.trim().length !== 0) {
@@ -333,6 +332,16 @@ export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
   }
   Object.assign(errors, continuationErrors(value));
   if (value.prompt.trim().length === 0) errors.prompt = "Instructions are required.";
+  return errors;
+}
+
+/** Form-only completeness; YAML conversion and save retain their authored optional fields. */
+export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
+  const errors = triggerFormDocumentErrors(value);
+  if (errors.agent === undefined && splitAgentId(value.agent).model === undefined) {
+    errors.agent = "Choose a provider and model.";
+  }
+  if (value.mode.trim().length === 0) errors.mode = "Execution mode is required.";
   return errors;
 }
 
@@ -347,7 +356,7 @@ function refused(parse: () => unknown): string | undefined {
 }
 
 function validateFormValue(value: TriggerFormValue): void {
-  const [message] = Object.values(triggerFormErrors(value));
+  const [message] = Object.values(triggerFormDocumentErrors(value));
   if (message !== undefined) throw new Error(message);
 }
 

@@ -59,9 +59,6 @@ export class DaemonRegistryHarness {
       cwd: "/workspace",
       env: {},
       providerOptions: { permission: { edit: "ask", bash: "deny" } },
-      toolPolicy: {
-        preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
-      },
     });
     void promise.catch(() => undefined);
     return {

@@ -9,7 +9,6 @@ const options: DaemonCreateAgentOptions = {
   cwd: "/workspace",
   env: { REQUEST_ENV: "configured" },
   providerOptions: { sandbox_mode: "workspace-write" },
-  toolPolicy: { preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }] },
 };
 
 function connect(
@@ -65,7 +64,6 @@ test("ordinary creation keeps prompt delivery separate from creation and preserv
       provider: options.provider,
       cwd: options.cwd,
       providerOptions: options.providerOptions,
-      toolPolicy: options.toolPolicy,
     },
     env: options.env,
   });
@@ -337,4 +335,22 @@ test.each([
   expect(events).toMatchObject([{ type: "agent_update", agent: { status: "idle" } }]);
   unwatch();
   agents.close();
+});
+
+test("launches arbitrary daemon providers with MCP servers and no Hub tool policy", async () => {
+  const requests: Record<string, unknown>[] = [];
+  const agents = connect(requests);
+  await agents.create("key", {
+    ...options,
+    provider: "provider-from-daemon",
+    mcpServers: { hub: { type: "http", url: "https://hub.test/mcp" } },
+  });
+  expect(requests[0]).toMatchObject({
+    config: {
+      provider: "provider-from-daemon",
+      mcpServers: { hub: { type: "http", url: "https://hub.test/mcp" } },
+    },
+  });
+  expect(requests[0]).not.toHaveProperty("config.toolPolicy");
+  expect(requests[0]).not.toHaveProperty("config.mcpServerRequirements");
 });

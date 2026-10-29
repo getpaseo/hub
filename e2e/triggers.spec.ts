@@ -102,10 +102,6 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
     await triggers.expectRefusedOnSubmit(
       "run.agent.mode: Mode 'default' is not available for provider 'opencode'",
     );
-    await triggers.replaceYaml(
-      advancedTriggerYaml(daemon).replace("provider: opencode", "provider: omp"),
-    );
-    await triggers.expectRefusedOnSubmit("Provider 'omp' cannot run unattended Hub automations");
     await triggers.capture(`${SHOTS}/03b-refused-mode.png`);
   });
 
@@ -243,3 +239,114 @@ steps:
     agent: engineer
     prompt: Implement it.
 `;
+
+test("round-trips unknown daemon providers and advertised settings through form, YAML, and launch", async ({
+  hub,
+  page,
+}) => {
+  await hub.signUpAs("owner", owner);
+  await hub.createOrganization("owner", "Acme");
+  const apiKey = await hub.createRunApiKey("owner");
+  const daemon = await hub.connectProviderDaemon("owner", "Acme", [
+    {
+      provider: "plugin-added-agent",
+      label: "Plugin agent",
+      status: "ready",
+      enabled: true,
+      models: ["vendor/first", "vendor/second"].map((id) => ({
+        provider: "plugin-added-agent",
+        id,
+        label: id,
+        thinkingOptions: [
+          { id: "deliberate", label: "Deliberate" },
+          { id: "rapid", label: "Rapid" },
+        ],
+      })),
+      defaultModeId: "inspect",
+      modes: [
+        { id: "evaluate", label: "Evaluate" },
+        { id: "inspect", label: "Inspect" },
+      ],
+    },
+    {
+      provider: "modeless-agent",
+      label: "Modeless agent",
+      status: "ready",
+      enabled: true,
+      models: [],
+      modes: [],
+    },
+  ]);
+  const triggers = new OrganizationTriggers(page);
+  await triggers.open();
+  await triggers.startNew();
+  await triggers.expectReportedModelChoices("/workspace/acme", ["vendor/first", "vendor/second"]);
+  await triggers.configureManual({
+    name: "unknown-run",
+    daemon,
+    cwd: "/workspace/acme",
+    agent: "plugin-added-agent/vendor/first",
+    providerOptions: '{"custom_setting":{"limit":7}}',
+    prompt: "Perform the task.",
+  });
+  await triggers.expectMaterializedSelections("inspect", "deliberate");
+  await triggers.switchToYaml();
+  await triggers.expectYamlContains(
+    "model: vendor/first",
+    "mode: inspect",
+    "thinkingOptionId: deliberate",
+  );
+  await triggers.save("unknown-run");
+  await hub.launchSavedTrigger("unknown-run", apiKey);
+  await hub.expectProviderLaunch(daemon, {
+    provider: "plugin-added-agent",
+    model: "vendor/first",
+    modeId: "inspect",
+    thinkingOptionId: "deliberate",
+    providerOptions: { custom_setting: { limit: 7 } },
+  });
+  await triggers.openTrigger("unknown-run");
+  await triggers.switchToYaml();
+  await triggers.replaceYaml(`name: unknown-run
+enabled: true
+on:
+  manual.run: {}
+run:
+  target: { daemon: ${daemon}, cwd: /workspace/acme }
+  agent: { provider: plugin-added-agent, model: vendor/second, mode: evaluate, thinkingOptionId: rapid, options: { custom_setting: { limit: 9 } } }
+  prompt: Perform the task from YAML
+  max_runtime: 1h
+  idle_timeout: 5m
+`);
+  await triggers.save("unknown-run");
+  await hub.launchSavedTrigger("unknown-run", apiKey);
+  await hub.expectProviderLaunch(daemon, {
+    provider: "plugin-added-agent",
+    model: "vendor/second",
+    modeId: "evaluate",
+    thinkingOptionId: "rapid",
+    providerOptions: { custom_setting: { limit: 9 } },
+  });
+  await triggers.openTrigger("unknown-run");
+  await triggers.switchToYaml();
+  await triggers.replaceYaml(`name: unknown-run
+enabled: true
+on:
+  manual.run: {}
+run:
+  target: { daemon: ${daemon}, cwd: /workspace/acme }
+  agent: { provider: modeless-agent }
+  prompt: Preserve authored YAML without model or mode
+  max_runtime: 1h
+  idle_timeout: 5m
+`);
+  await triggers.save("unknown-run");
+  await hub.launchSavedTrigger("unknown-run", apiKey);
+  await hub.expectProviderLaunch(daemon, { provider: "modeless-agent" });
+  await triggers.openTrigger("unknown-run");
+  await expect(page.getByRole("radio", { name: "YAML" })).toBeChecked();
+  await triggers.switchToForm();
+  await triggers.expectRefusedOnSubmit("Choose a provider and model.");
+  await triggers.switchToYaml();
+  await triggers.save("unknown-run");
+});

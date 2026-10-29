@@ -158,7 +158,7 @@ describe("daemon socket generations", () => {
     });
   });
 
-  it("forwards only structured MCP grants with opaque provider options", async () => {
+  it("forwards opaque provider options without a Hub tool policy", async () => {
     const pending = await daemon.pendingCreate("contract-create");
 
     assert.deepEqual(
@@ -169,9 +169,7 @@ describe("daemon socket generations", () => {
     );
     assert.deepEqual(
       z.record(z.string(), z.unknown()).parse(pending.request["config"])["toolPolicy"],
-      {
-        preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
-      },
+      undefined,
     );
   });
 

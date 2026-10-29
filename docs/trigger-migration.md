@@ -47,8 +47,8 @@ The simple editor writes `from_users: ["*"]` when “Allowed users” is left at
 wildcard is an explicit allow-everyone policy for Slack, Discord, and GitHub; an absent or empty
 allowlist still fails closed.
 
-New single-run triggers require an absolute daemon working directory and an explicit agent mode.
-Existing migrated YAML keeps its authored provider defaults until it is edited. Legacy output
+The visual form requires concrete provider/model and execution-mode selections and saves those values explicitly. A daemon-advertised preferred mode can be preselected as a concrete mode ID. YAML retains optional model/mode fields; existing documents are not required to add them. Explicitly authored settings remain validated by the daemon.
+Existing migrated YAML retains its authored fields when edited as YAML. Legacy output
 grants and limits remain enforceable, but newly-authored conversational triggers automatically
 receive an unlimited provider-native `hub.reply`; `hub.finish_execution` remains available to every
 execution. GitHub replies are posted to the issue or pull request that originated the event.
