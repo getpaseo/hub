@@ -1126,26 +1126,24 @@ function ProviderCatalogFields({
   onChange: (value: TriggerFormValue) => void;
 }) {
   const selected = selectedProviderModel(entries, form.agent);
-  const agentOptions = (entries ?? []).flatMap((entry) =>
-    entry.status !== "ready" || !entry.enabled
-      ? []
-      : [
-          {
-            value: entry.provider,
-            label: `${entry.label ?? entry.provider} (default model)`,
-            detail: entry.provider,
-            keywords: [entry.provider],
-          },
-          ...(entry.models ?? [])
-            .filter((model) => model.isSelectable !== false)
-            .map((model) => ({
-              value: `${entry.provider}/${model.id}`,
-              label: model.label,
-              detail: `${entry.label ?? entry.provider} · ${entry.provider}/${model.id}`,
-              keywords: [model.label, entry.label ?? entry.provider, model.id],
-            })),
-        ],
-  ) satisfies ComboboxOption[];
+  const agentOptions = (entries ?? []).flatMap((entry) => {
+    if (entry.status !== "ready" || !entry.enabled) return [];
+    const options = (entry.models ?? [])
+      .filter((model) => model.isSelectable !== false)
+      .map((model) => ({
+        value: `${entry.provider}/${model.id}`,
+        label: model.label,
+        detail: `${entry.label ?? entry.provider} · ${entry.provider}/${model.id}`,
+        keywords: [model.label, entry.label ?? entry.provider, model.id],
+      }));
+    options.unshift({
+      value: entry.provider,
+      label: `${entry.label ?? entry.provider} (default model)`,
+      detail: entry.provider,
+      keywords: [entry.provider],
+    });
+    return options;
+  }) satisfies ComboboxOption[];
   const modeOptions = (selected.entry?.modes ?? []).map((mode) => ({
     value: mode.id,
     label: mode.label,
