@@ -153,7 +153,7 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   const agent = splitAgentId(value.agent);
   setIfChanged(document, ["run", "agent", "provider"], agent.provider);
   setOptional(document, ["run", "agent", "model"], agent.model);
-  setIfChanged(document, ["run", "agent", "mode"], value.mode.trim());
+  setOptional(document, ["run", "agent", "mode"], blankToUndefined(value.mode));
   setOptional(
     document,
     ["run", "agent", "thinkingOptionId"],
