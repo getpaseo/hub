@@ -123,7 +123,6 @@ async function fixture(now = Date.now) {
             provider: "codex",
             cwd: "/repo",
             env: intent.github === undefined ? {} : { GH_TOKEN: "scoped-github-token" },
-            toolPolicy: { preapproved: [] },
           }),
         }),
     };

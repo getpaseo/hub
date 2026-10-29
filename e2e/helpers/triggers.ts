@@ -151,8 +151,9 @@ export class OrganizationTriggers {
     daemon: string;
     cwd: string;
     agent: string;
-    mode: string;
-    thinking: string;
+    mode?: string;
+    thinking?: string;
+    providerOptions?: string;
     prompt: string;
   }) {
     await this.page.getByLabel("Trigger name").fill(input.name);
@@ -160,19 +161,13 @@ export class OrganizationTriggers {
     await this.selectOption("Run on daemon", input.daemon);
     await this.page.getByLabel("Working directory").fill(input.cwd);
     await this.selectAgent(input.agent);
-    await this.selectOption("Execution mode", input.mode);
-    await this.selectOption("Thinking", input.thinking);
+    if (input.mode !== undefined) await this.selectOption("Execution mode", input.mode);
+    if (input.thinking !== undefined) await this.selectOption("Thinking", input.thinking);
+    if (input.providerOptions !== undefined) {
+      await this.page.getByRole("button", { name: "Advanced provider options" }).click();
+      await this.page.getByLabel("Provider options (JSON)").fill(input.providerOptions);
+    }
     await this.page.getByLabel("Instructions", { exact: true }).fill(input.prompt);
-  }
-
-  async configureProviderWithoutModes(daemon: string) {
-    await this.page.getByLabel("Trigger name").fill("custom-run");
-    await this.selectOption("When this happens", "manual.run");
-    await this.selectOption("Run on daemon", daemon);
-    await this.page.getByLabel("Working directory").fill("/workspace/acme");
-    await this.selectAgent("custom-provider");
-    await expect(this.page.getByRole("combobox", { name: "Execution mode" })).toBeHidden();
-    await this.page.getByLabel("Instructions", { exact: true }).fill("Perform the task.");
   }
 
   async configureSchedule(daemon: string) {

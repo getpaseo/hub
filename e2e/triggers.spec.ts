@@ -240,16 +240,97 @@ steps:
     prompt: Implement it.
 `;
 
-test("saves daemon providers without permission modes from the form", async ({ hub, page }) => {
+test("round-trips unknown daemon providers and advertised settings through form, YAML, and launch", async ({
+  hub,
+  page,
+}) => {
   await hub.signUpAs("owner", owner);
   await hub.createOrganization("owner", "Acme");
-  const daemon = await hub.connectProviderDaemon("owner", "Acme");
+  const apiKey = await hub.createRunApiKey("owner");
+  const daemon = await hub.connectProviderDaemon("owner", "Acme", [
+    {
+      provider: "plugin-added-agent",
+      label: "Plugin agent",
+      status: "ready",
+      enabled: true,
+      models: ["vendor/first", "vendor/second"].map((id) => ({
+        provider: "plugin-added-agent",
+        id,
+        label: id,
+        thinkingOptions: [
+          { id: "deliberate", label: "Deliberate" },
+          { id: "rapid", label: "Rapid" },
+        ],
+      })),
+      modes: [
+        { id: "evaluate", label: "Evaluate" },
+        { id: "inspect", label: "Inspect" },
+      ],
+    },
+    {
+      provider: "modeless-agent",
+      label: "Modeless agent",
+      status: "ready",
+      enabled: true,
+      models: [],
+      modes: [],
+    },
+  ]);
   const triggers = new OrganizationTriggers(page);
   await triggers.open();
   await triggers.startNew();
-  await triggers.configureProviderWithoutModes(daemon);
-  await triggers.capture("/tmp/hub-provider-qa/custom-provider-form.png");
+  await triggers.configureManual({
+    name: "unknown-run",
+    daemon,
+    cwd: "/workspace/acme",
+    agent: "plugin-added-agent/vendor/first",
+    mode: "evaluate",
+    thinking: "deliberate",
+    providerOptions: '{"custom_setting":{"limit":7}}',
+    prompt: "Perform the task.",
+  });
+  await triggers.save("unknown-run");
+  await hub.launchSavedTrigger("unknown-run", apiKey);
+  await hub.expectProviderLaunch(daemon, {
+    provider: "plugin-added-agent",
+    model: "vendor/first",
+    modeId: "evaluate",
+    thinkingOptionId: "deliberate",
+    providerOptions: { custom_setting: { limit: 7 } },
+  });
+  await triggers.openTrigger("unknown-run");
   await triggers.switchToYaml();
-  await triggers.expectYamlContains("provider: custom-provider");
-  await triggers.save("custom-run");
+  await triggers.replaceYaml(`name: unknown-run
+enabled: true
+on:
+  manual.run: {}
+run:
+  target: { daemon: ${daemon}, cwd: /workspace/acme }
+  agent: { provider: plugin-added-agent, model: vendor/second, mode: inspect, thinkingOptionId: rapid, options: { custom_setting: { limit: 9 } } }
+  prompt: Perform the task from YAML
+  max_runtime: 1h
+  idle_timeout: 5m
+`);
+  await triggers.save("unknown-run");
+  await hub.launchSavedTrigger("unknown-run", apiKey);
+  await hub.expectProviderLaunch(daemon, {
+    provider: "plugin-added-agent",
+    model: "vendor/second",
+    modeId: "inspect",
+    thinkingOptionId: "rapid",
+    providerOptions: { custom_setting: { limit: 9 } },
+  });
+  await triggers.startNew();
+  await triggers.configureManual({
+    name: "modeless-run",
+    daemon,
+    cwd: "/workspace/acme",
+    agent: "modeless-agent",
+    prompt: "Perform the modeless task.",
+  });
+  await expect(page.getByRole("combobox", { name: "Execution mode" })).toBeHidden();
+  await triggers.capture("/tmp/hub-provider-qa/unknown-modeless-form.png");
+  await triggers.save("modeless-run");
+  await hub.launchSavedTrigger("modeless-run", apiKey);
+  await hub.expectProviderLaunch(daemon, { provider: "modeless-agent" });
 });
