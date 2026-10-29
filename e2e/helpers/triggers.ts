@@ -131,19 +131,34 @@ export class OrganizationTriggers {
     await expect(this.page.getByRole("combobox", { name: "Execution mode" })).toBeHidden();
     await this.page.getByLabel("Working directory").fill(input.cwd);
     await this.selectAgent(input.agent);
-    await expect(this.page.getByRole("combobox", { name: "Execution mode" })).toHaveAttribute(
-      "data-value",
-      "",
-    );
-    await expect(this.page.getByRole("combobox", { name: "Thinking" })).toHaveAttribute(
-      "data-value",
-      "",
-    );
     await this.selectOption("Execution mode", input.mode);
     await this.selectOption("Thinking", input.thinking);
     await this.page.getByRole("button", { name: "Advanced provider options" }).click();
     await this.page.getByLabel("Provider options (JSON)").fill(input.providerOptions);
     await this.page.getByLabel("Instructions", { exact: true }).fill(input.prompt);
+  }
+
+  async expectReportedModelChoices(cwd: string, labels: string[]) {
+    await this.page.getByLabel("Working directory").fill(cwd);
+    const picker = this.page.getByRole("combobox", { name: "Agent", exact: true });
+    await picker.scrollIntoViewIfNeeded();
+    await picker.click();
+    await expect(this.page.getByRole("option")).toHaveCount(labels.length);
+    for (const label of labels)
+      await expect(this.page.getByRole("option").filter({ hasText: label })).toBeVisible();
+    await this.page.screenshot({ path: "/tmp/hub-provider-qa/concrete-model-picker.png" });
+    await this.page.keyboard.press("Escape");
+  }
+
+  async expectMaterializedSelections(mode: string, thinking: string) {
+    await expect(this.page.getByRole("combobox", { name: "Execution mode" })).toHaveAttribute(
+      "data-value",
+      mode,
+    );
+    await expect(this.page.getByRole("combobox", { name: "Thinking" })).toHaveAttribute(
+      "data-value",
+      thinking,
+    );
   }
 
   async configureManual(input: {

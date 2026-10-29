@@ -262,6 +262,7 @@ test("round-trips unknown daemon providers and advertised settings through form,
           { id: "rapid", label: "Rapid" },
         ],
       })),
+      defaultModeId: "inspect",
       modes: [
         { id: "evaluate", label: "Evaluate" },
         { id: "inspect", label: "Inspect" },
@@ -279,22 +280,28 @@ test("round-trips unknown daemon providers and advertised settings through form,
   const triggers = new OrganizationTriggers(page);
   await triggers.open();
   await triggers.startNew();
+  await triggers.expectReportedModelChoices("/workspace/acme", ["vendor/first", "vendor/second"]);
   await triggers.configureManual({
     name: "unknown-run",
     daemon,
     cwd: "/workspace/acme",
     agent: "plugin-added-agent/vendor/first",
-    mode: "evaluate",
-    thinking: "deliberate",
     providerOptions: '{"custom_setting":{"limit":7}}',
     prompt: "Perform the task.",
   });
+  await triggers.expectMaterializedSelections("inspect", "deliberate");
+  await triggers.switchToYaml();
+  await triggers.expectYamlContains(
+    "model: vendor/first",
+    "mode: inspect",
+    "thinkingOptionId: deliberate",
+  );
   await triggers.save("unknown-run");
   await hub.launchSavedTrigger("unknown-run", apiKey);
   await hub.expectProviderLaunch(daemon, {
     provider: "plugin-added-agent",
     model: "vendor/first",
-    modeId: "evaluate",
+    modeId: "inspect",
     thinkingOptionId: "deliberate",
     providerOptions: { custom_setting: { limit: 7 } },
   });
@@ -306,7 +313,7 @@ on:
   manual.run: {}
 run:
   target: { daemon: ${daemon}, cwd: /workspace/acme }
-  agent: { provider: plugin-added-agent, model: vendor/second, mode: inspect, thinkingOptionId: rapid, options: { custom_setting: { limit: 9 } } }
+  agent: { provider: plugin-added-agent, model: vendor/second, mode: evaluate, thinkingOptionId: rapid, options: { custom_setting: { limit: 9 } } }
   prompt: Perform the task from YAML
   max_runtime: 1h
   idle_timeout: 5m
@@ -316,21 +323,30 @@ run:
   await hub.expectProviderLaunch(daemon, {
     provider: "plugin-added-agent",
     model: "vendor/second",
-    modeId: "inspect",
+    modeId: "evaluate",
     thinkingOptionId: "rapid",
     providerOptions: { custom_setting: { limit: 9 } },
   });
-  await triggers.startNew();
-  await triggers.configureManual({
-    name: "modeless-run",
-    daemon,
-    cwd: "/workspace/acme",
-    agent: "modeless-agent",
-    prompt: "Perform the modeless task.",
-  });
-  await expect(page.getByRole("combobox", { name: "Execution mode" })).toBeHidden();
-  await triggers.capture("/tmp/hub-provider-qa/unknown-modeless-form.png");
-  await triggers.save("modeless-run");
-  await hub.launchSavedTrigger("modeless-run", apiKey);
+  await triggers.openTrigger("unknown-run");
+  await triggers.switchToYaml();
+  await triggers.replaceYaml(`name: unknown-run
+enabled: true
+on:
+  manual.run: {}
+run:
+  target: { daemon: ${daemon}, cwd: /workspace/acme }
+  agent: { provider: modeless-agent }
+  prompt: Preserve authored YAML without model or mode
+  max_runtime: 1h
+  idle_timeout: 5m
+`);
+  await triggers.save("unknown-run");
+  await hub.launchSavedTrigger("unknown-run", apiKey);
   await hub.expectProviderLaunch(daemon, { provider: "modeless-agent" });
+  await triggers.openTrigger("unknown-run");
+  await expect(page.getByRole("radio", { name: "YAML" })).toBeChecked();
+  await triggers.switchToForm();
+  await triggers.expectRefusedOnSubmit("Choose a provider and model.");
+  await triggers.switchToYaml();
+  await triggers.save("unknown-run");
 });
