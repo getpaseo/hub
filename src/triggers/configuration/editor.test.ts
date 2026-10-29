@@ -478,3 +478,14 @@ test("a trigger row names the event kind before what narrows it", () => {
   });
   expect(describeTriggerEvent(null, "github.push")).toEqual({ kind: "GitHub push" });
 });
+
+test("form authoring omits an unspecified provider mode", () => {
+  const projected = projectTriggerForm(ADVANCED);
+  if (projected.status !== "editable") throw new Error("expected editable form");
+  const value = { ...projected.value, agent: "pi/test-model", mode: "" };
+  expect(triggerFormErrors(value).mode).toBeUndefined();
+  const yaml = createTriggerYaml(value);
+  expect(TriggerDocumentSchema.parse(parseDocument(yaml).toJS()).run.agent).not.toHaveProperty(
+    "mode",
+  );
+});

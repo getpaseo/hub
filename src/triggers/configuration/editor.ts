@@ -217,7 +217,7 @@ export function createTriggerYaml(value: TriggerFormValue): string {
         agent: {
           provider: agent.provider,
           ...(agent.model === undefined ? {} : { model: agent.model }),
-          mode: value.mode.trim(),
+          ...(value.mode.trim() ? { mode: value.mode.trim() } : {}),
           ...(blankToUndefined(value.thinkingOptionId) === undefined
             ? {}
             : { thinkingOptionId: value.thinkingOptionId.trim() }),
@@ -324,7 +324,6 @@ export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
   if (value.idleTimeout.trim().length === 0) errors.idleTimeout = "Idle timeout is required.";
   const agent = refused(() => splitAgentId(value.agent));
   if (agent !== undefined) errors.agent = agent;
-  if (value.mode.trim().length === 0) errors.mode = "Execution mode is required.";
   const options = refused(() => parseProviderOptions(value.providerOptions));
   if (options !== undefined) errors.providerOptions = options;
   if (value.githubConnection.trim().length !== 0) {

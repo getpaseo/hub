@@ -175,6 +175,7 @@ describe("daemon enrollment and execution", () => {
     assert.equal(agent.prompt, "Reply pong.");
     assert.equal(agent.thinkingOptionId, "xhigh");
     assert.deepEqual(agent.toolPolicy, {
+      enforcement: "if-supported",
       preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
     });
     assert.deepEqual(agent.env, {
@@ -226,6 +227,7 @@ describe("daemon enrollment and execution", () => {
     });
     assert.equal(hub.createdAgentLaunch().prompt, "Reply pong.");
     assert.deepEqual(hub.createdAgentLaunch().toolPolicy, {
+      enforcement: "if-supported",
       preapproved: [
         { kind: "mcp", server: "hub", tool: "finish_execution" },
         { kind: "mcp", server: "hub", tool: "reply" },
@@ -237,6 +239,7 @@ describe("daemon enrollment and execution", () => {
     });
     assert.equal(hub.createdAgentLaunch().prompt, "Reply pong.");
     assert.deepEqual(hub.createdAgentLaunch().toolPolicy, {
+      enforcement: "if-supported",
       preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
     });
   });

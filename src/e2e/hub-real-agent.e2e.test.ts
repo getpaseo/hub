@@ -46,6 +46,18 @@ describeRealAgent("Hub execution MCP real-agent smoke", () => {
     assert.equal(evidence.completionHelperLaunched, false);
   }, 300_000);
 
+  it("lets a real Pi agent finalize without requiring exact preapproval", async () => {
+    await hub.connect();
+    await hub.daemonIsConnected();
+    await hub.installRealAgentConfiguration("pi", true);
+    const run = await hub.runRealAgentManual("real-pi-finalize");
+    const evidence = await hub.realAgentCompletionEvidence(run, "pi");
+    assert.equal(evidence.status, "succeeded");
+    assert.equal(evidence.completedByAgent, true);
+    assert.equal(evidence.completedToolCall, true);
+    assert.equal(evidence.completionHelperLaunched, false);
+  }, 300_000);
+
   it("lets a real Claude agent finalize a production manual run through MCP", async () => {
     await hub.connect();
     await hub.daemonIsConnected();

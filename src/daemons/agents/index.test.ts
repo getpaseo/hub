@@ -338,3 +338,34 @@ test.each([
   unwatch();
   agents.close();
 });
+
+test.each([true, false])(
+  "negotiates optional MCP support with capable host %s",
+  async (capable) => {
+    const requests: Record<string, unknown>[] = [];
+    const agents = connect(requests);
+    agents.receive({
+      type: "session",
+      message: {
+        type: "server_info",
+        payload: {
+          features: { hubAgentRpc: true, agentRequestReceipts: true, optionalMcpSupport: capable },
+        },
+      },
+    });
+    await agents.create("key", {
+      ...options,
+      toolPolicy: { ...options.toolPolicy, enforcement: "if-supported" },
+      mcpServerRequirements: { hub: "optional" },
+    });
+    expect(requests[0]).toMatchObject({
+      config: {
+        toolPolicy: capable
+          ? { ...options.toolPolicy, enforcement: "if-supported" }
+          : options.toolPolicy,
+      },
+    });
+    const config = requests[0]!["config"] as Record<string, unknown>;
+    expect(config["mcpServerRequirements"]).toEqual(capable ? { hub: "optional" } : undefined);
+  },
+);

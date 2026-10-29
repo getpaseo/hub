@@ -38,6 +38,7 @@ describe("execution tool policy", () => {
     });
 
     assert.deepEqual(materialized, {
+      enforcement: "if-supported",
       preapproved: [
         { kind: "mcp", server: "hub", tool: "finish_execution" },
         { kind: "mcp", server: "hub", tool: "reply" },
@@ -45,6 +46,7 @@ describe("execution tool policy", () => {
       ],
     });
     assert.deepEqual(unavailable, {
+      enforcement: "if-supported",
       preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
     });
   });

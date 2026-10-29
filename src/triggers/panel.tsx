@@ -45,7 +45,6 @@ import type { HubProviderSnapshotEntry } from "../hub/protocol.js";
 import { EventFields } from "./event-fields.js";
 import { EDITOR_EVENTS, eventDefinition, parseEditorEvent } from "./configuration/events.js";
 import { selectedProviderModel } from "./provider-catalog.js";
-import { supportsUnattendedRuns } from "./configuration/unattended.js";
 
 type BrowserTrigger = TriggerSnapshot["triggers"][number];
 type EditorMode = "form" | "yaml";
@@ -1127,19 +1126,25 @@ function ProviderCatalogFields({
   onChange: (value: TriggerFormValue) => void;
 }) {
   const selected = selectedProviderModel(entries, form.agent);
-  // A provider the daemon cannot run unattended is not offered: Hub sends a tool policy with every
-  // run, and the daemon refuses the policy at launch for any provider outside that set.
   const agentOptions = (entries ?? []).flatMap((entry) =>
-    entry.status !== "ready" || !entry.enabled || !supportsUnattendedRuns(entry.provider)
+    entry.status !== "ready" || !entry.enabled
       ? []
-      : (entry.models ?? [])
-          .filter((model) => model.isSelectable !== false)
-          .map((model) => ({
-            value: `${entry.provider}/${model.id}`,
-            label: model.label,
-            detail: `${entry.label ?? entry.provider} · ${entry.provider}/${model.id}`,
-            keywords: [model.label, entry.label ?? entry.provider, model.id],
-          })),
+      : [
+          {
+            value: entry.provider,
+            label: `${entry.label ?? entry.provider} (default model)`,
+            detail: entry.provider,
+            keywords: [entry.provider],
+          },
+          ...(entry.models ?? [])
+            .filter((model) => model.isSelectable !== false)
+            .map((model) => ({
+              value: `${entry.provider}/${model.id}`,
+              label: model.label,
+              detail: `${entry.label ?? entry.provider} · ${entry.provider}/${model.id}`,
+              keywords: [model.label, entry.label ?? entry.provider, model.id],
+            })),
+        ],
   ) satisfies ComboboxOption[];
   const modeOptions = (selected.entry?.modes ?? []).map((mode) => ({
     value: mode.id,
@@ -1174,25 +1179,25 @@ function ProviderCatalogFields({
           />
         )}
       </FormField>
-      <FormField
-        id="trigger-mode"
-        label="Execution mode"
-        description="Modes reported for the selected provider."
-        required
-        {...fieldError(errors, "mode")}
-      >
-        {(control) => (
-          <Combobox
-            {...control}
-            required
-            value={form.mode}
-            options={modeOptions}
-            placeholder="Select a mode"
-            empty="No modes found."
-            onChange={(option) => onChange({ ...form, mode: option.value })}
-          />
-        )}
-      </FormField>
+      {modeOptions.length === 0 ? null : (
+        <FormField
+          id="trigger-mode"
+          label="Execution mode"
+          description="Modes reported for the selected provider."
+          {...fieldError(errors, "mode")}
+        >
+          {(control) => (
+            <Combobox
+              {...control}
+              value={form.mode}
+              options={modeOptions}
+              placeholder="Select a mode"
+              empty="No modes found."
+              onChange={(option) => onChange({ ...form, mode: option.value })}
+            />
+          )}
+        </FormField>
+      )}
       {thinkingOptions.length === 0 ? null : (
         <FormField
           id="trigger-thinking"
