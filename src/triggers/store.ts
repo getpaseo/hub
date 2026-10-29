@@ -16,7 +16,6 @@ import {
   type TriggerDocument,
   type TriggerDocumentIssue,
 } from "./configuration/index.js";
-import { supportsUnattendedRuns, unattendedProviderRefusal } from "./configuration/unattended.js";
 
 export interface SaveTriggerInput {
   triggerId?: string;
@@ -126,13 +125,6 @@ export class OrganizationTriggerStore {
     if (target === undefined) throw new Error("compiled trigger target is missing");
     const issues: TriggerDocumentIssue[] = [];
     for (const { path, agent } of authoredAgents(compiled.authored)) {
-      if (!supportsUnattendedRuns(agent.provider)) {
-        issues.push({
-          path: [...path, "provider"],
-          message: unattendedProviderRefusal(agent.provider),
-        });
-        continue;
-      }
       let verdict: Awaited<
         ReturnType<DaemonAgentConfigurationValidator["validateAgentConfiguration"]>
       >;
@@ -207,11 +199,6 @@ function validateAuthoringContract(trigger: TriggerDocument): void {
   const issues: Array<{ path: readonly (string | number)[]; message: string }> = [];
   if (!trigger.run.target.cwd.startsWith("/")) {
     issues.push({ path: ["run", "target", "cwd"], message: "must be an absolute path" });
-  }
-  for (const { path, agent } of authoredAgents(trigger)) {
-    if (agent.mode === undefined) {
-      issues.push({ path: [...path, "mode"], message: "is required for new triggers" });
-    }
   }
   if (issues.length > 0) throw new TriggerDocumentError(issues);
 }

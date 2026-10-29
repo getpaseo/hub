@@ -5719,9 +5719,24 @@ class ContractDaemon {
   }
 }
 
-// Only providers a daemon runs unattended (`src/triggers/configuration/unattended.ts`); the
-// editor offers nothing else, and the store would refuse it.
+// Provider choices and optional modes belong to the daemon catalog.
 const browserProviderSnapshot = [
+  {
+    provider: "custom-provider",
+    status: "ready",
+    enabled: true,
+    label: "Custom provider",
+    models: [
+      {
+        provider: "custom-provider",
+        id: "test-model",
+        label: "Custom Model",
+        isDefault: true,
+        thinkingOptions: [],
+      },
+    ],
+    modes: [],
+  },
   {
     provider: "opencode",
     status: "ready",

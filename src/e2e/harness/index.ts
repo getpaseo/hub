@@ -128,7 +128,7 @@ export interface SourceCliBundleDeploymentEvidence {
   };
 }
 
-type RealAgentProvider = "claude" | "codex" | "opencode";
+type RealAgentProvider = "claude" | "codex" | "opencode" | "pi";
 type DispatchedManualRun = z.infer<typeof DispatchedManualRunSchema>;
 
 export interface ShutdownEvidence {
@@ -441,7 +441,10 @@ export class HubE2E {
     }
   }
 
-  async installRealAgentConfiguration(provider: RealAgentProvider): Promise<void> {
+  async installRealAgentConfiguration(
+    provider: RealAgentProvider,
+    structuredOutput = false,
+  ): Promise<void> {
     const daemon = await this.requirePool().query<{ slug: string }>(
       "select slug from daemons where presence = 'connected' order by connected_at desc limit 1",
     );
@@ -468,7 +471,17 @@ export class HubE2E {
       "        agent:",
       `          provider: ${provider}`,
       ...realAgentOptionsYaml(provider),
-      '        prompt: [{ text: "Call the finish_execution MCP tool exactly once. Do not use curl, shell, or direct HTTP." }] ',
+      ...(structuredOutput
+        ? [
+            "        output:",
+            "          schema:",
+            "            type: object",
+            "            required: [result]",
+            "            properties:",
+            "              result: { type: string, enum: [done] }",
+          ]
+        : []),
+      `        prompt: [{ text: "Call the finish_execution MCP tool exactly once.${structuredOutput ? " Set output to {result: done}." : ""} Do not use curl, shell, or direct HTTP." }]`,
     ].join("\n");
     const response = await fetch(`${this.requireProxy().origin}/api/v1/configurations/install`, {
       method: "POST",
@@ -588,10 +601,14 @@ export class HubE2E {
     const dispatch = await this.dispatchManualRun({ trigger, actor, deliveryKey, input });
     const run = await this.waitForManualRun(dispatch);
     const source = this.requireSource();
-    const [provider, processDescriptions] = await Promise.all([
-      source.agentProvider(run.agentId),
-      source.processDescriptions(),
-    ]);
+    const provider = await source.agentProvider(run.agentId);
+    let processDescriptions: string[] = [];
+    await this.observe(async () => {
+      processDescriptions = await source.processDescriptions();
+      return processDescriptions.some((description) =>
+        realAgentProcessPattern(provider as RealAgentProvider).test(description),
+      );
+    }, "provider runtime to start for the dispatched turn");
     this.realAgentLaunchEvidence.set(deliveryKey, {
       provider,
       processDescriptions,
@@ -1679,6 +1696,7 @@ export class HubE2E {
 }
 
 function realAgentOptionsYaml(provider: RealAgentProvider): string[] {
+  if (provider === "pi") return [];
   if (provider === "codex") {
     return [
       "          options:",
@@ -1708,6 +1726,7 @@ function realAgentOptionsYaml(provider: RealAgentProvider): string[] {
 }
 
 function realAgentProcessPattern(provider: RealAgentProvider): RegExp {
+  if (provider === "pi") return /(?:^|[ /])pi(?:\s|$)/u;
   if (provider === "codex") return /(?:^|\/)codex(?:\s|$)/u;
   if (provider === "claude") return /(?:^|\/)claude(?:\s|$)/u;
   return /(?:^|\/)opencode(?:\s|$)/u;

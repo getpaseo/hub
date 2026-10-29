@@ -102,10 +102,6 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
     await triggers.expectRefusedOnSubmit(
       "run.agent.mode: Mode 'default' is not available for provider 'opencode'",
     );
-    await triggers.replaceYaml(
-      advancedTriggerYaml(daemon).replace("provider: opencode", "provider: omp"),
-    );
-    await triggers.expectRefusedOnSubmit("Provider 'omp' cannot run unattended Hub automations");
     await triggers.capture(`${SHOTS}/03b-refused-mode.png`);
   });
 
@@ -243,3 +239,17 @@ steps:
     agent: engineer
     prompt: Implement it.
 `;
+
+test("saves daemon providers without permission modes from the form", async ({ hub, page }) => {
+  await hub.signUpAs("owner", owner);
+  await hub.createOrganization("owner", "Acme");
+  const daemon = await hub.connectProviderDaemon("owner", "Acme");
+  const triggers = new OrganizationTriggers(page);
+  await triggers.open();
+  await triggers.startNew();
+  await triggers.configureProviderWithoutModes(daemon);
+  await triggers.capture("/tmp/hub-provider-qa/custom-provider-form.png");
+  await triggers.switchToYaml();
+  await triggers.expectYamlContains("provider: custom-provider");
+  await triggers.save("custom-run");
+});

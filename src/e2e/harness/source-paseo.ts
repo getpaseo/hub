@@ -1,5 +1,5 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
-import { createConnection, createServer as createNetServer } from "node:net";
+import { createServer as createNetServer } from "node:net";
 import { rmSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -410,12 +410,10 @@ async function observe(
 }
 
 async function canConnect(host: string): Promise<boolean> {
-  const [hostname, portText] = host.split(":");
-  const port = Number(portText);
   return new Promise<boolean>((resolveConnection) => {
-    const socket = createConnection({ host: hostname, port });
-    socket.once("connect", () => {
-      socket.destroy();
+    const socket = new WebSocket(`ws://${host}/ws`);
+    socket.once("open", () => {
+      socket.close();
       resolveConnection(true);
     });
     socket.once("error", () => resolveConnection(false));

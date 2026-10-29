@@ -1965,6 +1965,7 @@ async function buildCreateAgentOptions(
     mcpServers: {
       hub: buildExecutionCapabilityMcpServer(hubExecutionEnv),
     },
+    mcpServerRequirements: { hub: "optional" },
     toolPolicy: executionToolPolicy({
       allowOutputs: intent.allowOutputs,
       outputContext: intent.outputContext,

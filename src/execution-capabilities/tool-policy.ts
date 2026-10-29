@@ -19,6 +19,7 @@ export function executionToolPolicy(input: {
     input.outputContext,
   );
   return {
+    enforcement: "if-supported",
     preapproved: executionToolDefinitions(input.outputSchema, materializedOutputs).map((tool) => ({
       kind: "mcp" as const,
       server: HUB_MCP_SERVER,

@@ -2608,7 +2608,12 @@ class TestDaemon {
           status: "server_info",
           serverId: this.daemonId,
           permissions: this.permissions,
-          features: { hubAgentRpc: true, agentRequestReceipts: true, backgroundWorkspaces: true },
+          features: {
+            hubAgentRpc: true,
+            agentRequestReceipts: true,
+            backgroundWorkspaces: true,
+            optionalMcpSupport: true,
+          },
         },
       });
       return;

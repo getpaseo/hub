@@ -128,10 +128,7 @@ export class OrganizationTriggers {
       "data-value",
       "",
     );
-    await expect(this.page.getByRole("combobox", { name: "Execution mode" })).toHaveAttribute(
-      "data-value",
-      "",
-    );
+    await expect(this.page.getByRole("combobox", { name: "Execution mode" })).toBeHidden();
     await this.page.getByLabel("Working directory").fill(input.cwd);
     await this.selectAgent(input.agent);
     await expect(this.page.getByRole("combobox", { name: "Execution mode" })).toHaveAttribute(
@@ -166,6 +163,16 @@ export class OrganizationTriggers {
     await this.selectOption("Execution mode", input.mode);
     await this.selectOption("Thinking", input.thinking);
     await this.page.getByLabel("Instructions", { exact: true }).fill(input.prompt);
+  }
+
+  async configureProviderWithoutModes(daemon: string) {
+    await this.page.getByLabel("Trigger name").fill("custom-run");
+    await this.selectOption("When this happens", "manual.run");
+    await this.selectOption("Run on daemon", daemon);
+    await this.page.getByLabel("Working directory").fill("/workspace/acme");
+    await this.selectAgent("custom-provider");
+    await expect(this.page.getByRole("combobox", { name: "Execution mode" })).toBeHidden();
+    await this.page.getByLabel("Instructions", { exact: true }).fill("Perform the task.");
   }
 
   async configureSchedule(daemon: string) {

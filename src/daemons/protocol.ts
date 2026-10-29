@@ -21,6 +21,7 @@ export interface DaemonCreateAgentOptions {
   cwd: string;
   env: Record<string, string>;
   mcpServers?: Record<string, McpHttpServerConfig>;
+  mcpServerRequirements?: Record<string, "optional" | "required">;
   worktree?: WorktreeTarget;
 }
 
@@ -31,6 +32,7 @@ export interface McpToolRef {
 }
 
 export interface ToolPolicy {
+  enforcement?: "required" | "if-supported";
   preapproved: readonly McpToolRef[];
 }
 
