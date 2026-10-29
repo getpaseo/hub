@@ -479,11 +479,11 @@ test("a trigger row names the event kind before what narrows it", () => {
   expect(describeTriggerEvent(null, "github.push")).toEqual({ kind: "GitHub push" });
 });
 
-test("form authoring omits an unspecified provider mode", () => {
+test("YAML conversion preserves an omitted mode while the form requires a selection", () => {
   const projected = projectTriggerForm(ADVANCED);
   if (projected.status !== "editable") throw new Error("expected editable form");
   const value = { ...projected.value, agent: "pi/test-model", mode: "" };
-  expect(triggerFormErrors(value).mode).toBeUndefined();
+  expect(triggerFormErrors(value).mode).toBe("Execution mode is required.");
   const patched = patchTriggerYaml(ADVANCED, value);
   expect(TriggerDocumentSchema.parse(parseDocument(patched).toJS()).run.agent).not.toHaveProperty(
     "mode",
@@ -491,5 +491,23 @@ test("form authoring omits an unspecified provider mode", () => {
   const yaml = createTriggerYaml(value);
   expect(TriggerDocumentSchema.parse(parseDocument(yaml).toJS()).run.agent).not.toHaveProperty(
     "mode",
+  );
+});
+
+test("form submission requires concrete model and mode selections without rejecting YAML omissions", () => {
+  const projected = projectTriggerForm(ADVANCED);
+  if (projected.status !== "editable") throw new Error("expected editable form");
+  expect(triggerFormErrors({ ...projected.value, agent: "codex" }).agent).toBe(
+    "Choose a provider and model.",
+  );
+  expect(triggerFormErrors({ ...projected.value, mode: "" }).mode).toBe(
+    "Execution mode is required.",
+  );
+  const yaml = ADVANCED.replace("    model: gpt-5.4\n", "").replace("    mode: full-access\n", "");
+  const existing = projectTriggerForm(yaml);
+  expect(existing.status).toBe("editable");
+  if (existing.status !== "editable") throw new Error("expected editable YAML");
+  expect(patchTriggerYaml(yaml, { ...existing.value, prompt: "Updated YAML content" })).toContain(
+    "Updated YAML content",
   );
 });

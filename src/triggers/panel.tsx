@@ -44,7 +44,7 @@ import { daemonProviderSnapshot } from "../daemons/functions.js";
 import type { HubProviderSnapshotEntry } from "../hub/protocol.js";
 import { EventFields } from "./event-fields.js";
 import { EDITOR_EVENTS, eventDefinition, parseEditorEvent } from "./configuration/events.js";
-import { selectedProviderModel } from "./provider-catalog.js";
+import { changeTriggerModel, selectedProviderModel } from "./provider-catalog.js";
 
 type BrowserTrigger = TriggerSnapshot["triggers"][number];
 type EditorMode = "form" | "yaml";
@@ -427,8 +427,16 @@ function useTriggerEditorState(
   const initialForm = trigger?.draft ?? defaultForm(snapshot);
   const initialYaml = trigger?.yaml ?? "";
   const initialProjection = useMemo(() => projectTriggerForm(initialYaml), [initialYaml]);
+  const initialErrors =
+    initialProjection.status === "editable" ? triggerFormErrors(initialProjection.value) : {};
   const [mode, setMode] = useState<EditorMode>(
-    trigger === null || (initialProjection.status === "editable" && !legacy) ? "form" : "yaml",
+    trigger === null ||
+      (initialProjection.status === "editable" &&
+        !legacy &&
+        initialErrors.agent === undefined &&
+        initialErrors.mode === undefined)
+      ? "form"
+      : "yaml",
   );
   const [yaml, setYaml] = useState(initialYaml);
   const [form, setForm] = useState<TriggerFormValue>(
@@ -461,7 +469,7 @@ function useTriggerEditorState(
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (mode === "yaml") onSave(yaml);
-    else if (other.status === "ok") onSave(other.yaml);
+    else if (other.status === "ok" && Object.keys(errors).length === 0) onSave(other.yaml);
     else refuse();
   };
   return {
@@ -1126,24 +1134,18 @@ function ProviderCatalogFields({
   onChange: (value: TriggerFormValue) => void;
 }) {
   const selected = selectedProviderModel(entries, form.agent);
-  const agentOptions = (entries ?? []).flatMap((entry) => {
-    if (entry.status !== "ready" || !entry.enabled) return [];
-    const options = (entry.models ?? [])
-      .filter((model) => model.isSelectable !== false)
-      .map((model) => ({
-        value: `${entry.provider}/${model.id}`,
-        label: model.label,
-        detail: `${entry.label ?? entry.provider} · ${entry.provider}/${model.id}`,
-        keywords: [model.label, entry.label ?? entry.provider, model.id],
-      }));
-    options.unshift({
-      value: entry.provider,
-      label: `${entry.label ?? entry.provider} (default model)`,
-      detail: entry.provider,
-      keywords: [entry.provider],
-    });
-    return options;
-  }) satisfies ComboboxOption[];
+  const agentOptions = (entries ?? []).flatMap((entry) =>
+    entry.status !== "ready" || !entry.enabled
+      ? []
+      : (entry.models ?? [])
+          .filter((model) => model.isSelectable !== false)
+          .map((model) => ({
+            value: `${entry.provider}/${model.id}`,
+            label: model.label,
+            detail: `${entry.label ?? entry.provider} · ${entry.provider}/${model.id}`,
+            keywords: [model.label, entry.label ?? entry.provider, model.id],
+          })),
+  ) satisfies ComboboxOption[];
   const modeOptions = (selected.entry?.modes ?? []).map((mode) => ({
     value: mode.id,
     label: mode.label,
@@ -1172,25 +1174,27 @@ function ProviderCatalogFields({
             searchPlaceholder="Search models…"
             empty="No models found."
             onChange={(option) =>
-              onChange({ ...form, agent: option.value, mode: "", thinkingOptionId: "" })
+              onChange(changeTriggerModel({ entries: entries ?? [], form, agent: option.value }))
             }
           />
         )}
       </FormField>
-      {modeOptions.length === 0 ? null : (
+      {selected.entry === undefined ? null : (
         <FormField
           id="trigger-mode"
           label="Execution mode"
           description="Modes reported for the selected provider."
+          required
           {...fieldError(errors, "mode")}
         >
           {(control) => (
             <Combobox
               {...control}
+              required
               value={form.mode}
               options={modeOptions}
               placeholder="Select a mode"
-              empty="No modes found."
+              empty="No execution modes reported by this daemon."
               onChange={(option) => onChange({ ...form, mode: option.value })}
             />
           )}

@@ -298,7 +298,7 @@ export type TriggerFieldErrors = Partial<
  * `mergeTriggerForm` reports when the document cannot be written at all. Insertion order is the
  * order the fields appear on screen, so "the first problem" is the topmost one.
  */
-export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
+function triggerFormDocumentErrors(value: TriggerFormValue): TriggerFieldErrors {
   const errors: TriggerFieldErrors = {};
   const name = value.name.trim();
   if (name.length === 0) errors.name = "Trigger name is required.";
@@ -335,6 +335,16 @@ export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
   return errors;
 }
 
+/** Form-only completeness; YAML conversion and save retain their authored optional fields. */
+export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
+  const errors = triggerFormDocumentErrors(value);
+  if (errors.agent === undefined && splitAgentId(value.agent).model === undefined) {
+    errors.agent = "Choose a provider and model.";
+  }
+  if (value.mode.trim().length === 0) errors.mode = "Execution mode is required.";
+  return errors;
+}
+
 /** The message a parse refused with, or `undefined` when it accepted the value. */
 function refused(parse: () => unknown): string | undefined {
   try {
@@ -346,7 +356,7 @@ function refused(parse: () => unknown): string | undefined {
 }
 
 function validateFormValue(value: TriggerFormValue): void {
-  const [message] = Object.values(triggerFormErrors(value));
+  const [message] = Object.values(triggerFormDocumentErrors(value));
   if (message !== undefined) throw new Error(message);
 }
 
