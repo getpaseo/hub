@@ -258,8 +258,9 @@ export function createSlackTriggerProvider(options: {
         },
       };
     },
-    async onDispatchAccepted(_triggerContext, _outputContext, reactionState) {
+    async onDispatchAccepted(context, _outputContext, reactionState) {
       if (slackReactionPhase(reactionState) !== undefined) return reactionState;
+      await addReactionSafely(options.client, context.target, "eyes");
       return { phase: "accepted" };
     },
     async onAgentExecutionStarted(context, _outputContext, reactionState) {
