@@ -5,7 +5,13 @@ import { logger } from "../../logger.js";
 import { logProviderEventIntake } from "../audit.js";
 import type { ProviderEventDropReasonCode } from "../drop-reason.js";
 import type { TriggerHandler, TriggerSource } from "../index.js";
-import { eventIssueId, eventProjectId, normalizeLinearEvent } from "./events.js";
+import {
+  eventIssueId,
+  eventProjectId,
+  eventTeamId,
+  hasExplicitNullLinearProject,
+  normalizeLinearEvent,
+} from "./events.js";
 import type { LinearIssueDetails } from "../../providers/linear/client.js";
 
 const MAX_WEBHOOK_BYTES = 1_048_576;
@@ -22,6 +28,7 @@ export interface LinearWebhookSourceOptions {
   accept(input: {
     linearOrganizationId: string;
     projectId?: string;
+    teamId?: string;
     deliveryId: string;
     signatureHash: string;
     source: string;
@@ -114,7 +121,14 @@ async function handoffLinearEvent(
       logger.info({ deliveryId: verified.deliveryId }, "ignoring unsupported Linear event");
       return new Response("OK", { status: 200 });
     }
-    if (eventProjectId(event) === undefined && options.resolveIssue !== undefined) {
+    const hasCompleteTeamRoute =
+      eventTeamId(event) !== undefined &&
+      hasExplicitNullLinearProject(verified.payload, verified.eventName);
+    // Issue webhooks carry their filter fields directly. Comment and Agent Session issue
+    // relations can be compact even when they already identify a project or team.
+    const needsIssueHydration =
+      event.type !== "issue" || (eventProjectId(event) === undefined && !hasCompleteTeamRoute);
+    if (needsIssueHydration && options.resolveIssue !== undefined) {
       const source = linearEventSource(event);
       if (
         options.canHydrateIssue !== undefined &&
@@ -147,16 +161,18 @@ async function handoffLinearEvent(
 
 async function acceptAndDispatchLinearEvent(
   event: NonNullable<ReturnType<typeof normalizeLinearEvent>>,
-  source: "linear.issue" | "linear.comment",
+  source: "linear.issue" | "linear.comment" | "linear.agent_session",
   verified: VerifiedLinearRequest,
   handlers: Set<TriggerHandler>,
   options: LinearWebhookSourceOptions,
   preserveBindingDrop = false,
 ): Promise<Response> {
   const projectId = eventProjectId(event);
+  const teamId = eventTeamId(event);
   const acceptance = await options.accept({
     linearOrganizationId: event.organizationId,
     ...(projectId === undefined ? {} : { projectId }),
+    ...(teamId === undefined ? {} : { teamId }),
     deliveryId: verified.deliveryId,
     signatureHash: verified.signatureHash,
     source,
@@ -170,7 +186,7 @@ async function acceptAndDispatchLinearEvent(
     provider: "linear",
     source,
     deliveryId: verified.deliveryId,
-    resourceId: projectId,
+    resourceId: projectId ?? teamId,
     acceptance,
   });
   const events = acceptance.status === "accepted" ? acceptance.events : [];
@@ -182,8 +198,9 @@ async function acceptAndDispatchLinearEvent(
 
 function linearEventSource(
   event: NonNullable<ReturnType<typeof normalizeLinearEvent>>,
-): "linear.issue" | "linear.comment" {
-  return event.type === "issue" ? "linear.issue" : "linear.comment";
+): "linear.issue" | "linear.comment" | "linear.agent_session" {
+  if (event.type === "issue") return "linear.issue";
+  return event.type === "comment" ? "linear.comment" : "linear.agent_session";
 }
 
 /** Verify Linear's HMAC-SHA256 over the exact raw request body. */
