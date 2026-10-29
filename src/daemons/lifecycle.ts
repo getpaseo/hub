@@ -598,11 +598,7 @@ export class DaemonDispatchLifecycle {
       provider,
       hubExecutionEnv.executionId,
     );
-    return buildCreateAgentOptions(
-      materialized.intent,
-      hubExecutionEnv,
-      materialized.env,
-    );
+    return buildCreateAgentOptions(materialized.intent, hubExecutionEnv, materialized.env);
   }
 
   async handleAgentStreamEvent(
