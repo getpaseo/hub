@@ -11,6 +11,7 @@ export const GITHUB_SEMANTIC_TRIGGER_EVENT_NAMES = [
   "github.issue_created",
   "github.pull_request_created",
   "github.pull_request_ready_for_review",
+  "github.pull_request_synchronized",
   "github.issue_comment_created",
   "github.pull_request_comment_created",
   "github.issue_label_added",
@@ -152,6 +153,7 @@ function issueSemanticEvent(action: string | undefined): GitHubSemanticEvent | u
 function pullRequestSemanticEvent(action: string | undefined): GitHubSemanticEvent | undefined {
   if (action === "opened") return "github.pull_request_created";
   if (action === "ready_for_review") return "github.pull_request_ready_for_review";
+  if (action === "synchronize") return "github.pull_request_synchronized";
   if (action === "labeled") return "github.pull_request_label_added";
   return undefined;
 }

@@ -12,7 +12,10 @@ import {
 import { NormalizedDiscordMessageEventSchema } from "../triggers/discord/events.js";
 import { NormalizedSlackMentionEventSchema } from "../triggers/slack/events.js";
 import { NormalizedLinearEventSchema } from "../triggers/linear/events.js";
-import { classifyGitHubEvent } from "../triggers/github/classification.js";
+import {
+  classifyGitHubEvent,
+  type GitHubSemanticEvent,
+} from "../triggers/github/classification.js";
 
 export interface TriggerSummary {
   provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule";
@@ -62,12 +65,8 @@ function summarizeGitHub(payload: unknown): TriggerSummary {
   }
   const externalUrl = readGitHubTriggerUrl(event.data.payload) ?? null;
   const classified = classifyGitHubEvent(event.data);
-  if (
-    classified.semanticEvent === "github.pull_request_created" ||
-    classified.semanticEvent === "github.pull_request_ready_for_review"
-  ) {
-    const action =
-      classified.semanticEvent === "github.pull_request_created" ? "created" : "ready for review";
+  const action = pullRequestAction(classified.semanticEvent);
+  if (action !== undefined) {
     return {
       provider: "github",
       headline:
@@ -80,6 +79,13 @@ function summarizeGitHub(payload: unknown): TriggerSummary {
   }
   const { headline, actor } = summarizeGitHubEvent(event.data.type, event.data.payload);
   return { provider: "github", headline, actor, externalUrl };
+}
+
+function pullRequestAction(event: GitHubSemanticEvent | undefined): string | undefined {
+  if (event === "github.pull_request_created") return "created";
+  if (event === "github.pull_request_ready_for_review") return "ready for review";
+  if (event === "github.pull_request_synchronized") return "updated with new commits";
+  return undefined;
 }
 
 /**

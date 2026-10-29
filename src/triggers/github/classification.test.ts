@@ -21,3 +21,21 @@ it("classifies the ready transition and preserves its revision for the reviewer"
   assert.equal(classified.actor, "maintainer");
   assert.equal(classified.item?.number, 12);
 });
+
+it("classifies new commits on a pull request with the pushed head", () => {
+  const classified = classifyGitHubEvent({
+    id: "synchronize-delivery",
+    type: "pull_request",
+    repo: "owner/repo",
+    repositoryId: 7,
+    installationId: 42,
+    createdAt: "2026-10-29T00:00:00.000Z",
+    payload: {
+      action: "synchronize",
+      sender: { login: "maintainer" },
+      pull_request: { number: 12, draft: false, head: { sha: "pushed-head" } },
+    },
+  });
+  assert.equal(classified.semanticEvent, "github.pull_request_synchronized");
+  assert.deepEqual(classified.pullRequest, { draft: false, headSha: "pushed-head" });
+});

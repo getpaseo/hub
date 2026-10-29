@@ -36,6 +36,8 @@ export const TriggerFilterSchema = z
   .object({
     pattern: z.string().optional(),
     contains: z.string().optional(),
+    /** GitHub text which makes an event ineligible, such as a command another trigger owns. */
+    exclude_contains: z.string().optional(),
     label: z.string().min(1).optional(),
     labels: z.array(z.string().min(1)).min(1).optional(),
     repo: z.string().min(1).optional(),

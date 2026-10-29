@@ -88,13 +88,7 @@ function matchesFilter(
     return false;
   }
 
-  const pattern = readStringFilter(filter, "pattern");
-  if (pattern !== undefined && !classified.text.startsWith(pattern)) {
-    return false;
-  }
-
-  const contains = readStringFilter(filter, "contains");
-  if (contains !== undefined && !classified.text.includes(contains)) {
+  if (!matchesText(classified.text, filter)) {
     return false;
   }
 
@@ -118,9 +112,18 @@ function matchesFilter(
   return true;
 }
 
+function matchesText(text: string, filter: TriggerFilter): boolean {
+  const pattern = readStringFilter(filter, "pattern");
+  if (pattern !== undefined && !text.startsWith(pattern)) return false;
+  const contains = readStringFilter(filter, "contains");
+  if (contains !== undefined && !text.includes(contains)) return false;
+  const excluded = readStringFilter(filter, "exclude_contains");
+  return excluded === undefined || !text.includes(excluded);
+}
+
 function readStringFilter(
   filter: TriggerFilter,
-  key: "pattern" | "contains" | "label",
+  key: "pattern" | "contains" | "exclude_contains" | "label",
 ): string | undefined {
   const value = filter[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;

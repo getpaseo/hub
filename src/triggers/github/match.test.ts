@@ -197,6 +197,60 @@ describe("GitHub trigger matching", () => {
     assert.equal(matchTriggers(configured, event).length, expected);
   });
 
+  it.each([
+    ["synchronize", 1],
+    ["opened", 0],
+    ["ready_for_review", 0],
+    ["labeled", 0],
+    ["edited", 0],
+  ])("pull_request_synchronized matches %s", (action, expected) => {
+    const config = configFor({ from_users: ["boudra"], repo: "boudra/faro" });
+    const configured = {
+      ...config,
+      triggers: [{ ...config.triggers[0]!, on: "github.pull_request_synchronized" }],
+    };
+    const event = eventFor("pull_request", {
+      action,
+      pull_request: pullRequest({ draft: false, head: { sha: "new-head", ref: "topic" } }),
+    });
+    assert.equal(matchTriggers(configured, event).length, expected);
+  });
+
+  it.each([
+    ["@paseo-bot review", "reviewer"],
+    ["@paseo-bot rebase this", "general"],
+  ])("routes %s to the %s trigger only", (body, expected) => {
+    const general = configFor({ from_users: ["boudra"], contains: "@paseo-bot" });
+    const reviewer = configFor({
+      from_users: ["boudra"],
+      contains: "@paseo-bot review",
+    });
+    const configured = {
+      ...general,
+      triggers: [
+        {
+          ...general.triggers[0]!,
+          name: "general",
+          filters: { ...general.triggers[0]!.filters, exclude_contains: "@paseo-bot review" },
+        },
+        {
+          ...reviewer.triggers[0]!,
+          name: "reviewer",
+          on: "github.pull_request_comment_created",
+        },
+      ],
+    };
+    const event = eventFor("issue_comment", {
+      action: "created",
+      issue: { ...issue(), pull_request: {} },
+      comment: comment({ body }),
+    });
+    assert.deepEqual(
+      matchTriggers(configured, event).map((match) => match.trigger.name),
+      [expected],
+    );
+  });
+
   it("allows every actor only when the wildcard is explicit", () => {
     const config = configFor({ from_users: ["*"] });
     const event = createEvent({

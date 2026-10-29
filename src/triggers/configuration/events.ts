@@ -47,6 +47,10 @@ const EVENTS = {
   "github.issue_created": event("github", "GitHub issue created"),
   "github.pull_request_created": event("github", "GitHub pull request created"),
   "github.pull_request_ready_for_review": event("github", "GitHub pull request ready for review"),
+  "github.pull_request_synchronized": event(
+    "github",
+    "GitHub pull request updated with new commits",
+  ),
   "github.issue_comment_created": event("github", "GitHub issue comment created"),
   "github.pull_request_comment_created": event("github", "GitHub pull request comment created"),
   "github.issue_label_added": event("github", "GitHub issue label added", [ADDED_LABEL]),
