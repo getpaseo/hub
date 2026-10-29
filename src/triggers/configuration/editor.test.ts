@@ -484,6 +484,10 @@ test("form authoring omits an unspecified provider mode", () => {
   if (projected.status !== "editable") throw new Error("expected editable form");
   const value = { ...projected.value, agent: "pi/test-model", mode: "" };
   expect(triggerFormErrors(value).mode).toBeUndefined();
+  const patched = patchTriggerYaml(ADVANCED, value);
+  expect(TriggerDocumentSchema.parse(parseDocument(patched).toJS()).run.agent).not.toHaveProperty(
+    "mode",
+  );
   const yaml = createTriggerYaml(value);
   expect(TriggerDocumentSchema.parse(parseDocument(yaml).toJS()).run.agent).not.toHaveProperty(
     "mode",
