@@ -22,6 +22,7 @@ import {
 } from "./socket-protocol.js";
 
 const MAX_FRAME_BYTES = 1_048_576;
+const DEFAULT_HEARTBEAT_MS = 30_000;
 
 export type SlackDeliveryStatus =
   | { state: "connecting" | "reconnecting" | "connected" }
@@ -41,6 +42,7 @@ export interface SlackSocketSourceOptions extends SlackEventIntakeOptions {
   apiUrl?: string;
   random?: () => number;
   timeoutMs?: number;
+  heartbeatMs?: number;
 }
 
 export function createSlackSocketSource(options: SlackSocketSourceOptions): SlackSocketSource {
@@ -99,7 +101,11 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
               connection.socket.close();
             });
         });
-        const closed = await connection.closed;
+        const stopHeartbeat = monitorSlackSocket(
+          connection.socket,
+          options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS,
+        );
+        const closed = await connection.closed.finally(stopHeartbeat);
         current = undefined;
         if (stopped) return;
         if (terminalDisconnect !== undefined) {
@@ -277,6 +283,31 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       "validation",
     );
   }
+}
+
+function monitorSlackSocket(socket: WebSocket, heartbeatMs: number): () => void {
+  let awaitingPong = false;
+  const onPong = () => {
+    awaitingPong = false;
+  };
+  socket.on("pong", onPong);
+  const timer = setInterval(() => {
+    if (awaitingPong) {
+      socket.terminate();
+      return;
+    }
+    awaitingPong = true;
+    try {
+      socket.ping();
+    } catch {
+      socket.terminate();
+    }
+  }, heartbeatMs);
+  timer.unref();
+  return () => {
+    clearInterval(timer);
+    socket.off("pong", onPong);
+  };
 }
 
 function boundedEnvelopeId(value: unknown): string | undefined {

@@ -116,6 +116,24 @@ describe("Slack Socket Mode source", () => {
     await source.stop();
   });
 
+  it("reconnects when a connected socket stops responding", async () => {
+    const slack = await startSlackSocketFixture([
+      { kind: "socket", ignoreClose: true },
+      { kind: "socket" },
+    ]);
+    closers.push(() => slack.close());
+    const stream = new FailureLogStream();
+    const source = socketSource(slack, accepted, "xapp-fixture-secret", { heartbeatMs: 20 });
+
+    await runWithFailureTracking(() => source.start(ignoreTrigger), createLogger(stream));
+    await waitFor(() => slack.openCount === 2 && source.status().state === "connected");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    assert.equal(slack.openCount, 2);
+    assertSlackFailure(stream, "slack.socket.connect", "network", "xapp-fixture-secret");
+    await source.stop();
+  });
+
   it("reconnects cleanly for refresh and reports one abnormal close", async () => {
     const slack = await startSlackSocketFixture();
     closers.push(() => slack.close());
@@ -171,10 +189,11 @@ function socketSource(
   slack: { openUrl: string },
   accept: Parameters<typeof createSlackEventSource>[0]["accept"],
   appToken = "xapp-fixture-secret",
+  socket: { heartbeatMs?: number } = {},
 ) {
   return createSlackEventSource({
     configuration: { provider: "slack", transport: "socket", appId: "A123", appToken },
-    socket: { apiUrl: slack.openUrl, random: () => 0, timeoutMs: 250 },
+    socket: { apiUrl: slack.openUrl, random: () => 0, timeoutMs: 250, ...socket },
     accept,
   });
 }
