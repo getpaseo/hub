@@ -16,6 +16,7 @@
 ### Fixed
 
 - Discord `${{ paseo.context }}` keeps the embeds of referenced messages and thread messages: each embed's title, description, URL, author, fields, and footer. An embed-only bot notification no longer reaches the agent as an empty message.
+- Files attached to the Slack message that mentions the bot reach the agent in `slack.trigger_message.attachments`. Before, only files from earlier messages in the thread did.
 
 ## 0.11.0 - 2026-10-25
 
