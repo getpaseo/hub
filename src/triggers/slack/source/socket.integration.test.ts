@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "vitest";
+import { afterEach, describe, it, vi } from "vitest";
+import { WebSocket } from "ws";
+import type { DurableProviderEvent } from "../../../db/types.js";
 import { runWithFailureTracking } from "../../../failures/index.js";
+import type { TriggerHandler } from "../../index.js";
 import { createLogger } from "../../../logger.js";
 import { assertOneFailure, FailureLogStream } from "../../../test-utils/failure-logs.js";
 import { startSlackSocketFixture } from "../../../test-utils/slack-socket-fixture.js";
@@ -165,18 +168,298 @@ describe("Slack Socket Mode source", () => {
     await waitFor(() => slack.outstanding === 0);
     assert.equal(source.status().state, "stopped");
   });
+
+  it("acknowledges after the accept and keeps reading while a handler hangs", async () => {
+    const slack = await startSlackSocketFixture();
+    closers.push(() => slack.close());
+    const dispatched: string[] = [];
+    const source = socketSource(slack, acceptedWithEvent, undefined, { dispatchTimeoutMs: 300 });
+    await source.start(async (trigger) => {
+      dispatched.push(trigger.deliveryId);
+      if (trigger.deliveryId === "slack-E1") await never;
+    });
+    await waitFor(() => source.status().state === "connected");
+
+    slack.send(eventEnvelope("env-1", "E1"));
+    await waitFor(() => slack.acks.length === 1, 150);
+    slack.send(eventEnvelope("env-2", "E2"));
+    await waitFor(() => slack.acks.length === 2);
+
+    assert.deepEqual(slack.acks, [{ envelope_id: "env-1" }, { envelope_id: "env-2" }]);
+    assert.deepEqual(dispatched, ["slack-E1", "slack-E2"]);
+    assert.equal(slack.openCount, 1);
+    await source.stop();
+  });
+
+  it("never acknowledges an accept that outlives its timeout", async () => {
+    const payloadCanary = "payload-canary-accept-77";
+    const slack = await startSlackSocketFixture();
+    closers.push(() => slack.close());
+    const stream = new FailureLogStream();
+    let releaseFirst: (() => void) | undefined;
+    const firstAccept = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const dispatched: string[] = [];
+    const source = socketSource(
+      slack,
+      async (input) => {
+        if (input.deliveryId === "slack-E1") await firstAccept;
+        return acceptedWithEvent(input);
+      },
+      undefined,
+      { acceptTimeoutMs: 50, dispatchTimeoutMs: 60_000 },
+    );
+    const record: TriggerHandler = async (trigger) => {
+      dispatched.push(trigger.deliveryId);
+    };
+    await runWithFailureTracking(() => source.start(record), createLogger(stream));
+    await waitFor(() => source.status().state === "connected");
+
+    slack.send(eventEnvelope("env-1", "E1", payloadCanary));
+    slack.send(eventEnvelope("env-2", "E2"));
+    await waitFor(() => slack.acks.length === 1);
+    releaseFirst?.();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    assert.deepEqual(slack.acks, [{ envelope_id: "env-2" }]);
+    assert.deepEqual(dispatched, ["slack-E2"]);
+    assert.equal(slack.openCount, 1);
+    assertSlackFailure(stream, "slack.socket.accept_timeout", "internal", payloadCanary);
+    assert.equal(stream.text().includes("xapp-fixture-secret"), false);
+    await source.stop();
+  });
+
+  for (const [name, hung] of [
+    ["an event", eventEnvelope("env-hang", "E1")],
+    ["a poison envelope", { type: "events_api", envelope_id: "env-hang", payload: "poison" }],
+  ] as const) {
+    it(`drops the socket when the acknowledgement of ${name} is never written`, async () => {
+      const slack = await startSlackSocketFixture();
+      closers.push(() => slack.close());
+      const stream = new FailureLogStream();
+      // oxlint-disable-next-line typescript-eslint/unbound-method
+      const send = WebSocket.prototype.send;
+      const spy = vi.spyOn(WebSocket.prototype, "send").mockImplementation(function (
+        this: WebSocket,
+        ...args: Parameters<WebSocket["send"]>
+      ) {
+        // The fixture's server sockets share this prototype, so match only the ack frame.
+        if (args[0] === JSON.stringify({ envelope_id: "env-hang" })) return;
+        send.apply(this, args);
+      });
+      try {
+        const source = socketSource(slack, acceptedWithEvent, undefined, { ackTimeoutMs: 50 });
+        await runWithFailureTracking(() => source.start(ignoreTrigger), createLogger(stream));
+        await waitFor(() => source.status().state === "connected");
+
+        slack.send(hung);
+        await waitFor(() => slack.openCount === 2 && source.status().state === "connected");
+        slack.send(eventEnvelope("env-next", "E2"));
+        await waitFor(() => slack.acks.length === 1);
+
+        assert.deepEqual(slack.acks, [{ envelope_id: "env-next" }]);
+        const timeouts = stream
+          .records()
+          .filter((record) => record["operation"] === "slack.socket.ack_timeout");
+        assert.equal(timeouts.length, 1);
+        assert.equal(timeouts[0]?.["failureKind"], "network");
+        assert.equal(
+          stream.records().some((record) => record["operation"] === "slack.socket.connect"),
+          false,
+        );
+        await source.stop();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  }
+
+  it("reads the next connection's events while a closed connection's handler hangs", async () => {
+    const slack = await startSlackSocketFixture();
+    closers.push(() => slack.close());
+    const source = socketSource(slack, acceptedWithEvent, undefined, {
+      dispatchTimeoutMs: 60_000,
+    });
+    await source.start(async (trigger) => {
+      if (trigger.deliveryId === "slack-E1") await never;
+    });
+    await waitFor(() => source.status().state === "connected");
+
+    slack.send(eventEnvelope("env-1", "E1"));
+    await waitFor(() => slack.acks.length === 1);
+    slack.terminateCurrent();
+    await waitFor(() => slack.openCount === 2 && source.status().state === "connected");
+    slack.send(eventEnvelope("env-2", "E2"));
+    await waitFor(() => slack.acks.length === 2);
+
+    assert.deepEqual(slack.acks.at(-1), { envelope_id: "env-2" });
+    await source.stop();
+  });
+
+  it("keeps a closed connection's late failure away from the next connection", async () => {
+    const slack = await startSlackSocketFixture();
+    closers.push(() => slack.close());
+    const stream = new FailureLogStream();
+    let failFirst: ((error: Error) => void) | undefined;
+    const firstAccept = new Promise<never>((_resolve, reject) => {
+      failFirst = reject;
+    });
+    const source = socketSource(
+      slack,
+      async (input) => {
+        if (input.deliveryId === "slack-E1") await firstAccept;
+        return acceptedWithEvent(input);
+      },
+      undefined,
+      { acceptTimeoutMs: 60_000 },
+    );
+    await runWithFailureTracking(() => source.start(ignoreTrigger), createLogger(stream));
+    await waitFor(() => source.status().state === "connected");
+
+    slack.send(eventEnvelope("env-1", "E1"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    slack.terminateCurrent();
+    await waitFor(() => slack.openCount === 2 && source.status().state === "connected");
+    failFirst?.(new Error("late accept failure"));
+    await waitFor(() => operations(stream).includes("slack.socket.handoff"));
+    slack.terminateCurrent();
+    await waitFor(() => slack.openCount === 3 && source.status().state === "connected");
+
+    assert.deepEqual(operations(stream).toSorted(), [
+      "slack.socket.connect",
+      "slack.socket.connect",
+      "slack.socket.handoff",
+    ]);
+    await source.stop();
+  });
+
+  it("neither acknowledges nor dispatches a closed connection's late accept", async () => {
+    const slack = await startSlackSocketFixture();
+    closers.push(() => slack.close());
+    const stream = new FailureLogStream();
+    let releaseFirst: (() => void) | undefined;
+    const firstAccept = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const dispatched: string[] = [];
+    const source = socketSource(
+      slack,
+      async (input) => {
+        if (input.deliveryId === "slack-E1") await firstAccept;
+        return acceptedWithEvent(input);
+      },
+      undefined,
+      { acceptTimeoutMs: 60_000 },
+    );
+    const record: TriggerHandler = async (trigger) => {
+      dispatched.push(trigger.deliveryId);
+    };
+    await runWithFailureTracking(() => source.start(record), createLogger(stream));
+    await waitFor(() => source.status().state === "connected");
+
+    slack.send(eventEnvelope("env-1", "E1"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    slack.terminateCurrent();
+    await waitFor(() => slack.openCount === 2 && source.status().state === "connected");
+    releaseFirst?.();
+    slack.send(eventEnvelope("env-2", "E2"));
+    await waitFor(() => slack.acks.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    assert.deepEqual(slack.acks, [{ envelope_id: "env-2" }]);
+    assert.deepEqual(dispatched, ["slack-E2"]);
+    assert.deepEqual(operations(stream), ["slack.socket.connect"]);
+    await source.stop();
+  });
+
+  it("stops within its grace while a handler hangs", async () => {
+    const slack = await startSlackSocketFixture();
+    closers.push(() => slack.close());
+    const source = socketSource(slack, acceptedWithEvent, undefined, { stopGraceMs: 200 });
+    await source.start(() => never);
+    await waitFor(() => source.status().state === "connected");
+    slack.send(eventEnvelope("env-1", "E1"));
+    await waitFor(() => slack.acks.length === 1);
+
+    const started = Date.now();
+    await source.stop();
+
+    assert.ok(Date.now() - started < 700);
+    assert.equal(source.status().state, "stopped");
+  });
+
+  it("observes work that fails after its timeout", async () => {
+    const slack = await startSlackSocketFixture();
+    closers.push(() => slack.close());
+    const source = socketSource(
+      slack,
+      async (input) => {
+        if (input.deliveryId === "slack-E1") {
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          throw new Error("late accept failure");
+        }
+        return acceptedWithEvent(input);
+      },
+      undefined,
+      { acceptTimeoutMs: 20, dispatchTimeoutMs: 20 },
+    );
+    await source.start(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      throw new Error("late handler failure");
+    });
+    await waitFor(() => source.status().state === "connected");
+
+    slack.send(eventEnvelope("env-1", "E1"));
+    slack.send(eventEnvelope("env-2", "E2"));
+    await waitFor(() => slack.acks.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    assert.deepEqual(slack.acks, [{ envelope_id: "env-2" }]);
+    assert.equal(slack.openCount, 1);
+    await source.stop();
+  });
 });
+
+type SocketTuning = NonNullable<Parameters<typeof createSlackEventSource>[0]["socket"]>;
 
 function socketSource(
   slack: { openUrl: string },
   accept: Parameters<typeof createSlackEventSource>[0]["accept"],
   appToken = "xapp-fixture-secret",
+  tuning: SocketTuning = {},
 ) {
   return createSlackEventSource({
     configuration: { provider: "slack", transport: "socket", appId: "A123", appToken },
-    socket: { apiUrl: slack.openUrl, random: () => 0, timeoutMs: 250 },
+    socket: { apiUrl: slack.openUrl, random: () => 0, timeoutMs: 250, ...tuning },
     accept,
   });
+}
+
+const never = new Promise<never>(() => undefined);
+
+const acceptedWithEvent: Parameters<typeof createSlackEventSource>[0]["accept"] = (input) =>
+  Promise.resolve({
+    status: "accepted",
+    receiptId: `receipt-${input.deliveryId}`,
+    events: [
+      {
+        providerEventReceiptId: `receipt-${input.deliveryId}`,
+        organizationId: "org-1",
+        projectId: "project-1",
+        configurationRevisionId: "revision-1",
+        deliveryId: input.deliveryId,
+        source: input.source,
+        payload: input.payload,
+        receivedAt: input.receivedAt,
+        connectionId: null,
+        resourceId: null,
+      } satisfies DurableProviderEvent,
+    ],
+  });
+
+function operations(stream: FailureLogStream): string[] {
+  return stream.records().map((record) => String(record["operation"]));
 }
 
 const accepted: Parameters<typeof createSlackEventSource>[0]["accept"] = () =>
@@ -199,7 +482,7 @@ function assertSlackFailure(
   });
 }
 
-function eventEnvelope(envelopeId: string, eventId: string) {
+function eventEnvelope(envelopeId: string, eventId: string, text = "<@UBOT> hello") {
   return {
     type: "events_api",
     envelope_id: envelopeId,
@@ -213,7 +496,7 @@ function eventEnvelope(envelopeId: string, eventId: string) {
         type: "app_mention",
         user: "U123",
         channel: "C123",
-        text: "<@UBOT> hello",
+        text,
         ts: "1700000000.001",
         event_ts: "1700000000.001",
       },

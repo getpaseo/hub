@@ -5,7 +5,7 @@ import type { SlackEventIntakeOptions } from "./internal/intake.js";
 import {
   createSlackSocketSource,
   type SlackDeliveryStatus,
-  type SlackSocketSourceOptions,
+  type SlackSocketTuning,
 } from "./internal/socket.js";
 
 export interface SlackEventSource extends TriggerSource {
@@ -17,7 +17,7 @@ export interface SlackEventSource extends TriggerSource {
 export interface CreateSlackEventSourceOptions {
   configuration: SlackProviderApplicationConfiguration;
   accept: SlackEventIntakeOptions["accept"];
-  socket?: Pick<SlackSocketSourceOptions, "apiUrl" | "random" | "timeoutMs">;
+  socket?: SlackSocketTuning;
 }
 
 export function createSlackEventSource(options: CreateSlackEventSourceOptions): SlackEventSource {

@@ -21,6 +21,11 @@ export class SlackEventIntakeValidationError extends Error {
   override name = "SlackEventIntakeValidationError";
 }
 
+export type AcceptedSlackEvents = Extract<
+  ProviderEventAcceptance,
+  { status: "accepted" }
+>["events"];
+
 /** Transport-blind durable handoff for Slack Events API callbacks. */
 export async function intakeSlackEvent(
   payload: unknown,
@@ -28,13 +33,24 @@ export async function intakeSlackEvent(
   handlers: ReadonlySet<TriggerHandler>,
   options: SlackEventIntakeOptions,
 ): Promise<void> {
+  const events = await acceptSlackEvent(payload, signatureHash, handlers, options);
+  await dispatchSlackEvents(events, handlers);
+}
+
+/** Records the callback durably and returns the events to hand to the triggers. */
+export async function acceptSlackEvent(
+  payload: unknown,
+  signatureHash: string,
+  handlers: ReadonlySet<TriggerHandler>,
+  options: SlackEventIntakeOptions,
+): Promise<AcceptedSlackEvents> {
   const callback = SlackEventCallbackSchema.safeParse(payload);
   if (!callback.success) throw new SlackEventIntakeValidationError();
   if (callback.data.api_app_id !== options.appId) {
     throw new SlackEventIntakeValidationError();
   }
   const normalizedEvent = normalizeSlackEvent(callback.data);
-  if (normalizedEvent === undefined) return;
+  if (normalizedEvent === undefined) return [];
 
   const deliveryId = `slack-${normalizedEvent.id}`;
   const acceptance = await options.accept({
@@ -53,7 +69,14 @@ export async function intakeSlackEvent(
     resourceId: normalizedEvent.teamId,
     acceptance,
   });
-  const events = acceptance.status === "accepted" ? acceptance.events : [];
+  return acceptance.status === "accepted" ? acceptance.events : [];
+}
+
+/** Hands accepted events to every trigger handler. */
+export async function dispatchSlackEvents(
+  events: AcceptedSlackEvents,
+  handlers: ReadonlySet<TriggerHandler>,
+): Promise<void> {
   await Promise.all(
     events.flatMap((acceptedEvent) => Array.from(handlers, (handler) => handler(acceptedEvent))),
   );
