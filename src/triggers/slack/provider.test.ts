@@ -417,7 +417,12 @@ describe("Slack Phase 1 trigger provider", () => {
     // A root mention has no earlier messages, but still says where it was posted.
     assert.deepEqual(rootContext, {
       slack: {
-        trigger_message: { ts: "1700000000.000001", channel: { id: "C1" }, thread: null },
+        trigger_message: {
+          ts: "1700000000.000001",
+          channel: { id: "C1" },
+          thread: null,
+          attachments: [],
+        },
         thread: { status: "not_applicable", messages: [] },
       },
     });
@@ -494,6 +499,7 @@ describe("Slack Phase 1 trigger provider", () => {
           ts: "1700000000.000001",
           channel: { id: "C1" },
           thread: { ts: "1700000000.000001" },
+          attachments: [],
         },
         thread: {
           status: "available",
@@ -533,6 +539,70 @@ describe("Slack Phase 1 trigger provider", () => {
     assert.match(secondUrl, /execution-slack-context-2/u);
   });
 
+  it("exposes files posted with the mention itself through context", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      configuration(),
+      { organizationId: "org-1" },
+    );
+    const attachments = createAttachmentCapabilityRegistry({
+      database,
+      publicBaseUrl: "https://hub.test",
+      authoritySecret: "hub-secret",
+      resolvers: {},
+    });
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: () => Promise.resolve("UBOT"),
+      client: new RecordingSlackClient(),
+      attachments,
+    });
+    const triggerFile = {
+      id: "F2",
+      filename: "Request.json",
+      contentType: "text/plain",
+      size: 4096,
+    };
+
+    // The thread's earlier messages stop before the mention, so its own files come only from here,
+    // whether it was posted in a thread or at the root of a channel.
+    for (const threadTs of ["1700000000.000001", null]) {
+      const base = external(project.id, revision.id, { threadTs });
+      const match = (
+        await provider.match({
+          ...base,
+          connectionId: "22222222-2222-4222-8222-222222222222",
+          payload: { ...base.payload, attachments: [triggerFile] },
+        })
+      )[0];
+      if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+      const executionId = `execution-slack-trigger-files-${threadTs === null ? "root" : "reply"}`;
+      const context = await provider.materializeContext!({
+        executionId,
+        organizationId: "org-1",
+        projectId: project.id,
+        providerEventReceiptId: "11111111-1111-4111-8111-111111111119",
+        triggerContext: match.triggerContext,
+      });
+      const attachment = await database.findAttachmentBySource(
+        "11111111-1111-4111-8111-111111111119",
+        "slack",
+        "F2",
+      );
+      assert.ok(attachment);
+      assert.deepEqual(context?.slack.trigger_message.attachments, [
+        {
+          id: attachment.id,
+          filename: "Request.json",
+          content_type: "text/plain",
+          size: 4096,
+          url: attachments.urlFor(attachment.id, executionId),
+        },
+      ]);
+    }
+  });
+
   it("distinguishes an unavailable Slack thread from an empty hydrated thread", async () => {
     const database = createMemoryDatabase();
     const { project, revision, store } = await createActiveProjectConfiguration(
@@ -565,6 +635,7 @@ describe("Slack Phase 1 trigger provider", () => {
           ts: "1700000000.000001",
           channel: { id: "C1" },
           thread: { ts: "1700000000.000001" },
+          attachments: [],
         },
         thread: { status: "available", messages: [] },
       },
@@ -591,6 +662,7 @@ describe("Slack Phase 1 trigger provider", () => {
           ts: "1700000000.000001",
           channel: { id: "C1" },
           thread: { ts: "1700000000.000001" },
+          attachments: [],
         },
         thread: { status: "unavailable", messages: [] },
       },

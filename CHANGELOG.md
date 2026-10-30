@@ -13,6 +13,10 @@
 
 - Unhandled provider event receipts expire automatically after seven days on every instance. Receipts routed to a trigger or still referenced by a run or attachment remain available.
 
+### Fixed
+
+- Files attached to the Slack message that mentions the bot reach the agent in `slack.trigger_message.attachments`. Before, only files from earlier messages in the thread did.
+
 ## 0.11.0 - 2026-10-25
 
 ### Added
