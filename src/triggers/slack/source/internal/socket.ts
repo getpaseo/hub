@@ -28,6 +28,10 @@ const DEFAULT_ACCEPT_TIMEOUT_MS = 30_000;
 const DEFAULT_ACK_TIMEOUT_MS = 10_000;
 const DEFAULT_DISPATCH_TIMEOUT_MS = 30_000;
 const DEFAULT_STOP_GRACE_MS = 5_000;
+/** How often a connected socket pings Slack. */
+export const SLACK_SOCKET_PING_INTERVAL_MS = 30_000;
+/** How long a ping may go unanswered before the socket is dropped and reopened. */
+export const SLACK_SOCKET_PONG_TIMEOUT_MS = 10_000;
 const TIMED_OUT = Symbol("timed out");
 
 export type SlackDeliveryStatus =
@@ -86,6 +90,10 @@ export interface SlackSocketSourceOptions extends SlackEventIntakeOptions {
   dispatchTimeoutMs?: number;
   /** Longest `stop()` waits for the frame in progress. */
   stopGraceMs?: number;
+  /** How often to ping Slack on a connected socket. */
+  pingIntervalMs?: number;
+  /** How long a ping may go unanswered before the socket is dropped. */
+  pongTimeoutMs?: number;
 }
 
 export type SlackSocketTuning = Pick<
@@ -97,6 +105,8 @@ export type SlackSocketTuning = Pick<
   | "ackTimeoutMs"
   | "dispatchTimeoutMs"
   | "stopGraceMs"
+  | "pingIntervalMs"
+  | "pongTimeoutMs"
 >;
 
 /** State owned by one Socket Mode connection, so a closed one cannot affect the next. */
@@ -120,6 +130,8 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
   const ackTimeoutMs = options.ackTimeoutMs ?? DEFAULT_ACK_TIMEOUT_MS;
   const dispatchTimeoutMs = options.dispatchTimeoutMs ?? DEFAULT_DISPATCH_TIMEOUT_MS;
   const stopGraceMs = options.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
+  const pingIntervalMs = options.pingIntervalMs ?? SLACK_SOCKET_PING_INTERVAL_MS;
+  const pongTimeoutMs = options.pongTimeoutMs ?? SLACK_SOCKET_PONG_TIMEOUT_MS;
   let status: SlackDeliveryStatus = { state: "stopped" };
   let stateChangedAt = new Date();
   let stopped = true;
@@ -173,8 +185,10 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
         };
         current = link;
         links.add(link);
+        const stopPinging = pingUntilClosed(link);
         connection.socket.once("close", () => {
           link.closed = true;
+          stopPinging();
           forgetIfDrained(link);
         });
         transientReported = false;
@@ -447,6 +461,42 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       socket.close();
     }
     return false;
+  }
+
+  /**
+   * Pings Slack on a schedule and drops a socket that stops answering, which a half-open
+   * connection never reports on its own. Returns the function that stops the timers.
+   */
+  function pingUntilClosed(link: SlackSocketLink): () => void {
+    const { socket } = link.connection;
+    let pongTimer: NodeJS.Timeout | undefined;
+    const onPong = () => {
+      clearTimeout(pongTimer);
+      pongTimer = undefined;
+      counters.lastPongAt = new Date();
+    };
+    socket.on("pong", onPong);
+    const pinger = setInterval(() => {
+      if (pongTimer !== undefined) return;
+      pongTimer = setTimeout(() => {
+        if (!link.failureOwned) {
+          link.failureOwned = true;
+          report(
+            new Error("Slack stopped answering pings"),
+            "slack.socket.ping_timeout",
+            "network",
+          );
+        }
+        // Not close(): it waits for a close handshake that a dead peer never sends.
+        socket.terminate();
+      }, pongTimeoutMs);
+      socket.ping();
+    }, pingIntervalMs);
+    return () => {
+      clearInterval(pinger);
+      clearTimeout(pongTimer);
+      socket.off("pong", onPong);
+    };
   }
 
   function setStatus(next: SlackDeliveryStatus): void {

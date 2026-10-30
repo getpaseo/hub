@@ -8,6 +8,7 @@ import { createLogger } from "../../../logger.js";
 import { assertOneFailure, FailureLogStream } from "../../../test-utils/failure-logs.js";
 import { startSlackSocketFixture } from "../../../test-utils/slack-socket-fixture.js";
 import { createSlackEventSource } from "./index.js";
+import { SLACK_SOCKET_PING_INTERVAL_MS, SLACK_SOCKET_PONG_TIMEOUT_MS } from "./internal/socket.js";
 
 describe("Slack Socket Mode source", () => {
   const closers: Array<() => Promise<void>> = [];
@@ -722,6 +723,72 @@ describe("Slack Socket Mode intake health", () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
     slack.send(eventEnvelope("env-2", "E2"));
     await waitFor(() => (intakeOf(source).lastCompletedAt?.getTime() ?? 0) > first);
+    await source.stop();
+  });
+});
+
+describe("Slack Socket Mode liveness", () => {
+  const closers: Array<() => Promise<void>> = [];
+  afterEach(async () => Promise.all(closers.splice(0).map((close) => close())));
+  const pingIntervalMs = 50;
+  const pongTimeoutMs = 50;
+
+  it("detects within the production bound", () => {
+    assert.equal(SLACK_SOCKET_PING_INTERVAL_MS, 30_000);
+    assert.equal(SLACK_SOCKET_PONG_TIMEOUT_MS, 10_000);
+    assert.ok(SLACK_SOCKET_PING_INTERVAL_MS + SLACK_SOCKET_PONG_TIMEOUT_MS <= 40_000);
+  });
+
+  it("records pongs and reopens a socket whose peer stops answering", async () => {
+    const slack = await startSlackSocketFixture();
+    closers.push(() => slack.close());
+    const stream = new FailureLogStream();
+    const source = socketSource(slack, acceptedWithEvent, undefined, {
+      pingIntervalMs,
+      pongTimeoutMs,
+    });
+    await runWithFailureTracking(() => source.start(ignoreTrigger), createLogger(stream));
+    await waitFor(() => source.status().state === "connected");
+    assert.equal(intakeOf(source).lastPongAt, null);
+    await waitFor(() => intakeOf(source).lastPongAt !== null);
+    assert.ok(Date.now() - (intakeOf(source).lastPongAt?.getTime() ?? 0) < 200);
+
+    const pausedAt = Date.now();
+    slack.pauseCurrent();
+    await waitFor(() => slack.openCount === 2 && source.status().state === "connected");
+
+    assert.ok(Date.now() - pausedAt <= pingIntervalMs + pongTimeoutMs + 500);
+    assertSlackFailure(stream, "slack.socket.ping_timeout", "network", "xapp-fixture-secret");
+    await source.stop();
+  });
+
+  it("starts the reconnect at once and opens when Slack answers late", async () => {
+    const slack = await startSlackSocketFixture([
+      { kind: "socket" },
+      { kind: "socket", delayMs: 150 },
+    ]);
+    closers.push(() => slack.close());
+    const source = socketSource(slack, acceptedWithEvent, undefined, {
+      pingIntervalMs,
+      pongTimeoutMs,
+    });
+    await runWithFailureTracking(
+      () => source.start(ignoreTrigger),
+      createLogger(new FailureLogStream()),
+    );
+    await waitFor(() => source.status().state === "connected");
+
+    slack.pauseCurrent();
+    await waitFor(
+      () => source.status().state !== "connected",
+      pingIntervalMs + pongTimeoutMs + 500,
+    );
+    const droppedAt = Date.now();
+    await waitFor(() => slack.openCount === 2);
+    const reopenedAfter = (slack.openTimes[1] ?? Infinity) - droppedAt;
+    assert.ok(reopenedAfter <= 1_000, `reconnect started ${reopenedAfter} ms after the drop`);
+    assert.notEqual(source.status().state, "connected");
+    await waitFor(() => source.status().state === "connected");
     await source.stop();
   });
 });
