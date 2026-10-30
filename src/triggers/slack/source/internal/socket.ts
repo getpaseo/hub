@@ -5,8 +5,8 @@ import { logger } from "../../../../logger.js";
 import type { TriggerHandler, TriggerSource } from "../../../index.js";
 import {
   acceptSlackEvent,
-  dispatchSlackEvents,
   SlackEventIntakeValidationError,
+  startSlackDispatch,
   type AcceptedSlackEvents,
   type SlackEventIntakeOptions,
 } from "./intake.js";
@@ -38,9 +38,39 @@ export type SlackDeliveryStatus =
     }
   | { state: "stopped" };
 
+export type SlackIntakePhase = "accept" | "ack" | "dispatch";
+
+/**
+ * Slack intake as one Socket Mode source sees it. Queue and active-frame fields describe the
+ * current connection; the rest cover the source since it was created. Times, not ages, so the
+ * caller decides what is too old.
+ */
+export interface SlackSocketIntakeHealth {
+  transport: "socket";
+  state: SlackDeliveryStatus["state"];
+  stateChangedAt: Date;
+  queuedFrames: number;
+  activePhase: SlackIntakePhase | null;
+  activePhaseStartedAt: Date | null;
+  lastCompletedAt: Date | null;
+  acceptTimeouts: number;
+  ackTimeouts: number;
+  dispatchTimeouts: number;
+  lastAcceptOkAt: Date | null;
+  lastAcceptTimeoutAt: Date | null;
+  abandonedHandlers: number;
+  oldestAbandonedStartedAt: Date | null;
+  closedConnectionFrames: number;
+  oldestClosedFrameStartedAt: Date | null;
+  lastPongAt: Date | null;
+}
+
+export type SlackIntakeHealth = SlackSocketIntakeHealth | { transport: "webhook" };
+
 export interface SlackSocketSource extends TriggerSource {
   status(): SlackDeliveryStatus;
   retry(): Promise<void>;
+  intake(): SlackSocketIntakeHealth;
 }
 
 export interface SlackSocketSourceOptions extends SlackEventIntakeOptions {
@@ -75,6 +105,9 @@ interface SlackSocketLink {
   frames: Promise<void>;
   /** Set once the socket has closed; its late frames neither acknowledge nor dispatch. */
   closed: boolean;
+  /** Frames received but not yet started. */
+  queued: number;
+  active: { phase: SlackIntakePhase; startedAt: Date } | undefined;
   failureOwned: boolean;
   expectedClose: boolean;
   terminalDisconnect: "socketModeOff" | undefined;
@@ -88,6 +121,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
   const dispatchTimeoutMs = options.dispatchTimeoutMs ?? DEFAULT_DISPATCH_TIMEOUT_MS;
   const stopGraceMs = options.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
   let status: SlackDeliveryStatus = { state: "stopped" };
+  let stateChangedAt = new Date();
   let stopped = true;
   let attempt = 0;
   let controller: AbortController | undefined;
@@ -96,6 +130,19 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
   let wake: (() => void) | undefined;
   let transientReported = false;
   let minimumDelay = 0;
+  /** Connections that are current or still have frames to finish. */
+  const links = new Set<SlackSocketLink>();
+  /** Start times of trigger handlers still running after their dispatch timeout. */
+  const abandoned = new Set<{ startedAt: Date }>();
+  const counters = {
+    lastCompletedAt: null as Date | null,
+    acceptTimeouts: 0,
+    ackTimeouts: 0,
+    dispatchTimeouts: 0,
+    lastAcceptOkAt: null as Date | null,
+    lastAcceptTimeoutAt: null as Date | null,
+    lastPongAt: null as Date | null,
+  };
   const scrubValues = () => [
     options.appToken,
     ...(options.apiUrl === undefined ? [] : [options.apiUrl]),
@@ -104,7 +151,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
   const run = async () => {
     for (;;) {
       if (stopped) return;
-      status = { state: attempt === 0 ? "connecting" : "reconnecting" };
+      setStatus({ state: attempt === 0 ? "connecting" : "reconnecting" });
       controller = new AbortController();
       try {
         const connection = await openSlackSocket({
@@ -118,37 +165,46 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
           connection,
           frames: Promise.resolve(),
           closed: false,
+          queued: 0,
+          active: undefined,
           failureOwned: false,
           expectedClose: false,
           terminalDisconnect: undefined,
         };
         current = link;
+        links.add(link);
         connection.socket.once("close", () => {
           link.closed = true;
+          forgetIfDrained(link);
         });
         transientReported = false;
         attempt = 0;
-        status = { state: "connected" };
+        setStatus({ state: "connected" });
         logger.info(
           { provider: "slack", operation: "slack.socket.connect", appId: options.appId },
           "Slack Socket Mode connected",
         );
         connection.socket.on("message", (data, binary) => {
+          link.queued += 1;
           link.frames = link.frames
-            .then(() => handleFrame(link, data, binary))
+            .then(() => {
+              link.queued -= 1;
+              return handleFrame(link, data, binary);
+            })
             .catch((error: unknown) => {
               if (!link.failureOwned) {
                 link.failureOwned = true;
                 report(error, "slack.socket.handoff", "internal");
               }
               connection.socket.close();
-            });
+            })
+            .then(() => completeFrame(link));
         });
         const closed = await connection.closed;
         if (current === link) current = undefined;
         if (stopped) return;
         if (link.terminalDisconnect !== undefined) {
-          status = { state: "actionNeeded", reason: link.terminalDisconnect };
+          setStatus({ state: "actionNeeded", reason: link.terminalDisconnect });
           if (!link.failureOwned)
             report(new Error("Slack Socket Mode is off"), "slack.socket.disconnect", "validation");
           return;
@@ -166,7 +222,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       } catch (error) {
         if (stopped || controller.signal.aborted) return;
         if (error instanceof SlackSocketConnectionError && error.reason !== "transient") {
-          status = { state: "actionNeeded", reason: error.reason };
+          setStatus({ state: "actionNeeded", reason: error.reason });
           report(error, "slack.socket.authenticate", "authentication");
           return;
         }
@@ -208,9 +264,33 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       await supervisor;
       if (link !== undefined) await settleWithin(link.frames, stopGraceMs);
       handlers.clear();
-      status = { state: "stopped" };
+      setStatus({ state: "stopped" });
     },
     status: () => status,
+    intake: () => {
+      const link = current?.closed === false ? current : undefined;
+      const closedLinks = [...links].filter((candidate) => candidate !== link);
+      return {
+        transport: "socket",
+        state: status.state,
+        stateChangedAt,
+        queuedFrames: link?.queued ?? 0,
+        activePhase: link?.active?.phase ?? null,
+        activePhaseStartedAt: link?.active?.startedAt ?? null,
+        ...counters,
+        abandonedHandlers: abandoned.size,
+        oldestAbandonedStartedAt: earliest([...abandoned].map((entry) => entry.startedAt)),
+        closedConnectionFrames: closedLinks.reduce(
+          (total, closed) => total + closed.queued + (closed.active === undefined ? 0 : 1),
+          0,
+        ),
+        oldestClosedFrameStartedAt: earliest(
+          closedLinks.flatMap((closed) =>
+            closed.active === undefined ? [] : [closed.active.startedAt],
+          ),
+        ),
+      };
+    },
     async retry() {
       if (!stopped && status.state !== "actionNeeded") {
         wake?.();
@@ -272,6 +352,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
   ): Promise<void> {
     const signatureHash = createHash("sha256").update(envelopeId).digest("hex");
     let events: AcceptedSlackEvents = [];
+    startPhase(link, "accept");
     try {
       const accepted = await settleWithin(
         acceptSlackEvent(payload, signatureHash, handlers, options),
@@ -279,6 +360,8 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
         "slack.socket.accept",
       );
       if (accepted === TIMED_OUT) {
+        counters.acceptTimeouts += 1;
+        counters.lastAcceptTimeoutAt = new Date();
         // Leave it unacknowledged: Slack redelivers it and the receipt store replays it.
         report(
           new Error("Slack event accept timed out"),
@@ -287,6 +370,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
         );
         return;
       }
+      counters.lastAcceptOkAt = new Date();
       events = accepted;
     } catch (error) {
       if (!(error instanceof SlackEventIntakeValidationError)) throw error;
@@ -296,13 +380,29 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
     // Dispatch only what Slack has been told it received; anything else it redelivers.
     if (!(await sendAck(link, envelopeId))) return;
     if (events.length === 0) return;
+    const phase = startPhase(link, "dispatch");
+    const running = new Set<Promise<unknown>>();
     try {
+      const calls = startSlackDispatch(events, handlers);
+      for (const call of calls) {
+        running.add(call);
+        const settle = () => running.delete(call);
+        call.then(settle, settle);
+      }
       const dispatched = await settleWithin(
-        dispatchSlackEvents(events, handlers),
+        Promise.all(calls),
         dispatchTimeoutMs,
         "slack.socket.dispatch",
       );
       if (dispatched === TIMED_OUT) {
+        counters.dispatchTimeouts += 1;
+        // One entry per handler call still running, each forgotten when it settles.
+        for (const call of running) {
+          const entry = { startedAt: phase.startedAt };
+          abandoned.add(entry);
+          const forget = () => abandoned.delete(entry);
+          call.then(forget, forget);
+        }
         report(
           new Error("Slack trigger handlers timed out"),
           "slack.socket.dispatch_timeout",
@@ -318,6 +418,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
   /** Resolves true once the acknowledgement is written. */
   async function sendAck(link: SlackSocketLink, envelopeId: string): Promise<boolean> {
     if (link.closed) return false;
+    startPhase(link, "ack");
     const { socket } = link.connection;
     try {
       const sent = await settleWithin(
@@ -334,6 +435,7 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
         "slack.socket.ack",
       );
       if (sent !== TIMED_OUT) return true;
+      counters.ackTimeouts += 1;
       if (!link.failureOwned) {
         link.failureOwned = true;
         report(new Error("Slack acknowledgement timed out"), "slack.socket.ack_timeout", "network");
@@ -345,6 +447,30 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
       socket.close();
     }
     return false;
+  }
+
+  function setStatus(next: SlackDeliveryStatus): void {
+    // Stamped on a change of state only, so a retry loop does not look freshly down.
+    if (next.state !== status.state) stateChangedAt = new Date();
+    status = next;
+  }
+
+  function startPhase(
+    link: SlackSocketLink,
+    phase: SlackIntakePhase,
+  ): { phase: SlackIntakePhase; startedAt: Date } {
+    link.active = { phase, startedAt: new Date() };
+    return link.active;
+  }
+
+  function completeFrame(link: SlackSocketLink): void {
+    link.active = undefined;
+    counters.lastCompletedAt = new Date();
+    forgetIfDrained(link);
+  }
+
+  function forgetIfDrained(link: SlackSocketLink): void {
+    if (link.closed && link.queued === 0 && link.active === undefined) links.delete(link);
   }
 
   function waitForRetry(milliseconds: number): Promise<void> {
@@ -408,6 +534,12 @@ async function settleWithin<T>(
   } finally {
     clearTimeout(timer);
   }
+}
+
+function earliest(times: readonly Date[]): Date | null {
+  let first: Date | null = null;
+  for (const time of times) if (first === null || time < first) first = time;
+  return first;
 }
 
 function boundedEnvelopeId(value: unknown): string | undefined {

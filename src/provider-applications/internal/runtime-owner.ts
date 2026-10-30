@@ -21,7 +21,7 @@ import type {
   ProviderRuntimeOwner,
 } from "../index.js";
 import { parseProviderApplicationConfiguration } from "./store.js";
-import type { SlackDeliveryStatus } from "../../triggers/slack/source/index.js";
+import type { SlackIntakeHealth, SlackDeliveryStatus } from "../../triggers/slack/source/index.js";
 import { GITHUB_TRIGGER_SOURCE_NAMES } from "../../triggers/github/classification.js";
 
 interface Slot {
@@ -108,7 +108,9 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     return this.slot(provider).identity;
   }
 
-  slackDelivery(): { status(): SlackDeliveryStatus; retry(): Promise<void> } | undefined {
+  slackDelivery():
+    | { status(): SlackDeliveryStatus; retry(): Promise<void>; intake(): SlackIntakeHealth }
+    | undefined {
     return this.slot("slack").active?.registration.slackDelivery;
   }
 

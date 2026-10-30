@@ -187,7 +187,11 @@ export function createSlackRegistration(
     requests:
       events.request === undefined ? [] : [{ name: "slack.events", handle: events.request }],
     attachment: { provider: "slack", resolve: createSlackAttachmentResolver(bot) },
-    slackDelivery: { status: () => events.status(), retry: () => events.retry() },
+    slackDelivery: {
+      status: () => events.status(),
+      retry: () => events.retry(),
+      intake: () => events.intake(),
+    },
   };
 }
 

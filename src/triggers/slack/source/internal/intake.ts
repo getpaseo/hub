@@ -77,7 +77,22 @@ export async function dispatchSlackEvents(
   events: AcceptedSlackEvents,
   handlers: ReadonlySet<TriggerHandler>,
 ): Promise<void> {
-  await Promise.all(
-    events.flatMap((acceptedEvent) => Array.from(handlers, (handler) => handler(acceptedEvent))),
+  await Promise.all(startSlackDispatch(events, handlers));
+}
+
+/** Starts one handler call per event and handler, so each can be followed on its own. */
+export function startSlackDispatch(
+  events: AcceptedSlackEvents,
+  handlers: ReadonlySet<TriggerHandler>,
+): Promise<unknown>[] {
+  return events.flatMap((acceptedEvent) =>
+    Array.from(handlers, (handler) => callHandler(handler, acceptedEvent)),
   );
+}
+
+async function callHandler(
+  handler: TriggerHandler,
+  event: AcceptedSlackEvents[number],
+): Promise<unknown> {
+  return handler(event);
 }
