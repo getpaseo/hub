@@ -16,6 +16,7 @@ import { Route as ShellIndexRouteImport } from './routes/_shell/index'
 import { Route as TestTriggerRouteImport } from './routes/test/trigger'
 import { Route as TestStripeCheckoutRouteImport } from './routes/test/stripe-checkout'
 import { Route as TestSmokeRouteImport } from './routes/test/smoke'
+import { Route as HealthSlackRouteImport } from './routes/health/slack'
 import { Route as AssetsSplatRouteImport } from './routes/assets/$'
 import { Route as ApiReferenceRouteImport } from './routes/api/reference'
 import { Route as ApiOpenapiDotjsonRouteImport } from './routes/api/openapi[.]json'
@@ -90,6 +91,11 @@ const TestSmokeRoute = TestSmokeRouteImport.update({
   id: '/test/smoke',
   path: '/test/smoke',
   getParentRoute: () => rootRouteImport,
+} as any)
+const HealthSlackRoute = HealthSlackRouteImport.update({
+  id: '/slack',
+  path: '/slack',
+  getParentRoute: () => HealthRoute,
 } as any)
 const AssetsSplatRoute = AssetsSplatRouteImport.update({
   id: '/assets/$',
@@ -318,7 +324,7 @@ const ShellOOrganizationSlugSettingsApiKeysRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
-  '/health': typeof HealthRoute
+  '/health': typeof HealthRouteWithChildren
   '/webhook': typeof WebhookRoute
   '/apps': typeof ShellAppsRoute
   '/cli-login': typeof ShellCliLoginRoute
@@ -329,6 +335,7 @@ export interface FileRoutesByFullPath {
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
+  '/health/slack': typeof HealthSlackRoute
   '/test/smoke': typeof TestSmokeRoute
   '/test/stripe-checkout': typeof TestStripeCheckoutRoute
   '/test/trigger': typeof TestTriggerRoute
@@ -365,7 +372,7 @@ export interface FileRoutesByFullPath {
   '/o/$organizationSlug/triggers/': typeof ShellOOrganizationSlugTriggersIndexRoute
 }
 export interface FileRoutesByTo {
-  '/health': typeof HealthRoute
+  '/health': typeof HealthRouteWithChildren
   '/webhook': typeof WebhookRoute
   '/apps': typeof ShellAppsRoute
   '/cli-login': typeof ShellCliLoginRoute
@@ -376,6 +383,7 @@ export interface FileRoutesByTo {
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
+  '/health/slack': typeof HealthSlackRoute
   '/test/smoke': typeof TestSmokeRoute
   '/test/stripe-checkout': typeof TestStripeCheckoutRoute
   '/test/trigger': typeof TestTriggerRoute
@@ -413,7 +421,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_shell': typeof ShellRouteWithChildren
-  '/health': typeof HealthRoute
+  '/health': typeof HealthRouteWithChildren
   '/webhook': typeof WebhookRoute
   '/_shell/apps': typeof ShellAppsRoute
   '/_shell/cli-login': typeof ShellCliLoginRoute
@@ -424,6 +432,7 @@ export interface FileRoutesById {
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
+  '/health/slack': typeof HealthSlackRoute
   '/test/smoke': typeof TestSmokeRoute
   '/test/stripe-checkout': typeof TestStripeCheckoutRoute
   '/test/trigger': typeof TestTriggerRoute
@@ -475,6 +484,7 @@ export interface FileRouteTypes {
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
+    | '/health/slack'
     | '/test/smoke'
     | '/test/stripe-checkout'
     | '/test/trigger'
@@ -522,6 +532,7 @@ export interface FileRouteTypes {
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
+    | '/health/slack'
     | '/test/smoke'
     | '/test/stripe-checkout'
     | '/test/trigger'
@@ -569,6 +580,7 @@ export interface FileRouteTypes {
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
+    | '/health/slack'
     | '/test/smoke'
     | '/test/stripe-checkout'
     | '/test/trigger'
@@ -608,7 +620,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   ShellRoute: typeof ShellRouteWithChildren
-  HealthRoute: typeof HealthRoute
+  HealthRoute: typeof HealthRouteWithChildren
   WebhookRoute: typeof WebhookRoute
   ApiSplatRoute: typeof ApiSplatRoute
   ApiOpenapiDotjsonRoute: typeof ApiOpenapiDotjsonRoute
@@ -686,6 +698,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/test/smoke'
       preLoaderRoute: typeof TestSmokeRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/health/slack': {
+      id: '/health/slack'
+      path: '/slack'
+      fullPath: '/health/slack'
+      preLoaderRoute: typeof HealthSlackRouteImport
+      parentRoute: typeof HealthRoute
     }
     '/assets/$': {
       id: '/assets/$'
@@ -1050,6 +1069,17 @@ const ShellRouteChildren: ShellRouteChildren = {
 
 const ShellRouteWithChildren = ShellRoute._addFileChildren(ShellRouteChildren)
 
+interface HealthRouteChildren {
+  HealthSlackRoute: typeof HealthSlackRoute
+}
+
+const HealthRouteChildren: HealthRouteChildren = {
+  HealthSlackRoute: HealthSlackRoute,
+}
+
+const HealthRouteWithChildren =
+  HealthRoute._addFileChildren(HealthRouteChildren)
+
 interface ApiV1CliAuthorizationsRouteChildren {
   ApiV1CliAuthorizationsPollRoute: typeof ApiV1CliAuthorizationsPollRoute
 }
@@ -1066,7 +1096,7 @@ const ApiV1CliAuthorizationsRouteWithChildren =
 
 const rootRouteChildren: RootRouteChildren = {
   ShellRoute: ShellRouteWithChildren,
-  HealthRoute: HealthRoute,
+  HealthRoute: HealthRouteWithChildren,
   WebhookRoute: WebhookRoute,
   ApiSplatRoute: ApiSplatRoute,
   ApiOpenapiDotjsonRoute: ApiOpenapiDotjsonRoute,

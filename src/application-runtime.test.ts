@@ -8,6 +8,7 @@ import { EntitlementsService } from "./entitlements/service.js";
 import type { ProviderRegistration, TriggerProviderResources } from "./providers/registration.js";
 import { createApplicationRuntime } from "./application-runtime.js";
 import { replyOutputTool } from "./execution-capabilities/outputs.js";
+import { handleSlackHealth, startApplication, stopApplication } from "./server/runtime.js";
 
 describe("application runtime provider composition", () => {
   it("collects a fake registration without a concrete-provider case", async () => {
@@ -130,6 +131,94 @@ describe("application runtime provider composition", () => {
       "second:stop",
       "upstream:close",
     ]);
+  });
+
+  it("serves Slack intake health from the composed runtime", async () => {
+    const database = await runtimeDatabase("owner");
+    const stalledAt = new Date(Date.now() - 1_000);
+    const connectedAt = new Date(Date.now() - 60_000);
+    await startApplication(() =>
+      createApplicationRuntime({
+        database,
+        auth: new RuntimeAuth(),
+        entitlements: entitlementsForTest(database),
+        billing: null,
+        registrations: [fakeRegistration()],
+        slackIntakeHealth: () => ({
+          transport: "socket",
+          state: "connected",
+          stateChangedAt: connectedAt,
+          queuedFrames: 2,
+          activePhase: null,
+          activePhaseStartedAt: null,
+          lastCompletedAt: stalledAt,
+          acceptTimeouts: 3,
+          ackTimeouts: 0,
+          dispatchTimeouts: 1,
+          lastAcceptOkAt: null,
+          lastAcceptTimeoutAt: stalledAt,
+          abandonedHandlers: 1,
+          oldestAbandonedStartedAt: null,
+          closedConnectionFrames: 0,
+          oldestClosedFrameStartedAt: null,
+          lastPongAt: null,
+        }),
+        close: () => Promise.resolve(),
+      }),
+    );
+    try {
+      const response = await handleSlackHealth();
+      assert.equal(response.status, 503);
+      assert.deepEqual(await response.json(), {
+        ok: false,
+        reason: "accept_stalled",
+        transport: "socket",
+        state: "connected",
+        stateChangedAt: connectedAt.toISOString(),
+        queuedFrames: 2,
+        activePhase: null,
+        activePhaseAgeMs: null,
+        lastCompletedAt: stalledAt.toISOString(),
+        acceptTimeouts: 3,
+        ackTimeouts: 0,
+        dispatchTimeouts: 1,
+        lastAcceptOkAt: null,
+        lastAcceptTimeoutAt: stalledAt.toISOString(),
+        abandonedHandlers: 1,
+        oldestAbandonedAgeMs: null,
+        closedConnectionFrames: 0,
+        oldestClosedFrameAgeMs: null,
+        lastPongAt: null,
+      });
+    } finally {
+      await stopApplication();
+    }
+  });
+
+  it("reports Slack as not configured when the runtime has no intake health", async () => {
+    const database = await runtimeDatabase("owner");
+    await startApplication(() =>
+      createApplicationRuntime({
+        database,
+        auth: new RuntimeAuth(),
+        entitlements: entitlementsForTest(database),
+        billing: null,
+        registrations: [fakeRegistration()],
+        close: () => Promise.resolve(),
+      }),
+    );
+    try {
+      const response = await handleSlackHealth();
+      assert.equal(response.status, 200);
+      const body: unknown = await response.json();
+      assert.ok(typeof body === "object" && body !== null);
+      assert.deepEqual(
+        Object.entries(body).filter(([, value]) => value !== null),
+        [["ok", true]],
+      );
+    } finally {
+      await stopApplication();
+    }
   });
 
   it("reports member connection status as read-only", async () => {
