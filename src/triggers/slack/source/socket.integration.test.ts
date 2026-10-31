@@ -674,6 +674,143 @@ describe("Slack Socket Mode intake health", () => {
     await source.stop();
   });
 
+  it("keeps a closed connection's late accept timeout from marking a recovered source stalled", async () => {
+    const slack = await startSlackSocketFixture();
+    closers.push(() => slack.close());
+    const source = socketSource(
+      slack,
+      async (input) => {
+        if (input.deliveryId === "slack-E1") await never;
+        return acceptedWithEvent(input);
+      },
+      undefined,
+      { acceptTimeoutMs: 300 },
+    );
+    await runWithFailureTracking(
+      () => source.start(ignoreTrigger),
+      createLogger(new FailureLogStream()),
+    );
+    await waitFor(() => source.status().state === "connected");
+
+    slack.send(eventEnvelope("env-1", "E1"));
+    await waitFor(() => intakeOf(source).activePhase === "accept");
+    slack.terminateCurrent();
+    await waitFor(() => slack.openCount === 2 && source.status().state === "connected");
+    slack.send(eventEnvelope("env-2", "E2"));
+    await waitFor(() => slack.acks.length === 1);
+    await waitFor(() => intakeOf(source).acceptTimeouts === 1);
+
+    const health = intakeOf(source);
+    assert.notEqual(health.lastAcceptOkAt, null);
+    assert.equal(health.lastAcceptTimeoutAt, null);
+    await source.stop();
+  });
+
+  it("keeps the newest success when accepts on older connections finish out of order", async () => {
+    const slack = await startSlackSocketFixture();
+    closers.push(() => slack.close());
+    let releaseFirst: (() => void) | undefined;
+    const firstAccept = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const source = socketSource(
+      slack,
+      async (input) => {
+        if (input.deliveryId === "slack-E1") await firstAccept;
+        if (input.deliveryId === "slack-E2") await never;
+        return acceptedWithEvent(input);
+      },
+      undefined,
+      { acceptTimeoutMs: 800 },
+    );
+    await runWithFailureTracking(
+      () => source.start(ignoreTrigger),
+      createLogger(new FailureLogStream()),
+    );
+    await waitFor(() => source.status().state === "connected");
+
+    // E1 starts on the first connection, E2 on the second, E3 on the third.
+    slack.send(eventEnvelope("env-1", "E1"));
+    await waitFor(() => intakeOf(source).activePhase === "accept");
+    slack.terminateCurrent();
+    await waitFor(() => slack.openCount === 2 && source.status().state === "connected");
+    slack.send(eventEnvelope("env-2", "E2"));
+    await waitFor(() => intakeOf(source).activePhase === "accept");
+    slack.terminateCurrent();
+    await waitFor(() => slack.openCount === 3 && source.status().state === "connected");
+    slack.send(eventEnvelope("env-3", "E3"));
+    await waitFor(() => slack.acks.length === 1);
+    // E1 succeeds after E3, then E2 times out: E3 began after E2 and succeeded.
+    releaseFirst?.();
+    await waitFor(() => intakeOf(source).acceptTimeouts === 1);
+
+    assert.equal(intakeOf(source).lastAcceptTimeoutAt, null);
+    await source.stop();
+  });
+
+  it("does not count an ignored event as a successful accept", async () => {
+    const slack = await startSlackSocketFixture();
+    closers.push(() => slack.close());
+    const durable: string[] = [];
+    const source = socketSource(
+      slack,
+      async (input) => {
+        durable.push(input.deliveryId);
+        await never;
+        return acceptedWithEvent(input);
+      },
+      undefined,
+      { acceptTimeoutMs: 100 },
+    );
+    await runWithFailureTracking(
+      () => source.start(ignoreTrigger),
+      createLogger(new FailureLogStream()),
+    );
+    await waitFor(() => source.status().state === "connected");
+
+    slack.send(eventEnvelope("env-1", "E1"));
+    await waitFor(() => intakeOf(source).acceptTimeouts === 1);
+    const fromBot = eventEnvelope("env-2", "E2");
+    slack.send({
+      ...fromBot,
+      payload: { ...fromBot.payload, event: { ...fromBot.payload.event, bot_id: "B123" } },
+    });
+    await waitFor(() => slack.acks.length === 1);
+
+    assert.deepEqual(durable, ["slack-E1"]);
+    const health = intakeOf(source);
+    assert.equal(health.lastAcceptOkAt, null);
+    assert.notEqual(health.lastAcceptTimeoutAt, null);
+    await source.stop();
+  });
+
+  it("keeps the deadline for the other handlers when one fails", async () => {
+    const slack = await startSlackSocketFixture();
+    closers.push(() => slack.close());
+    const stream = new FailureLogStream();
+    const fail: TriggerHandler = () => Promise.reject(new Error("handler failed"));
+    const hold: TriggerHandler = () => never;
+    const source = socketSource(slack, acceptedWithEvent, undefined, {
+      dispatchTimeoutMs: 50,
+      stopGraceMs: 100,
+    });
+    await runWithFailureTracking(async () => {
+      await source.start(fail);
+      await source.start(hold);
+    }, createLogger(stream));
+    await waitFor(() => source.status().state === "connected");
+
+    slack.send(eventEnvelope("env-1", "E1"));
+    await waitFor(() => intakeOf(source).dispatchTimeouts === 1);
+
+    assert.equal(intakeOf(source).abandonedHandlers, 1);
+    assert.deepEqual(operations(stream).toSorted(), [
+      "slack.socket.dispatch_timeout",
+      "slack.socket.handoff",
+    ]);
+    await source.stop();
+  });
+
   it("stamps the state change once across failed reconnect attempts", async () => {
     const slack = await startSlackSocketFixture([
       { kind: "socket" },
@@ -762,34 +899,97 @@ describe("Slack Socket Mode liveness", () => {
     await source.stop();
   });
 
-  it("starts the reconnect at once and opens when Slack answers late", async () => {
+  it("reports a ping timeout once when it fails an acknowledgement still being written", async () => {
+    const slack = await startSlackSocketFixture();
+    closers.push(() => slack.close());
+    const stream = new FailureLogStream();
+    let held: ((error: Error) => void) | undefined;
+    const send = sendOf(WebSocket.prototype);
+    const terminate = terminateOf(WebSocket.prototype);
+    const sendSpy = vi.spyOn(WebSocket.prototype, "send").mockImplementation(function (
+      this: WebSocket,
+      ...args: Parameters<WebSocket["send"]>
+    ) {
+      const callback = args.at(-1);
+      if (
+        args[0] === JSON.stringify({ envelope_id: "env-held" }) &&
+        typeof callback === "function"
+      ) {
+        held = callback;
+        return;
+      }
+      send(this, args);
+    });
+    const terminateSpy = vi
+      .spyOn(WebSocket.prototype, "terminate")
+      .mockImplementation(function (this: WebSocket) {
+        terminate(this);
+        const fail = held;
+        held = undefined;
+        fail?.(new Error("WebSocket is not open"));
+      });
+    try {
+      const source = socketSource(slack, acceptedWithEvent, undefined, {
+        pingIntervalMs,
+        pongTimeoutMs,
+        ackTimeoutMs: 60_000,
+      });
+      await runWithFailureTracking(() => source.start(ignoreTrigger), createLogger(stream));
+      await waitFor(() => source.status().state === "connected");
+
+      slack.send(eventEnvelope("env-held", "E1"));
+      await waitFor(() => intakeOf(source).activePhase === "ack");
+      slack.pauseCurrent();
+      await waitFor(() => slack.openCount === 2 && source.status().state === "connected");
+
+      assert.deepEqual(operations(stream), ["slack.socket.ping_timeout"]);
+      await source.stop();
+    } finally {
+      sendSpy.mockRestore();
+      terminateSpy.mockRestore();
+    }
+  });
+
+  it("starts the reconnect within a second of the termination and opens when Slack answers late", async () => {
     const slack = await startSlackSocketFixture([
       { kind: "socket" },
       { kind: "socket", delayMs: 150 },
     ]);
     closers.push(() => slack.close());
-    const source = socketSource(slack, acceptedWithEvent, undefined, {
-      pingIntervalMs,
-      pongTimeoutMs,
-    });
-    await runWithFailureTracking(
-      () => source.start(ignoreTrigger),
-      createLogger(new FailureLogStream()),
-    );
-    await waitFor(() => source.status().state === "connected");
+    let terminatedAt: number | undefined;
+    const terminate = terminateOf(WebSocket.prototype);
+    const spy = vi
+      .spyOn(WebSocket.prototype, "terminate")
+      .mockImplementation(function (this: WebSocket) {
+        terminatedAt ??= Date.now();
+        terminate(this);
+      });
+    try {
+      // 0.8 of the first attempt's one-second cap, so the retry delay is really sampled.
+      const source = socketSource(slack, acceptedWithEvent, undefined, {
+        pingIntervalMs,
+        pongTimeoutMs,
+        random: () => 0.8,
+      });
+      await runWithFailureTracking(
+        () => source.start(ignoreTrigger),
+        createLogger(new FailureLogStream()),
+      );
+      await waitFor(() => source.status().state === "connected");
 
-    slack.pauseCurrent();
-    await waitFor(
-      () => source.status().state !== "connected",
-      pingIntervalMs + pongTimeoutMs + 500,
-    );
-    const droppedAt = Date.now();
-    await waitFor(() => slack.openCount === 2);
-    const reopenedAfter = (slack.openTimes[1] ?? Infinity) - droppedAt;
-    assert.ok(reopenedAfter <= 1_000, `reconnect started ${reopenedAfter} ms after the drop`);
-    assert.notEqual(source.status().state, "connected");
-    await waitFor(() => source.status().state === "connected");
-    await source.stop();
+      slack.pauseCurrent();
+      await waitFor(() => slack.openCount === 2, pingIntervalMs + pongTimeoutMs + 2_000);
+      const reopenedAfter = (slack.openTimes[1] ?? Infinity) - (terminatedAt ?? -Infinity);
+      assert.ok(
+        reopenedAfter >= 700 && reopenedAfter <= 1_000,
+        `reconnect started ${reopenedAfter} ms after the termination`,
+      );
+      assert.notEqual(source.status().state, "connected");
+      await waitFor(() => source.status().state === "connected");
+      await source.stop();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
@@ -797,6 +997,15 @@ function intakeOf(source: ReturnType<typeof createSlackEventSource>) {
   const health = source.intake();
   if (health.transport !== "socket") throw new Error("expected Socket Mode intake health");
   return health;
+}
+
+/** Calls the real terminate even while the prototype is spied on. */
+function terminateOf(prototype: WebSocket): (socket: WebSocket) => void {
+  // oxlint-disable-next-line typescript-eslint/unbound-method
+  const terminate = prototype.terminate;
+  return (socket) => {
+    Reflect.apply(terminate, socket, []);
+  };
 }
 
 /** Calls the real send even while the prototype is spied on. */
