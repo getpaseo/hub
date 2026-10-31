@@ -181,7 +181,7 @@ export const GITHUB_GUIDE: ProviderGuide = {
             {
               kind: "text",
               value:
-                ", grant Members read-only access so Hub can verify that the person connecting an organization installation is an organization admin. For an existing App, approve this permission on the installation before reconnecting.",
+                ", grant Members read-only access so Hub can verify that the person connecting an organization installation is an organization admin and check GitHub team membership for team allowlists. For an existing App, approve this permission on the installation before reconnecting.",
             },
           ],
           permissions: [{ name: "Members", access: "Read-only" }],

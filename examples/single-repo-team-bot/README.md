@@ -15,11 +15,14 @@ Copy `.paseo` to your repository root, then replace these values:
 | `your-github-connection`            | GitHub connection slug in Hub            |
 | `YOUR_DISCORD_USER_ID`              | Discord user allowed to trigger runs     |
 | `YOUR_SLACK_USER_ID`                | Slack user allowed to trigger runs       |
-| `your-github-login`                 | GitHub user allowed to trigger runs      |
+| `your-org/your-team`                | GitHub team allowed to trigger runs      |
 | `@your-bot`                         | Mention that starts the GitHub workflow  |
 
-Connect Discord, Slack, and GitHub to the project before enabling their triggers. Keep the user
-allowlists narrow; wildcards are not supported.
+Connect Discord, Slack, and GitHub to the project before enabling their triggers. GitHub team
+filters use `organization/team-slug` and require the GitHub App's organization **Members**
+permission with read access. If membership cannot be checked, Hub does not start a run. A GitHub
+`from_users` allowlist can be combined with `from_teams`; either grants access. Keep allowlists
+narrow; wildcards are not supported.
 
 ## Deploy
 
