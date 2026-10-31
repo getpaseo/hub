@@ -18,8 +18,8 @@ describe("Slack Web API client", () => {
       "operator",
     );
     assert.deepEqual(request, {
-      url: "https://slack.com/api/users.info",
-      method: "POST",
+      url: "https://slack.com/api/users.info?user=U1",
+      method: "GET",
     });
   });
 
@@ -265,7 +265,7 @@ describe("Slack Web API client", () => {
           url: requestUrl(input),
           authorization: new Headers(init?.headers).get("authorization"),
         });
-        if (requestUrl(input).endsWith("files.info")) {
+        if (requestUrl(input).startsWith("https://slack.com/api/files.info?")) {
           return Response.json({
             ok: true,
             file: {
@@ -288,7 +288,7 @@ describe("Slack Web API client", () => {
 
     assert.equal(await response?.text(), "slack-image-bytes");
     assert.deepEqual(requests, [
-      { url: "https://slack.com/api/files.info", authorization: "Bearer xoxb-secret" },
+      { url: "https://slack.com/api/files.info?file=F1", authorization: "Bearer xoxb-secret" },
       {
         url: "https://files.slack.com/files-pri/T1-F1/download/image.png",
         authorization: "Bearer xoxb-secret",
