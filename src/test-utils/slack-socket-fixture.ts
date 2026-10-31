@@ -5,7 +5,7 @@ import { WebSocketServer, type RawData, type WebSocket } from "ws";
 import { SLACK_REQUIRED_BOT_SCOPES } from "../providers/slack/client.js";
 
 export type SlackOpenBehavior =
-  | { kind: "socket"; appId?: string; ignoreClose?: boolean }
+  | { kind: "socket"; appId?: string; ignoreClose?: boolean; delayMs?: number }
   | { kind: "http"; status: number }
   | { kind: "slackError"; code: string; bodyCanary: string }
   | { kind: "unfinished"; status: number };
@@ -30,6 +30,7 @@ export async function startSlackSocketFixture(
   const unfinished = new Set<Socket>();
   const authorizations: Array<string | undefined> = [];
   const acks: unknown[] = [];
+  const openTimes: number[] = [];
   let openCount = 0;
   // eslint-disable-next-line complexity -- this is the single faithful Slack fixture router.
   const server = createServer((request, response) => {
@@ -37,6 +38,7 @@ export async function startSlackSocketFixture(
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/apps.connections.open") {
       openCount += 1;
+      openTimes.push(Date.now());
       const behavior =
         identity.appToken !== undefined &&
         request.headers.authorization !== `Bearer ${identity.appToken}`
@@ -59,7 +61,9 @@ export async function startSlackSocketFixture(
           ignore: behavior.ignoreClose === true ? "yes" : "no",
           ticket: "ticket-canary",
         });
-        response.end(JSON.stringify({ ok: true, url: `${base(server, "ws")}/socket?${query}` }));
+        const body = JSON.stringify({ ok: true, url: `${base(server, "ws")}/socket?${query}` });
+        if (behavior.delayMs === undefined) response.end(body);
+        else setTimeout(() => response.end(body), behavior.delayMs);
       }
       return;
     }
@@ -128,6 +132,7 @@ export async function startSlackSocketFixture(
     openUrl: `${base(server)}/api/apps.connections.open`,
     authorizations,
     acks,
+    openTimes,
     get authorization() {
       return authorizations[0];
     },
@@ -142,6 +147,11 @@ export async function startSlackSocketFixture(
     },
     terminateCurrent() {
       clients.at(-1)?.terminate();
+    },
+    /** Stops reading the current socket: no pongs, no close handshake, as a dead peer. */
+    pauseCurrent() {
+      const current = clients.at(-1);
+      if (current !== undefined) peerTransport(current)?.pause();
     },
     resumePeers() {
       for (const socket of sockets.clients) peerTransport(socket)?.resume();

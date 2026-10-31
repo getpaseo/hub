@@ -5,19 +5,21 @@ import type { SlackEventIntakeOptions } from "./internal/intake.js";
 import {
   createSlackSocketSource,
   type SlackDeliveryStatus,
-  type SlackSocketSourceOptions,
+  type SlackIntakeHealth,
+  type SlackSocketTuning,
 } from "./internal/socket.js";
 
 export interface SlackEventSource extends TriggerSource {
   request?: (request: Request) => Promise<Response>;
   status(): SlackDeliveryStatus;
   retry(): Promise<void>;
+  intake(): SlackIntakeHealth;
 }
 
 export interface CreateSlackEventSourceOptions {
   configuration: SlackProviderApplicationConfiguration;
   accept: SlackEventIntakeOptions["accept"];
-  socket?: Pick<SlackSocketSourceOptions, "apiUrl" | "random" | "timeoutMs">;
+  socket?: SlackSocketTuning;
 }
 
 export function createSlackEventSource(options: CreateSlackEventSourceOptions): SlackEventSource {
@@ -33,6 +35,7 @@ export function createSlackEventSource(options: CreateSlackEventSourceOptions): 
       request: (request) => webhook.handle(request),
       status: () => ({ state: "stopped" }),
       retry: () => Promise.resolve(),
+      intake: () => ({ transport: "webhook" }),
     };
   }
   const socket = createSlackSocketSource({
@@ -44,4 +47,4 @@ export function createSlackEventSource(options: CreateSlackEventSourceOptions): 
   return socket;
 }
 
-export type { SlackDeliveryStatus } from "./internal/socket.js";
+export type { SlackDeliveryStatus, SlackIntakeHealth } from "./internal/socket.js";

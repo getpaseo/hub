@@ -8,7 +8,7 @@ import type {
   AttachmentProvider,
   AttachmentResolver,
 } from "../attachments/capabilities.js";
-import type { SlackDeliveryStatus } from "../triggers/slack/source/index.js";
+import type { SlackDeliveryStatus, SlackIntakeHealth } from "../triggers/slack/source/index.js";
 
 export interface TriggerProviderResources {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
@@ -77,5 +77,9 @@ export interface ProviderRegistration {
   outputs: readonly ProviderOutputRegistration[];
   requests: readonly ProviderRequestRegistration[];
   attachment?: ProviderAttachmentRegistration;
-  slackDelivery?: { status(): SlackDeliveryStatus; retry(): Promise<void> };
+  slackDelivery?: {
+    status(): SlackDeliveryStatus;
+    retry(): Promise<void>;
+    intake(): SlackIntakeHealth;
+  };
 }

@@ -30,6 +30,7 @@ import type { ProviderApplications } from "./provider-applications/index.js";
 import { DaemonProviderCatalog } from "./daemons/provider-catalog.js";
 import { HomeDashboard } from "./home/dashboard.js";
 import type { ProviderConnectionRegistration } from "./providers/registration.js";
+import type { SlackIntakeHealth } from "./triggers/slack/source/index.js";
 
 export interface ApplicationCompositionOptions {
   database: Database | null;
@@ -44,6 +45,8 @@ export interface ApplicationCompositionOptions {
   completionTokenSecret?: string;
   testTriggerRoutes?: boolean;
   daemonConnectionForId?: DaemonDispatchLifecycleOptions["connectionForDaemon"];
+  /** The running Slack source's intake health; undefined when Slack is not running. */
+  slackIntakeHealth?: () => SlackIntakeHealth | undefined;
   close(): Promise<void>;
 }
 
@@ -142,6 +145,7 @@ async function createOwnedApplicationRuntime(
     homeDashboard: homeDashboardFor(options, connections),
     ...entitlementSurfaces(options),
     testTriggerRoutes: options.testTriggerRoutes ?? false,
+    slackIntakeHealth: () => options.slackIntakeHealth?.(),
     auth: (request) => {
       if (options.database === null) {
         return Promise.resolve(Response.json({ error: "database_unavailable" }, { status: 503 }));

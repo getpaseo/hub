@@ -23,7 +23,7 @@ import { createSlackAttachmentResolver } from "../../triggers/slack/attachments.
 import { createSlackReplyExecutor } from "../../triggers/slack/reply.js";
 import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { createSlackEventSource } from "../../triggers/slack/source/index.js";
-import type { SlackSocketSourceOptions } from "../../triggers/slack/source/internal/socket.js";
+import type { SlackSocketTuning } from "../../triggers/slack/source/internal/socket.js";
 import type { ProviderConnectionRegistration, ProviderRegistration } from "../registration.js";
 import {
   createSlackConnectionClient,
@@ -56,7 +56,7 @@ export interface CreateSlackRegistrationOptions {
   connectionClient?: SlackConnectionClient;
   botClient?: SlackBotClient;
   fetch?: typeof fetch;
-  socket?: Pick<SlackSocketSourceOptions, "apiUrl" | "random" | "timeoutMs">;
+  socket?: SlackSocketTuning;
   configurationVersion?: number;
   expectedConfigurationVersion?: number;
   activateConfiguration?: boolean;
@@ -187,7 +187,11 @@ export function createSlackRegistration(
     requests:
       events.request === undefined ? [] : [{ name: "slack.events", handle: events.request }],
     attachment: { provider: "slack", resolve: createSlackAttachmentResolver(bot) },
-    slackDelivery: { status: () => events.status(), retry: () => events.retry() },
+    slackDelivery: {
+      status: () => events.status(),
+      retry: () => events.retry(),
+      intake: () => events.intake(),
+    },
   };
 }
 

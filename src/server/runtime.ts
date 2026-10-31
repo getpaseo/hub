@@ -18,6 +18,8 @@ import type { UsageDashboard } from "../usage/dashboard.js";
 import type { ProviderApplications } from "../provider-applications/index.js";
 import type { DaemonProviderCatalog } from "../daemons/provider-catalog.js";
 import type { HomeDashboard } from "../home/dashboard.js";
+import type { SlackIntakeHealth } from "../triggers/slack/source/index.js";
+import { slackHealthReport } from "./slack-health.js";
 
 /**
  * The public plan catalog shape is billing's own: `src/billing/public-catalog.ts` decides which
@@ -81,6 +83,8 @@ export interface ApplicationRuntime {
   operatorConsole: OperatorConsole | null;
   providerApplications: ProviderApplications | null;
   testTriggerRoutes: boolean;
+  /** Slack intake health for `/health/slack`; absent or undefined when Slack is not running. */
+  slackIntakeHealth?(): SlackIntakeHealth | undefined;
   auth(request: Request): Promise<Response>;
   browserAccount?(request: Request): Promise<Response>;
   signInEmail?(
@@ -155,6 +159,12 @@ export function getApplication(): Promise<ApplicationRuntime> {
 
 export async function handleAuth(request: Request): Promise<Response> {
   return (await getApplication()).auth(request);
+}
+
+export async function handleSlackHealth(): Promise<Response> {
+  const runtime = await getApplication();
+  const { status, body } = slackHealthReport(runtime.slackIntakeHealth?.(), new Date());
+  return Response.json(body, { status });
 }
 
 export async function handleWebhook(request: Request): Promise<Response> {
