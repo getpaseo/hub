@@ -205,7 +205,8 @@ export function createSlackSocketSource(options: SlackSocketSourceOptions): Slac
           link.frames = link.frames
             .then(() => {
               link.queued -= 1;
-              return handleFrame(link, data, binary);
+              // It can never be acknowledged now, so Slack redelivers it on the next connection.
+              return link.closed ? undefined : handleFrame(link, data, binary);
             })
             .catch((error: unknown) => {
               if (!link.failureOwned) {

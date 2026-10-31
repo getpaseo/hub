@@ -748,6 +748,52 @@ describe("Slack Socket Mode intake health", () => {
     await source.stop();
   });
 
+  it("skips frames still queued when their connection closes", async () => {
+    const slack = await startSlackSocketFixture();
+    closers.push(() => slack.close());
+    const durable: string[] = [];
+    let releaseFirst: (() => void) | undefined;
+    const firstHandler = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const source = socketSource(
+      slack,
+      async (input) => {
+        durable.push(input.deliveryId);
+        if (input.deliveryId === "slack-E2") await never;
+        return acceptedWithEvent(input);
+      },
+      undefined,
+      { acceptTimeoutMs: 200, dispatchTimeoutMs: 60_000, stopGraceMs: 100 },
+    );
+    const holdFirst: TriggerHandler = async (trigger) => {
+      if (trigger.deliveryId === "slack-E1") await firstHandler;
+    };
+    await runWithFailureTracking(
+      () => source.start(holdFirst),
+      createLogger(new FailureLogStream()),
+    );
+    await waitFor(() => source.status().state === "connected");
+
+    // E2 queues behind E1's handler; the connection closes before E2's turn.
+    slack.send(eventEnvelope("env-1", "E1"));
+    await waitFor(() => intakeOf(source).activePhase === "dispatch");
+    slack.send(eventEnvelope("env-2", "E2"));
+    await waitFor(() => intakeOf(source).queuedFrames === 1);
+    slack.terminateCurrent();
+    await waitFor(() => slack.openCount === 2 && source.status().state === "connected");
+    slack.send(eventEnvelope("env-3", "E3"));
+    await waitFor(() => slack.acks.length === 2);
+    releaseFirst?.();
+    await waitFor(() => intakeOf(source).closedConnectionFrames === 0);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    assert.deepEqual(durable, ["slack-E1", "slack-E3"]);
+    assert.equal(intakeOf(source).acceptTimeouts, 0);
+    assert.equal(intakeOf(source).lastAcceptTimeoutAt, null);
+    await source.stop();
+  });
+
   it("does not count an ignored event as a successful accept", async () => {
     const slack = await startSlackSocketFixture();
     closers.push(() => slack.close());
