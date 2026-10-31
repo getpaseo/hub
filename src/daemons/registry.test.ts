@@ -88,13 +88,17 @@ describe("daemon socket protocol negotiation", () => {
         client.once("open", resolve);
         client.once("error", reject);
       });
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      const isHello = (message: string) =>
+        HubDaemonHelloSchema.safeParse(JSON.parse(message)).success;
+      if (expectsHello) {
+        // The hello crosses the socket after the client's open event, so wait for it to arrive.
+        await vi.waitFor(() => assert(messages.some(isHello)), { timeout: 5_000 });
+      } else {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
 
       assert.equal(negotiatedProtocol, expectedProtocol);
-      assert.equal(
-        messages.some((message) => HubDaemonHelloSchema.safeParse(JSON.parse(message)).success),
-        expectsHello,
-      );
+      assert.equal(messages.some(isHello), expectsHello);
       assert.equal(registry.connection(daemon.id) !== undefined, expectsReady);
 
       client.close();
