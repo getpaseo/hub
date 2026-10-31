@@ -131,27 +131,6 @@ export function createSlackBotClient(options: {
     if (!result.ok) throw new Error(`Slack API ${result.error ?? "unknown_error"}`);
   }
 
-  async function callJson(
-    organizationId: string,
-    teamId: string,
-    method: string,
-    body: Record<string, string>,
-  ): Promise<unknown> {
-    const token = await options.tokenForWorkspace(organizationId, teamId);
-    if (token === undefined) throw new Error("Slack workspace is not connected");
-    const response = await request(`https://slack.com/api/${method}`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json; charset=utf-8",
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(options.requestTimeoutMs ?? SLACK_API_TIMEOUT_MS),
-    });
-    if (!response.ok) throw new Error(`Slack API HTTP ${response.status}`);
-    return response.json();
-  }
-
   async function queryJson(
     organizationId: string,
     teamId: string,
@@ -248,7 +227,7 @@ export function createSlackBotClient(options: {
     const token = await options.tokenForWorkspace(input.organizationId, input.teamId);
     if (token === undefined) throw new Error("Slack workspace is not connected");
     const result = SlackFileInfoSchema.parse(
-      await callJson(input.organizationId, input.teamId, "files.info", { file: input.fileId }),
+      await queryJson(input.organizationId, input.teamId, "files.info", { file: input.fileId }),
     );
     if (!result.ok || result.file?.id !== input.fileId) {
       throw new Error(`Slack file ${input.fileId} is unavailable`);
@@ -273,7 +252,7 @@ export function createSlackBotClient(options: {
     userId: string;
   }): Promise<string | undefined> {
     const result = SlackUserInfoSchema.parse(
-      await callJson(input.organizationId, input.teamId, "users.info", { user: input.userId }),
+      await queryJson(input.organizationId, input.teamId, "users.info", { user: input.userId }),
     );
     if (!result.ok) throw new Error(`Slack API ${result.error ?? "unknown_error"}`);
     return result.user?.name;
