@@ -83,7 +83,10 @@ export interface ApplicationRuntime {
   testTriggerRoutes: boolean;
   auth(request: Request): Promise<Response>;
   browserAccount?(request: Request): Promise<Response>;
-  signInEmail?(data: { email: string; password: string }, headers: Headers): Promise<"complete">;
+  signInEmail?(
+    data: { email: string; password: string; invitation?: string | undefined },
+    headers: Headers,
+  ): Promise<"complete">;
   signUpEmail?(
     data: { name: string; email: string; password: string },
     headers: Headers,

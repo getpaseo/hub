@@ -36,6 +36,8 @@ export const TriggerFilterSchema = z
   .object({
     pattern: z.string().optional(),
     contains: z.string().optional(),
+    /** GitHub text which makes an event ineligible, such as a command another trigger owns. */
+    exclude_contains: z.string().optional(),
     label: z.string().min(1).optional(),
     labels: z.array(z.string().min(1)).min(1).optional(),
     repo: z.string().min(1).optional(),
@@ -113,6 +115,7 @@ export const TriggerRunSchema = z
       .optional(),
     outputs: z.record(z.string().regex(EVENT_NAME), TriggerOutputSchema).optional(),
     auto_archive: z.boolean().default(true),
+    background: z.boolean().default(false),
   })
   .strict();
 
@@ -141,11 +144,13 @@ export const TriggerDocumentSchema = z
             message: "Schedule requires recurrence and does not accept connection or filters.",
           });
         }
-        if (Object.keys(trigger.on).length !== 1 || trigger.inputs !== undefined) {
+        // A tick supplies no inputs; it runs with the declared defaults.
+        for (const [name, input] of Object.entries(trigger.inputs ?? {})) {
+          if (input.required !== true) continue;
           context.addIssue({
             code: "custom",
-            path: ["on", event],
-            message: "A schedule must be the only event and cannot require invocation inputs.",
+            path: ["inputs", name],
+            message: "A trigger with a schedule cannot require an input; give it a default.",
           });
         }
       } else if (definition.recurrence !== undefined) {

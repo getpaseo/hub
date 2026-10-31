@@ -1,6 +1,5 @@
 import type { AuthServer } from "../../auth/server.js";
 import { createHash } from "node:crypto";
-import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import type { Database } from "../../db/types.js";
 import { replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { logger } from "../../logger.js";
@@ -436,9 +435,6 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
                 },
               },
             ],
-      ...(provider === "github"
-        ? { githubConfiguration: this.dynamicGitHubConfiguration(slot) }
-        : {}),
       ...(provider === "slack" || provider === "discord"
         ? {
             attachment: {
@@ -530,26 +526,6 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
             trigger.onMachineTerminated?.(triggerContext, reason, reactionState) ??
             Promise.resolve(),
         ),
-    };
-  }
-
-  private dynamicGitHubConfiguration(slot: Slot): GitHubConfigurationProvider {
-    const invoke = <T>(operation: (configuration: GitHubConfigurationProvider) => Promise<T>) => {
-      const active = slot.active;
-      const configuration = active?.registration.githubConfiguration;
-      if (active === undefined || configuration === undefined) {
-        throw unavailable("github_configuration_unavailable");
-      }
-      return this.withLease(active, () => operation(configuration));
-    };
-    return {
-      listInstallationRepositories: (input) =>
-        invoke((configuration) => configuration.listInstallationRepositories(input)),
-      readDefaultBranchHead: (input) =>
-        invoke((configuration) => configuration.readDefaultBranchHead(input)),
-      listFilesAtCommit: (input) =>
-        invoke((configuration) => configuration.listFilesAtCommit(input)),
-      readFileAtCommit: (input) => invoke((configuration) => configuration.readFileAtCommit(input)),
     };
   }
 

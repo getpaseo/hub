@@ -14,6 +14,7 @@ import type {
   GitHubConnectionClient,
   GitHubInstallationIdentity,
 } from "../providers/github/client.js";
+import { BrowserGitHubConfiguration } from "../e2e/harness/browser-providers.js";
 import { createGitHubRegistration } from "../providers/github/index.js";
 import { createDiscordRegistration } from "../providers/discord/index.js";
 import type { ProviderRegistration } from "../providers/registration.js";
@@ -35,6 +36,7 @@ describe("provider connection facades PostgreSQL authority", () => {
   let github: TestGitHub;
   let discord: TestDiscord;
   let connections: ProviderFixture;
+  let githubRepositories: TestGitHubRepositories;
 
   beforeEach(async () => {
     postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
@@ -49,10 +51,12 @@ describe("provider connection facades PostgreSQL authority", () => {
     auth = new ConnectionAuth(accessFor("acme", "owner"));
     github = new TestGitHub();
     discord = new TestDiscord();
+    githubRepositories = new TestGitHubRepositories();
     connections = createConnections({
       database,
       auth,
       github,
+      githubRepositories,
       discord,
     });
   }, 120_000);
@@ -305,13 +309,130 @@ describe("provider connection facades PostgreSQL authority", () => {
     assert.equal(serialized.includes(setup.state), false);
   });
 
+  it("publishes a complete connection only after its repositories have been fetched", async () => {
+    const setup = await start(connections, "github");
+    const state = await completeSetup(connections, setup.state, 42);
+    const gate = new ProviderBarrier();
+
+    githubRepositories.wait = async () => {
+      await gate.wait();
+    };
+    const callback = githubCallback(connections, state, "code");
+    try {
+      await gate.entered;
+      assert.equal(await database.findGitHubConnection(42), undefined);
+    } finally {
+      gate.release();
+    }
+    assert.equal(result(await callback), "github_connected");
+    assert.deepEqual(
+      (await database.listGitHubRepositories("acme")).map((item) => item.fullName).sort(),
+      ["acme-inc/app", "acme-inc/docs"],
+    );
+  });
+
+  it("leaves a failed repository fetch unconnected and permits retrying the connection attempt", async () => {
+    const setup = await start(connections, "github");
+    const state = await completeSetup(connections, setup.state, 42);
+    githubRepositories.wait = async () => {
+      throw new Error("repository fetch failed");
+    };
+    assert.notEqual(result(await githubCallback(connections, state, "code")), "github_connected");
+    assert.equal(await database.findGitHubConnection(42), undefined);
+    githubRepositories.wait = async () => undefined;
+    assert.equal(
+      result(await githubCallback(connections, state, "retry-code")),
+      "github_connected",
+    );
+    assert.equal((await database.listGitHubRepositories("acme")).length, 2);
+  });
+
+  it("retains repository changes received while the first callback is fetching its snapshot", async () => {
+    const setup = await start(connections, "github");
+    const state = await completeSetup(connections, setup.state, 42);
+    const gate = new ProviderBarrier();
+    let first = true;
+    githubRepositories.wait = async () => {
+      if (!first) return;
+      first = false;
+      await gate.wait();
+    };
+    const callback = githubCallback(connections, state, "first-code");
+    await gate.entered;
+    githubRepositories.selection = [
+      { repositoryId: 9003, fullName: "acme-inc/new", defaultBranch: "next" },
+    ];
+    try {
+      await deliverGitHubLifecycle(connections, "during-first-connection", 42);
+      assert.equal(
+        (
+          await pool.query(
+            `select * from provider_event_receipts where delivery_id = 'during-first-connection'`,
+          )
+        ).rows.length,
+        0,
+      );
+      assert.equal(
+        (
+          await pool.query(
+            `select * from github_installation_syncs where delivery_id = 'during-first-connection' and retry_at is not null`,
+          )
+        ).rows.length,
+        1,
+      );
+    } finally {
+      gate.release();
+    }
+    assert.equal(result(await callback), "github_connected");
+    const source = connections.registrations.find(
+      (candidate) => candidate.connection.name === "github",
+    )!.sources[0]!;
+    await source.start(async () => undefined);
+    await source.stop();
+    assert.deepEqual(
+      (await database.listGitHubRepositories("acme")).map((item) => item.fullName),
+      ["acme-inc/new"],
+    );
+  });
+
+  it("serializes reconnect and repository webhooks without overwriting the latest GitHub selection", async () => {
+    await connectGitHub(connections, 42);
+    const setup = await start(connections, "github");
+    const state = await completeSetup(connections, setup.state, 42);
+    const gate = new ProviderBarrier();
+
+    let first = true;
+    githubRepositories.wait = async () => {
+      if (!first) return;
+      first = false;
+      await gate.wait();
+    };
+    const callback = githubCallback(connections, state, "reconnect-code");
+    await gate.entered;
+    const webhook = deliverGitHubLifecycle(connections, "during-reconnect", 42);
+    githubRepositories.selection = [
+      { repositoryId: 9003, fullName: "acme-inc/new", defaultBranch: "next" },
+    ];
+    gate.release();
+    await Promise.all([callback, webhook]);
+    assert.deepEqual(
+      (await database.listGitHubRepositories("acme")).map((item) => item.fullName),
+      ["acme-inc/new"],
+    );
+    assert.equal(
+      (await pool.query(`select * from github_installation_syncs where retry_at is not null`)).rows
+        .length,
+      0,
+    );
+  });
+
   it("applies only current GitHub lifecycle evidence to the matching binding", async () => {
     const setup = await start(connections, "github");
     const userState = await completeSetup(connections, setup.state, 42);
     await githubCallback(connections, userState, "code");
 
     github.identity = { ...github.identity!, status: "suspended" };
-    await applyGitHubLifecycle(connections, "suspend", 42);
+    await deliverGitHubLifecycle(connections, "suspend", 42);
     assert.deepEqual(await resolution(connections, "github", "42"), { status: "suspended" });
 
     github.identity = { ...github.identity, status: "active" };
@@ -327,16 +448,16 @@ describe("provider connection facades PostgreSQL authority", () => {
     });
 
     github.identity = { ...github.identity, status: "suspended" };
-    await applyGitHubLifecycle(connections, "suspend-again", 42);
+    await deliverGitHubLifecycle(connections, "suspend-again", 42);
     github.identity = { ...github.identity, status: "active" };
-    await applyGitHubLifecycle(connections, "restore", 42);
+    await deliverGitHubLifecycle(connections, "restore", 42);
     assert.deepEqual(await resolution(connections, "github", "42"), {
       status: "active",
       organizationId: "acme",
     });
 
     github.identity = undefined;
-    await applyGitHubLifecycle(connections, "removed", 42);
+    await deliverGitHubLifecycle(connections, "removed", 42);
     assert.deepEqual(await resolution(connections, "github", "42"), { status: "unbound" });
   });
 
@@ -345,9 +466,12 @@ describe("provider connection facades PostgreSQL authority", () => {
     github.identity = { ...github.identity!, status: "suspended" };
     github.failInstallationReads = 1;
 
-    await assert.rejects(applyGitHubLifecycle(connections, "lifecycle-retry", 42));
-    await applyGitHubLifecycle(connections, "lifecycle-retry", 42);
-    await applyGitHubLifecycle(connections, "lifecycle-retry", 42);
+    await deliverGitHubLifecycle(connections, "lifecycle-retry", 42);
+    await pool.query(
+      `update github_installation_syncs set retry_at = now() where retry_at is not null`,
+    );
+    await deliverGitHubLifecycle(connections, "lifecycle-retry", 42);
+    await deliverGitHubLifecycle(connections, "lifecycle-retry", 42);
 
     assert.equal(github.installationReads, 2);
     assert.deepEqual(await resolution(connections, "github", "42"), { status: "suspended" });
@@ -526,6 +650,16 @@ class FailingConnectionAuth implements AuthServer {
   }
   close(): Promise<void> {
     return Promise.resolve();
+  }
+}
+
+class TestGitHubRepositories extends BrowserGitHubConfiguration {
+  selection: Array<{ repositoryId: number; fullName: string; defaultBranch: string }> | undefined;
+  wait: () => Promise<void> = async () => undefined;
+  override async listInstallationRepositories(input: { installationId: number }) {
+    const selected = this.selection ?? (await super.listInstallationRepositories(input));
+    await this.wait();
+    return selected;
   }
 }
 
@@ -849,7 +983,7 @@ async function attemptIdForState(pool: QueryHandle, state: string): Promise<stri
   return id!;
 }
 
-async function applyGitHubLifecycle(
+async function deliverGitHubLifecycle(
   connections: ProviderFixture,
   deliveryId: string,
   installationId: number,
@@ -881,6 +1015,9 @@ async function applyGitHubLifecycle(
     }),
   );
   assert.equal(response.status, 200);
+  await connections.registrations
+    .find((candidate) => candidate.connection.name === "github")!
+    .sources[0]!.stop();
 }
 
 function result(response: Response): string | null {
@@ -962,6 +1099,7 @@ interface CreateConnectionsOptions {
   auth: AuthServer;
   organizationSlug?: string;
   github?: GitHubConnectionClient;
+  githubRepositories?: TestGitHubRepositories;
   discord?: DiscordConnectionClient;
 }
 
@@ -984,6 +1122,7 @@ function createConnections(options: CreateConnectionsOptions): ProviderFixture {
           privateKey: "test-private-key",
         },
         connectionClient: options.github,
+        configurationProvider: options.githubRepositories ?? new TestGitHubRepositories(),
       }),
     );
   }

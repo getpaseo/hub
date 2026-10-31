@@ -1,6 +1,7 @@
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-new-array-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop -- focused trigger screens bind one document, and a row's link, timestamp, and action are that row's own slots */
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- generated routes cannot express server-resolved organization URLs */
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSnapshotQuery } from "../queries/index.js";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { ArrowLeft, Braces, FileText, LockKeyhole, Plus } from "lucide-react";
@@ -30,7 +31,7 @@ import { CodeEditor } from "../projects/configuration/code-editor.js";
 import { useRouteTenant } from "../projects/context.js";
 import type { Result } from "../contract/respond.js";
 import {
-  summarizeTriggerEvent,
+  describeTriggerEvent,
   changeTriggerEvent,
   mergeTriggerForm,
   projectTriggerForm,
@@ -40,7 +41,7 @@ import {
 } from "./configuration/editor.js";
 import { saveTrigger, triggerSnapshot, type TriggerSnapshot } from "./functions.js";
 import { daemonProviderSnapshot } from "../daemons/functions.js";
-import type { HubProviderSnapshot, HubProviderSnapshotEntry } from "../hub/protocol.js";
+import type { HubProviderSnapshotEntry } from "../hub/protocol.js";
 import { EventFields } from "./event-fields.js";
 import { EDITOR_EVENTS, eventDefinition, parseEditorEvent } from "./configuration/events.js";
 import { selectedProviderModel } from "./provider-catalog.js";
@@ -58,9 +59,9 @@ type TriggerTextField = Exclude<
 >;
 
 const TRIGGER_COLUMNS = [
-  { header: "Trigger" },
-  { header: "Event", className: "hidden md:table-cell" },
-  { header: "Target", className: "hidden lg:table-cell" },
+  { header: "Trigger", fill: true },
+  { header: "Event", fill: true, className: "hidden md:table-cell" },
+  { header: "Target", fill: true, className: "hidden xl:table-cell" },
   { header: "Last triggered", className: "hidden xl:table-cell" },
   { header: "Status" },
 ] as const;
@@ -84,7 +85,7 @@ export function TriggersPanel() {
   const scope = { organizationSlug: tenant.organization.slug };
   const snapshot = useTriggerSnapshot(scope.organizationSlug);
   const navigate = useNavigate();
-  if (snapshot.isPending) {
+  if (snapshot.status === "pending") {
     return (
       <>
         <PageHeader title="Triggers" description={TRIGGERS_DESCRIPTION} />
@@ -92,10 +93,10 @@ export function TriggersPanel() {
       </>
     );
   }
-  if (snapshot.isError || snapshot.data.status === "error") {
-    return <TriggerLoadError result={snapshot.data} />;
+  if (snapshot.status === "error") {
+    return <TriggerLoadError error={snapshot.error} />;
   }
-  const data = snapshot.data.data;
+  const data = snapshot.data;
   const triggerPath = (triggerId: string) =>
     `/o/${scope.organizationSlug}/triggers/${triggerId}` as never;
   return (
@@ -139,7 +140,7 @@ export function TriggersPanel() {
               }}
             >
               <DataCell>
-                <span className="flex min-w-52 items-center gap-3">
+                <span className="flex items-center gap-3">
                   <span
                     className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-muted text-foreground"
                     role="img"
@@ -151,6 +152,7 @@ export function TriggersPanel() {
                     primary={
                       <Link
                         to={triggerPath(trigger.id)}
+                        title={trigger.name}
                         className="hover:underline"
                         onClick={(event) => event.stopPropagation()}
                       >
@@ -165,22 +167,17 @@ export function TriggersPanel() {
                   />
                 </span>
               </DataCell>
-              <DataCell className="hidden whitespace-nowrap md:table-cell">
-                <TwoLine
-                  primary={summarizeTriggerEvent(trigger.draft, trigger.event)}
-                  {...(trigger.draft?.connection === "" || trigger.draft?.connection === undefined
-                    ? {}
-                    : { secondary: trigger.draft.connection })}
-                />
+              <DataCell>
+                <TriggerEvent trigger={trigger} />
               </DataCell>
-              <DataCell className="hidden whitespace-nowrap lg:table-cell">
+              <DataCell>
                 {trigger.draft === null ? (
                   <span className="text-muted-foreground">Advanced configuration</span>
                 ) : (
-                  <TwoLine mono primary={trigger.draft.daemon} secondary={trigger.draft.cwd} />
+                  <TwoLine path primary={trigger.draft.daemon} secondary={trigger.draft.cwd} />
                 )}
               </DataCell>
-              <DataCell className="hidden whitespace-nowrap xl:table-cell">
+              <DataCell>
                 {trigger.lastTriggered === null ? (
                   <span className="text-muted-foreground">Never</span>
                 ) : (
@@ -203,6 +200,11 @@ export function TriggersPanel() {
   );
 }
 
+function TriggerEvent({ trigger }: { trigger: BrowserTrigger }) {
+  const { kind, detail } = describeTriggerEvent(trigger.draft, trigger.event);
+  return <TwoLine primary={kind} {...(detail === undefined ? {} : { secondary: detail })} />;
+}
+
 export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
   const tenant = useRouteTenant();
   const organizationSlug = tenant.organization.slug;
@@ -220,11 +222,11 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
       await navigate({ to: `/o/${organizationSlug}/triggers` as never });
     },
   });
-  if (snapshot.isPending) return <TriggerEditorSkeleton />;
-  if (snapshot.isError || snapshot.data.status === "error") {
-    return <TriggerLoadError result={snapshot.data} />;
+  if (snapshot.status === "pending") return <TriggerEditorSkeleton />;
+  if (snapshot.status === "error") {
+    return <TriggerLoadError error={snapshot.error} />;
   }
-  const data = snapshot.data.data;
+  const data = snapshot.data;
   const trigger = triggerId === "new" ? null : data.triggers.find(({ id }) => id === triggerId);
   if (trigger === undefined) {
     return (
@@ -261,17 +263,17 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
 
 function useTriggerSnapshot(organizationSlug: string) {
   const load = useServerFn(triggerSnapshot);
-  return useQuery({
+  return useSnapshotQuery({
     queryKey: ["triggers", organizationSlug],
     queryFn: () => load({ data: { organizationSlug } }),
   });
 }
 
-function TriggerLoadError({ result }: { result: Result<TriggerSnapshot> | undefined }) {
+function TriggerLoadError({ error }: { error: string | null }) {
   return (
     <FailureAlert
       title="Triggers unavailable"
-      error={result}
+      error={error}
       fallback="Hub couldn't load this organization's triggers."
     />
   );
@@ -1221,10 +1223,9 @@ function useDaemonProviderCatalog(
   cwd: string,
 ) {
   const load = useServerFn(daemonProviderSnapshot);
-  const queryClient = useQueryClient();
   const queryKey = ["daemon-provider-snapshot", organizationSlug, daemonId, cwd] as const;
   const enabled = daemonId !== undefined && cwd.trim() !== "";
-  const query = useQuery({
+  const query = useSnapshotQuery({
     queryKey,
     enabled,
     queryFn: () =>
@@ -1232,36 +1233,20 @@ function useDaemonProviderCatalog(
         data: { organizationSlug, daemonId: daemonId!, cwd: cwd.trim(), refresh: true },
       }),
   });
-  const refresh = useMutation({
-    mutationFn: () =>
-      load({
-        data: { organizationSlug, daemonId: daemonId!, cwd: cwd.trim(), refresh: true },
-      }),
-    onSuccess: (result) => queryClient.setQueryData(queryKey, result),
-  });
-  const result = query.data;
-  const providerErrors =
-    result?.status === "ok"
-      ? result.data.entries
-          .filter((entry) => entry.status === "error")
-          .map((entry) => `${entry.label ?? entry.provider}: ${entry.error ?? "unavailable"}`)
-      : [];
+  const entries = query.data?.entries;
+  const providerErrors = (entries ?? [])
+    .filter((entry) => entry.status === "error")
+    .map((entry) => `${entry.label ?? entry.provider}: ${entry.error ?? "unavailable"}`);
+  const providerError = providerErrors.length > 0 ? providerErrors.join(" ") : undefined;
   return {
-    entries: result?.status === "ok" ? result.data.entries : undefined,
-    loading: (enabled && query.isPending) || refresh.isPending,
-    error: providerCatalogError(result, query.isError, providerErrors),
-    refresh: () => refresh.mutate(),
+    entries,
+    loading: query.isFetching,
+    error:
+      query.status === "error"
+        ? (query.error ?? "Hub couldn't load this daemon's providers.")
+        : providerError,
+    refresh: query.refetch,
   };
-}
-
-function providerCatalogError(
-  result: Result<HubProviderSnapshot> | undefined,
-  queryFailed: boolean,
-  providerErrors: string[],
-): string | undefined {
-  if (result?.status === "error") return result.error.message;
-  if (queryFailed) return "Hub couldn't load this daemon's providers.";
-  return providerErrors.length > 0 ? providerErrors.join(" ") : undefined;
 }
 
 /**

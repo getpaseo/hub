@@ -18,6 +18,15 @@ function reportsMissingEvent(error: unknown): boolean {
   );
 }
 
+function reportsScheduledRequiredInput(error: unknown): boolean {
+  return (
+    error instanceof TriggerDocumentError &&
+    error.issues.some(
+      ({ path, message }) => path.join(".") === "inputs.focus" && /schedule/u.test(message),
+    )
+  );
+}
+
 function reportsEmptyTitle(error: unknown): boolean {
   return (
     error instanceof TriggerDocumentError &&
@@ -74,6 +83,31 @@ run:
 `;
 
 describe("self-contained trigger documents", () => {
+  it.each([undefined, false, true])("compiles and round-trips background %s", (background) => {
+    const yaml =
+      background === undefined
+        ? trigger
+        : trigger.replace(
+            "run:",
+            `run:
+  background: ${background}`,
+          );
+    const compiled = compileTriggerDocument(yaml);
+    assert.equal(compiled.authored.run.background, background ?? false);
+    assert.equal(compiled.events[0]?.steps[0]?.background, background ?? false);
+    assert.equal(
+      parseTriggerDocument(serializeTriggerDocument(compiled.authored)).run.background,
+      background ?? false,
+    );
+  });
+
+  it("rejects a non-boolean background value", () => {
+    assert.throws(
+      () => parseTriggerDocument(trigger.replace("run:", 'run:\n  background: "true"')),
+      /run.background/,
+    );
+  });
+
   it("compiles and preserves a configurable startup timeout", () => {
     const yaml = trigger.replace("  max_runtime: 90m", "  max_runtime: 90m\n  startup_timeout: 3m");
     const compiled = compileTriggerDocument(yaml);
@@ -195,6 +229,31 @@ run:
   prompt: run
 `),
       reportsMissingEvent,
+    );
+  });
+
+  it("refuses a schedule beside an input that a tick cannot supply", () => {
+    const scheduled = (input: string) => `
+name: watch
+inputs:
+  focus: ${input}
+on:
+  schedule.tick:
+    recurrence: { start: "2026-01-01T09:00:00", rule: "FREQ=DAILY", timezone: UTC }
+  manual.run: {}
+run:
+  target: { daemon: local, cwd: /workspace }
+  agent: { provider: codex }
+  prompt: run
+`;
+    assert.equal(
+      Object.keys(parseTriggerDocument(scheduled("{ type: string, default: everything }")).on)
+        .length,
+      2,
+    );
+    assert.throws(
+      () => parseTriggerDocument(scheduled("{ type: string, required: true }")),
+      reportsScheduledRequiredInput,
     );
   });
 });

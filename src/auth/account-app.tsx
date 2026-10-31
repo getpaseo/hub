@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useSnapshotQuery } from "../queries/index.js";
 import { useServerFn } from "@tanstack/react-start";
 import { useCallback, useState } from "react";
 import { accountState } from "./functions.js";
@@ -30,23 +30,22 @@ function AccountApplication() {
   const search =
     typeof window === "undefined" ? undefined : new URLSearchParams(window.location.search);
   const invitation = search?.get("invitation") ?? undefined;
-  const account = useQuery({
+  const account = useSnapshotQuery({
     queryKey: ["account", invitation],
     queryFn: () => loadAccount({ data: invitation === undefined ? {} : { invitation } }),
   });
-  if (account.isPending) return <LoadingEntry />;
-  if (account.isError || account.data.status === "error") {
+  if (account.status === "pending") return <LoadingEntry />;
+  if (account.status === "error") {
     return (
       <FailedEntry
         message={
-          account.data?.status === "error"
-            ? account.data.error.message
-            : "Hub did not receive your account state. Check your connection and reload the page."
+          account.error ??
+          "Hub did not receive your account state. Check your connection and reload the page."
         }
       />
     );
   }
-  const state = account.data.data;
+  const state = account.data;
   if (handoff && (state.status === "appSetupRequired" || state.status === "active")) {
     return (
       <DaemonHandoffEntry

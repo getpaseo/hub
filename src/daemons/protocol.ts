@@ -12,6 +12,7 @@ export interface DaemonCreateAgentOptions {
   title?: string;
   /** Title for the workspace the daemon creates for the agent, set once the agent exists. */
   workspaceTitle?: string;
+  background?: boolean;
   mode?: string;
   model?: string;
   thinkingOptionId?: string;

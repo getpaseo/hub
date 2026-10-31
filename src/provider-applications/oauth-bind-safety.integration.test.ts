@@ -285,6 +285,7 @@ function bind(
     return database.bindGitHubConnection({
       ...shared,
       phase: "github_user_authorization",
+      repositories: [],
       installationId: 42,
       accountId: "account",
       accountLogin: "Acme",

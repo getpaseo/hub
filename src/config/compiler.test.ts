@@ -56,6 +56,22 @@ function legacyCompiledConfiguration(compiled: CompiledHubConfig): unknown {
 }
 
 describe("workflow compiler", () => {
+  it("round-trips the ready-for-review event and its actor allowlist", () => {
+    const authored = configuration();
+    authored.triggers[0]!.on = "github.pull_request_ready_for_review";
+    Reflect.set(authored.triggers[0]!, "filters", {
+      repo: "owner/repo",
+      from_users: ["maintainer"],
+    });
+    const compiled = compileHubConfig(authored);
+    assert.equal(compiled.triggers[0]?.on, "github.pull_request_ready_for_review");
+    assert.deepEqual(compiled.triggers[0]?.filters, {
+      repo: "owner/repo",
+      from_users: ["maintainer"],
+    });
+    assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+  });
+
   it("preserves an authored startup timeout in stored compiled configurations", () => {
     const authored = configuration();
     Reflect.set(authored.triggers[0]!.steps[0]!, "startup_timeout", "3m");

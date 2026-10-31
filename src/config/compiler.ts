@@ -88,6 +88,8 @@ const AuthoredTriggerFilterSchema = z
   .object({
     pattern: z.string().optional(),
     contains: z.string().optional(),
+    /** GitHub text which makes an event ineligible, such as a command another trigger owns. */
+    exclude_contains: z.string().optional(),
     label: z.string().min(1).optional(),
     labels: z.array(z.string().min(1)).min(1).optional(),
     repo: z.string().min(1).optional(),
@@ -183,6 +185,7 @@ const StepSchema = z
     output: z.object({ schema: JsonSchemaSchema }).strict().optional(),
     allow_outputs: z.array(AllowOutputSchema).optional(),
     auto_archive: z.boolean().optional(),
+    background: z.boolean().optional(),
   })
   .strict();
 
@@ -261,6 +264,7 @@ export interface CompiledStep {
   output?: { schema: JsonValue } | undefined;
   allowOutputs: readonly { type: string; max?: number | undefined; required: boolean }[];
   autoArchive: boolean;
+  background: boolean;
 }
 
 export type CompiledSteps = readonly CompiledStep[];
@@ -420,6 +424,7 @@ const CompiledStepSchema: z.ZodType<CompiledStep> = z
         .strict(),
     ),
     autoArchive: z.boolean(),
+    background: z.boolean().default(false),
   })
   .strict();
 
@@ -627,6 +632,7 @@ function compileStep(
       required: allowOutput.required ?? false,
     })),
     autoArchive: step.auto_archive ?? false,
+    background: step.background ?? false,
   };
 }
 
@@ -1428,6 +1434,7 @@ function rejectTriggerFields(value: unknown, index: number): void {
     "prompt",
     "idle_timeout",
     "auto_archive",
+    "background",
     "allow_outputs",
   ]) {
     if (field in value) {

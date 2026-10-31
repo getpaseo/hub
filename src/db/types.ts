@@ -46,6 +46,7 @@ export interface ProviderEventReceiptSummary {
 /** One run as an organization overview reads it: what fired, what happened, and which agent ran. */
 export interface OrganizationRunRecord {
   id: string;
+  /** The trigger's name as the user wrote it, never the internal name of one of its events. */
   triggerName: string;
   provider: ProviderEventReceiptRecord["provider"];
   source: string;
@@ -494,7 +495,13 @@ export interface AdvanceGitHubConnectionAttemptInput extends ReadConnectionAttem
   pkceVerifier: string;
 }
 
+export type GitHubRepositorySnapshot = Pick<
+  GitHubRepositoryRecord,
+  "repositoryId" | "fullName" | "defaultBranch"
+>[];
+
 export interface BindGitHubConnectionInput extends ReadConnectionAttemptInput {
+  repositories: GitHubRepositorySnapshot;
   providerApplicationId: string;
   installationId: number;
   accountId: string;
@@ -660,7 +667,13 @@ export type ManualEventPersistence =
   | { status: "accepted"; event: DurableProviderEvent }
   | { status: "duplicate"; providerEventReceiptId: string };
 
+export interface GitHubInstallationSyncOwner {
+  providerApplicationId: string;
+  configurationVersion: number;
+}
+
 export interface GitHubLifecycleReceiptClaimInput {
+  providerApplicationId: string;
   installationId: number;
   deliveryId: string;
   signatureHash: string;
@@ -669,13 +682,17 @@ export interface GitHubLifecycleReceiptClaimInput {
   receivedAt: Date;
 }
 
-export type GitHubLifecycleReceiptClaim =
-  | { status: "claimed"; providerEventReceiptId: string; installationId: number }
-  | { status: "duplicate"; providerEventReceiptId: string };
+export type GitHubInstallationSyncClaim =
+  | { status: "claimed"; installationSyncId: string; installationId: number }
+  | { status: "duplicate"; installationSyncId: string };
 
-export type GitHubLifecycleResult =
+export type GitHubInstallationSyncResult =
   | { status: "absent"; removeBinding: boolean }
-  | { status: "present"; identity: GitHubLifecycleIdentity };
+  | {
+      status: "present";
+      identity: GitHubLifecycleIdentity;
+      repositories: GitHubRepositorySnapshot;
+    };
 
 export interface InsertMachineInput {
   orgId: string;
@@ -1290,14 +1307,24 @@ export interface Database {
   acceptSlackEvent(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance>;
   acceptLinearEvent(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance>;
   persistManualEvent(input: PersistManualEventInput): Promise<ManualEventPersistence>;
+  synchronizeGitHubInstallation<T>(installationId: number, operation: () => Promise<T>): Promise<T>;
+  pendingGitHubInstallationSyncs(
+    owner: GitHubInstallationSyncOwner,
+  ): Promise<
+    Array<Extract<GitHubInstallationSyncClaim, { status: "claimed" }> & { removeBinding: boolean }>
+  >;
   claimGitHubLifecycleReceipt(
     input: GitHubLifecycleReceiptClaimInput,
-  ): Promise<GitHubLifecycleReceiptClaim>;
-  applyGitHubLifecycle(
-    claim: Extract<GitHubLifecycleReceiptClaim, { status: "claimed" }>,
-    result: GitHubLifecycleResult,
+  ): Promise<GitHubInstallationSyncClaim>;
+  applyGitHubInstallationSync(
+    owner: GitHubInstallationSyncOwner,
+    claim: Extract<GitHubInstallationSyncClaim, { status: "claimed" }>,
+    result: GitHubInstallationSyncResult,
   ): Promise<void>;
-  releaseGitHubLifecycleReceipt(providerEventReceiptId: string): Promise<void>;
+  retryGitHubInstallationSync(
+    owner: GitHubInstallationSyncOwner,
+    installationSyncId: string,
+  ): Promise<void>;
   findProviderEventReceiptByDeliveryId(
     deliveryId: string,
     organizationId?: string,
@@ -1568,13 +1595,6 @@ export interface Database {
     organizationId: string,
     fullName: string,
   ): Promise<GitHubRepositoryRecord | undefined>;
-  upsertGitHubRepositories(
-    organizationId: string,
-    connectionId: string,
-    repositories: Array<
-      Pick<GitHubRepositoryRecord, "repositoryId" | "fullName" | "defaultBranch">
-    >,
-  ): Promise<void>;
   findGitHubConfigurationTarget(
     projectId: string,
     repositoryId?: number,

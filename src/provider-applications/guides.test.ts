@@ -223,6 +223,10 @@ test("GitHub renders permissions as a mapping and events as a list, never as pro
   );
   const prose = steps.map(stepText).join(" ");
   assert.ok(
+    prose.includes("GitHub team membership for team allowlists"),
+    "Members permission does not explain team allowlists",
+  );
+  assert.ok(
     !prose.includes("Read and write, Issues"),
     "permissions were flattened back into prose",
   );

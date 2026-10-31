@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSnapshotQuery } from "../queries/index.js";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { BookOpen } from "lucide-react";
 import { useCallback, useState, type FormEvent } from "react";
@@ -34,10 +35,10 @@ import { daemonLoginCommand, GRANT_EXECUTE_COMMAND } from "./handoff.js";
 import { daemonsQueryKey, refreshDaemons } from "./status.js";
 
 const DAEMON_COLUMNS: readonly DataColumn[] = [
-  { header: "Slug" },
+  { header: "Slug", fill: true },
   { header: "ID" },
   { header: "Status" },
-  { header: "Access" },
+  { header: "Access", fill: true },
   { header: "Last seen" },
   { header: "Registered" },
   { header: "", align: "end" },
@@ -87,7 +88,7 @@ export function DaemonsPanel({
   const queryClient = useQueryClient();
   const queryKey = daemonsQueryKey(accountId, organizationId);
   const loadDaemons = useServerFn(daemonList);
-  const snapshot = useQuery({
+  const snapshot = useSnapshotQuery({
     queryKey,
     queryFn: () => loadDaemons({ data: { organizationSlug } }),
   });
@@ -141,17 +142,17 @@ export function DaemonsPanel({
     (daemonId: string) => revoke.mutate({ data: { organizationSlug, daemonId } }),
     [organizationSlug, revoke],
   );
-  if (snapshot.isPending) return <DaemonLoading />;
-  if (snapshot.isError || snapshot.data.status === "error") {
+  if (snapshot.status === "pending") return <DaemonLoading />;
+  if (snapshot.status === "error") {
     return (
       <FailureAlert
         title="Daemons unavailable"
-        error={snapshot.data}
+        error={snapshot.error}
         fallback="Hub did not receive the daemon list. Check your connection and reload the page."
       />
     );
   }
-  const daemons = snapshot.data.data;
+  const daemons = snapshot.data;
   const revokeFailed = revoke.isError || revoke.data?.status === "error";
   const busy = rename.isPending || revoke.isPending;
   return (
@@ -208,7 +209,7 @@ function DaemonRow({
 
   return (
     <DataRow>
-      <DataCell className="min-w-0">
+      <DataCell>
         <TwoLine primary={daemon.slug} />
       </DataCell>
       <DataCell muted>
@@ -230,7 +231,7 @@ function DaemonRow({
       <DataCell muted>
         <RelativeTime value={daemon.registeredAt} />
       </DataCell>
-      <DataCell align="end">
+      <DataCell>
         {canManage ? (
           <>
             <RowActions label={`Actions for ${daemon.slug}`}>

@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../auth/server.js";
 import { createMemoryDatabase } from "../db/memory.js";
-import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
-import { ProjectDashboard, type ManualConfigurationInput } from "./dashboard.js";
+import { ProjectDashboard } from "./dashboard.js";
 
 describe("project dashboard activity read models", () => {
   it("uses canonical Linear health in project and organization snapshots", async () => {
@@ -60,7 +59,7 @@ describe("project dashboard activity read models", () => {
         ],
       });
 
-    const dashboard = new ProjectDashboard(database, accountAuth(), undefined);
+    const dashboard = new ProjectDashboard(database, accountAuth());
     const request = new Request("https://hub.test/o/acme/projects/hub");
     const [organization, project] = await Promise.all([
       dashboard.organizationSnapshot(request, { organizationSlug: "acme" }),
@@ -149,7 +148,7 @@ describe("project dashboard activity read models", () => {
       unroutedReceipt.event.providerEventReceiptId,
       "trigger_filters_rejected",
     );
-    const dashboard = new ProjectDashboard(database, accountAuth(), undefined);
+    const dashboard = new ProjectDashboard(database, accountAuth());
     const request = new Request("https://hub.test/o/acme/projects/hub");
     const list = await dashboard.projectSnapshot(request, {
       organizationSlug: "acme",
@@ -182,146 +181,6 @@ describe("project dashboard activity read models", () => {
     assert.equal("rawPayload" in unroutedEvent, false);
   });
 });
-
-describe("manual configuration saves", () => {
-  const hubYaml = [
-    "environments:",
-    "  runner:",
-    "    kind: daemon",
-    `    daemon: ${TEST_DAEMON_SLUG}`,
-    "    cwd: /repo",
-    "agents: {}",
-    "",
-  ].join("\n");
-  const workflowYaml = [
-    "name: triage",
-    "on: manual.run",
-    "max_runtime: 1h",
-    "steps:",
-    "  - id: only",
-    "    environment: runner",
-    "    max_runtime: 10m",
-    "    idle_timeout: 1m",
-    "    agent: { provider: claude }",
-    "    prompt:",
-    "      - include: partials/triage/preamble.md",
-    "",
-  ].join("\n");
-  const files = () => [
-    { path: ".paseo/hub.yml", content: hubYaml },
-    { path: ".paseo/workflows/triage.yml", content: workflowYaml },
-    {
-      path: ".paseo/workflows/partials/triage/preamble.md",
-      content: "Triage first.",
-    },
-  ];
-
-  it("activates the YAML and its partials as one revision the editor reopens", async () => {
-    const hub = await manualConfigurationHub();
-
-    const saved = await hub.save({ files: files() });
-
-    assert.equal(saved.outcome, "activated");
-    const active = (await hub.snapshot()).configuration.activeRevision;
-    assert.equal(active?.version, saved.revision.version);
-    assert.deepEqual(
-      active?.files,
-      files().toSorted((left, right) => left.path.localeCompare(right.path)),
-    );
-  });
-
-  it("rejects an include with no partial supplied and preserves the active revision", async () => {
-    const hub = await manualConfigurationHub();
-    const activated = await hub.save({ files: files() });
-
-    const rejected = await hub.save({ files: files().slice(0, 2) });
-
-    assert.equal(rejected.outcome, "invalid");
-    assert.match(String(rejected.errors), /missing from the bundle/u);
-    assert.equal(
-      (await hub.snapshot()).configuration.activeRevision?.version,
-      activated.revision.version,
-    );
-  });
-
-  it("rejects an unreferenced shared partial and preserves the active revision", async () => {
-    const hub = await manualConfigurationHub();
-    const activated = await hub.save({ files: files() });
-
-    const extra = {
-      path: ".paseo/workflows/partials/unused.md",
-      content: "Available for future workflows.",
-    };
-    const saved = await hub.save({ files: [...files(), extra] });
-
-    assert.equal(saved.outcome, "invalid");
-    assert.match(String(saved.errors), /not referenced/iu);
-    assert.equal(
-      (await hub.snapshot()).configuration.activeRevision?.version,
-      activated.revision.version,
-    );
-  });
-
-  it("records invalid YAML as a revision without activating it", async () => {
-    const hub = await manualConfigurationHub();
-
-    const rejected = await hub.save({
-      files: [{ path: ".paseo/hub.yml", content: "environments: [" }],
-    });
-
-    assert.equal(rejected.outcome, "invalid");
-    assert.equal((await hub.snapshot()).configuration.activeRevision, null);
-  });
-
-  it("shows malformed expressions against the authored workflow field", async () => {
-    const hub = await manualConfigurationHub();
-    const malformed = files().map((file) =>
-      file.path === ".paseo/workflows/triage.yml"
-        ? Object.assign({}, file, {
-            content: file.content.replace(
-              "agent: { provider: claude }",
-              "agent: ${{ paseo.inputs.agent + }}",
-            ),
-          })
-        : file,
-    );
-
-    const rejected = await hub.save({ files: malformed });
-
-    assert.equal(rejected.outcome, "invalid");
-    assert.match(String(rejected.errors), /\.paseo\/workflows\/triage\.yml\.steps\.only\.agent/iu);
-  });
-});
-
-async function manualConfigurationHub() {
-  const database = createMemoryDatabase({
-    memberships: [
-      {
-        userId: "user-1",
-        organizationId: "org-1",
-        organizationName: "Acme",
-        organizationSlug: "acme",
-        membershipId: "membership-1",
-        role: "owner",
-      },
-    ],
-  });
-  await enrollTestDaemon(database, "org-1");
-  await database.createProject({
-    organizationId: "org-1",
-    name: "Hub",
-    slug: "hub",
-    createdByUserId: "user-1",
-  });
-  const dashboard = new ProjectDashboard(database, accountAuth(), undefined);
-  const request = new Request("https://hub.test/o/acme/projects/hub");
-  const scope = { organizationSlug: "acme", projectSlug: "hub" };
-  return {
-    save: (input: ManualConfigurationInput) =>
-      dashboard.saveManualConfiguration(request, scope, input),
-    snapshot: () => dashboard.projectSnapshot(request, scope),
-  };
-}
 
 function accountAuth(): AuthServer {
   return {

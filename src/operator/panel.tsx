@@ -1,5 +1,6 @@
+import { useSnapshotQuery } from "../queries/index.js";
 import { useCallback, useState, type FormEvent } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import {
   DataCell,
@@ -49,7 +50,7 @@ const PICKER_DESCRIPTION = "Pick an organization to manage its entitlements.";
 const AUDIT_TITLE = "Audit trail";
 const AUDIT_DESCRIPTION = "Every provisioning, plan stamp, and override, most recent first.";
 const ENTITLEMENT_COLUMNS: readonly DataColumn[] = [
-  { header: "Entitlement" },
+  { header: "Entitlement", fill: true },
   { header: "Granted" },
   { header: "Override" },
   { header: "Effective" },
@@ -60,7 +61,7 @@ const ENTITLEMENTS_EMPTY = { title: "No entitlements" };
 const AUDIT_COLUMNS: readonly DataColumn[] = [
   { header: "Change" },
   { header: "Actor" },
-  { header: "Reason" },
+  { header: "Reason", fill: true },
   { header: "When", align: "end" },
 ];
 const AUDIT_EMPTY = {
@@ -95,14 +96,17 @@ function OrganizationPicker({
   onSelect: (slug: string) => void;
 }) {
   const load = useServerFn(operatorOrganizations);
-  const query = useQuery({ queryKey: ["operator", "organizations"], queryFn: () => load() });
+  const query = useSnapshotQuery({
+    queryKey: ["operator", "organizations"],
+    queryFn: () => load(),
+  });
 
-  if (query.isPending) return <OrganizationPickerLoading />;
-  if (query.isError || query.data.status === "error") {
+  if (query.status === "pending") return <OrganizationPickerLoading />;
+  if (query.status === "error") {
     return (
       <FailureAlert
         title="Operator console unavailable"
-        error={query.data}
+        error={query.error}
         fallback="Hub did not receive the organization list. Check your connection and reload the page."
       />
     );
@@ -114,7 +118,7 @@ function OrganizationPicker({
           <SelectValue placeholder="Select an organization" />
         </SelectTrigger>
         <SelectContent>
-          {query.data.data.map((organization) => (
+          {query.data.map((organization) => (
             <SelectItem key={organization.id} value={organization.slug}>
               {organization.name}
             </SelectItem>
@@ -127,22 +131,22 @@ function OrganizationPicker({
 
 function OperatorOrganization({ slug }: { slug: string }) {
   const load = useServerFn(operatorSnapshot);
-  const query = useQuery({
+  const query = useSnapshotQuery({
     queryKey: ["operator", "snapshot", slug],
     queryFn: () => load({ data: { organizationSlug: slug } }),
   });
 
-  if (query.isPending) return <OperatorOrganizationLoading />;
-  if (query.isError || query.data.status === "error") {
+  if (query.status === "pending") return <OperatorOrganizationLoading />;
+  if (query.status === "error") {
     return (
       <FailureAlert
         title="Entitlements unavailable"
-        error={query.data}
+        error={query.error}
         fallback="Hub did not receive this organization's entitlements. Check your connection and reload the page."
       />
     );
   }
-  return <OrganizationContent snapshot={query.data.data} slug={slug} />;
+  return <OrganizationContent snapshot={query.data} slug={slug} />;
 }
 
 function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: string }) {
@@ -205,7 +209,7 @@ function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: str
             </DataCell>
             <DataCell>{seatLimitLabel(effective.seats.max)}</DataCell>
             <DataCell muted>{snapshot.seatsInUse}</DataCell>
-            <DataCell align="end">
+            <DataCell>
               <Button
                 type="button"
                 variant="outline"
@@ -233,7 +237,7 @@ function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: str
               <InviteState canInvite={effective.canInviteMembers} />
             </DataCell>
             <DataCell muted>—</DataCell>
-            <DataCell align="end">
+            <DataCell>
               <Button
                 type="button"
                 variant="outline"
@@ -255,7 +259,7 @@ function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: str
             </DataCell>
             <DataCell>{meterLimitLabel(effectiveExecutionsLimit)}</DataCell>
             <DataCell>{meterUsageLabel(snapshot.usage)}</DataCell>
-            <DataCell align="end">
+            <DataCell>
               <Button
                 type="button"
                 variant="outline"
@@ -460,12 +464,8 @@ function AuditTrail({ history }: { history: Snapshot["history"] }) {
             />
           </DataCell>
           <DataCell muted>{entry.actorName ?? "System"}</DataCell>
-          <DataCell muted className="max-w-xs">
-            <span className="block truncate" title={entry.reason ?? undefined}>
-              {entry.reason ?? "—"}
-            </span>
-          </DataCell>
-          <DataCell align="end" muted>
+          <DataCell muted>{entry.reason ?? "—"}</DataCell>
+          <DataCell muted>
             <RelativeTime value={entry.createdAt} />
           </DataCell>
         </DataRow>

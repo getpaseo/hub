@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useSnapshotQuery } from "../queries/index.js";
 import { useServerFn } from "@tanstack/react-start";
 import {
   DataCell,
@@ -25,13 +25,13 @@ const LIMITS_DESCRIPTION = "What this organization is allowed, and how much is i
 const HISTORY_TITLE = "History";
 const HISTORY_DESCRIPTION = "Every change to this organization's limits, most recent first.";
 const LIMIT_COLUMNS: readonly DataColumn[] = [
-  { header: "Resource" },
+  { header: "Resource", fill: true },
   { header: "Limit" },
   { header: "In use", align: "end" },
 ];
 const HISTORY_COLUMNS: readonly DataColumn[] = [
   { header: "Change" },
-  { header: "Reason" },
+  { header: "Reason", fill: true },
   { header: "Who" },
   { header: "When", align: "end" },
 ];
@@ -51,22 +51,22 @@ const SOURCE_LABELS: Record<EntitlementChangeSource, string> = {
 export function OrganizationUsagePanel() {
   const tenant = useRouteTenant();
   const load = useServerFn(usageSnapshot);
-  const query = useQuery({
+  const query = useSnapshotQuery({
     queryKey: ["usage", tenant.account.id, tenant.organization.id],
     queryFn: () => load({ data: { organizationSlug: tenant.organization.slug } }),
   });
 
-  if (query.isPending) return <UsageLoading name={tenant.organization.name} />;
-  if (query.isError || query.data.status === "error") {
+  if (query.status === "pending") return <UsageLoading name={tenant.organization.name} />;
+  if (query.status === "error") {
     return (
       <FailureAlert
         title="Usage unavailable"
-        error={query.data}
+        error={query.error}
         fallback="Hub did not receive the usage snapshot. Check your connection and reload the page."
       />
     );
   }
-  return <UsageContent snapshot={query.data.data} />;
+  return <UsageContent snapshot={query.data} />;
 }
 
 function UsageContent({ snapshot }: { snapshot: Snapshot }) {
@@ -83,7 +83,7 @@ function UsageContent({ snapshot }: { snapshot: Snapshot }) {
           <DataRow>
             <DataCell>Seats</DataCell>
             <DataCell muted>{limitLabel(limits.seats.limit)}</DataCell>
-            <DataCell align="end">{limits.seats.used}</DataCell>
+            <DataCell>{limits.seats.used}</DataCell>
           </DataRow>
           <DataRow>
             <DataCell>Members can invite</DataCell>
@@ -92,14 +92,12 @@ function UsageContent({ snapshot }: { snapshot: Snapshot }) {
                 {limits.canInviteMembers ? "Allowed" : "Not allowed"}
               </StatusPill>
             </DataCell>
-            <DataCell align="end" muted>
-              —
-            </DataCell>
+            <DataCell muted>—</DataCell>
           </DataRow>
           <DataRow>
             <DataCell>Executions this month</DataCell>
             <DataCell muted>{limitLabel(limits.executionsMonthly.limit)}</DataCell>
-            <DataCell align="end">{measureUsage(limits.executionsMonthly)}</DataCell>
+            <DataCell>{measureUsage(limits.executionsMonthly)}</DataCell>
           </DataRow>
         </DataTable>
       </Section>
@@ -144,13 +142,9 @@ function History({ history }: { history: Snapshot["history"] }) {
       {history.map((entry) => (
         <DataRow key={entry.id}>
           <DataCell>{SOURCE_LABELS[entry.source]}</DataCell>
-          <DataCell muted className="max-w-xs">
-            <span className="block truncate" title={entry.reason ?? undefined}>
-              {entry.reason ?? "—"}
-            </span>
-          </DataCell>
+          <DataCell muted>{entry.reason ?? "—"}</DataCell>
           <DataCell muted>{entry.actorName ?? "System"}</DataCell>
-          <DataCell align="end" muted>
+          <DataCell muted>
             <RelativeTime value={entry.createdAt} />
           </DataCell>
         </DataRow>

@@ -910,6 +910,7 @@ function launchIntent(
         .map((type) => ({ type, max: 1, required: true as const })),
     ],
     autoArchive,
+    background: false,
     triggerContext: { provider: "slack" },
     outputContext: slackOutputContext,
     ...(outputSchema === undefined ? {} : { outputSchema }),

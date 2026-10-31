@@ -95,6 +95,7 @@ describe("durable Hub action acknowledgement state", () => {
         prompt: "Full prompt ".repeat(100),
         allowOutputs: [],
         autoArchive: false,
+        background: false,
         triggerContext: {},
         outputContext: {},
         configurationRevisionId: "revision-reconnect",

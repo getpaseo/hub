@@ -43,7 +43,19 @@ run:
     Scheduling context: ${{ paseo.context }}
   max_runtime: 2h
   idle_timeout: 10m
+  auto_archive: true
+  background: true
 ```
+
+The run block also controls the execution workspace:
+
+- `run.auto_archive` defaults to `true` and archives the workspace after execution.
+- `run.background` defaults to `false`. Set it to `true` in YAML to create a Paseo background
+  workspace, hidden from workspace listings unless the client requests background workspaces.
+  This is independent of archiving. Hub always passes the field through. Older daemons without
+  `backgroundWorkspaces` support ignore it: the run proceeds with a visible workspace.
+  Changing this setting for an existing continuation requires a new agent or a different
+  continuation key.
 
 The persisted recurrence has three fields: `start` is a quoted local date-time with seconds and
 no offset; `timezone` gives that clock's IANA timezone; `rule` is one RFC 5545 RRULE value, without
@@ -69,8 +81,13 @@ stored. Rules beyond the simple presets appear in the **Custom schedule** field,
 other execution settings change. Custom intervals, monthly/yearly patterns, and finite rules
 remain fully supported by YAML/API; they are not expanded into extra form controls.
 
-A schedule is the document's sole event and has no connection, filters or invocation inputs.
-Other execution settings work normally, including GitHub authority, provider options, worktrees,
+A schedule has no connection or filters. It can share a document with other events, such as
+`manual.run`, so one prompt runs on the clock and on demand. A tick supplies no inputs: it runs with
+each input's `default`, so a document with a schedule cannot declare a `required` input. A manual
+dispatch addresses the document by its `name` wherever `manual.run` sits under `on`. Only schedule
+occurrences take part in the overlap exclusion below; a manual run neither delays nor is delayed by
+a tick. The form edits a single event, so a document with several events is edited in YAML. Other
+execution settings work normally, including GitHub authority, provider options, worktrees,
 continuation and outputs.
 
 `${{ paseo.context }}` contains a `schedule` object with `trigger_id`, `scheduled_at` (the intended

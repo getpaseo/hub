@@ -5,6 +5,7 @@ import type { Duplex } from "node:stream";
 import type { Logger } from "pino";
 import type { RuntimeConfig } from "./config/index.js";
 import { createDatabase } from "./db/pg.js";
+import { ReceiptRetention } from "./receipt-retention/index.js";
 import type { Database } from "./db/types.js";
 import {
   embeddedDatabaseRuntime,
@@ -178,6 +179,9 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
         provider,
       });
     }
+    const receiptRetention = new ReceiptRetention(runtime);
+    resources.own(() => receiptRetention.stop());
+    receiptRetention.start();
     return application;
   } catch (error) {
     await resources.close();

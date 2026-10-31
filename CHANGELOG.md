@@ -1,5 +1,68 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `github.pull_request_synchronized` triggers a workflow when new commits are pushed to a pull request, with the pushed head SHA in the agent context.
+- The GitHub `exclude_contains` filter skips an event whose text contains the given string, so a general mention trigger can leave a command such as `@bot review` to the trigger that owns it.
+- `github.pull_request_ready_for_review` triggers a workflow when a draft pull request is marked ready for review, without running on creation or later pushes. GitHub pull request deliveries expose the draft status and head SHA in the agent context for revision checks.
+
+### Changed
+
+- Unhandled provider event receipts expire automatically after seven days on every instance. Receipts routed to a trigger or still referenced by a run or attachment remain available.
+
+## 0.11.0 - 2026-10-25
+
+### Added
+
+- One trigger can run on a schedule and on demand: `schedule.tick` may share a document with other events such as `manual.run`, so a prompt no longer needs two files. A tick runs with each input's default, so a document with a schedule cannot declare a required input.
+- `run.background: true` creates a Paseo background workspace for a run, keeping automated runs out of ordinary workspace listings. It defaults to `false`; daemons without background workspace support ignore it and run visibly.
+- An unverified user who signs in with the correct password receives a verification email immediately, and the link signs them in.
+
+### Changed
+
+- CLI logins authorize only while their creator is still an owner or admin of the organization; removing or demoting a member revokes their CLI credentials. Organization API keys and enrolled daemons are unaffected.
+- Connecting a GitHub installation now requires the GitHub account owner, or an active admin of the organization that owns the installation. The GitHub App needs the Members read-only organization permission; an existing App must have it approved on the installation before reconnecting.
+- Connecting a GitHub App discovers its complete repository catalog before reporting success, and installation webhooks keep the catalog current, so a trigger with `filters.repo` resolves repositories on a newly connected installation.
+- Tables size each column by its widest value; only columns whose values can be cut share the remaining width.
+
+### Fixed
+
+- Every run of a trigger with several events carries the trigger's name, instead of an internal event name, in workspace titles and on the home page.
+- Background runs receive agent status updates, so Hub observes completion, enforces the idle timeout, and archives the workspace instead of leaving cleanup pending.
+- A run with `auto_archive: true` whose agent went idle during a Hub restart, reconnect, or deploy is archived after recovery instead of staying open indefinitely.
+- GitHub notifications for a deleted comment or an uninstalled App settle instead of retrying every 30 seconds.
+- When a background refresh of a loaded Hub screen fails, the screen keeps its last loaded content and retries instead of replacing it with an error.
+
+## 0.10.0 - 2026-09-29
+
+### Added
+
+- Scheduled triggers that run on a calendar recurrence, with time zones.
+- Conversation continuity: a new arrival in the same issue, pull request, or thread continues the agent already working there instead of starting another, with explicit keys and an opt-out.
+- A new arrival for a running agent steers it, including agents that run with scoped execution credentials.
+- A Home page for new organizations with a setup checklist, a notice when provider events arrive with no trigger listening, and a seven-day overview.
+- Saving a trigger validates its agent against the target daemon, so a model, mode, or provider the daemon cannot run is refused at save instead of failing the first run.
+- A `startup_timeout` setting for machines that need longer than the default two minutes to start an agent.
+
+### Changed
+
+- Upgrade Paseo daemons before upgrading Hub: conversation continuity needs the current daemon.
+- One consistent interface across sign-in, organization administration, projects, connections, triggers, and instance settings.
+- The trigger editor walks four numbered steps: what arrives, who may send it, where it lands, and what runs there.
+- Trigger forms list only the events Hub handles, and label events require the label they match.
+- Alerts say what happened, and empty pages no longer draw empty tables and panels.
+- Paseo shows Hub executions under their trigger's name instead of an execution id.
+
+### Fixed
+
+- Active agents keep their execution credentials across Hub restarts and reconnect to the same daemon agent.
+- Long rendered prompts reach the agent in full.
+- New GitHub agents receive their reply tool, and preserved legacy workflows dispatch again.
+- The sidebar and breadcrumb stay on the page that is visible while the next one loads.
+- Unsupported methods on the execution MCP route return 405 instead of an HTML page or a 500, and a daemon sending an invalid WebSocket close code no longer crashes Hub.
+
 ## 0.9.0 - 2026-09-04
 
 ### Added

@@ -1,5 +1,6 @@
+import { useSnapshotQuery } from "../queries/index.js";
 import { KeyRound } from "lucide-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ConfirmMenuItem } from "../components/app/confirm-action.js";
@@ -92,9 +93,9 @@ const SCOPE_OPTIONS = [
 ] as const;
 
 const TABLE_COLUMNS = [
-  { header: "Name" },
+  { header: "Name", fill: true },
   { header: "Prefix" },
-  { header: "Scopes" },
+  { header: "Scopes", fill: true },
   { header: "Created" },
   { header: "Last used" },
   { header: "Status" },
@@ -111,7 +112,7 @@ const EMPTY_CLI_TABLE = {
   description: "Run paseo hub login to create one.",
 };
 const CLI_COLUMNS = [
-  { header: "Prefix" },
+  { header: "Prefix", fill: true },
   { header: "Created" },
   { header: "Last used" },
   { header: "Status" },
@@ -131,7 +132,7 @@ export function ApiKeys() {
   const load = useServerFn(listApiKeys) as (
     input: Parameters<typeof listApiKeys>[0],
   ) => Promise<ListResult>;
-  const snapshot = useQuery({
+  const snapshot = useSnapshotQuery({
     queryKey: ["api-keys", account.organization.id],
     queryFn: () => load({}),
     enabled: account.capabilities.manageResources,
@@ -168,7 +169,7 @@ export function ApiKeys() {
     },
   });
   const openCreate = useCallback(() => setCreating(true), []);
-  const reload = useCallback(() => void snapshot.refetch(), [snapshot]);
+  const reload = snapshot.refetch;
   const close = useCallback(
     (open: boolean) => {
       setCreating(open);
@@ -219,7 +220,7 @@ export function ApiKeys() {
       </>
     );
   }
-  if (snapshot.isPending) {
+  if (snapshot.status === "pending") {
     return (
       <>
         {header}
@@ -232,24 +233,24 @@ export function ApiKeys() {
       </>
     );
   }
-  if (snapshot.isError || snapshot.data.status === "error") {
+  if (snapshot.status === "error") {
     return (
       <>
         {header}
         <FailureAlert
           title="API keys unavailable"
-          error={snapshot.data}
+          error={snapshot.error}
           fallback={LIST_FAILURE}
           onRetry={reload}
         />
       </>
     );
   }
-  const keys = [...snapshot.data.data.keys].sort((left, right) => {
+  const keys = [...snapshot.data.keys].sort((left, right) => {
     const revoked = Number(left.revokedAt !== null) - Number(right.revokedAt !== null);
     return revoked || right.createdAt.localeCompare(left.createdAt);
   });
-  const cliCredentials = [...snapshot.data.data.cliCredentials].sort((left, right) =>
+  const cliCredentials = [...snapshot.data.cliCredentials].sort((left, right) =>
     right.createdAt.localeCompare(left.createdAt),
   );
   const createError =
@@ -339,7 +340,7 @@ function CliCredentialRow({
           {record.revokedAt === null ? "Active" : "Revoked"}
         </StatusPill>
       </DataCell>
-      <DataCell align="end">
+      <DataCell>
         {record.revokedAt === null ? (
           <RowActions label={`Actions for ${record.prefix}`}>
             <ConfirmMenuItem
@@ -389,7 +390,7 @@ function ApiKeyRow({
           {record.revokedAt === null ? "Active" : "Revoked"}
         </StatusPill>
       </DataCell>
-      <DataCell align="end">
+      <DataCell>
         {record.revokedAt === null && canManage ? (
           <RowActions label={`Actions for ${record.name}`}>
             <ConfirmMenuItem

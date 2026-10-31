@@ -75,9 +75,10 @@ import type {
   AcceptSlackEventInput,
   UpdateLinearConnectionTokensInput,
   LinearConnectionRefreshOperation,
-  GitHubLifecycleReceiptClaim,
+  GitHubInstallationSyncOwner,
+  GitHubInstallationSyncClaim,
   GitHubLifecycleReceiptClaimInput,
-  GitHubLifecycleResult,
+  GitHubInstallationSyncResult,
   PersistManualEventInput,
   ProjectConfigurationReadModel,
   ProjectConfigurationRevisionRecord,
@@ -148,9 +149,12 @@ class PgDatabase implements Database {
   ) {
     this.schedules = new ScheduleRepository(this.pool);
     this.executionAuthority = new ExecutionAuthorityRepository(this.pool);
-    const database = this.pool.drizzle();
     this.connections = new ConnectionRepository(this.pool, locks);
-    this.triggerAcceptance = new ProviderEventAcceptanceRepository(database, this.connections);
+    this.triggerAcceptance = new ProviderEventAcceptanceRepository(
+      this.pool,
+      locks,
+      this.connections,
+    );
   }
 
   acceptGitHubEvent(input: AcceptGitHubEventInput) {
@@ -173,19 +177,34 @@ class PgDatabase implements Database {
     return this.triggerAcceptance.persistManual(input);
   }
 
+  synchronizeGitHubInstallation<T>(
+    installationId: number,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return this.locks.withLock(
+      JSON.stringify(["github-installation-sync", installationId]),
+      operation,
+    );
+  }
+
+  pendingGitHubInstallationSyncs(owner: GitHubInstallationSyncOwner) {
+    return this.triggerAcceptance.pendingGitHubInstallationSyncs(owner);
+  }
+
   claimGitHubLifecycleReceipt(input: GitHubLifecycleReceiptClaimInput) {
     return this.triggerAcceptance.claimGitHubLifecycleReceipt(input);
   }
 
-  applyGitHubLifecycle(
-    claim: Extract<GitHubLifecycleReceiptClaim, { status: "claimed" }>,
-    result: GitHubLifecycleResult,
+  applyGitHubInstallationSync(
+    owner: GitHubInstallationSyncOwner,
+    claim: Extract<GitHubInstallationSyncClaim, { status: "claimed" }>,
+    result: GitHubInstallationSyncResult,
   ) {
-    return this.triggerAcceptance.applyGitHubLifecycle(claim, result);
+    return this.triggerAcceptance.applyGitHubInstallationSync(owner, claim, result);
   }
 
-  releaseGitHubLifecycleReceipt(providerEventReceiptId: string) {
-    return this.triggerAcceptance.releaseGitHubLifecycleReceipt(providerEventReceiptId);
+  retryGitHubInstallationSync(owner: GitHubInstallationSyncOwner, installationSyncId: string) {
+    return this.triggerAcceptance.retryGitHubInstallationSync(owner, installationSyncId);
   }
 
   async markProviderEventDropped(
@@ -4017,34 +4036,6 @@ class PgDatabase implements Database {
     return rows.rows[0] === undefined ? undefined : toGitHubRepositoryRecord(rows.rows[0]);
   }
 
-  async upsertGitHubRepositories(
-    organizationId: string,
-    connectionId: string,
-    repositories: Array<
-      Pick<GitHubRepositoryRecord, "repositoryId" | "fullName" | "defaultBranch">
-    >,
-  ): Promise<void> {
-    for (const repository of repositories) {
-      await query(
-        this.pool,
-        `insert into github_repositories
-           (organization_id, connection_id, repository_id, full_name, default_branch)
-         values ($1, $2, $3, $4, $5)
-         on conflict (connection_id, repository_id) do update
-           set full_name = excluded.full_name,
-               default_branch = excluded.default_branch,
-               updated_at = clock_timestamp()`,
-        [
-          organizationId,
-          connectionId,
-          repository.repositoryId,
-          repository.fullName,
-          repository.defaultBranch,
-        ],
-      );
-    }
-  }
-
   async findGitHubConfigurationTarget(
     projectId: string,
     repositoryId?: number,
@@ -4152,8 +4143,8 @@ class PgDatabase implements Database {
   ): Promise<OrganizationRunRecord[]> {
     const rows = await query<OrganizationRunRow>(
       this.pool,
-      `select runs.id, runs.configured_trigger_name, runs.status,
-              receipts.provider, receipts.source, receipts.received_at,
+      `select runs.id, coalesce(triggers.name, runs.configured_trigger_name) as trigger_name,
+              runs.status, receipts.provider, receipts.source, receipts.received_at,
               (select executions.launch_intent -> 'agent'
                  from workflow_step_runs steps
                  join agent_executions executions on executions.id = steps.agent_execution_id
@@ -4164,6 +4155,9 @@ class PgDatabase implements Database {
        join provider_event_receipts receipts
          on receipts.id = runs.provider_event_receipt_id
         and receipts.organization_id = runs.organization_id
+       left join organization_triggers triggers
+         on triggers.runtime_project_id = runs.project_id
+        and triggers.organization_id = runs.organization_id
        where runs.organization_id = $1 and runs.created_at >= $2
        order by runs.created_at desc, runs.id desc
        limit $3`,
@@ -4171,7 +4165,7 @@ class PgDatabase implements Database {
     );
     return rows.rows.map((row) => ({
       id: row.id,
-      triggerName: row.configured_trigger_name,
+      triggerName: row.trigger_name,
       provider: row.provider,
       source: row.source,
       status: row.status,
@@ -4562,7 +4556,7 @@ interface ProjectActivityRunRow extends TriggerRunRow {
 
 interface OrganizationRunRow extends QueryRow {
   id: string;
-  configured_trigger_name: string;
+  trigger_name: string;
   status: TriggerRunRecord["status"];
   provider: ProviderEventReceiptRecord["provider"];
   source: string;

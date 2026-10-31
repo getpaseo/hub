@@ -1,4 +1,5 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useSnapshotQuery } from "../queries/index.js";
+import { useMutation } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useCallback, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { AuthCard } from "../components/app/auth-layout.js";
@@ -23,7 +24,7 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
       : (new URLSearchParams(window.location.search).get("code") ?? undefined),
   );
   const inspect = useServerFn(inspectCliAuthorization);
-  const snapshot = useQuery({
+  const snapshot = useSnapshotQuery({
     queryKey: ["cli-authorization", accountId, organizationId, code],
     queryFn: () => inspect({ data: { userCode: code! } }),
     enabled: code !== undefined,
@@ -37,7 +38,7 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
   const submitDecision = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
-      if (snapshot.data?.status !== "ok" || code === undefined) return;
+      if (snapshot.status !== "success" || code === undefined) return;
       const submitter = "submitter" in event.nativeEvent ? event.nativeEvent.submitter : undefined;
       const decision =
         submitter instanceof HTMLButtonElement && submitter.value === "deny" ? "deny" : "approve";
@@ -45,13 +46,13 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
         data: {
           userCode: code,
           decision,
-          organizationId: snapshot.data.data.organization.id,
+          organizationId: snapshot.data.organization.id,
         },
       });
     },
-    [code, decide, snapshot.data],
+    [code, decide, snapshot.data, snapshot.status],
   );
-  const resolved = snapshot.data?.status === "ok" ? snapshot.data.data : undefined;
+  const resolved = snapshot.status === "success" ? snapshot.data : undefined;
   const organizationName = resolved?.organization.name;
   const expiresAt = resolved?.expiresAt;
   const facts = useMemo<SummaryRow[]>(
@@ -70,13 +71,13 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
     [expiresAt, organizationName],
   );
 
-  if (code !== undefined && snapshot.isPending) return <Loading rows={facts} />;
-  if (snapshot.isError || snapshot.data?.status === "error") {
+  if (code !== undefined && snapshot.status === "pending") return <Loading rows={facts} />;
+  if (snapshot.status === "error") {
     return (
       <Centered>
         <FailureAlert
           title="CLI login unavailable"
-          error={snapshot.data}
+          error={snapshot.error}
           fallback="This CLI login request is unavailable or expired."
         />
       </Centered>
@@ -96,7 +97,7 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
     );
   }
   if (code === undefined || snapshot.data === undefined) return <CodeEntry onCode={setCode} />;
-  const request = snapshot.data.data;
+  const request = snapshot.data;
   const failed = decide.isError || decide.data?.status === "error";
   return (
     <Centered>

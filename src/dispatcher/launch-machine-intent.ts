@@ -22,6 +22,7 @@ export interface LaunchMachineIntent {
   projectId: string;
   triggerRunId: string;
   workflowStepRunId?: string;
+  /** The trigger's name as the user wrote it; never the internal name of one of its events. */
   triggerName: string;
   environmentName: string;
   environment: DaemonEnvironmentTarget;
@@ -36,6 +37,7 @@ export interface LaunchMachineIntent {
   startupTimeoutMs?: number;
   idleTimeoutMs?: number;
   autoArchive: boolean;
+  background: boolean;
   triggerContext: unknown;
   outputContext: unknown;
   outputSchema?: JsonValue;
@@ -62,6 +64,7 @@ export function buildLaunchMachineIntent(input: {
   startupTimeoutMs?: number;
   idleTimeoutMs?: number;
   autoArchive: boolean;
+  background: boolean;
   triggerContext: unknown;
   outputContext: unknown;
   hubConfig: unknown;
@@ -84,6 +87,7 @@ export function buildLaunchMachineIntent(input: {
     ...(input.startupTimeoutMs === undefined ? {} : { startupTimeoutMs: input.startupTimeoutMs }),
     ...(input.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: input.idleTimeoutMs }),
     autoArchive: input.autoArchive,
+    background: input.background,
     triggerContext: input.triggerContext,
     outputContext: input.outputContext,
     configurationRevisionId: input.configurationRevisionId,

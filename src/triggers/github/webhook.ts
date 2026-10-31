@@ -287,7 +287,7 @@ async function handleLifecycle(
       deliveryId: webhook.deliveryId,
       installationId,
     },
-    "provider lifecycle event applied",
+    "provider lifecycle event accepted",
   );
   return new Response("OK", { status: 200 });
 }

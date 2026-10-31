@@ -354,24 +354,15 @@ describe("dynamic provider runtime", () => {
     );
   });
 
-  it("drains in-flight configuration calls while later GitHub capabilities use the replacement", async () => {
+  it("uses replacement GitHub capabilities after registration retirement", async () => {
     const used: string[] = [];
     const stopped: string[] = [];
-    let releaseConfiguration: (() => void) | undefined;
-    const configurationGate = new Promise<void>((resolve) => {
-      releaseConfiguration = resolve;
-    });
     const runtime = new DynamicProviderRuntime({
       database: createMemoryDatabase(),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
       registrationFactory: ({ configuration }) =>
-        downstreamRegistration(
-          providerConfigurationId(configuration),
-          used,
-          stopped,
-          configurationGate,
-        ),
+        downstreamRegistration(providerConfigurationId(configuration), used, stopped),
     });
     const stable = runtime
       .registrations()
@@ -404,13 +395,6 @@ describe("dynamic provider runtime", () => {
       triggerContext: match.triggerContext,
     });
 
-    const pendingConfiguration = stable.githubConfiguration!.readFileAtCommit({
-      installationId: 1,
-      repositoryId: 2,
-      commitSha: "sha",
-      path: ".paseo/hub.yml",
-    });
-    await new Promise((resolve) => setImmediate(resolve));
     const second = await runtime.prepare(
       "github",
       providerConfiguration("github", "A2"),
@@ -422,8 +406,6 @@ describe("dynamic provider runtime", () => {
     second.publish();
 
     assert.deepEqual(stopped, ["A1"]);
-    releaseConfiguration?.();
-    await pendingConfiguration;
     await stable.integration!.resolve("project", "github", "token", {
       executionId: "execution-1",
     });
@@ -435,12 +417,7 @@ describe("dynamic provider runtime", () => {
     });
     await new Promise((resolve) => setImmediate(resolve));
 
-    assert.deepEqual(used, [
-      "launch:A1",
-      "configuration:A1",
-      "integration:A2",
-      "authority-mint:A2",
-    ]);
+    assert.deepEqual(used, ["launch:A1", "integration:A2", "authority-mint:A2"]);
     assert.deepEqual(stopped, ["A1"]);
     await trigger.onAgentExecutionTerminal?.("execution-1", match.triggerContext);
     await new Promise((resolve) => setImmediate(resolve));
@@ -793,7 +770,6 @@ function downstreamRegistration(
   id: string,
   used: string[],
   stopped: string[],
-  configurationGate: Promise<void> = Promise.resolve(),
 ): ProviderRegistration {
   const trigger: TriggerProvider = {
     name: id.startsWith("A") ? "github" : "slack",
@@ -867,16 +843,6 @@ function downstreamRegistration(
       resolve: () => {
         used.push(`attachment:${id}`);
         return Promise.resolve(new Response(id));
-      },
-    },
-    githubConfiguration: {
-      listInstallationRepositories: () => Promise.resolve([]),
-      readDefaultBranchHead: () => Promise.resolve(id),
-      listFilesAtCommit: () => Promise.resolve([]),
-      readFileAtCommit: async () => {
-        used.push(`configuration:${id}`);
-        await configurationGate;
-        return { kind: "file", content: id };
       },
     },
   };

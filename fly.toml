@@ -20,6 +20,6 @@ primary_region = 'ord'
   min_machines_running = 1
 
 [[vm]]
-  memory = '512mb'
-  cpu_kind = 'shared'
+  memory = '2gb'
+  cpu_kind = 'performance'
   cpus = 1

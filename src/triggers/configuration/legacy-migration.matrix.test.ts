@@ -90,6 +90,7 @@ steps:
       - { type: slack.reply, max: 5, required: true }
       - { type: github.comment, max: 1 }
     auto_archive: false
+    background: true
 `;
 
 function exhaustiveFiles(): HubBundleFile[] {
@@ -117,6 +118,7 @@ describe("legacy migration compatibility matrix", () => {
       executionSemantics(before.triggers[0]!, before.environments[0]!),
     );
     assert.match(trigger.yaml, /max_runtime: 2h/u);
+    assert.match(trigger.yaml, /background: true/u);
     assert.match(trigger.yaml, /select: \$\{\{ paseo\.inputs\.agent \}\}/u);
     assert.match(trigger.yaml, /network_access: false/u);
     assert.doesNotMatch(trigger.yaml, /include:|partials:|steps:|environments:/u);

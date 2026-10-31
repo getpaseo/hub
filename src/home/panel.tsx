@@ -1,6 +1,6 @@
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop -- one screen binds one snapshot; a row's action and status are that row's own slots */
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- generated routes cannot express server-resolved organization URLs */
-import { useQuery } from "@tanstack/react-query";
+import { useSnapshotQuery } from "../queries/index.js";
 import { Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Cpu, History, Sparkles } from "lucide-react";
@@ -34,7 +34,7 @@ export function HomePanel() {
   const account = useActiveAccount();
   const scope = { organizationSlug: tenant.organization.slug };
   const load = useServerFn(homeSnapshot);
-  const snapshot = useQuery({
+  const snapshot = useSnapshotQuery({
     queryKey: ["home", tenant.account.id, tenant.organization.id],
     queryFn: () => load({ data: scope }),
   });

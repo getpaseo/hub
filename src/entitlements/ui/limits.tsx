@@ -1,4 +1,5 @@
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- dynamic remedy URLs are validated by their route owners */
+import { useSnapshotQuery } from "../../queries/index.js";
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
@@ -13,13 +14,13 @@ import { usageSnapshot } from "../../usage/functions.js";
 export function useOrganizationLimits(enabled = true): UsageLimitsView | undefined {
   const tenant = useRouteTenant();
   const load = useServerFn(usageSnapshot);
-  const query = useQuery({
+  const query = useSnapshotQuery({
     queryKey: ["usage", tenant.account.id, tenant.organization.id],
     queryFn: () => load({ data: { organizationSlug: tenant.organization.slug } }),
     enabled,
   });
 
-  return query.data?.status === "ok" ? query.data.data.limits : undefined;
+  return query.status === "success" ? query.data.limits : undefined;
 }
 
 export interface EntitlementRemedy {

@@ -3,7 +3,6 @@ import type { ConnectionResolutionContext, ConnectionResolver } from "../config/
 import type { OrganizationConnectionUsage } from "../db/types.js";
 import type { OutputExecutor, OutputToolDefinition } from "../execution-capabilities/outputs.js";
 import type { TriggerProvider, TriggerSource } from "../triggers/index.js";
-import type { GitHubConfigurationProvider } from "../configuration/github-sync.js";
 import type {
   AttachmentCapabilityRegistry,
   AttachmentProvider,
@@ -78,6 +77,5 @@ export interface ProviderRegistration {
   outputs: readonly ProviderOutputRegistration[];
   requests: readonly ProviderRequestRegistration[];
   attachment?: ProviderAttachmentRegistration;
-  githubConfiguration?: GitHubConfigurationProvider;
   slackDelivery?: { status(): SlackDeliveryStatus; retry(): Promise<void> };
 }

@@ -136,7 +136,7 @@ function matchesStaticFilter(
     hasIdentityAllowlist(filter) &&
     matchesConnection(filter, connectionId) &&
     matchesRepository(filter, event) &&
-    matchesText(filter, classified.text) &&
+    matchesText(classified.text, filter) &&
     matchesLabels(filter, classified)
   );
 }
@@ -158,14 +158,6 @@ function matchesRepository(filter: TriggerFilter, event: NormalizedGitHubEvent):
 
   const resourceId = filter["resourceId"];
   return typeof resourceId !== "string" || resourceId === String(event.repositoryId);
-}
-
-function matchesText(filter: TriggerFilter, text: string): boolean {
-  const pattern = readStringFilter(filter, "pattern");
-  if (pattern !== undefined && !text.startsWith(pattern)) return false;
-
-  const contains = readStringFilter(filter, "contains");
-  return contains === undefined || text.includes(contains);
 }
 
 function matchesLabels(
@@ -221,9 +213,18 @@ async function matchesTeamFilter(
   return false;
 }
 
+function matchesText(text: string, filter: TriggerFilter): boolean {
+  const pattern = readStringFilter(filter, "pattern");
+  if (pattern !== undefined && !text.startsWith(pattern)) return false;
+  const contains = readStringFilter(filter, "contains");
+  if (contains !== undefined && !text.includes(contains)) return false;
+  const excluded = readStringFilter(filter, "exclude_contains");
+  return excluded === undefined || !text.includes(excluded);
+}
+
 function readStringFilter(
   filter: TriggerFilter,
-  key: "pattern" | "contains" | "label",
+  key: "pattern" | "contains" | "exclude_contains" | "label",
 ): string | undefined {
   const value = filter[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;

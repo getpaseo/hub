@@ -41,6 +41,8 @@ const organizationIsolation = {
 };
 
 test("switches two identities without leaking team or invitation state", async ({ hub }) => {
+  // Four browser accounts and two organizations share this journey's total CI budget.
+  test.slow();
   await hub.establishOrganizationIsolation(organizationIsolation);
   await expectOrbitIsolation(hub);
   await hub.chooseOrganization("alice", "Acme");

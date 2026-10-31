@@ -158,6 +158,7 @@ export const PullRequestPayloadSchema = z
     pull_request: z
       .object({
         number: OptionalNumberSchema,
+        draft: z.boolean().optional().catch(undefined),
         title: OptionalStringSchema,
         body: OptionalStringSchema,
         html_url: OptionalStringSchema,
@@ -166,6 +167,7 @@ export const PullRequestPayloadSchema = z
         head: z
           .object({
             ref: OptionalStringSchema,
+            sha: OptionalStringSchema,
           })
           .optional()
           .catch(undefined),

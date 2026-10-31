@@ -320,11 +320,10 @@ export class AppSection {
    */
   async permissionMapping(): Promise<Readonly<Record<string, string>>> {
     return await this.steps()
-      .locator("dl")
-      .first()
-      .evaluate((list) => {
+      .locator('dl[data-summary$=" permissions"]')
+      .evaluateAll((lists) => {
         const pairs: Record<string, string> = {};
-        const terms = [...list.querySelectorAll("dt")];
+        const terms = lists.flatMap((list) => [...list.querySelectorAll("dt")]);
         for (const term of terms) {
           const definition = term.nextElementSibling;
           if (definition?.tagName.toLowerCase() !== "dd") continue;

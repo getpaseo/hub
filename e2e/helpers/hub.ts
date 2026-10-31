@@ -32,7 +32,6 @@ import {
   type OrganizationSection,
   type OrganizationSettingsSection,
 } from "./projects/navigation.js";
-import { ProjectConfiguration } from "./projects/configuration.js";
 
 export interface BuiltApplication {
   origin: string;
@@ -51,7 +50,10 @@ export interface BuiltApplication {
   reportedSeatQuantity(organizationId: string): Promise<number | null>;
   /** Arms one account-setup failure inside the built application, for the error/retry journey. */
   failNextAccountSetup(): Promise<void>;
-  accountEmailLink(email: string, kind: "verification" | "password-reset"): Promise<string>;
+  accountEmail(
+    email: string,
+    kind: "verification" | "password-reset",
+  ): Promise<{ url: string; count: number }>;
   /** Records a daemon enrollment token for this instance's organization. */
   issueDaemonEnrollment(verifier: string): Promise<void>;
   /** Arms one project snapshot read failure inside the disposable built application. */
@@ -68,7 +70,6 @@ export interface BuiltApplication {
   }): Promise<void>;
   installProviderDispatchFixture(input: {
     organizationId: string;
-    repositoryId: number;
     repository: string;
     guildId: string;
     files: readonly HubBundleFile[];
@@ -186,7 +187,10 @@ export class PaseoHub {
       data: account,
     });
     expect(response.status()).toBe(200);
-    const verificationLink = await this.primary.accountEmailLink(account.email, "verification");
+    const { url: verificationLink } = await this.primary.accountEmail(
+      account.email,
+      "verification",
+    );
     expect((await this.requests.get(verificationLink)).ok()).toBe(true);
   }
 
@@ -262,6 +266,10 @@ export class PaseoHub {
   async signUpAs(alias: string, account: Account): Promise<void> {
     const user = await this.user(alias);
     await user.signUp(account);
+  }
+
+  async proveUnverifiedSignInJourney(alias: string, account: Account): Promise<void> {
+    await (await this.user(alias)).verifyFromSignIn(account);
   }
 
   async provePasswordRecoveryJourney(
@@ -463,7 +471,7 @@ export class PaseoHub {
         .getByLabel("Email");
       await expect(invitationEmail).toHaveValue(account.email);
       await expect(invitationEmail).toHaveAttribute("readonly", "");
-      await user.signUpForInvitation(account);
+      await user.signUpForInvitationViaSignIn(account);
       await user.acceptInvitation();
       await user.expectActiveOrganization("Invited Organization");
     } finally {
@@ -1229,13 +1237,13 @@ export class PaseoHub {
       [[acmeDaemon.daemonId, orbitDaemon.daemonId]],
     );
     await Promise.all([
-      this.installTenantProviderConfiguration(acmeId, 42, "acme/widgets", "100"),
-      this.installTenantProviderConfiguration(orbitId, 84, "orbit/widgets", "200"),
+      this.installTenantProviderConfiguration(acmeId, "acme-inc/app", "100"),
+      this.installTenantProviderConfiguration(orbitId, "orbit-inc/app", "200"),
     ]);
 
-    await this.deliverGitHub("acme-github", 42, "acme/widgets", "alice");
+    await this.deliverGitHub("acme-github", 42, 9001, "acme-inc/app", "alice");
     await this.deliverDiscord("301", "100", "800");
-    await this.deliverGitHub("orbit-github", 84, "orbit/widgets", "alice");
+    await this.deliverGitHub("orbit-github", 84, 9101, "orbit-inc/app", "alice");
     await this.deliverDiscord("302", "200", "800");
 
     const dispatchesSchema = z.array(
@@ -1289,7 +1297,8 @@ export class PaseoHub {
     await this.deliverGitHub(
       "acme-github-after-disconnect",
       42,
-      "acme/widgets",
+      9001,
+      "acme-inc/app",
       "after-disconnect",
     );
     await this.deliverDiscord("303", "100", "800");
@@ -1333,31 +1342,6 @@ export class PaseoHub {
       await user.signUp(account);
       await user.createOrganization("Unconfigured");
       await user.expectNotConfiguredConnections();
-    } finally {
-      await context.close();
-    }
-  }
-
-  async proveManualConfigurationWithoutGitHub(account: Account, rawYaml: string): Promise<void> {
-    const application = await this.startApplication({
-      databaseProfile: "fresh",
-      providerScenario: "discord-only",
-    });
-    const context = await this.browser.newContext();
-    try {
-      const page = await context.newPage();
-      const user = new HubUser(application, context, page);
-      const navigation = new ProjectNavigation(page);
-      const configuration = new ProjectConfiguration(page);
-      await user.signUp(account);
-      await user.createOrganization("Discord only");
-      await this.seedDaemonForEmail(application, account.email, "editor-daemon");
-      await navigation.openProject("Default");
-      await navigation.openProjectSection("Configuration");
-      await configuration.saveManualConfiguration(rawYaml);
-      await configuration.expectActiveRevision(1);
-      await page.waitForLoadState("networkidle");
-      expect(application.logs()).not.toContain("github_repositories_unavailable");
     } finally {
       await context.close();
     }
@@ -1487,6 +1471,29 @@ export class PaseoHub {
     } finally {
       await context.close();
     }
+  }
+
+  /** An active GitHub installation the trigger editor can name, without the OAuth journey. */
+  async seedGitHubConnection(organizationName: string, slug: string): Promise<void> {
+    await this.queryDatabase(
+      this.primary,
+      `insert into github_connections
+         (organization_id, installation_id, slug, account_id, account_login, account_type, status)
+       select id, 4242, $2, '4242', $2, 'Organization', 'active'
+       from organization where name = $1`,
+      [organizationName, slug],
+    );
+  }
+
+  /** A Discord guild the trigger editor can name, without the OAuth journey. */
+  async seedDiscordConnection(organizationName: string, slug: string): Promise<void> {
+    await this.queryDatabase(
+      this.primary,
+      `insert into discord_connections (organization_id, guild_id, slug, guild_name)
+       select id, 'browser-guild', $2, 'Acme Community'
+       from organization where name = $1`,
+      [organizationName, slug],
+    );
   }
 
   async seedSuspendedGitHubConnection(organizationName: string): Promise<void> {
@@ -1909,13 +1916,45 @@ export class PaseoHub {
    * intake deduplicates on the payload's signature as well as on the delivery id.
    */
   async deliverUnroutedGitHubEvent(deliveryId: string): Promise<void> {
-    await this.deliverGitHub(deliveryId, 42, "acme-inc/widgets", deliveryId);
+    await this.deliverGitHub(deliveryId, 42, 9001, "acme-inc/app", deliveryId);
   }
 
   /** A connected session-v1 daemon that serves the trigger editor's provider catalog. */
   async connectProviderDaemon(alias: string, organizationName: string): Promise<string> {
     const daemon = await this.connectBrowserDaemon(alias, organizationName, "devbox");
     return daemon.slug;
+  }
+
+  /** A finished or running run of a saved trigger, received `minutesAgo` minutes ago. */
+  async seedTriggerRun(
+    triggerName: string,
+    run: { minutesAgo: number; status: "running" | "succeeded" | "failed" },
+  ): Promise<void> {
+    const receivedAt = `now() - make_interval(mins => $3)`;
+    await this.queryDatabase(
+      this.primary,
+      `with trigger as (
+         select t.organization_id, t.runtime_project_id as project_id,
+                (select r.id from project_configuration_revisions r
+                 where r.project_id = t.runtime_project_id
+                 order by r.created_at desc limit 1) as revision_id
+         from organization_triggers t where t.name = $1
+       ), receipt as (
+         insert into provider_event_receipts
+           (organization_id, provider, delivery_id, source, payload, received_at)
+         select organization_id, 'manual', gen_random_uuid()::text, 'manual.run', '{}'::jsonb,
+                ${receivedAt}
+         from trigger
+         returning id, organization_id
+       )
+       insert into trigger_runs
+         (organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
+          configured_trigger_name, status, prompt, deadline_at, created_at)
+       select receipt.organization_id, trigger.project_id, trigger.revision_id, receipt.id, $1, $2,
+              'Handle the event.', now() + interval '1 hour', ${receivedAt}
+       from receipt, trigger`,
+      [triggerName, run.status, run.minutesAgo],
+    );
   }
 
   /** A connected app precondition for trigger-editor journeys; OAuth itself has separate specs. */
@@ -2132,7 +2171,6 @@ export class PaseoHub {
 
   private async installTenantProviderConfiguration(
     organizationId: string,
-    repositoryId: number,
     repo: string,
     guildId: string,
   ): Promise<void> {
@@ -2147,7 +2185,6 @@ export class PaseoHub {
     if (discord === undefined) throw new Error("Discord connection unavailable");
     await this.primary.installProviderDispatchFixture({
       organizationId,
-      repositoryId,
       repository: repo,
       guildId,
       files: configurationBundleFixture(dump(providerDispatchConfiguration(repo, discord.slug))),
@@ -2157,10 +2194,13 @@ export class PaseoHub {
   private async deliverGitHub(
     deliveryId: string,
     installationId: number,
+    repositoryId: number,
     repo: string,
     actor: string,
   ): Promise<void> {
-    const payload = JSON.stringify(githubIssueCommentPayload(installationId, repo, actor));
+    const payload = JSON.stringify(
+      githubIssueCommentPayload(installationId, repositoryId, repo, actor),
+    );
     const signature =
       "sha256=" + createHmac("sha256", WEBHOOK_SECRET).update(payload).digest("hex");
     const response = await this.requests.post(`${this.primary.origin}/webhook`, {
@@ -2316,7 +2356,7 @@ export class PaseoHub {
     });
     const signedOutSession = await this.requests.get(`${application.origin}/api/auth/get-session`);
     expect(await signedOutSession.text()).toBe("null");
-    const verificationLink = await application.accountEmailLink(account.email, "verification");
+    const { url: verificationLink } = await application.accountEmail(account.email, "verification");
     const verification = await this.requests.get(verificationLink, { maxRedirects: 0 });
     expect(verification.status()).toBe(302);
     expect(verification.headers()["set-cookie"]).toContain("better-auth.session_token=");
@@ -2608,6 +2648,40 @@ class HubUser {
     await expect(this.page.getByRole("heading", { name: "Choose an organization" })).toBeVisible();
   }
 
+  async verifyFromSignIn(account: Account): Promise<void> {
+    await this.page.goto(this.origin);
+    await this.submitSignUp(account);
+    await expect(this.page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+    expect((await this.application.accountEmail(account.email, "verification")).count).toBe(1);
+    await this.page.getByRole("button", { name: "Back to sign in" }).click();
+    await this.submitSignUp(account);
+    await expect(this.page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+    await expect(
+      this.page.getByText(
+        `Check ${account.email} for a verification link. If you receive one, open it to finish signing in. If you already verified your email, go back to sign in.`,
+      ),
+    ).toBeVisible();
+    expect((await this.application.accountEmail(account.email, "verification")).count).toBe(1);
+    await this.signInPendingAccount(account);
+    await this.completeEmailVerification(account.email);
+    await expect(this.page.getByRole("heading", { name: "Choose an organization" })).toBeVisible();
+  }
+
+  private async signInPendingAccount(account: Account): Promise<void> {
+    await this.page.getByRole("button", { name: "Back to sign in" }).click();
+    const form = this.page.getByRole("form", { name: "Sign in" });
+    await form.getByLabel("Email").fill(account.email);
+    await this.submitPendingSignIn(account);
+  }
+
+  private async submitPendingSignIn(account: Account): Promise<void> {
+    const form = this.page.getByRole("form", { name: "Sign in" });
+    await form.getByLabel("Password").fill(account.password);
+    await form.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(this.page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+    expect((await this.application.accountEmail(account.email, "verification")).count).toBe(2);
+  }
+
   async completeBootstrapJourney(
     account: Account,
     replacementPassword: string,
@@ -2647,7 +2721,7 @@ class HubUser {
     await this.page.getByRole("button", { name: "Back to sign in" }).click();
     await requestReset(account.email);
 
-    const link = await this.application.accountEmailLink(account.email, "password-reset");
+    const { url: link } = await this.application.accountEmail(account.email, "password-reset");
     await this.page.goto(link);
     const reset = this.page.getByRole("form", { name: "Choose a new password" });
     await reset.getByLabel("New password", { exact: true }).fill(replacementPassword);
@@ -2963,9 +3037,22 @@ class HubUser {
     await expect(this.page.getByRole("button", { name: "Accept invitation" })).toBeVisible();
   }
 
+  async signUpForInvitationViaSignIn(account: Account): Promise<void> {
+    this.email = account.email.toLowerCase();
+    await this.submitInvitationSignUp(account);
+    await expect(this.page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+    await this.page.getByRole("button", { name: "Back to sign in" }).click();
+    await expect(this.page.getByRole("form", { name: "Sign in" }).getByLabel("Email")).toHaveValue(
+      account.email,
+    );
+    await this.submitPendingSignIn(account);
+    await this.completeEmailVerification(account.email);
+    await expect(this.page.getByRole("button", { name: "Accept invitation" })).toBeVisible();
+  }
+
   private async completeEmailVerification(email: string): Promise<void> {
     await expect(this.page.getByRole("heading", { name: "Check your email" })).toBeVisible();
-    const link = await this.application.accountEmailLink(email, "verification");
+    const { url: link } = await this.application.accountEmail(email, "verification");
     await this.page.goto(link);
     await expect(this.page.getByRole("heading", { name: "Email verified" })).toBeVisible();
     await this.page.getByRole("button", { name: "Continue" }).click();
@@ -6159,13 +6246,18 @@ function providerDispatchConfiguration(repo: string, guildId: string) {
   };
 }
 
-function githubIssueCommentPayload(installationId: number, repo: string, actor: string) {
+function githubIssueCommentPayload(
+  installationId: number,
+  repositoryId: number,
+  repo: string,
+  actor: string,
+) {
   return {
     action: "created",
     sender: { login: actor },
     comment: { id: installationId, body: "@paseo run tenant dispatch", user: { login: actor } },
     issue: { number: installationId },
-    repository: { id: installationId, full_name: repo },
+    repository: { id: repositoryId, full_name: repo },
     installation: { id: installationId },
   };
 }

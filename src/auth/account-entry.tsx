@@ -96,7 +96,13 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
       const email = formValue(data, "email");
       const password = formValue(data, "password");
       if (mode === "signIn") {
-        signInMutation.mutate({ data: { email, password } });
+        signInMutation.mutate({
+          data: {
+            email,
+            password,
+            ...(account.invitation === undefined ? {} : { invitation: account.invitation.id }),
+          },
+        });
       } else {
         signUpMutation.mutate({
           data: {

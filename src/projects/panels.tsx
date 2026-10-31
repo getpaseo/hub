@@ -1,5 +1,6 @@
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-array-as-prop, eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop, typescript-eslint/no-unsafe-type-assertion -- route links and mutation controls are intentionally scoped to each rendered tenant snapshot */
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSnapshotQuery } from "../queries/index.js";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { type FormEvent, type ReactNode } from "react";
@@ -73,7 +74,7 @@ export function OrganizationConnectionsPanel() {
   const scope = { organizationSlug: tenant.organization.slug };
   const snapshot = useOrganizationSnapshot(<ConnectionsLoading />);
   const loadStatus = useServerFn(connectionStatus);
-  const statusQuery = useQuery({
+  const statusQuery = useSnapshotQuery({
     queryKey: ["connection-status", tenant.account.id, tenant.organization.id],
     queryFn: () => loadStatus({ data: scope }),
   });
@@ -365,7 +366,7 @@ export function ProjectActivityRunPanel({ runId }: { runId: string }) {
     projectSlug: tenant.project?.slug ?? "",
     runId,
   };
-  const query = useQuery({
+  const query = useSnapshotQuery({
     queryKey: ["project-activity-run", tenant.account.id, tenant.organization.id, runId],
     queryFn: () => load({ data: scope }),
   });
@@ -388,12 +389,12 @@ export function ProjectActivityRunPanel({ runId }: { runId: string }) {
         <DataTable
           label="Run steps"
           columns={[
-            { header: "Step" },
+            { header: "Step", fill: true },
             { header: "Status" },
             { header: "Deadline" },
             { header: "Agent" },
             { header: "Structured output" },
-            { header: "Failure reason" },
+            { header: "Failure reason", fill: true },
           ]}
           isEmpty={activity.steps.length === 0}
           empty={{ title: "No steps" }}
@@ -607,11 +608,11 @@ function ActivityTable({
     <DataTable
       label={label}
       columns={[
-        { header: "Run" },
+        { header: "Run", fill: true },
         { header: "Provider" },
         { header: "Source" },
         { header: "Status" },
-        ...(showReason ? [{ header: "Reason" }] : []),
+        ...(showReason ? [{ header: "Reason", fill: true }] : []),
         { header: "Received" },
       ]}
       isEmpty={activity.length === 0}

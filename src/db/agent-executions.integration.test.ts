@@ -1299,6 +1299,7 @@ function launchIntent(
     },
     allowOutputs: [],
     autoArchive: false,
+    background: false,
     triggerContext: { provider: "slack" },
     outputContext: {},
     configurationRevisionId,

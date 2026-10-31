@@ -176,6 +176,18 @@ export const GITHUB_GUIDE: ProviderGuide = {
         },
         {
           segments: [
+            { kind: "text", value: "Under " },
+            { kind: "term", value: "Organization permissions" },
+            {
+              kind: "text",
+              value:
+                ", grant Members read-only access so Hub can verify that the person connecting an organization installation is an organization admin and check GitHub team membership for team allowlists. For an existing App, approve this permission on the installation before reconnecting.",
+            },
+          ],
+          permissions: [{ name: "Members", access: "Read-only" }],
+        },
+        {
+          segments: [
             { kind: "text", value: "Create the App, then generate a " },
             { kind: "term", value: "Client secret" },
             { kind: "text", value: " and a " },
@@ -265,14 +277,6 @@ export const GITHUB_GUIDE: ProviderGuide = {
             "Pull request review comment",
             "Push",
           ],
-        },
-        {
-          segments: [
-            { kind: "text", value: "If a workflow uses a GitHub team allowlist, under " },
-            { kind: "term", value: "Organization permissions" },
-            { kind: "text", value: ", grant:" },
-          ],
-          permissions: [{ name: "Members", access: "Read-only" }],
         },
       ],
       fields: [

@@ -1,3 +1,4 @@
+import { createGitHubLifecycle } from "./lifecycle.js";
 import { createHash } from "node:crypto";
 import type { AuthServer } from "../../auth/server.js";
 import { createGitHubAuth, repositoryNamesForAccount, type GitHubAuth } from "../../auth/github.js";
@@ -102,6 +103,12 @@ export function createGitHubRegistration(
       appAuth,
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
     });
+  const githubConfiguration =
+    options.configurationProvider ?? createGitHubConfigurationProvider(appAuth);
+  const lifecycle = createGitHubLifecycle(database, client, githubConfiguration, {
+    providerApplicationId: configuration.appId,
+    configurationVersion: options.configurationVersion ?? 0,
+  });
   const connection =
     options.auth === null
       ? githubConnectionStatus(true)
@@ -114,7 +121,7 @@ export function createGitHubRegistration(
             configurationVersion: options.configurationVersion ?? 0,
             configuration,
           },
-          client,
+          { client, repositories: githubConfiguration },
         );
   const webhook = createWebhookSource(configuration.webhookSecret, {
     accept: (input) =>
@@ -123,7 +130,7 @@ export function createGitHubRegistration(
         providerApplicationId: configuration.appId,
         providerConfigurationVersion: options.configurationVersion ?? 0,
       }),
-    applyLifecycle: (delivery) => applyLifecycle(database, client, delivery),
+    applyLifecycle: (delivery) => lifecycle.accept(delivery),
     async synchronizePush(input) {
       const payload = PushPayloadSchema.safeParse(input.payload);
       if (!payload.success) return;
@@ -156,8 +163,6 @@ export function createGitHubRegistration(
       );
     },
   });
-  const githubConfiguration =
-    options.configurationProvider ?? createGitHubConfigurationProvider(appAuth);
   const reactions = options.reactionClient ?? createGitHubReactionClient(appAuth);
   const comments = {
     async createIssueComment(input: {
@@ -258,7 +263,18 @@ export function createGitHubRegistration(
         });
       },
     ],
-    sources: [webhook],
+    sources: [
+      {
+        async start(handler) {
+          await webhook.start(handler);
+          lifecycle.start();
+        },
+        async stop() {
+          await webhook.stop();
+          await lifecycle.stop();
+        },
+      },
+    ],
     outputs: [
       {
         type: "github.reply",
@@ -268,7 +284,6 @@ export function createGitHubRegistration(
       },
     ],
     requests: [{ name: "webhook", handle: (request) => webhook.handle(request) }],
-    githubConfiguration,
   };
 }
 
@@ -330,10 +345,16 @@ function githubConnectionStatus(configured: boolean): ProviderConnectionRegistra
   };
 }
 
+interface GitHubConnectionServices {
+  client: GitHubConnectionClient;
+  repositories: Pick<GitHubConfigurationProvider, "listInstallationRepositories">;
+}
+
 function createGitHubConnection(
   options: GitHubConnectionOptions,
-  client: GitHubConnectionClient | undefined,
+  services: GitHubConnectionServices | undefined,
 ): ProviderConnectionRegistration {
+  const client = services?.client;
   const start = async (request: Request): Promise<Response> => {
     const rejected = options.auth.rejectCookieMutation(request);
     if (rejected !== undefined) return rejected;
@@ -384,7 +405,7 @@ function createGitHubConnection(
       start,
       disconnect,
       setup: (request) => completeSetup(options, client, request),
-      callback: (request) => completeAuthorization(options, client, request),
+      callback: (request) => completeAuthorization(options, services, request),
     },
   };
 }
@@ -472,7 +493,7 @@ async function completeSetup(
 
 async function completeAuthorization(
   options: GitHubConnectionOptions,
-  client: GitHubConnectionClient | undefined,
+  services: GitHubConnectionServices | undefined,
   request: Request,
 ): Promise<Response> {
   const url = new URL(request.url);
@@ -489,7 +510,7 @@ async function completeAuthorization(
       applicationBaseUrl: options.applicationBaseUrl,
     });
   }
-  if (state === null || code === null || client === undefined) {
+  if (state === null || code === null || services === undefined) {
     return connectionCallbackFailure({
       request,
       error: new GitHubCallbackError("invalid authorization callback"),
@@ -513,27 +534,34 @@ async function completeAuthorization(
     const installationId = positiveInteger(attempt.candidateExternalId);
     if (installationId === undefined || attempt.pkceVerifier === null)
       throw new Error("invalid attempt");
-    const identity = await client.verifyUserInstallation({
-      code,
-      verifier: attempt.pkceVerifier,
-      installationId,
-    });
-    if (identity === undefined) {
-      await options.database.consumeConnectionAttempt({
-        stateVerifier: stateHash(state),
-        phase: "github_user_authorization",
+    const verifier = attempt.pkceVerifier;
+    await options.database.synchronizeGitHubInstallation(installationId, async () => {
+      const identity = await services.client.verifyUserInstallation({
+        code,
+        verifier,
+        installationId,
+      });
+      if (identity === undefined) {
+        await options.database.consumeConnectionAttempt({
+          stateVerifier: stateHash(state),
+          phase: "github_user_authorization",
+          access,
+        });
+        throw new GitHubCallbackError("installation verification rejected");
+      }
+      const repositories =
+        identity.status === "suspended"
+          ? []
+          : await services.repositories.listInstallationRepositories({ installationId });
+      await bindGitHub(
+        options.database,
+        state,
         access,
-      });
-      return connectionCallbackFailure({
-        request,
-        error: new GitHubCallbackError("installation verification rejected"),
-        provider: "github",
-        phase: "authorization",
-        applicationBaseUrl: callbackOrigin,
-        returnRoute: attempt.returnRoute,
-      });
-    }
-    await bindGitHub(options.database, state, access, identity, options.configuration.appId);
+        identity,
+        options.configuration.appId,
+        repositories,
+      );
+    });
     return connectionResult(callbackOrigin, attempt.returnRoute, "github_connected", "github");
   } catch (error) {
     return connectionCallbackFailure({
@@ -557,50 +585,16 @@ async function bindGitHub(
   access: Awaited<ReturnType<typeof callbackConnectionAccess>>,
   identity: GitHubInstallationIdentity,
   providerApplicationId: string,
+  repositories: import("../../db/types.js").GitHubRepositorySnapshot,
 ): Promise<void> {
   await database.bindGitHubConnection({
     providerApplicationId,
+    repositories,
     stateVerifier: stateHash(state),
     phase: "github_user_authorization",
     access,
     ...identity,
   });
-}
-
-interface GitHubLifecycleDelivery {
-  installationId: number;
-  event: "installation" | "installation_repositories";
-  deliveryId: string;
-  signatureHash: string;
-  source: string;
-  payload: unknown;
-  receivedAt: Date;
-}
-
-async function applyLifecycle(
-  database: Database,
-  client: GitHubConnectionClient,
-  delivery: GitHubLifecycleDelivery,
-): Promise<void> {
-  const claim = await database.claimGitHubLifecycleReceipt(delivery);
-  if (claim.status === "duplicate") return;
-  try {
-    const evidence = await client.getInstallation(delivery.installationId);
-    if (evidence.status === "absent") {
-      await database.applyGitHubLifecycle(claim, {
-        status: "absent",
-        removeBinding: delivery.event === "installation",
-      });
-      return;
-    }
-    await database.applyGitHubLifecycle(claim, {
-      status: "present",
-      identity: evidence.identity,
-    });
-  } catch (error) {
-    await database.releaseGitHubLifecycleReceipt(claim.providerEventReceiptId);
-    throw error;
-  }
 }
 
 function githubStatus(configured: boolean, bindings: readonly GitHubConnectionRecord[]) {

@@ -113,7 +113,7 @@ export function VerificationPendingEntry({
       <AuthCard
         titleId="verification-pending-heading"
         title="Check your email"
-        description={`We sent a verification link to ${email}. Open it to finish signing in.`}
+        description={`Check ${email} for a verification link. If you receive one, open it to finish signing in. If you already verified your email, go back to sign in.`}
       >
         <ErrorSummary message={message} />
         <StatusLine>

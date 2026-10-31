@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, it } from "vitest";
+
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { postgresDatabaseRuntime } from "./runtime/index.js";
 import type { DatabaseRuntime, QueryHandle, QueryRow } from "./runtime/index.js";
@@ -21,6 +22,8 @@ import type { OperationAuthenticator } from "../auth/operation-auth.js";
 import { EntitlementsService } from "../entitlements/service.js";
 import { migrateLegacyProjectTriggers } from "../triggers/migration.js";
 import type { MigrateProjectTriggersInput } from "./types.js";
+
+const GITHUB_OWNER = { providerApplicationId: "42", configurationVersion: 0 };
 
 const LEGACY_MIGRATIONS = join(process.cwd(), "src/db/migrations");
 const DRIZZLE_MIGRATIONS = join(process.cwd(), "drizzle");
@@ -309,7 +312,7 @@ describe("database migration application", () => {
     assert.deepEqual(after, before);
     assert.deepEqual(await historicalShape(fixture.url), {
       authTables: 7,
-      drizzleMigrations: 49,
+      drizzleMigrations: 50,
       legacyArtifacts: null,
       legacyOperatorPrincipals: null,
       bootstrapOrganizationId: fixture.organizationId,
@@ -892,6 +895,70 @@ describe("database migration application", () => {
     }
   }, 120_000);
 
+  it("queues every existing installation when upgrading repository discovery", async () => {
+    const url = await createHistoricalBaseline({
+      postgres,
+      prefix: "installation_repository_sync",
+      through: "0048_execution_authority",
+    });
+    const connectionId = randomUUID();
+    await poolQuery(url, `insert into organization (id, name, slug) values ('org', 'Org', 'org')`);
+    await poolQuery(
+      url,
+      `insert into github_connections (id, provider_application_id, organization_id, installation_id, slug, account_id, account_login, account_type, status) values ($1, '42', 'org', 42, 'acme', '1', 'acme', 'Organization', 'active')`,
+      [connectionId],
+    );
+    await poolQuery(
+      url,
+      `insert into github_connections (provider_application_id, organization_id, installation_id, slug, account_id, account_login, account_type, status) values ('42', 'org', 43, 'no-receipt', '2', 'no-receipt', 'Organization', 'active')`,
+    );
+    for (const [deliveryId, receivedAt] of [
+      ["old", "2026-01-01"],
+      ["latest", "2026-01-02"],
+    ]) {
+      await poolQuery(
+        url,
+        `insert into provider_event_receipts (organization_id, provider, connection_id, delivery_id, signature_hash, source, payload, received_at, dropped_reason) values ('org', 'github', $1, $2, $2, 'github.installation', '{}', $3, 'github_lifecycle')`,
+        [connectionId, deliveryId, receivedAt],
+      );
+    }
+    await poolQuery(
+      url,
+      `insert into runtime_provider_activation (provider, provider_application_id, configuration_version) values ('github', '42', 0)`,
+    );
+    const database = await createDatabase(url);
+    try {
+      const pending = await database.pendingGitHubInstallationSyncs(GITHUB_OWNER);
+      assert.deepEqual(
+        pending.map((work) => work.installationId).sort((a, b) => a - b),
+        [42, 43],
+      );
+      for (const work of pending) {
+        await database.applyGitHubInstallationSync(GITHUB_OWNER, work, {
+          status: "present",
+          identity: {
+            accountId: "1",
+            accountLogin: "acme",
+            accountType: "Organization",
+            status: "active",
+          },
+          repositories: [
+            {
+              repositoryId: work.installationId + 100,
+              fullName: `acme/repo-${work.installationId}`,
+              defaultBranch: "main",
+            },
+          ],
+        });
+      }
+      assert.equal((await database.listGitHubRepositories("org")).length, 2);
+      assert.deepEqual(await database.pendingGitHubInstallationSyncs(GITHUB_OWNER), []);
+      assert.equal((await poolQuery(url, `select * from provider_event_receipts`)).rows.length, 2);
+    } finally {
+      await database.close();
+    }
+  }, 120_000);
+
   it("claims concurrent lifecycle receipts without unique-index failures", async () => {
     const url = databaseUrl(postgres, "concurrent_lifecycle_receipts");
     const database = await createDatabase(url);
@@ -906,6 +973,7 @@ describe("database migration application", () => {
                  'lifecycle', 'Organization', 'active')`,
       );
       const lifecycleInput = {
+        providerApplicationId: "42",
         installationId: 9261,
         deliveryId: "concurrent-lifecycle-receipt",
         signatureHash: "concurrent-lifecycle-signature",
@@ -931,12 +999,16 @@ describe("database migration application", () => {
     const database = await createDatabase(url);
     try {
       const [project] = await createProjectFixtures(database, url);
+      await poolQuery(
+        url,
+        `insert into runtime_provider_activation (provider, provider_application_id, configuration_version) values ('github', '42', 0)`,
+      );
       const connectionId = randomUUID();
       await poolQuery(
         url,
         `insert into github_connections
-           (id, organization_id, installation_id, slug, account_id, account_login, account_type, status)
-         values ('${connectionId}', 'organization-a', 9271, 'lifecycle-removal-github', 'account-9271',
+           (id, provider_application_id, organization_id, installation_id, slug, account_id, account_login, account_type, status)
+         values ('${connectionId}', '42', 'organization-a', 9271, 'lifecycle-removal-github', 'account-9271',
                  'lifecycle-removal', 'Organization', 'active');
          update project_configuration_sources
          set kind = 'github', github_connection_id = '${connectionId}', github_repository_id = 9272,
@@ -963,6 +1035,7 @@ describe("database migration application", () => {
       ]);
 
       const claim = await database.claimGitHubLifecycleReceipt({
+        providerApplicationId: "42",
         installationId: 9271,
         deliveryId: "lifecycle-removal",
         signatureHash: "lifecycle-removal-signature",
@@ -973,7 +1046,10 @@ describe("database migration application", () => {
       assert.equal(claim.status, "claimed");
       if (claim.status !== "claimed") return;
 
-      await database.applyGitHubLifecycle(claim, { status: "absent", removeBinding: true });
+      await database.applyGitHubInstallationSync(GITHUB_OWNER, claim, {
+        status: "absent",
+        removeBinding: true,
+      });
 
       const state = await poolQuery<{
         connections: number;
