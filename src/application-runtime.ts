@@ -396,6 +396,7 @@ function createConnectionsForProject(
       ...usage.github.map((connection) => ({ provider: "github" as const, connection })),
       ...usage.discord.map((connection) => ({ provider: "discord" as const, connection })),
       ...usage.slack.map((connection) => ({ provider: "slack" as const, connection })),
+      ...usage.googleChat.map((connection) => ({ provider: "google-chat" as const, connection })),
     ].filter(
       ({ connection }) =>
         connection.organizationId === project.organizationId && connection.slug === connectionSlug,

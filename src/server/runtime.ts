@@ -212,6 +212,8 @@ export async function handleConnections(
     | "slackStart"
     | "slackDisconnect"
     | "slackCallback"
+    | "googleChatStart"
+    | "googleChatDisconnect"
     | "linearStart"
     | "linearDisconnect"
     | "linearCallback",
@@ -233,6 +235,8 @@ const CONNECTION_ACTIONS = {
   slackStart: { provider: "slack", name: "start" },
   slackDisconnect: { provider: "slack", name: "disconnect" },
   slackCallback: { provider: "slack", name: "callback" },
+  googleChatStart: { provider: "google-chat", name: "start" },
+  googleChatDisconnect: { provider: "google-chat", name: "disconnect" },
   linearStart: { provider: "linear", name: "start" },
   linearDisconnect: { provider: "linear", name: "disconnect" },
   linearCallback: { provider: "linear", name: "callback" },

@@ -34,6 +34,11 @@ const slackStatusSchema = z.discriminatedUnion("status", [
     status: z.literal("connected"),
   }),
 ]);
+const googleChatStatusSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("notConfigured") }),
+  z.object({ status: z.literal("disconnected") }),
+  z.object({ status: z.literal("connected") }),
+]);
 const linearStatusSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("notConfigured") }),
   z.object({ status: z.literal("disconnected") }),
@@ -45,6 +50,7 @@ export const connectionStatusSchema = z.object({
   github: githubStatusSchema,
   discord: discordStatusSchema,
   slack: slackStatusSchema,
+  "google-chat": googleChatStatusSchema,
   linear: linearStatusSchema,
 });
 const scopeSchema = z.object({
@@ -156,6 +162,7 @@ const CONNECTION_OPERATIONS = {
   github: { start: "githubStart", disconnect: "githubDisconnect" },
   discord: { start: "discordStart", disconnect: "discordDisconnect" },
   slack: { start: "slackStart", disconnect: "slackDisconnect" },
+  "google-chat": { start: "googleChatStart", disconnect: "googleChatDisconnect" },
   linear: { start: "linearStart", disconnect: "linearDisconnect" },
 } as const;
 

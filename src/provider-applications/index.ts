@@ -7,7 +7,7 @@ import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 import { parseProviderApplicationConfiguration } from "./internal/store.js";
 import { reportFailure } from "../failures/index.js";
 
-export const PROVIDERS = ["github", "slack", "discord", "linear"] as const;
+export const PROVIDERS = ["github", "slack", "discord", "google-chat", "linear"] as const;
 export type Provider = (typeof PROVIDERS)[number];
 
 export interface GitHubProviderApplicationConfiguration {
@@ -48,6 +48,26 @@ export interface DiscordProviderApplicationConfiguration {
   expectedVersion?: number;
 }
 
+export type GoogleChatProviderApplicationConfiguration =
+  | {
+      provider: "google-chat";
+      transport: "pubsub";
+      projectId: string;
+      appName: string;
+      serviceAccountJson: string;
+      subscription: string;
+      expectedVersion?: number;
+    }
+  | {
+      provider: "google-chat";
+      transport: "webhook";
+      projectId: string;
+      appName: string;
+      serviceAccountJson: string;
+      audience?: string;
+      expectedVersion?: number;
+    };
+
 export interface LinearProviderApplicationConfiguration {
   provider: "linear";
   clientId: string;
@@ -60,12 +80,14 @@ export type ProviderApplicationConfiguration =
   | GitHubProviderApplicationConfiguration
   | SlackProviderApplicationConfiguration
   | DiscordProviderApplicationConfiguration
+  | GoogleChatProviderApplicationConfiguration
   | LinearProviderApplicationConfiguration;
 
 export type ProviderApplicationIdentity =
   | { provider: "github"; id: string; name: string; ownerLogin: string }
   | { provider: "slack"; id: string; name: string }
   | { provider: "discord"; id: string; name: string }
+  | { provider: "google-chat"; id: string; name: string; clientEmail: string }
   | { provider: "linear"; id: string; name: string };
 
 export interface StoredProviderApplication {
@@ -285,6 +307,8 @@ export type ProviderVerificationSubject =
   | "botToken"
   | "clientSecret"
   | "privateKey"
+  | "serviceAccountJson"
+  | "pubsubSubscription"
   | "identityMismatch";
 
 export class ProviderVerificationError extends Error {
@@ -417,16 +441,20 @@ export function createProviderApplications(
           return [provider, view] as const;
         }),
       );
-      const [github, slack, discord, linear] = entries.map(([, view]) => view);
+      const [github, slack, discord, googleChat, linear] = entries.map(([, view]) => view);
       if (
         github === undefined ||
         slack === undefined ||
         discord === undefined ||
+        googleChat === undefined ||
         linear === undefined
       ) {
         throw new Error("provider overview is incomplete");
       }
-      return { callbackOrigin, providers: { github, slack, discord, linear } };
+      return {
+        callbackOrigin,
+        providers: { github, slack, discord, "google-chat": googleChat, linear },
+      };
     },
 
     async verifyAndSave(request, provider, input, surface) {
@@ -458,6 +486,13 @@ export function createProviderApplications(
             input,
             returnRoute,
           );
+        }
+        if (
+          provider === "google-chat" &&
+          input.provider === "google-chat" &&
+          input.transport === "webhook"
+        ) {
+          requireHttpsOrigin(callbackOrigin);
         }
         return verifyAndActivateProvider(options, account, provider, input, callbackOrigin);
       });
@@ -659,7 +694,11 @@ function providerStatus(
 function acceptsEvents(configuration: ProviderApplicationConfiguration | undefined): boolean {
   if (configuration === undefined) return false;
   if (configuration.provider === "github") return (configuration.webhookSecret ?? "") !== "";
-  return configuration.provider === "slack" || configuration.provider === "linear";
+  return (
+    configuration.provider === "slack" ||
+    configuration.provider === "google-chat" ||
+    configuration.provider === "linear"
+  );
 }
 
 function publicIdentifiers(
@@ -682,6 +721,20 @@ function publicIdentifiers(
         : { appId: configuration.appId, transport: configuration.transport };
     case "discord":
       return { applicationId: configuration.applicationId };
+    case "google-chat":
+      return configuration.transport === "pubsub"
+        ? {
+            projectId: configuration.projectId,
+            appName: configuration.appName,
+            transport: configuration.transport,
+            subscription: configuration.subscription,
+          }
+        : {
+            projectId: configuration.projectId,
+            appName: configuration.appName,
+            transport: configuration.transport,
+            ...(configuration.audience === undefined ? {} : { audience: configuration.audience }),
+          };
     case "linear":
       return { clientId: configuration.clientId };
   }

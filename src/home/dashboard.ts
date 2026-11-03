@@ -14,10 +14,10 @@ const RUNS_SHOWN = 50;
 
 export interface HomeSnapshot {
   organization: { id: string; name: string; slug: string };
-  /** Whether any provider app (GitHub, Slack, Discord, Linear) is set up on this Hub at all. */
+  /** Whether any provider app (GitHub, Slack, Discord, Google Chat, Linear) is set up on this Hub at all. */
   appsConfigured: boolean;
   connections: readonly {
-    provider: "github" | "slack" | "discord" | "linear";
+    provider: "github" | "slack" | "discord" | "google-chat" | "linear";
     slug: string;
     label: string;
   }[];
@@ -87,6 +87,11 @@ export class HomeDashboard {
           provider: "discord" as const,
           slug,
           label: guildName,
+        })),
+        ...connections.googleChat.map(({ slug, appName }) => ({
+          provider: "google-chat" as const,
+          slug,
+          label: appName,
         })),
         ...connections.linear.map(({ slug, linearOrganizationName }) => ({
           provider: "linear" as const,

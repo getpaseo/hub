@@ -39,6 +39,7 @@ import { Route as ApiIntegrationsSlackEventsRouteImport } from './routes/api/int
 import { Route as ApiIntegrationsSlackCallbackRouteImport } from './routes/api/integrations/slack/callback'
 import { Route as ApiIntegrationsLinearEventsRouteImport } from './routes/api/integrations/linear/events'
 import { Route as ApiIntegrationsLinearCallbackRouteImport } from './routes/api/integrations/linear/callback'
+import { Route as ApiIntegrationsGoogleChatEventsRouteImport } from './routes/api/integrations/google-chat/events'
 import { Route as ApiIntegrationsGithubSetupRouteImport } from './routes/api/integrations/github/setup'
 import { Route as ApiIntegrationsGithubCallbackRouteImport } from './routes/api/integrations/github/callback'
 import { Route as ApiIntegrationsDiscordCallbackRouteImport } from './routes/api/integrations/discord/callback'
@@ -213,6 +214,12 @@ const ApiIntegrationsLinearCallbackRoute =
     path: '/api/integrations/linear/callback',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiIntegrationsGoogleChatEventsRoute =
+  ApiIntegrationsGoogleChatEventsRouteImport.update({
+    id: '/api/integrations/google-chat/events',
+    path: '/api/integrations/google-chat/events',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiIntegrationsGithubSetupRoute =
   ApiIntegrationsGithubSetupRouteImport.update({
     id: '/api/integrations/github/setup',
@@ -351,6 +358,7 @@ export interface FileRoutesByFullPath {
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
   '/api/integrations/github/setup': typeof ApiIntegrationsGithubSetupRoute
+  '/api/integrations/google-chat/events': typeof ApiIntegrationsGoogleChatEventsRoute
   '/api/integrations/linear/callback': typeof ApiIntegrationsLinearCallbackRoute
   '/api/integrations/linear/events': typeof ApiIntegrationsLinearEventsRoute
   '/api/integrations/slack/callback': typeof ApiIntegrationsSlackCallbackRoute
@@ -397,6 +405,7 @@ export interface FileRoutesByTo {
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
   '/api/integrations/github/setup': typeof ApiIntegrationsGithubSetupRoute
+  '/api/integrations/google-chat/events': typeof ApiIntegrationsGoogleChatEventsRoute
   '/api/integrations/linear/callback': typeof ApiIntegrationsLinearCallbackRoute
   '/api/integrations/linear/events': typeof ApiIntegrationsLinearEventsRoute
   '/api/integrations/slack/callback': typeof ApiIntegrationsSlackCallbackRoute
@@ -447,6 +456,7 @@ export interface FileRoutesById {
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
   '/api/integrations/github/setup': typeof ApiIntegrationsGithubSetupRoute
+  '/api/integrations/google-chat/events': typeof ApiIntegrationsGoogleChatEventsRoute
   '/api/integrations/linear/callback': typeof ApiIntegrationsLinearCallbackRoute
   '/api/integrations/linear/events': typeof ApiIntegrationsLinearEventsRoute
   '/api/integrations/slack/callback': typeof ApiIntegrationsSlackCallbackRoute
@@ -497,6 +507,7 @@ export interface FileRouteTypes {
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
     | '/api/integrations/github/setup'
+    | '/api/integrations/google-chat/events'
     | '/api/integrations/linear/callback'
     | '/api/integrations/linear/events'
     | '/api/integrations/slack/callback'
@@ -543,6 +554,7 @@ export interface FileRouteTypes {
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
     | '/api/integrations/github/setup'
+    | '/api/integrations/google-chat/events'
     | '/api/integrations/linear/callback'
     | '/api/integrations/linear/events'
     | '/api/integrations/slack/callback'
@@ -592,6 +604,7 @@ export interface FileRouteTypes {
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
     | '/api/integrations/github/setup'
+    | '/api/integrations/google-chat/events'
     | '/api/integrations/linear/callback'
     | '/api/integrations/linear/events'
     | '/api/integrations/slack/callback'
@@ -630,6 +643,7 @@ export interface RootRouteChildren {
   ApiIntegrationsDiscordCallbackRoute: typeof ApiIntegrationsDiscordCallbackRoute
   ApiIntegrationsGithubCallbackRoute: typeof ApiIntegrationsGithubCallbackRoute
   ApiIntegrationsGithubSetupRoute: typeof ApiIntegrationsGithubSetupRoute
+  ApiIntegrationsGoogleChatEventsRoute: typeof ApiIntegrationsGoogleChatEventsRoute
   ApiIntegrationsLinearCallbackRoute: typeof ApiIntegrationsLinearCallbackRoute
   ApiIntegrationsLinearEventsRoute: typeof ApiIntegrationsLinearEventsRoute
   ApiIntegrationsSlackCallbackRoute: typeof ApiIntegrationsSlackCallbackRoute
@@ -846,6 +860,13 @@ declare module '@tanstack/react-router' {
       path: '/api/integrations/linear/callback'
       fullPath: '/api/integrations/linear/callback'
       preLoaderRoute: typeof ApiIntegrationsLinearCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/integrations/google-chat/events': {
+      id: '/api/integrations/google-chat/events'
+      path: '/api/integrations/google-chat/events'
+      fullPath: '/api/integrations/google-chat/events'
+      preLoaderRoute: typeof ApiIntegrationsGoogleChatEventsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/integrations/github/setup': {
@@ -1089,6 +1110,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiIntegrationsDiscordCallbackRoute: ApiIntegrationsDiscordCallbackRoute,
   ApiIntegrationsGithubCallbackRoute: ApiIntegrationsGithubCallbackRoute,
   ApiIntegrationsGithubSetupRoute: ApiIntegrationsGithubSetupRoute,
+  ApiIntegrationsGoogleChatEventsRoute: ApiIntegrationsGoogleChatEventsRoute,
   ApiIntegrationsLinearCallbackRoute: ApiIntegrationsLinearCallbackRoute,
   ApiIntegrationsLinearEventsRoute: ApiIntegrationsLinearEventsRoute,
   ApiIntegrationsSlackCallbackRoute: ApiIntegrationsSlackCallbackRoute,

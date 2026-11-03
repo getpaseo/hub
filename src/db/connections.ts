@@ -12,17 +12,20 @@ import type {
   AdvanceGitHubConnectionAttemptInput,
   BindDiscordConnectionInput,
   BindGitHubConnectionInput,
+  BindGoogleChatConnectionInput,
   BindLinearConnectionInput,
   BindSlackConnectionInput,
   CompleteLinearProviderApplicationInput,
   CompleteSlackProviderApplicationInput,
   ConnectionAccountAccess,
   ConnectionAttemptPhase,
+  ConnectionAttemptProvider,
   ConnectionAttemptRecord,
   ConnectionProvider,
   ConnectionStartAuthority,
   DiscordConnectionRecord,
   GitHubConnectionRecord,
+  GoogleChatConnectionRecord,
   LinearConnectionRecord,
   LinearConnectionRefreshOperation,
   ReadConnectionAttemptInput,
@@ -224,6 +227,67 @@ export class ConnectionRepository {
           connectedByUserId: attempt.userId,
         })
         .returning({ id: schema.discordConnections.id });
+    });
+  }
+
+  async bindGoogleChat(input: BindGoogleChatConnectionInput): Promise<void> {
+    await this.runtime.transaction(async (runtimeTransaction) => {
+      const transaction = runtimeTransaction.drizzle();
+      await lockStartAuthority(transaction, input.access);
+      await lockProviderApplication(this.locks, runtimeTransaction, "google-chat");
+      const [activation] = await transaction
+        .select({
+          applicationId: schema.runtimeProviderActivations.providerApplicationId,
+          configurationVersion: schema.runtimeProviderActivations.configurationVersion,
+        })
+        .from(schema.runtimeProviderActivations)
+        .where(eq(schema.runtimeProviderActivations.provider, "google-chat"))
+        .for("update");
+      if (
+        activation?.applicationId !== input.providerApplicationId ||
+        activation?.configurationVersion !== input.configurationVersion
+      ) {
+        throw providerApplicationChanged();
+      }
+      await lockExternal(this.locks, runtimeTransaction, "google-chat", input.projectId);
+      const [existing] = await transaction
+        .select({
+          id: schema.googleChatConnections.id,
+          organizationId: schema.googleChatConnections.organizationId,
+        })
+        .from(schema.googleChatConnections)
+        .where(eq(schema.googleChatConnections.projectId, input.projectId))
+        .for("update");
+      if (existing !== undefined && existing.organizationId !== input.access.organizationId) {
+        throw new ConnectionConflictError();
+      }
+      if (existing === undefined) {
+        await transaction.insert(schema.googleChatConnections).values({
+          organizationId: input.access.organizationId,
+          projectId: input.projectId,
+          providerApplicationId: input.providerApplicationId,
+          appName: input.appName,
+          clientEmail: input.clientEmail,
+          slug: await uniqueConnectionSlug(
+            transaction,
+            input.access.organizationId,
+            "google-chat",
+            input.appName,
+          ),
+          connectedByUserId: input.access.userId,
+        });
+      } else {
+        await transaction
+          .update(schema.googleChatConnections)
+          .set({
+            appName: input.appName,
+            clientEmail: input.clientEmail,
+            providerApplicationId: input.providerApplicationId,
+            connectedByUserId: input.access.userId,
+            updatedAt: sql`clock_timestamp()`,
+          })
+          .where(eq(schema.googleChatConnections.id, existing.id));
+      }
     });
   }
 
@@ -649,6 +713,31 @@ export class ConnectionRepository {
           accessToken: connection.accessToken,
         } as const;
       }
+      if (provider === "google-chat") {
+        const [connection] = await transaction
+          .select({
+            projectId: schema.googleChatConnections.projectId,
+          })
+          .from(schema.googleChatConnections)
+          .where(
+            and(
+              eq(schema.googleChatConnections.id, connectionId),
+              eq(schema.googleChatConnections.organizationId, access.organizationId),
+            ),
+          )
+          .for("update");
+        if (connection === undefined) throw new ConnectionAccessDeniedError();
+        await transaction
+          .delete(schema.projectTriggerRoutes)
+          .where(eq(schema.projectTriggerRoutes.connectionId, connectionId));
+        await transaction
+          .delete(schema.googleChatConnections)
+          .where(eq(schema.googleChatConnections.id, connectionId));
+        return {
+          provider,
+          projectId: connection.projectId,
+        } as const;
+      }
       const [connection] = await transaction
         .select({
           teamId: schema.slackConnections.teamId,
@@ -753,6 +842,32 @@ export class ConnectionRepository {
       )
       .limit(1);
     return row === undefined ? undefined : linearConnection(row);
+  }
+
+  async findGoogleChat(projectId: string): Promise<GoogleChatConnectionRecord | undefined> {
+    const [row] = await this.database
+      .select()
+      .from(schema.googleChatConnections)
+      .where(eq(schema.googleChatConnections.projectId, projectId))
+      .limit(1);
+    return row === undefined ? undefined : googleChatConnection(row);
+  }
+
+  async findGoogleChatForOrganization(
+    organizationId: string,
+    projectId: string,
+  ): Promise<GoogleChatConnectionRecord | undefined> {
+    const [row] = await this.database
+      .select()
+      .from(schema.googleChatConnections)
+      .where(
+        and(
+          eq(schema.googleChatConnections.organizationId, organizationId),
+          eq(schema.googleChatConnections.projectId, projectId),
+        ),
+      )
+      .limit(1);
+    return row === undefined ? undefined : googleChatConnection(row);
   }
 
   async removeDiscord(guildId: string): Promise<void> {
@@ -1058,7 +1173,9 @@ async function consumeLockedAttempt(transaction: HubTransaction, attemptId: stri
     .where(eq(schema.organizationConnectionAttempts.id, attemptId));
 }
 
-function initialConnectionAttemptPhase(provider: ConnectionProvider): ConnectionAttemptPhase {
+function initialConnectionAttemptPhase(
+  provider: ConnectionAttemptProvider,
+): ConnectionAttemptPhase {
   if (provider === "github") return "github_setup";
   if (provider === "discord") return "discord_authorization";
   return provider === "slack" ? "slack_authorization" : "linear_authorization";
@@ -1144,6 +1261,20 @@ function linearConnection(
   };
 }
 
+function googleChatConnection(
+  row: typeof schema.googleChatConnections.$inferSelect,
+): GoogleChatConnectionRecord {
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    slug: row.slug,
+    providerApplicationId: row.providerApplicationId,
+    projectId: row.projectId,
+    appName: row.appName,
+    clientEmail: row.clientEmail,
+  };
+}
+
 async function uniqueConnectionSlug(
   transaction: HubTransaction,
   organizationId: string,
@@ -1160,6 +1291,8 @@ async function uniqueConnectionSlug(
       select slug from discord_connections where organization_id = ${organizationId}
       union all
       select slug from linear_connections where organization_id = ${organizationId}
+      union all
+      select slug from google_chat_connections where organization_id = ${organizationId}
     ) slugs
     where slug = ${base} or slug like ${`${base}-%`}
     order by slug

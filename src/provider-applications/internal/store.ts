@@ -42,6 +42,24 @@ const discordConfigurationSchema = z.object({
   clientSecret: z.string().min(1),
   botToken: z.string().min(1),
 });
+const googleChatConfigurationSchema = z.discriminatedUnion("transport", [
+  z.object({
+    provider: z.literal("google-chat"),
+    transport: z.literal("pubsub"),
+    projectId: z.string().min(1),
+    appName: z.string().min(1),
+    serviceAccountJson: z.string().min(1),
+    subscription: z.string().min(1),
+  }),
+  z.object({
+    provider: z.literal("google-chat"),
+    transport: z.literal("webhook"),
+    projectId: z.string().min(1),
+    appName: z.string().min(1),
+    serviceAccountJson: z.string().min(1),
+    audience: z.string().min(1).optional(),
+  }),
+]);
 const linearConfigurationSchema = z.object({
   provider: z.literal("linear"),
   clientId: z.string().min(1),
@@ -52,6 +70,7 @@ const configurationSchema = z.discriminatedUnion("provider", [
   githubConfigurationSchema,
   slackConfigurationSchema,
   discordConfigurationSchema,
+  googleChatConfigurationSchema,
   linearConfigurationSchema,
 ]);
 
@@ -62,9 +81,15 @@ export function parseProviderApplicationConfiguration(
   const parsed = configurationSchema.parse(value);
   // An absent optional value stays absent rather than becoming present-and-undefined, which is
   // what the rest of the codebase means by optional.
-  if (parsed.provider !== "github") return parsed;
-  const { webhookSecret, ...rest } = parsed;
-  return webhookSecret === undefined ? rest : { ...rest, webhookSecret };
+  if (parsed.provider === "github") {
+    const { webhookSecret, ...rest } = parsed;
+    return webhookSecret === undefined ? rest : { ...rest, webhookSecret };
+  }
+  if (parsed.provider === "google-chat" && parsed.transport === "webhook") {
+    const { audience, ...rest } = parsed;
+    return audience === undefined ? rest : { ...rest, audience };
+  }
+  return parsed;
 }
 const identitySchema = z.discriminatedUnion("provider", [
   z.object({
@@ -75,6 +100,12 @@ const identitySchema = z.discriminatedUnion("provider", [
   }),
   z.object({ provider: z.literal("slack"), id: z.string().min(1), name: z.string().min(1) }),
   z.object({ provider: z.literal("discord"), id: z.string().min(1), name: z.string().min(1) }),
+  z.object({
+    provider: z.literal("google-chat"),
+    id: z.string().min(1),
+    name: z.string().min(1),
+    clientEmail: z.string().min(1),
+  }),
   z.object({ provider: z.literal("linear"), id: z.string().min(1), name: z.string().min(1) }),
 ]);
 
@@ -336,6 +367,7 @@ async function writeProviderActivation(
 function connectionTable(provider: Provider): string {
   if (provider === "github") return "github_connections";
   if (provider === "slack") return "slack_connections";
+  if (provider === "google-chat") return "google_chat_connections";
   if (provider === "linear") return "linear_connections";
   return "discord_connections";
 }
@@ -359,7 +391,13 @@ function parseRow(row: ProviderConfigurationRow): StoredProviderApplication {
 }
 
 function providerSchema(value: string): Provider {
-  if (value === "github" || value === "slack" || value === "discord" || value === "linear") {
+  if (
+    value === "github" ||
+    value === "slack" ||
+    value === "discord" ||
+    value === "google-chat" ||
+    value === "linear"
+  ) {
     return value;
   }
   throw new Error("stored provider configuration has invalid provider");

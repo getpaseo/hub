@@ -463,6 +463,7 @@ function successfulOperations(): PublicOperations {
         github: [],
         discord: [],
         slack: [],
+        googleChat: [],
         linear: [],
       }),
     listSetupResources: () =>

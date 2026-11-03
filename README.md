@@ -4,7 +4,7 @@
 
 <h1 align="center">Paseo Hub</h1>
 
-<p align="center">Run coding agents from GitHub, Linear, Slack, and Discord on your own Paseo daemons.</p>
+<p align="center">Run coding agents from GitHub, Linear, Slack, Google Chat, and Discord on your own Paseo daemons.</p>
 
 <p align="center">
   <a href="https://paseo.sh/docs/hub">Docs</a> ·
@@ -19,14 +19,15 @@ Paseo Hub is the self-hosted automation layer for [Paseo](https://paseo.sh). Con
 
 - **Your machines:** Hub dispatches to Paseo daemons on your laptop, devbox, or build server.
 - **Your configuration:** Keep triggers, environments, permissions, and prompts in version control.
-- **Your services:** Start agents from GitHub, Linear, Slack, Discord, or manual runs.
+- **Your services:** Start agents from GitHub, Linear, Slack, Google Chat, Discord, or manual runs.
 - **One audit trail:** See every event, configuration revision, execution, and result.
 
 ```text
- GitHub ─┐                 ┌─ laptop
- Linear ─┼─ Paseo Hub ────┼─ devbox
- Slack  ─┤                 └─ build server
- Discord ┘
+ GitHub      ─┐                 ┌─ laptop
+ Linear      ─┼─ Paseo Hub ─────┼─ devbox
+ Slack       ─┤                 └─ build server
+ Google Chat ─┤
+ Discord     ─┘
 ```
 
 ## Quick start
@@ -37,7 +38,7 @@ You need Node.js and [Paseo installed and running](https://paseo.sh/docs).
 npx @getpaseo/hub
 ```
 
-Open the local URL printed by Hub. Create the operator account, then follow the browser setup to connect GitHub, Slack, or Discord. Slack Socket Mode works without a public URL.
+Open the local URL printed by Hub. Create the operator account, then follow the browser setup to connect GitHub, Slack, Google Chat, or Discord. Slack Socket Mode and Google Chat Cloud Pub/Sub work without a public URL.
 
 From the repository where agents should work, run:
 

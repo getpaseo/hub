@@ -249,6 +249,9 @@ export const ConfigurationResourcesSchema = z
     ),
     discord: z.array(z.object({ slug: z.string(), guildName: z.string() }).strict()),
     slack: z.array(z.object({ slug: z.string(), teamName: z.string() }).strict()),
+    googleChat: z.array(
+      z.object({ slug: z.string(), projectId: z.string(), appName: z.string() }).strict(),
+    ),
     linear: z.array(z.object({ slug: z.string(), organizationName: z.string() }).strict()),
   })
   .strict()

@@ -174,7 +174,7 @@ describe("provider application failure copy", () => {
     ] as const;
     const messages: string[] = [];
     for (const code of codes) {
-      for (const provider of ["github", "slack", "discord"] as const) {
+      for (const provider of ["github", "slack", "discord", "google-chat", "linear"] as const) {
         messages.push(messageFor(provider, new ProviderApplicationError(code)));
       }
     }

@@ -10,6 +10,7 @@ import {
   readGitHubTriggerUrl,
 } from "../auth/github-events.js";
 import { NormalizedDiscordMessageEventSchema } from "../triggers/discord/events.js";
+import { NormalizedGoogleChatMentionEventSchema } from "../triggers/google-chat/events.js";
 import { NormalizedSlackMentionEventSchema } from "../triggers/slack/events.js";
 import { NormalizedLinearEventSchema } from "../triggers/linear/events.js";
 import {
@@ -18,7 +19,7 @@ import {
 } from "../triggers/github/classification.js";
 
 export interface TriggerSummary {
-  provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule";
+  provider: "github" | "slack" | "discord" | "google-chat" | "linear" | "manual" | "schedule";
   headline: string;
   actor: string | null;
   externalUrl: string | null;
@@ -38,6 +39,7 @@ export function summarizeTrigger(source: string, payload: unknown): TriggerSumma
   if (provider === "github") return summarizeGitHub(payload);
   if (provider === "slack") return summarizeSlack(payload);
   if (provider === "discord") return summarizeDiscord(payload);
+  if (provider === "google-chat") return summarizeGoogleChat(payload);
   if (provider === "linear") return summarizeLinear(payload);
   if (provider === "schedule") {
     return { provider, headline: "Scheduled run", actor: null, externalUrl: null };
@@ -182,6 +184,25 @@ function summarizeDiscord(payload: unknown): TriggerSummary {
     headline: content.length > 0 ? truncate(content, 96) : "Discord mention",
     actor: event.data.author.username,
     externalUrl: `https://discord.com/channels/${event.data.guildId}/${event.data.channelId}/${event.data.messageId}`,
+  };
+}
+
+function summarizeGoogleChat(payload: unknown): TriggerSummary {
+  const event = NormalizedGoogleChatMentionEventSchema.safeParse(payload);
+  if (!event.success) {
+    return {
+      provider: "google-chat",
+      headline: "Google Chat mention",
+      actor: null,
+      externalUrl: null,
+    };
+  }
+  const content = event.data.argumentText.trim() || event.data.text.trim();
+  return {
+    provider: "google-chat",
+    headline: content.length > 0 ? truncate(content, 96) : "Google Chat mention",
+    actor: event.data.author.displayName,
+    externalUrl: null,
   };
 }
 

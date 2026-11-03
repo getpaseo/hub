@@ -81,7 +81,7 @@ interface GuideGroupSource extends Omit<GuideGroup, "unavailable"> {
 
 export interface ProviderGuide {
   provider: Provider;
-  transport?: "socket" | "webhook";
+  transport?: "socket" | "pubsub" | "webhook";
   name: string;
   summary: string;
   portal: { label: string; href: string };
@@ -576,6 +576,227 @@ export const DISCORD_GUIDE: ProviderGuide = {
   receivesEvents: false,
 };
 
+const GOOGLE_CHAT_SERVICE_ACCOUNT_STEPS: readonly GuideStep[] = [
+  {
+    segments: [
+      { kind: "text", value: "In Google Cloud Console, enable the " },
+      { kind: "term", value: "Google Chat API" },
+      {
+        kind: "text",
+        value: ", create a service account under ",
+      },
+      { kind: "term", value: "IAM & Admin → Service Accounts" },
+      { kind: "text", value: ", and download a " },
+      { kind: "term", value: "JSON" },
+      { kind: "text", value: " key." },
+    ],
+  },
+];
+
+export const GOOGLE_CHAT_GUIDE: ProviderGuide = {
+  provider: "google-chat",
+  transport: "pubsub",
+  name: "Google Chat",
+  summary:
+    "Reads direct messages and space mentions in Google Workspace and replies in the thread.",
+  portal: {
+    label: "Open Google Chat API configuration",
+    href: "https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat",
+  },
+  formTitle: "Paste from Google Cloud",
+  summaryLabels: { identity: "Chat app", connections: "Organizations" },
+  environmentVariables: [
+    "GOOGLE_CHAT_TRANSPORT",
+    "GOOGLE_CHAT_PROJECT_ID",
+    "GOOGLE_CHAT_APP_NAME",
+    "GOOGLE_CHAT_PUBSUB_SUBSCRIPTION",
+    "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON",
+  ],
+  groups: [
+    {
+      id: "application",
+      steps: [
+        ...GOOGLE_CHAT_SERVICE_ACCOUNT_STEPS,
+        {
+          segments: [
+            { kind: "text", value: "Create a Cloud Pub/Sub topic and pull subscription, grant " },
+            {
+              kind: "term",
+              value: "chat-api-push@system.gserviceaccount.com",
+            },
+            { kind: "text", value: " the " },
+            { kind: "term", value: "Pub/Sub Publisher" },
+            {
+              kind: "text",
+              value: " role on the topic, and grant your service account:",
+            },
+          ],
+          permissions: [
+            { name: "Chat Bot", access: "roles/chat.bot" },
+            { name: "Pub/Sub Subscriber", access: "roles/pubsub.subscriber" },
+          ],
+        },
+        {
+          segments: [
+            { kind: "text", value: "Open " },
+            {
+              kind: "link",
+              value: "Google Chat API configuration",
+              href: "https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat",
+            },
+            { kind: "text", value: ", turn on " },
+            { kind: "term", value: "Interactive features" },
+            { kind: "text", value: ", choose " },
+            { kind: "term", value: "Cloud Pub/Sub" },
+            { kind: "text", value: ", and enter your topic name." },
+          ],
+        },
+      ],
+      fields: [
+        {
+          name: "projectId",
+          label: "Project ID",
+          kind: "text",
+          description: "Google Cloud project ID that owns the Chat app.",
+          identifier: "projectId",
+          required: "Enter the Google Cloud Project ID.",
+        },
+        {
+          name: "appName",
+          label: "App name",
+          kind: "text",
+          description: "Display name configured on the Google Chat app.",
+          identifier: "appName",
+          required: "Enter the App name.",
+        },
+        {
+          name: "subscription",
+          label: "Pub/Sub subscription",
+          kind: "text",
+          description: "Subscription ID or projects/<project>/subscriptions/<name>.",
+          identifier: "subscription",
+          required: "Enter the Pub/Sub subscription.",
+        },
+        {
+          name: "serviceAccountJson",
+          label: "Service account JSON",
+          kind: "multiline",
+          description: "Paste the contents of the service account key JSON file.",
+          required: "Enter the Service account JSON.",
+        },
+      ],
+    },
+  ],
+  urls: [],
+  savingContinues: false,
+  actions: {
+    save: "Verify and save",
+    savePending: "Verifying…",
+    connect: "Connect to this organization",
+  },
+  verifiedMessage: "Google Cloud accepted this Chat app.",
+  requiresHttps: false,
+  httpsRequirement: (origin) => `Google Chat Cloud Pub/Sub can connect from ${origin}.`,
+  receivesEvents: true,
+};
+
+export const GOOGLE_CHAT_WEBHOOK_GUIDE: ProviderGuide = {
+  provider: "google-chat",
+  transport: "webhook",
+  name: "Google Chat",
+  summary:
+    "Reads direct messages and space mentions in Google Workspace and replies in the thread.",
+  portal: {
+    label: "Open Google Chat API configuration",
+    href: "https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat",
+  },
+  formTitle: "Paste from Google Cloud",
+  summaryLabels: { identity: "Chat app", connections: "Organizations" },
+  environmentVariables: [
+    "GOOGLE_CHAT_TRANSPORT",
+    "GOOGLE_CHAT_PROJECT_ID",
+    "GOOGLE_CHAT_APP_NAME",
+    "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON",
+    "GOOGLE_CHAT_WEBHOOK_AUDIENCE",
+  ],
+  groups: [
+    {
+      id: "application",
+      steps: [
+        ...GOOGLE_CHAT_SERVICE_ACCOUNT_STEPS,
+        {
+          segments: [{ kind: "text", value: "Grant your service account:" }],
+          permissions: [{ name: "Chat Bot", access: "roles/chat.bot" }],
+        },
+        {
+          segments: [
+            { kind: "text", value: "Open " },
+            {
+              kind: "link",
+              value: "Google Chat API configuration",
+              href: "https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat",
+            },
+            { kind: "text", value: ", turn on " },
+            { kind: "term", value: "Interactive features" },
+            { kind: "text", value: ", choose " },
+            { kind: "term", value: "HTTP endpoint URL" },
+            { kind: "text", value: ", and set:" },
+          ],
+          urls: ["events"],
+        },
+      ],
+      fields: [
+        {
+          name: "projectId",
+          label: "Project ID",
+          kind: "text",
+          description: "Google Cloud project ID that owns the Chat app.",
+          identifier: "projectId",
+          required: "Enter the Google Cloud Project ID.",
+        },
+        {
+          name: "appName",
+          label: "App name",
+          kind: "text",
+          description: "Display name configured on the Google Chat app.",
+          identifier: "appName",
+          required: "Enter the App name.",
+        },
+        {
+          name: "audience",
+          label: "OIDC audience",
+          kind: "text",
+          description: "Optional override when Google Chat signs tokens for a custom audience.",
+          identifier: "audience",
+          required: "Enter the OIDC audience.",
+          optional: true,
+        },
+        {
+          name: "serviceAccountJson",
+          label: "Service account JSON",
+          kind: "multiline",
+          description: "Paste the contents of the service account key JSON file.",
+          required: "Enter the Service account JSON.",
+        },
+      ],
+    },
+  ],
+  urls: [
+    { key: "events", label: "HTTP endpoint URL", path: "/api/integrations/google-chat/events" },
+  ],
+  savingContinues: false,
+  actions: {
+    save: "Verify and save",
+    savePending: "Verifying…",
+    connect: "Connect to this organization",
+  },
+  verifiedMessage: "Google Cloud accepted this Chat app.",
+  requiresHttps: true,
+  httpsRequirement: (origin) =>
+    `Google Chat HTTP endpoints need HTTPS, and Hub is at ${origin}. Switch to Cloud Pub/Sub or reopen Hub at its public HTTPS address.`,
+  receivesEvents: true,
+};
+
 export const LINEAR_GUIDE: ProviderGuide = {
   provider: "linear",
   name: "Linear",
@@ -674,6 +895,7 @@ export const PROVIDER_GUIDES: readonly ProviderGuide[] = [
   GITHUB_GUIDE,
   SLACK_GUIDE,
   DISCORD_GUIDE,
+  GOOGLE_CHAT_GUIDE,
   LINEAR_GUIDE,
 ];
 
@@ -760,6 +982,7 @@ export function statusPresentation(status: ProviderApplicationStatus): {
 export function identityLabel(identity: ProviderApplicationIdentity): string {
   if (identity.provider === "github") return `${identity.name} · owned by ${identity.ownerLogin}`;
   if (identity.provider === "discord") return `${identity.name} · application ${identity.id}`;
+  if (identity.provider === "google-chat") return `${identity.name} · project ${identity.id}`;
   return identity.name;
 }
 

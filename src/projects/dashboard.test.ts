@@ -29,6 +29,7 @@ describe("project dashboard activity read models", () => {
         github: [],
         discord: [],
         slack: [],
+        googleChat: [],
         linear: [
           {
             id: "expired",

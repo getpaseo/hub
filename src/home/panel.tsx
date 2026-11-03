@@ -402,7 +402,7 @@ function runHint(triggers: HomeSnapshot["triggers"]): string {
   const hints = new Set<string>();
   for (const { event } of triggers) {
     const provider = event.split(".")[0];
-    if (provider === "slack" || provider === "discord") {
+    if (provider === "slack" || provider === "discord" || provider === "google-chat") {
       hints.add("Mention the bot in a channel it can see.");
     } else if (provider === "github") {
       hints.add("Open or comment on an issue or pull request in a connected repository.");
@@ -429,6 +429,7 @@ function providerName(provider: HomeSnapshot["unrouted"][number]["provider"]): s
   if (provider === "github") return "GitHub";
   if (provider === "slack") return "Slack";
   if (provider === "discord") return "Discord";
+  if (provider === "google-chat") return "Google Chat";
   if (provider === "linear") return "Linear";
   return statusLabel(provider);
 }

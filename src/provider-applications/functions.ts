@@ -4,6 +4,7 @@ import { z } from "zod";
 import { respondOk, type Result } from "../contract/respond.js";
 import { respondWithFailure } from "../failures/index.js";
 import { getApplication } from "../server/runtime.js";
+import { normalizePubSubSubscriptionName } from "../triggers/google-chat/pubsub.js";
 import {
   type ProviderApplicationConfiguration,
   type ProviderApplicationOverview,
@@ -11,49 +12,74 @@ import {
 } from "./index.js";
 import { providerApplicationSaveFailure, providerHost, providerName } from "./save-failure.js";
 
-const providerSchema = z.enum(["github", "slack", "discord", "linear"]);
+const providerSchema = z.enum(["github", "slack", "discord", "google-chat", "linear"]);
 const surfaceSchema = z.enum(["appSetup", "apps"]).optional();
 const expectedVersionSchema = z.number().int().positive().optional();
-const configurationSchema = z.discriminatedUnion("provider", [
-  z.object({
-    provider: z.literal("github"),
-    appId: z.string().trim().min(1),
-    appSlug: z.string().trim().min(1),
-    clientId: z.string().trim().min(1),
-    clientSecret: z.string().min(1),
-    privateKey: z.string().min(1),
-    // Optional: event triggers need a public HTTPS address, repository access does not.
-    webhookSecret: z.string().min(1).optional(),
-    expectedVersion: expectedVersionSchema,
-    surface: surfaceSchema,
-  }),
-  z.object({
-    provider: z.literal("slack"),
-    transport: z.literal("webhook"),
-    appId: z.string().trim().min(1),
-    clientId: z.string().trim().min(1),
-    clientSecret: z.string().min(1),
-    signingSecret: z.string().min(1),
-    expectedVersion: expectedVersionSchema,
-    surface: surfaceSchema,
-  }),
-  z.object({
-    provider: z.literal("discord"),
-    applicationId: z.string().trim().min(1),
-    clientSecret: z.string().min(1),
-    botToken: z.string().min(1),
-    expectedVersion: expectedVersionSchema,
-    surface: surfaceSchema,
-  }),
-  z.object({
-    provider: z.literal("linear"),
-    clientId: z.string().trim().min(1),
-    clientSecret: z.string().min(1),
-    webhookSecret: z.string().min(1),
-    expectedVersion: expectedVersionSchema,
-    surface: surfaceSchema,
-  }),
-]);
+const configurationSchema = z
+  .discriminatedUnion("provider", [
+    z.object({
+      provider: z.literal("github"),
+      appId: z.string().trim().min(1),
+      appSlug: z.string().trim().min(1),
+      clientId: z.string().trim().min(1),
+      clientSecret: z.string().min(1),
+      privateKey: z.string().min(1),
+      // Optional: event triggers need a public HTTPS address, repository access does not.
+      webhookSecret: z.string().min(1).optional(),
+      expectedVersion: expectedVersionSchema,
+      surface: surfaceSchema,
+    }),
+    z.object({
+      provider: z.literal("slack"),
+      transport: z.literal("webhook"),
+      appId: z.string().trim().min(1),
+      clientId: z.string().trim().min(1),
+      clientSecret: z.string().min(1),
+      signingSecret: z.string().min(1),
+      expectedVersion: expectedVersionSchema,
+      surface: surfaceSchema,
+    }),
+    z.object({
+      provider: z.literal("discord"),
+      applicationId: z.string().trim().min(1),
+      clientSecret: z.string().min(1),
+      botToken: z.string().min(1),
+      expectedVersion: expectedVersionSchema,
+      surface: surfaceSchema,
+    }),
+    z.object({
+      provider: z.literal("google-chat"),
+      transport: z.enum(["pubsub", "webhook"]),
+      projectId: z.string().trim().min(1),
+      appName: z.string().trim().min(1),
+      serviceAccountJson: z.string().min(1),
+      subscription: z.string().trim().min(1).optional(),
+      audience: z.string().trim().min(1).optional(),
+      expectedVersion: expectedVersionSchema,
+      surface: surfaceSchema,
+    }),
+    z.object({
+      provider: z.literal("linear"),
+      clientId: z.string().trim().min(1),
+      clientSecret: z.string().min(1),
+      webhookSecret: z.string().min(1),
+      expectedVersion: expectedVersionSchema,
+      surface: surfaceSchema,
+    }),
+  ])
+  .superRefine((value, context) => {
+    if (
+      value.provider === "google-chat" &&
+      value.transport === "pubsub" &&
+      value.subscription === undefined
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["subscription"],
+        message: "Enter the Pub/Sub subscription.",
+      });
+    }
+  });
 const connectionSchema = z.object({
   provider: providerSchema,
   organizationId: z.string().min(1),
@@ -199,6 +225,9 @@ function sensitiveConfigurationValues(
   if (configuration.provider === "slack") {
     return [configuration.clientSecret, configuration.signingSecret];
   }
+  if (configuration.provider === "google-chat") {
+    return [configuration.serviceAccountJson];
+  }
   if (configuration.provider === "linear") {
     return [configuration.clientSecret, configuration.webhookSecret];
   }
@@ -230,6 +259,28 @@ function normalizedConfiguration(
       clientId: data.clientId,
       clientSecret: data.clientSecret,
       signingSecret: data.signingSecret,
+      ...version,
+    };
+  }
+  if (data.provider === "google-chat") {
+    if (data.transport === "pubsub") {
+      return {
+        provider: data.provider,
+        transport: "pubsub",
+        projectId: data.projectId,
+        appName: data.appName,
+        serviceAccountJson: data.serviceAccountJson,
+        subscription: normalizePubSubSubscriptionName(data.projectId, data.subscription ?? ""),
+        ...version,
+      };
+    }
+    return {
+      provider: data.provider,
+      transport: "webhook",
+      projectId: data.projectId,
+      appName: data.appName,
+      serviceAccountJson: data.serviceAccountJson,
+      ...(data.audience === undefined ? {} : { audience: data.audience }),
       ...version,
     };
   }

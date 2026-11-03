@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { normalizePubSubSubscriptionName } from "../../triggers/google-chat/pubsub.js";
 import type { Provider, ProviderApplicationConfiguration } from "../index.js";
 
 /** @package */
@@ -8,11 +9,13 @@ export async function readProviderApplicationEnvironment(
   const github = await githubEnvironment(environment);
   const slack = slackEnvironment(environment);
   const discord = discordEnvironment(environment);
+  const googleChat = await googleChatEnvironment(environment);
   const linear = linearEnvironment(environment);
   return {
     ...(github === undefined ? {} : { github }),
     ...(slack === undefined ? {} : { slack }),
     ...(discord === undefined ? {} : { discord }),
+    ...(googleChat === undefined ? {} : { "google-chat": googleChat }),
     ...(linear === undefined ? {} : { linear }),
   };
 }
@@ -114,6 +117,98 @@ function discordEnvironment(
   return applicationId === undefined || clientSecret === undefined || botToken === undefined
     ? undefined
     : { provider: "discord", applicationId, clientSecret, botToken };
+}
+
+async function googleChatEnvironment(
+  environment: Record<string, string | undefined>,
+): Promise<ProviderApplicationConfiguration | undefined> {
+  const transport = nonEmpty(environment["GOOGLE_CHAT_TRANSPORT"]);
+  const projectId = nonEmpty(environment["GOOGLE_CHAT_PROJECT_ID"]);
+  const appName = nonEmpty(environment["GOOGLE_CHAT_APP_NAME"]);
+  const inlineCredentials = nonEmpty(environment["GOOGLE_CHAT_SERVICE_ACCOUNT_JSON"]);
+  const credentialsPath = nonEmpty(environment["GOOGLE_CHAT_SERVICE_ACCOUNT_PATH"]);
+  const subscription = nonEmpty(environment["GOOGLE_CHAT_PUBSUB_SUBSCRIPTION"]);
+  const audience = nonEmpty(environment["GOOGLE_CHAT_WEBHOOK_AUDIENCE"]);
+  const supplied = [
+    transport,
+    projectId,
+    appName,
+    inlineCredentials,
+    credentialsPath,
+    subscription,
+    audience,
+  ].some((value) => value !== undefined);
+  if (!supplied) return undefined;
+
+  const serviceAccountJson = await readServiceAccountJson(inlineCredentials, credentialsPath);
+  return buildGoogleChatEnvironment({
+    transport,
+    projectId,
+    appName,
+    serviceAccountJson,
+    subscription,
+    audience,
+  });
+}
+
+async function readServiceAccountJson(
+  inlineCredentials: string | undefined,
+  credentialsPath: string | undefined,
+): Promise<string | undefined> {
+  const value =
+    inlineCredentials ??
+    (credentialsPath === undefined ? undefined : await readFile(credentialsPath, "utf8"));
+  return nonEmpty(value);
+}
+
+function buildGoogleChatEnvironment(input: {
+  transport: string | undefined;
+  projectId: string | undefined;
+  appName: string | undefined;
+  serviceAccountJson: string | undefined;
+  subscription: string | undefined;
+  audience: string | undefined;
+}): ProviderApplicationConfiguration {
+  const { transport, projectId, appName, serviceAccountJson, subscription, audience } = input;
+  const resolvedTransport = transport ?? "pubsub";
+  if (resolvedTransport !== "pubsub" && resolvedTransport !== "webhook") {
+    throw new Error(
+      "Google Chat environment configuration has an unknown GOOGLE_CHAT_TRANSPORT value.",
+    );
+  }
+  if (projectId === undefined || appName === undefined || serviceAccountJson === undefined) {
+    throw new Error(
+      "Google Chat environment configuration requires GOOGLE_CHAT_PROJECT_ID, GOOGLE_CHAT_APP_NAME, and GOOGLE_CHAT_SERVICE_ACCOUNT_JSON (or GOOGLE_CHAT_SERVICE_ACCOUNT_PATH).",
+    );
+  }
+  if (resolvedTransport === "pubsub") {
+    if (subscription === undefined || audience !== undefined) {
+      throw new Error(
+        "Google Chat environment configuration for Pub/Sub requires GOOGLE_CHAT_PUBSUB_SUBSCRIPTION and must not set GOOGLE_CHAT_WEBHOOK_AUDIENCE.",
+      );
+    }
+    return {
+      provider: "google-chat",
+      transport: "pubsub",
+      projectId,
+      appName,
+      serviceAccountJson,
+      subscription: normalizePubSubSubscriptionName(projectId, subscription),
+    };
+  }
+  if (subscription !== undefined) {
+    throw new Error(
+      "Google Chat environment configuration for HTTP webhooks must not set GOOGLE_CHAT_PUBSUB_SUBSCRIPTION.",
+    );
+  }
+  return {
+    provider: "google-chat",
+    transport: "webhook",
+    projectId,
+    appName,
+    serviceAccountJson,
+    ...(audience === undefined ? {} : { audience }),
+  };
 }
 
 function linearEnvironment(

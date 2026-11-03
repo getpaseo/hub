@@ -61,6 +61,7 @@ import type {
   AdvanceGitHubConnectionAttemptInput,
   BindDiscordConnectionInput,
   BindGitHubConnectionInput,
+  BindGoogleChatConnectionInput,
   BindLinearConnectionInput,
   BindSlackConnectionInput,
   CompleteLinearProviderApplicationInput,
@@ -71,6 +72,7 @@ import type {
   StartConnectionAttemptInput,
   AcceptDiscordEventInput,
   AcceptGitHubEventInput,
+  AcceptGoogleChatEventInput,
   AcceptLinearEventInput,
   AcceptSlackEventInput,
   UpdateLinearConnectionTokensInput,
@@ -171,6 +173,10 @@ class PgDatabase implements Database {
 
   acceptLinearEvent(input: AcceptLinearEventInput) {
     return this.triggerAcceptance.acceptLinear(input);
+  }
+
+  acceptGoogleChatEvent(input: AcceptGoogleChatEventInput) {
+    return this.triggerAcceptance.acceptGoogleChat(input);
   }
 
   persistManualEvent(input: PersistManualEventInput) {
@@ -3903,7 +3909,7 @@ class PgDatabase implements Database {
        order by connection.account_login, connection.id`,
       [organizationId],
     );
-    const [discord, slack, linear] = await Promise.all([
+    const [discord, slack, linear, googleChat] = await Promise.all([
       query<{
         id: string;
         organization_id: string;
@@ -3957,6 +3963,22 @@ class PgDatabase implements Database {
          order by linear_organization_name, id`,
         [organizationId],
       ),
+      query<{
+        id: string;
+        organization_id: string;
+        slug: string;
+        project_id: string;
+        app_name: string;
+        client_email: string;
+        provider_application_id: string | null;
+      }>(
+        this.pool,
+        `select id, organization_id, slug, project_id, app_name, client_email,
+                provider_application_id
+         from google_chat_connections where organization_id = $1
+         order by app_name, id`,
+        [organizationId],
+      ),
     ]);
     return {
       github: github.rows.map((row) => ({
@@ -4000,6 +4022,15 @@ class PgDatabase implements Database {
         refreshToken: row.refresh_token,
         accessTokenExpiresAt: row.access_token_expires_at,
         scopes: stringArray(row.scopes),
+        providerApplicationId: row.provider_application_id,
+      })),
+      googleChat: googleChat.rows.map((row) => ({
+        id: row.id,
+        organizationId: row.organization_id,
+        slug: row.slug,
+        projectId: row.project_id,
+        appName: row.app_name,
+        clientEmail: row.client_email,
         providerApplicationId: row.provider_application_id,
       })),
     };
@@ -4233,6 +4264,10 @@ class PgDatabase implements Database {
     return this.connections.bindDiscord(input);
   }
 
+  bindGoogleChatConnection(input: BindGoogleChatConnectionInput): Promise<void> {
+    return this.connections.bindGoogleChat(input);
+  }
+
   bindSlackConnection(input: BindSlackConnectionInput): Promise<void> {
     return this.connections.bindSlack(input);
   }
@@ -4284,6 +4319,10 @@ class PgDatabase implements Database {
     return this.connections.findLinear(linearOrganizationId);
   }
 
+  findGoogleChatConnection(projectId: string) {
+    return this.connections.findGoogleChat(projectId);
+  }
+
   findSlackConnectionForOrganization(organizationId: string, teamId: string) {
     return this.connections.findSlackForOrganization(organizationId, teamId);
   }
@@ -4294,6 +4333,10 @@ class PgDatabase implements Database {
 
   findDiscordConnectionForOrganization(organizationId: string, guildId: string) {
     return this.connections.findDiscordForOrganization(organizationId, guildId);
+  }
+
+  findGoogleChatConnectionForOrganization(organizationId: string, projectId: string) {
+    return this.connections.findGoogleChatForOrganization(organizationId, projectId);
   }
 
   removeDiscordConnection(guildId: string): Promise<void> {

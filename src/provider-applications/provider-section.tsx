@@ -22,6 +22,7 @@ import { ProviderGlyph } from "../connections/provider-glyph.js";
 import type { Result } from "../contract/respond.js";
 import { cn } from "../lib/utils.js";
 import {
+  GOOGLE_CHAT_WEBHOOK_GUIDE,
   guideFields,
   guideGroups,
   guideUrl,
@@ -57,7 +58,19 @@ type SaveResponse = Result<ProviderApplicationSaveResult>;
 type ConnectResponse = Result<{ url: string }>;
 type VoidResponse = Result<void>;
 interface SaveMutationInput {
-  data: Record<string, unknown> & { provider: string; transport?: "socket" | "webhook" };
+  data: Record<string, unknown> & { provider: string; transport?: "socket" | "pubsub" | "webhook" };
+}
+
+function selectActiveGuide(
+  guide: ProviderGuide,
+  slackTransport: "socket" | "webhook",
+  googleChatTransport: "pubsub" | "webhook",
+): ProviderGuide {
+  if (guide.provider === "slack" && slackTransport === "webhook") return SLACK_WEBHOOK_GUIDE;
+  if (guide.provider === "google-chat" && googleChatTransport === "webhook") {
+    return GOOGLE_CHAT_WEBHOOK_GUIDE;
+  }
+  return guide;
 }
 
 // eslint-disable-next-line complexity -- this component owns one provider card's complete workflow.
@@ -84,8 +97,12 @@ export function ProviderSection({
   const queryClient = useQueryClient();
   const savedSlackTransport = view.identifiers["transport"] === "webhook" ? "webhook" : "socket";
   const [slackTransport, setSlackTransport] = useState<"socket" | "webhook">(savedSlackTransport);
-  const activeGuide =
-    guide.provider === "slack" && slackTransport === "webhook" ? SLACK_WEBHOOK_GUIDE : guide;
+  const savedGoogleChatTransport =
+    view.identifiers["transport"] === "webhook" ? "webhook" : "pubsub";
+  const [googleChatTransport, setGoogleChatTransport] = useState<"pubsub" | "webhook">(
+    savedGoogleChatTransport,
+  );
+  const activeGuide = selectActiveGuide(guide, slackTransport, googleChatTransport);
   const [replacing, setReplacing] = useState(false);
   const [errors, setErrors] = useState<Readonly<Record<string, string>>>({});
   const [outcome, setOutcome] = useState<Outcome | undefined>(returned);
@@ -259,6 +276,13 @@ export function ProviderSection({
         (phase === "guiding" || phase === "replacing" || phase === "blocked") ? (
           <SlackTransportChoice value={slackTransport} onChange={setSlackTransport} />
         ) : null}
+        {guide.provider === "google-chat" &&
+        (phase === "guiding" || phase === "replacing" || phase === "blocked") ? (
+          <GoogleChatTransportChoice
+            value={googleChatTransport}
+            onChange={setGoogleChatTransport}
+          />
+        ) : null}
         <SectionBody
           guide={activeGuide}
           view={view}
@@ -320,6 +344,43 @@ function SlackTransportChoice({
       description={TRANSPORT_QUESTION}
       value={value}
       options={SLACK_TRANSPORTS}
+      onChange={choose}
+    />
+  );
+}
+
+const GOOGLE_CHAT_TRANSPORT_QUESTION = "How should Google Chat reach Hub?";
+
+const GOOGLE_CHAT_TRANSPORTS: readonly SegmentedOption[] = [
+  {
+    value: "pubsub",
+    label: "Cloud Pub/Sub",
+    hint: "Pull events outbound from Cloud Pub/Sub. No public address or HTTPS needed.",
+  },
+  {
+    value: "webhook",
+    label: "HTTP endpoint",
+    hint: "Let Google Chat push OIDC-signed events to a public HTTPS address.",
+  },
+];
+
+function GoogleChatTransportChoice({
+  value,
+  onChange,
+}: {
+  value: "pubsub" | "webhook";
+  onChange: (value: "pubsub" | "webhook") => void;
+}) {
+  const choose = useCallback(
+    (next: string) => onChange(next === "webhook" ? "webhook" : "pubsub"),
+    [onChange],
+  );
+  return (
+    <SegmentedControl
+      label={GOOGLE_CHAT_TRANSPORT_QUESTION}
+      description={GOOGLE_CHAT_TRANSPORT_QUESTION}
+      value={value}
+      options={GOOGLE_CHAT_TRANSPORTS}
       onChange={choose}
     />
   );
@@ -459,11 +520,21 @@ function summaryRows(
     if (identity.provider === "discord") {
       rows.push({ label: "Application ID", value: identity.id });
     }
+    if (identity.provider === "google-chat") {
+      rows.push({ label: "Project ID", value: identity.id });
+      rows.push({ label: "Service account", value: identity.clientEmail });
+    }
   }
   if (guide.provider === "slack") {
     rows.push({
       label: "Delivery",
       value: view.identifiers["transport"] === "webhook" ? "Webhooks" : "Socket Mode",
+    });
+  }
+  if (guide.provider === "google-chat") {
+    rows.push({
+      label: "Delivery",
+      value: view.identifiers["transport"] === "webhook" ? "HTTP endpoint" : "Cloud Pub/Sub",
     });
   }
   rows.push({
@@ -847,7 +918,7 @@ function StepBody({
           {step.manifest === true ? (
             <CopyBlock
               label="App manifest"
-              value={slackManifest(origin, guide.transport ?? "socket")}
+              value={slackManifest(origin, guide.transport === "webhook" ? "webhook" : "socket")}
               action="Copy manifest"
             />
           ) : null}
