@@ -34,6 +34,11 @@ export function createDatabasePublicOperationRepository(
         })),
         discord: connections.discord.map(({ slug, guildName }) => ({ slug, guildName })),
         slack: connections.slack.map(({ slug, teamName }) => ({ slug, teamName })),
+        googleChat: connections.googleChat.map(({ slug, projectId, appName }) => ({
+          slug,
+          projectId,
+          appName,
+        })),
         linear: connections.linear.map(({ slug, linearOrganizationName }) => ({
           slug,
           organizationName: linearOrganizationName,

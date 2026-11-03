@@ -251,6 +251,13 @@ function connectionUsageView(
       teamName: connection.teamName,
       requiresReauthorization: !hasRequiredSlackScopes(connection.scopes),
     })),
+    googleChat: connections.googleChat.map((connection) => ({
+      id: connection.id,
+      slug: connection.slug,
+      projectId: connection.projectId,
+      appName: connection.appName,
+      clientEmail: connection.clientEmail,
+    })),
     linear: connections.linear.map((connection) => ({
       id: connection.id,
       slug: connection.slug,

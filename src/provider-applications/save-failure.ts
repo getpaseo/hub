@@ -20,7 +20,10 @@ export function providerApplicationSaveFailure(
   const gateway = discordGatewayDiagnostic(error);
   const report = { operation, component: "provider_applications", provider } as const;
 
-  if ((provider === "slack" || provider === "linear") && code === "httpsRequired") {
+  if (
+    (provider === "slack" || provider === "linear" || provider === "google-chat") &&
+    code === "httpsRequired"
+  ) {
     return respondWithFailure(
       error,
       report,
@@ -30,34 +33,12 @@ export function providerApplicationSaveFailure(
       { kind: "validation", scrubValues },
     );
   }
-  if (code === "managedByEnvironment") {
+  const conflictMessage = conflictSaveMessage(provider, name, code, errorContext(error));
+  if (conflictMessage !== undefined) {
     return respondWithFailure(
       error,
       report,
-      {
-        fallback: `${name} is set by Hub's environment, so it cannot be edited here. Nothing was saved. Change ${environmentVariables(provider)} where you set Hub's environment, then restart Hub.`,
-      },
-      { kind: "conflict", scrubValues },
-    );
-  }
-  if (code === "configurationConflict") {
-    return respondWithFailure(
-      error,
-      report,
-      {
-        fallback: `Someone else changed the ${name} app while this page was open. Nothing was saved. Reload the page to see the current values, then verify again.`,
-      },
-      { kind: "conflict", scrubValues },
-    );
-  }
-  if (code === "identityConflict") {
-    const identity = errorContext(error) ?? name;
-    return respondWithFailure(
-      error,
-      report,
-      {
-        fallback: `${name} is already connected as ${identity}, and connections cannot move to a different ${applicationNoun(provider)}. Nothing was saved. Remove its connections first, or rotate the secrets of the same ${applicationNoun(provider)}.`,
-      },
+      { fallback: conflictMessage },
       { kind: "conflict", scrubValues },
     );
   }
@@ -69,22 +50,12 @@ export function providerApplicationSaveFailure(
       { kind: "credentialsRejected", scrubValues },
     );
   }
-  if (provider === "slack" && code === "permissionMissing") {
+  const permissionMessage = specificPermissionMessage(provider, code, errorContext(error));
+  if (permissionMessage !== undefined) {
     return respondWithFailure(
       error,
       report,
-      { fallback: slackPermissionMessage(errorContext(error)) },
-      { kind: "permissionMissing", scrubValues },
-    );
-  }
-  if (provider === "discord" && errorContext(error) === "discordGatewayDisallowedIntents") {
-    return respondWithFailure(
-      error,
-      report,
-      {
-        fallback:
-          "Discord refused the bot because Message Content Intent is off, so it would only receive empty messages. Nothing was saved. Turn it on under Bot → Privileged Gateway Intents, save in Discord, then verify again.",
-      },
+      { fallback: permissionMessage },
       {
         kind: "permissionMissing",
         scrubValues,
@@ -116,6 +87,7 @@ export function providerApplicationSaveFailure(
 export function providerHost(provider: Provider): string {
   if (provider === "github") return "api.github.com";
   if (provider === "slack") return "slack.com";
+  if (provider === "google-chat") return "chat.googleapis.com";
   if (provider === "linear") return "linear.app";
   return "discord.com";
 }
@@ -123,6 +95,7 @@ export function providerHost(provider: Provider): string {
 export function providerName(provider: Provider): string {
   if (provider === "github") return "GitHub";
   if (provider === "slack") return "Slack";
+  if (provider === "google-chat") return "Google Chat";
   if (provider === "linear") return "Linear";
   return "Discord";
 }
@@ -130,6 +103,7 @@ export function providerName(provider: Provider): string {
 /** GitHub calls it an App, Discord an application, Slack an app. Use each provider's own word. */
 function applicationNoun(provider: Provider): string {
   if (provider === "github") return "App";
+  if (provider === "google-chat") return "Chat app";
   return "application";
 }
 
@@ -137,6 +111,42 @@ function environmentVariables(provider: Provider): string {
   const names = guideFor(provider).environmentVariables;
   if (names.length <= 1) return names.join("");
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+function conflictSaveMessage(
+  provider: Provider,
+  name: string,
+  code: string | undefined,
+  context: string | undefined,
+): string | undefined {
+  if (code === "managedByEnvironment") {
+    return `${name} is set by Hub's environment, so it cannot be edited here. Nothing was saved. Change ${environmentVariables(provider)} where you set Hub's environment, then restart Hub.`;
+  }
+  if (code === "configurationConflict") {
+    return `Someone else changed the ${name} app while this page was open. Nothing was saved. Reload the page to see the current values, then verify again.`;
+  }
+  if (code === "identityConflict") {
+    const identity = context ?? name;
+    return `${name} is already connected as ${identity}, and connections cannot move to a different ${applicationNoun(provider)}. Nothing was saved. Remove its connections first, or rotate the secrets of the same ${applicationNoun(provider)}.`;
+  }
+  return undefined;
+}
+
+function specificPermissionMessage(
+  provider: Provider,
+  code: string | undefined,
+  context: string | undefined,
+): string | undefined {
+  if (provider === "slack" && code === "permissionMissing") {
+    return slackPermissionMessage(context);
+  }
+  if (provider === "google-chat" && code === "permissionMissing") {
+    return googleChatPermissionMessage(context);
+  }
+  if (provider === "discord" && context === "discordGatewayDisallowedIntents") {
+    return "Discord refused the bot because Message Content Intent is off, so it would only receive empty messages. Nothing was saved. Turn it on under Bot → Privileged Gateway Intents, save in Discord, then verify again.";
+  }
+  return undefined;
 }
 
 /**
@@ -163,6 +173,12 @@ function credentialMessage(provider: Provider, subject: string | undefined): str
   if (provider === "linear") {
     return "Linear rejected these app credentials. Nothing was saved. Check the Client ID and Client Secret in the Linear application, then continue again.";
   }
+  if (provider === "google-chat") {
+    if (subject === "pubsubSubscription") {
+      return "Google Cloud could not find that Pub/Sub subscription. Nothing was saved. Check the subscription name in Cloud Pub/Sub, then verify again.";
+    }
+    return "Google Cloud rejected the service account JSON. Nothing was saved. Create a new JSON key under IAM & Admin → Service Accounts, paste the whole file, then verify again.";
+  }
   if (subject === "appToken") {
     return "Slack rejected the app-level token. Nothing was saved. Open Basic Information → App-Level Tokens, generate one with connections:write, then connect again.";
   }
@@ -179,12 +195,22 @@ function slackPermissionMessage(subject: string | undefined): string {
   return "The bot token is missing permissions Hub needs. Nothing was saved. Reapply the Socket Mode manifest, reinstall the app in the workspace, then connect again.";
 }
 
+function googleChatPermissionMessage(subject: string | undefined): string {
+  if (subject === "pubsubSubscription") {
+    return "The service account cannot read that Pub/Sub subscription. Nothing was saved. Grant roles/pubsub.subscriber on the subscription, then verify again.";
+  }
+  return "Google Cloud refused access to the Google Chat API. Nothing was saved. Enable the Google Chat API, configure the Chat app, and grant roles/chat.bot to the service account, then verify again.";
+}
+
 function identityMismatchMessage(provider: Provider): string {
   if (provider === "github") {
     return "These credentials belong to a different GitHub App than the App ID you entered. Nothing was saved. Copy the App ID from the same App's settings page, then verify again.";
   }
   if (provider === "discord") {
     return "That bot token belongs to a different Discord application than the Application ID you entered. Nothing was saved. Copy both values from the same application, then verify again.";
+  }
+  if (provider === "google-chat") {
+    return "That service account key belongs to a different Google Cloud project than the Project ID you entered. Nothing was saved. Use a service account from the same project or update the Project ID, then verify again.";
   }
   if (provider === "linear") {
     return "The Linear Client ID and Client Secret do not belong to the same application. Nothing was saved. Copy both from one Linear application, then continue again.";

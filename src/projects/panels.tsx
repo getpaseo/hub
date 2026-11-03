@@ -51,7 +51,7 @@ import {
 } from "./panel-state.js";
 import { archiveProject, activityRunSnapshot, updateProjectSlug } from "./functions.js";
 const CONNECTIONS_DESCRIPTION = "Organization provider connections.";
-const CONNECTION_PROVIDERS = ["github", "discord", "slack", "linear"] as const;
+const CONNECTION_PROVIDERS = ["github", "discord", "slack", "google-chat", "linear"] as const;
 type ConnectionProviderName = (typeof CONNECTION_PROVIDERS)[number];
 
 function ConnectionsLoading() {
@@ -316,10 +316,11 @@ export function ProjectOverviewPanel() {
             data.connections.github.length +
               data.connections.discord.length +
               data.connections.slack.length +
+              data.connections.googleChat.length +
               data.connections.linear.length >
             0
           }
-          detail={`${String(data.connections.github.length + data.connections.discord.length + data.connections.slack.length + data.connections.linear.length)} organization connections`}
+          detail={`${String(data.connections.github.length + data.connections.discord.length + data.connections.slack.length + data.connections.googleChat.length + data.connections.linear.length)} organization connections`}
         />
       </Section>
       <Section
@@ -707,6 +708,13 @@ function connectionRows(data: OrganizationSnapshot) {
         ? ("requiresReauthorization" as const)
         : ("connected" as const),
     })),
+    ...data.connections.googleChat.map((connection) => ({
+      provider: "google-chat" as const,
+      id: connection.id,
+      name: connection.slug,
+      externalId: `project ${connection.projectId}`,
+      status: "connected" as const,
+    })),
     ...data.connections.linear.map((connection) => ({
       provider: "linear" as const,
       id: connection.id,
@@ -721,6 +729,7 @@ function connectionRows(data: OrganizationSnapshot) {
 function providerLabel(provider: ConnectionProviderName) {
   if (provider === "github") return "GitHub";
   if (provider === "discord") return "Discord";
+  if (provider === "google-chat") return "Google Chat";
   return provider === "slack" ? "Slack" : "Linear";
 }
 

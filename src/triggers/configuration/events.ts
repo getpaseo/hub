@@ -13,7 +13,7 @@ export interface QualifierDefinition {
 }
 
 interface EventDefinition {
-  provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule";
+  provider: "github" | "slack" | "discord" | "google-chat" | "linear" | "manual" | "schedule";
   label: string;
   origin: "hub" | "provider";
   qualifiers: readonly QualifierDefinition[];
@@ -44,6 +44,7 @@ function event(
 const EVENTS = {
   "slack.mention": event("slack", "Slack mention"),
   "discord.mention": event("discord", "Discord mention"),
+  "google-chat.mention": event("google-chat", "Google Chat mention"),
   "github.issue_created": event("github", "GitHub issue created"),
   "github.pull_request_created": event("github", "GitHub pull request created"),
   "github.pull_request_ready_for_review": event("github", "GitHub pull request ready for review"),

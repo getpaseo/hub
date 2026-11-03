@@ -7,6 +7,7 @@ import { ConnectionRepository, replaceGitHubRepositories } from "./connections.j
 import type {
   AcceptDiscordEventInput,
   AcceptGitHubEventInput,
+  AcceptGoogleChatEventInput,
   AcceptLinearEventInput,
   AcceptSlackEventInput,
   GitHubInstallationSyncOwner,
@@ -51,8 +52,12 @@ export class ProviderEventAcceptanceRepository {
     return this.acceptProvider("linear", input.linearOrganizationId, input.projectId, input);
   }
 
+  acceptGoogleChat(input: AcceptGoogleChatEventInput): Promise<ProviderEventAcceptance> {
+    return this.acceptProvider("google-chat", input.projectId, input.projectId, input);
+  }
+
   private async acceptProvider(
-    provider: "github" | "slack" | "discord" | "linear",
+    provider: "github" | "slack" | "discord" | "linear" | "google-chat",
     externalId: number | string,
     resourceId: number | string | undefined,
     input: ProviderEventEvidence,
@@ -557,7 +562,7 @@ function selectFirstRoutePerProject<Route extends { projectId: string }>(
 
 async function findConnection(
   transaction: HubTransaction,
-  provider: "github" | "slack" | "discord" | "linear",
+  provider: "github" | "slack" | "discord" | "linear" | "google-chat",
   externalId: number | string,
 ) {
   if (provider === "github") {
@@ -597,6 +602,17 @@ async function findConnection(
       .limit(1);
     return row;
   }
+  if (provider === "google-chat") {
+    const [row] = await transaction
+      .select({
+        id: schema.googleChatConnections.id,
+        organizationId: schema.googleChatConnections.organizationId,
+      })
+      .from(schema.googleChatConnections)
+      .where(eq(schema.googleChatConnections.projectId, String(externalId)))
+      .limit(1);
+    return row;
+  }
   const [row] = await transaction
     .select({
       id: schema.discordConnections.id,
@@ -612,7 +628,7 @@ async function claimProviderReceipt(
   transaction: HubTransaction,
   input: {
     organizationId: string;
-    provider: "github" | "slack" | "discord" | "linear" | "manual";
+    provider: "github" | "slack" | "discord" | "linear" | "google-chat" | "manual";
     connectionId: string | null;
     resourceId: string | null;
     input: ProviderEventEvidence;

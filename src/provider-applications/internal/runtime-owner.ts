@@ -6,6 +6,7 @@ import { logger } from "../../logger.js";
 import { reportFailure } from "../../failures/index.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
+import { createGoogleChatRegistration } from "../../providers/google-chat/index.js";
 import { createLinearRegistration } from "../../providers/linear/index.js";
 import type {
   ProviderRegistration,
@@ -83,6 +84,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     ["github", emptySlot()],
     ["slack", emptySlot()],
     ["discord", emptySlot()],
+    ["google-chat", emptySlot()],
     ["linear", emptySlot()],
   ]);
   private readonly stable = new Map<Provider, ProviderRegistration>();
@@ -90,7 +92,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
   private linearInstallationHandler: LinearInstallationHandler | undefined;
 
   constructor(private readonly options: DynamicProviderRuntimeOptions) {
-    for (const provider of ["github", "slack", "discord", "linear"] as const) {
+    for (const provider of ["github", "slack", "discord", "google-chat", "linear"] as const) {
       this.stable.set(provider, this.stableRegistration(provider));
     }
   }
@@ -100,6 +102,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       this.stable.get("github")!,
       this.stable.get("discord")!,
       this.stable.get("slack")!,
+      this.stable.get("google-chat")!,
       this.stable.get("linear")!,
     ];
   }
@@ -229,6 +232,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       configurationVersion,
       ...(this.options.fetch === undefined ? {} : { fetch: this.options.fetch }),
     };
+    const oauthActivation = activationRegistrationOptions(activation);
     if (provider === "github" && configuration.provider === "github") {
       return createGitHubRegistration({ ...shared, configuration });
     }
@@ -236,10 +240,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       return createSlackRegistration({
         ...shared,
         configuration,
-        ...(activation?.expectedConfigurationVersion === undefined
-          ? {}
-          : { expectedConfigurationVersion: activation.expectedConfigurationVersion }),
-        activateConfiguration: activation?.activateConfiguration ?? false,
+        ...oauthActivation,
         onVerifiedInstallation: (input) => this.handleSlackInstallation(input),
       });
     }
@@ -253,14 +254,17 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         },
       });
     }
+    if (provider === "google-chat" && configuration.provider === "google-chat") {
+      return createGoogleChatRegistration({
+        ...shared,
+        configuration,
+      });
+    }
     if (provider === "linear" && configuration.provider === "linear") {
       return createLinearRegistration({
         ...shared,
         configuration,
-        ...(activation?.expectedConfigurationVersion === undefined
-          ? {}
-          : { expectedConfigurationVersion: activation.expectedConfigurationVersion }),
-        activateConfiguration: activation?.activateConfiguration ?? false,
+        ...oauthActivation,
         onVerifiedInstallation: (input) => this.handleLinearInstallation(input),
       });
     }
@@ -612,12 +616,14 @@ function emptySlot(): Slot {
 
 function actionNames(provider: Provider): readonly string[] {
   if (provider === "github") return ["start", "disconnect", "setup", "callback"];
+  if (provider === "google-chat") return ["start", "disconnect"];
   return ["start", "disconnect", "callback"];
 }
 
 function eventNames(provider: Provider): TriggerProvider["eventNames"] {
   if (provider === "slack") return ["slack.mention"];
   if (provider === "discord") return ["discord.mention"];
+  if (provider === "google-chat") return ["google-chat.mention"];
   if (provider === "linear") return ["linear.issue", "linear.comment"];
   return GITHUB_TRIGGER_SOURCE_NAMES;
 }
@@ -660,14 +666,28 @@ async function stopSources(active: ActiveRegistration): Promise<void> {
   if (rejected?.status === "rejected") throw rejected.reason;
 }
 
-async function retire(provider: Provider, active: ActiveRegistration): Promise<void> {
-  try {
-    await stopSources(active);
-  } catch (error) {
+function retire(provider: Provider, active: ActiveRegistration): Promise<void> {
+  return stopSources(active).catch((error) => {
     reportFailure(
       error,
       { operation: "provider_runtime.retire", component: "provider_runtime", provider },
       { logger, kind: "internal" },
     );
-  }
+  });
+}
+
+function activationRegistrationOptions(
+  activation:
+    | {
+        expectedConfigurationVersion: number | undefined;
+        activateConfiguration: boolean;
+      }
+    | undefined,
+) {
+  return {
+    ...(activation?.expectedConfigurationVersion === undefined
+      ? {}
+      : { expectedConfigurationVersion: activation.expectedConfigurationVersion }),
+    activateConfiguration: activation?.activateConfiguration ?? false,
+  };
 }

@@ -27,6 +27,7 @@ import type {
   AdvanceGitHubConnectionAttemptInput,
   BindDiscordConnectionInput,
   BindGitHubConnectionInput,
+  BindGoogleChatConnectionInput,
   BindLinearConnectionInput,
   BindSlackConnectionInput,
   CompleteLinearProviderApplicationInput,
@@ -41,6 +42,7 @@ import type {
   ConfigurationSyncAttemptRecord,
   AcceptDiscordEventInput,
   AcceptGitHubEventInput,
+  AcceptGoogleChatEventInput,
   AcceptLinearEventInput,
   AcceptSlackEventInput,
   DurableProviderEvent,
@@ -61,6 +63,7 @@ import type {
   GitHubConnectionRecord,
   GitHubConfigurationTarget,
   DiscordConnectionRecord,
+  GoogleChatConnectionRecord,
   SlackConnectionRecord,
   LinearConnectionRecord,
   GitHubRepositoryRecord,
@@ -129,6 +132,7 @@ export interface MemoryDatabaseOptions {
   }[];
   now?: () => Date;
   slackConnections?: readonly SlackConnectionRecord[];
+  googleChatConnections?: readonly GoogleChatConnectionRecord[];
 }
 
 function usageKey(organizationId: string, meter: string, periodStart: Date): string {
@@ -222,12 +226,16 @@ class MemoryDatabase implements Database {
   private readonly discordConnections = new Map<string, DiscordConnectionRecord>();
   private readonly slackConnections = new Map<string, SlackConnectionRecord>();
   private readonly linearConnections = new Map<string, LinearConnectionRecord>();
+  private readonly googleChatConnections = new Map<string, GoogleChatConnectionRecord>();
   private readonly organizationIds: Set<string>;
 
   constructor(private readonly options: MemoryDatabaseOptions = {}) {
     this.organizationIds = new Set(options.organizationIds);
     for (const connection of options.slackConnections ?? []) {
       this.slackConnections.set(connection.teamId, connection);
+    }
+    for (const connection of options.googleChatConnections ?? []) {
+      this.googleChatConnections.set(connection.projectId, connection);
     }
   }
 
@@ -1082,6 +1090,18 @@ class MemoryDatabase implements Database {
       binding?.organizationId,
       binding?.id,
       input.projectId ?? null,
+      reason,
+    );
+  }
+
+  async acceptGoogleChatEvent(input: AcceptGoogleChatEventInput): Promise<ProviderEventAcceptance> {
+    const binding = await this.findGoogleChatConnection(input.projectId);
+    const reason = googleChatDropReason(input, binding);
+    return this.acceptMemoryEvent(
+      input,
+      binding?.organizationId,
+      binding?.id,
+      input.projectId,
       reason,
     );
   }
@@ -3043,6 +3063,9 @@ class MemoryDatabase implements Database {
       linear: Array.from(this.linearConnections.values()).filter(
         (connection) => connection.organizationId === organizationId,
       ),
+      googleChat: Array.from(this.googleChatConnections.values()).filter(
+        (connection) => connection.organizationId === organizationId,
+      ),
     };
   }
 
@@ -3264,6 +3287,10 @@ class MemoryDatabase implements Database {
     return connectionPersistenceUnavailable();
   }
 
+  bindGoogleChatConnection(_input: BindGoogleChatConnectionInput): Promise<void> {
+    return connectionPersistenceUnavailable();
+  }
+
   bindSlackConnection(_input: BindSlackConnectionInput): Promise<void> {
     return connectionPersistenceUnavailable();
   }
@@ -3325,6 +3352,10 @@ class MemoryDatabase implements Database {
     return Promise.resolve(this.linearConnections.get(_linearOrganizationId));
   }
 
+  findGoogleChatConnection(projectId: string): Promise<GoogleChatConnectionRecord | undefined> {
+    return Promise.resolve(this.googleChatConnections.get(projectId));
+  }
+
   findSlackConnectionForOrganization(
     organizationId: string,
     teamId: string,
@@ -3349,6 +3380,14 @@ class MemoryDatabase implements Database {
     return Promise.resolve(connection?.organizationId === organizationId ? connection : undefined);
   }
 
+  findGoogleChatConnectionForOrganization(
+    organizationId: string,
+    projectId: string,
+  ): Promise<GoogleChatConnectionRecord | undefined> {
+    const connection = this.googleChatConnections.get(projectId);
+    return Promise.resolve(connection?.organizationId === organizationId ? connection : undefined);
+  }
+
   removeDiscordConnection(): Promise<void> {
     return Promise.resolve();
   }
@@ -3366,7 +3405,8 @@ class MemoryDatabase implements Database {
       | AcceptGitHubEventInput
       | AcceptDiscordEventInput
       | AcceptSlackEventInput
-      | AcceptLinearEventInput,
+      | AcceptLinearEventInput
+      | AcceptGoogleChatEventInput,
     organizationId: string | undefined,
     connectionId: string | undefined,
     resourceId: string | null,
@@ -3562,11 +3602,14 @@ function providerForInput(
     | AcceptGitHubEventInput
     | AcceptDiscordEventInput
     | AcceptSlackEventInput
-    | AcceptLinearEventInput,
-): "github" | "discord" | "slack" | "linear" {
+    | AcceptLinearEventInput
+    | AcceptGoogleChatEventInput,
+): "github" | "discord" | "slack" | "linear" | "google-chat" {
   if ("installationId" in input) return "github";
   if ("guildId" in input) return "discord";
-  return "teamId" in input ? "slack" : "linear";
+  if ("teamId" in input) return "slack";
+  if ("linearOrganizationId" in input) return "linear";
+  return "google-chat";
 }
 
 function githubDropReason(
@@ -3606,6 +3649,15 @@ function linearDropReason(
   if (linearConnectionRequiresReauthorization(binding, input.receivedAt)) {
     return "configuration_unavailable";
   }
+  return undefined;
+}
+
+function googleChatDropReason(
+  input: AcceptGoogleChatEventInput,
+  binding: GoogleChatConnectionRecord | undefined,
+): string | undefined {
+  if (input.dropReason !== undefined) return input.dropReason;
+  if (binding === undefined) return "google-chat_unbound";
   return undefined;
 }
 

@@ -1,5 +1,20 @@
 import jwt from "jsonwebtoken";
 import { z } from "zod";
+import {
+  CHAT_BOT_SCOPE,
+  PUBSUB_SCOPE,
+  GoogleAccessTokenError,
+  GoogleServiceAccountValidationError,
+  createGoogleAccessTokenSource,
+  parseGoogleServiceAccountJson,
+  type GoogleServiceAccountCredentials,
+} from "../../providers/google-chat/auth.js";
+import { GOOGLE_CHAT_API_BASE_URL } from "../../triggers/google-chat/client.js";
+import {
+  GOOGLE_PUBSUB_API_BASE_URL,
+  isValidPubSubSubscriptionName,
+  normalizePubSubSubscriptionName,
+} from "../../triggers/google-chat/pubsub.js";
 import type {
   ProviderApplicationConfiguration,
   ProviderApplicationIdentity,
@@ -18,6 +33,8 @@ const discordIdentitySchema = z.object({
   bot: z.literal(true),
 });
 const discordTokenSchema = z.object({ access_token: z.string().min(1) });
+const pubsubIamPermissionsSchema = z.object({ permissions: z.array(z.string()).optional() });
+const PUBSUB_CONSUME_PERMISSION = "pubsub.subscriptions.consume";
 const DEFAULT_TIMEOUT_MS = 8_000;
 const DISCORD_API = "https://discord.com/api/v10";
 
@@ -42,6 +59,9 @@ export function createProviderApplicationVerifier(
       }
       if (configuration.provider === "discord") {
         return verifyDiscord(configuration, request, timeoutMs);
+      }
+      if (configuration.provider === "google-chat") {
+        return verifyGoogleChat(configuration, request, now, timeoutMs);
       }
       // Slack client credentials have no honest verification endpoint. They are verified only
       // by the OAuth installation callback, where the returned bot token is tested.
@@ -208,6 +228,171 @@ async function revokeDiscordToken(
   } catch {
     return;
   }
+}
+
+async function verifyGoogleChat(
+  configuration: Extract<ProviderApplicationConfiguration, { provider: "google-chat" }>,
+  request: typeof fetch,
+  now: () => number,
+  timeoutMs: number,
+): Promise<ProviderApplicationIdentity> {
+  let credentials: GoogleServiceAccountCredentials;
+  try {
+    credentials = parseGoogleServiceAccountJson(configuration.serviceAccountJson);
+  } catch (cause) {
+    throw new ProviderVerificationError("credentialsRejected", undefined, {
+      subject: "serviceAccountJson",
+      cause,
+    });
+  }
+  if (credentials.projectId !== configuration.projectId) {
+    throw new ProviderVerificationError("credentialsRejected", undefined, {
+      subject: "identityMismatch",
+    });
+  }
+  await verifyGoogleChatBotAccess(credentials, request, now, timeoutMs);
+  if (configuration.transport === "pubsub") {
+    await verifyGoogleChatPubSubAccess(
+      credentials,
+      configuration.subscription,
+      request,
+      now,
+      timeoutMs,
+    );
+  }
+  return {
+    provider: "google-chat",
+    id: configuration.projectId,
+    name: configuration.appName,
+    clientEmail: credentials.clientEmail,
+  };
+}
+
+async function verifyGoogleChatBotAccess(
+  credentials: GoogleServiceAccountCredentials,
+  request: typeof fetch,
+  now: () => number,
+  timeoutMs: number,
+): Promise<void> {
+  const token = await mintGoogleToken(credentials, [CHAT_BOT_SCOPE], request, now, timeoutMs);
+  const response = await fixedRequest(
+    request,
+    `${GOOGLE_CHAT_API_BASE_URL}/v1/spaces?pageSize=1`,
+    { headers: { authorization: `Bearer ${token}` } },
+    timeoutMs,
+  );
+  if (response.status === 401) {
+    throw new ProviderVerificationError("credentialsRejected", response.status, {
+      subject: "serviceAccountJson",
+    });
+  }
+  if (response.status === 403) {
+    throw new ProviderVerificationError("permissionMissing", response.status, {
+      subject: "serviceAccountJson",
+    });
+  }
+  rejectFailedResponse(response);
+}
+
+async function verifyGoogleChatPubSubAccess(
+  credentials: GoogleServiceAccountCredentials,
+  subscription: string,
+  request: typeof fetch,
+  now: () => number,
+  timeoutMs: number,
+): Promise<void> {
+  const normalized = normalizePubSubSubscriptionName(credentials.projectId, subscription);
+  if (!isValidPubSubSubscriptionName(normalized)) {
+    throw new ProviderVerificationError("credentialsRejected", undefined, {
+      subject: "pubsubSubscription",
+    });
+  }
+  const token = await mintGoogleToken(credentials, [PUBSUB_SCOPE], request, now, timeoutMs);
+  const response = await fixedRequest(
+    request,
+    `${GOOGLE_PUBSUB_API_BASE_URL}/v1/${normalized}:testIamPermissions`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ permissions: [PUBSUB_CONSUME_PERMISSION] }),
+    },
+    timeoutMs,
+  );
+  if (response.status === 401) {
+    throw new ProviderVerificationError("credentialsRejected", response.status, {
+      subject: "serviceAccountJson",
+    });
+  }
+  if (response.status === 403 || response.status === 404) {
+    throw new ProviderVerificationError("permissionMissing", response.status, {
+      subject: "pubsubSubscription",
+    });
+  }
+  rejectFailedResponse(response);
+  const body = await safeJson(response);
+  if (body === undefined) throw new ProviderVerificationError("invalidResponse", response.status);
+  const parsed = pubsubIamPermissionsSchema.safeParse(body);
+  if (!parsed.success) throw new ProviderVerificationError("invalidResponse", response.status);
+  if (!(parsed.data.permissions ?? []).includes(PUBSUB_CONSUME_PERMISSION)) {
+    throw new ProviderVerificationError("permissionMissing", response.status, {
+      subject: "pubsubSubscription",
+    });
+  }
+}
+
+async function mintGoogleToken(
+  credentials: GoogleServiceAccountCredentials,
+  scopes: readonly string[],
+  request: typeof fetch,
+  now: () => number,
+  timeoutMs: number,
+): Promise<string> {
+  try {
+    const source = createGoogleAccessTokenSource({
+      credentials,
+      scopes,
+      now,
+      fetch: (input, init) => fixedRequest(request, requestUrlString(input), init ?? {}, timeoutMs),
+    });
+    return await source.getAccessToken();
+  } catch (error) {
+    if (error instanceof GoogleServiceAccountValidationError) {
+      throw new ProviderVerificationError("credentialsRejected", undefined, {
+        subject: "serviceAccountJson",
+        cause: error,
+      });
+    }
+    if (error instanceof GoogleAccessTokenError) {
+      if (error.cause instanceof ProviderVerificationError) {
+        throw error.cause;
+      }
+      if (
+        error.status === 400 ||
+        error.status === 401 ||
+        error.status === 403 ||
+        error.code === "credentialsRejected"
+      ) {
+        throw new ProviderVerificationError("credentialsRejected", error.status, {
+          subject: "serviceAccountJson",
+          cause: error,
+        });
+      }
+      if (error.status === 429) {
+        throw new ProviderVerificationError("rateLimited", error.status, { cause: error });
+      }
+      throw new ProviderVerificationError("upstreamUnavailable", error.status, { cause: error });
+    }
+    throw error;
+  }
+}
+
+function requestUrlString(input: string | URL | Request): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
 }
 
 async function fixedRequest(

@@ -2,6 +2,7 @@ import type { AuthServer } from "../../auth/server.js";
 import type { Database } from "../../db/types.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
+import { createGoogleChatRegistration } from "../../providers/google-chat/index.js";
 import { createLinearRegistration } from "../../providers/linear/index.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
 import { createSlackSocketInstallationVerifier } from "../../providers/slack/installation.js";
@@ -133,6 +134,12 @@ export const FIXTURE_APP_IDENTITIES: Readonly<Record<Provider, ProviderApplicati
   github: { provider: "github", id: "42", name: "Paseo Hub", ownerLogin: "acme-inc" },
   discord: { provider: "discord", id: "900", name: "Paseo" },
   slack: { provider: "slack", id: "browser-slack-app", name: "Paseo" },
+  "google-chat": {
+    provider: "google-chat",
+    id: "example-chat-project",
+    name: "Paseo",
+    clientEmail: "paseo@example-chat-project.iam.gserviceaccount.com",
+  },
   linear: { provider: "linear", id: "browser-linear-client", name: "Paseo" },
 };
 
@@ -286,6 +293,20 @@ export function browserRegistrationFactory(fixtures: BrowserProviderApplicationF
         },
         bot: fixtures.bot,
         connectionClient: discordConnections,
+      });
+    }
+    if (configuration.provider === "google-chat") {
+      return createGoogleChatRegistration({
+        ...shared,
+        configuration,
+        fetch: () =>
+          Promise.resolve(
+            Response.json({
+              access_token: "fixture-token",
+              expires_in: 3600,
+              receivedMessages: [],
+            }),
+          ),
       });
     }
     if (configuration.provider === "linear") {

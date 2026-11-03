@@ -652,6 +652,16 @@ function providerConfiguration(provider: Provider, id: string): ProviderApplicat
     };
   }
   if (provider === "slack") return slackConfiguration(id);
+  if (provider === "google-chat") {
+    return {
+      provider,
+      transport: "pubsub",
+      projectId: id,
+      appName: id,
+      serviceAccountJson: "{}",
+      subscription: `projects/${id}/subscriptions/events`,
+    };
+  }
   if (provider === "linear") {
     return { provider, clientId: id, clientSecret: "secret", webhookSecret: "webhook" };
   }
@@ -660,12 +670,16 @@ function providerConfiguration(provider: Provider, id: string): ProviderApplicat
 
 function providerIdentity(provider: Provider, id: string): ProviderApplicationIdentity {
   if (provider === "github") return { provider, id, name: id, ownerLogin: "owner" };
+  if (provider === "google-chat") {
+    return { provider, id, name: id, clientEmail: "bot@example.com" };
+  }
   return { provider, id, name: id };
 }
 
 function providerConfigurationId(configuration: ProviderApplicationConfiguration): string {
   if (configuration.provider === "github") return configuration.appId;
   if (configuration.provider === "slack") return configuration.appId;
+  if (configuration.provider === "google-chat") return configuration.projectId;
   if (configuration.provider === "linear") return configuration.clientId;
   return configuration.applicationId;
 }

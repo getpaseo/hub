@@ -68,6 +68,12 @@ export class TriggerDashboard {
           provider: "discord" as const,
           label: guildName,
         })),
+        ...connections.googleChat.map(({ id, slug, appName }) => ({
+          id,
+          slug,
+          provider: "google-chat" as const,
+          label: appName,
+        })),
         ...connections.github.map(({ id, slug, accountLogin }) => ({
           id,
           slug,
@@ -190,22 +196,25 @@ async function triggerView(
 }
 
 function triggerEvent(yaml: string, fallback: string | undefined): string {
-  const inline = /^on:\s+([a-z]+(?:\.[a-z_]+)+)\s*$/mu.exec(yaml)?.[1];
+  const inline = /^on:\s+([a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+)\s*$/mu.exec(yaml)?.[1];
   if (inline !== undefined) return inline;
-  const nested = /^on:\s*$[\s\S]*?^\s{2}([a-z]+(?:\.[a-z_]+)+):\s*$/mu.exec(yaml)?.[1];
+  const nested = /^on:\s*$[\s\S]*?^\s{2}([a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+):\s*$/mu.exec(
+    yaml,
+  )?.[1];
   return nested ?? fallback ?? "manual.run";
 }
 
 function triggerProvider(
   event: string,
   fallback: string | undefined,
-): "github" | "discord" | "slack" | "linear" | "manual" | "schedule" {
+): "github" | "discord" | "slack" | "google-chat" | "linear" | "manual" | "schedule" {
   const provider = event.split(".")[0] ?? fallback;
   if (
     provider === "schedule" ||
     provider === "github" ||
     provider === "discord" ||
     provider === "slack" ||
+    provider === "google-chat" ||
     provider === "linear"
   ) {
     return provider;

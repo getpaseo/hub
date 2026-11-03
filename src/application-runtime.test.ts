@@ -193,6 +193,7 @@ describe("application runtime provider composition", () => {
       ],
       discord: [],
       slack: [],
+      googleChat: [],
       linear: [],
     });
     const registration: ProviderRegistration = {

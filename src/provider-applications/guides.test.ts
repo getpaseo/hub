@@ -91,6 +91,7 @@ test("only Discord has no inbound events to wait for", () => {
       ["github", true],
       ["slack", true],
       ["discord", false],
+      ["google-chat", true],
       ["linear", true],
     ],
   );
@@ -123,6 +124,15 @@ test("identity lines name the app the operator created", () => {
   assert.equal(
     identityLabel({ provider: "discord", id: "900", name: "Paseo" }),
     "Paseo · application 900",
+  );
+  assert.equal(
+    identityLabel({
+      provider: "google-chat",
+      id: "example-project",
+      name: "Paseo",
+      clientEmail: "bot@example.com",
+    }),
+    "Paseo · project example-project",
   );
 });
 
@@ -291,7 +301,13 @@ test("every field the boundary needs is asked for, in the portal's own words", (
 test("each provider names the panel the operator pastes into after that provider", () => {
   assert.deepEqual(
     PROVIDER_GUIDES.map((guide) => guide.formTitle),
-    ["Paste from GitHub", "Connect Slack", "Paste from Discord", "Paste from Linear"],
+    [
+      "Paste from GitHub",
+      "Connect Slack",
+      "Paste from Discord",
+      "Paste from Google Cloud",
+      "Paste from Linear",
+    ],
   );
 });
 

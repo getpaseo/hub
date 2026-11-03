@@ -78,6 +78,7 @@ export function createProviderApplicationInventory(
 function connectionTable(provider: Provider): string {
   if (provider === "github") return "github_connections";
   if (provider === "slack") return "slack_connections";
+  if (provider === "google-chat") return "google_chat_connections";
   if (provider === "linear") return "linear_connections";
   return "discord_connections";
 }
@@ -94,6 +95,12 @@ function connectionIdentityQuery(provider: Provider): string {
                    provider_application_id as application_id,
                    false as action_needed, scopes
             from slack_connections order by connected_at`;
+  }
+  if (provider === "google-chat") {
+    return `select id::text as id, app_name as name,
+                   provider_application_id as application_id,
+                   false as action_needed, null::jsonb as scopes
+            from google_chat_connections order by connected_at`;
   }
   if (provider === "linear") {
     return `select id::text as id, linear_organization_name as name,

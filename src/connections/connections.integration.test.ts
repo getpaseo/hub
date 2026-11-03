@@ -1069,6 +1069,7 @@ async function resolution(
     github: github === undefined ? [] : [github],
     discord: discord === undefined ? [] : [discord],
     slack: [],
+    googleChat: [],
     linear: [],
   });
   assert(status !== null && typeof status === "object" && "status" in status);

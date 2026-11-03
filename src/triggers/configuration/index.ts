@@ -138,6 +138,7 @@ function automaticReplyType(event: string): string | undefined {
   const provider = event.split(".", 1)[0];
   return provider === "slack" ||
     provider === "discord" ||
+    provider === "google-chat" ||
     provider === "linear" ||
     provider === "github"
     ? `${provider}.reply`

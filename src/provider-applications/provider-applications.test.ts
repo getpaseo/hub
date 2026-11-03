@@ -665,6 +665,9 @@ function identityFor(
 ): ProviderApplicationIdentity {
   if (provider === "github") return github;
   if (provider === "discord") return { provider, id: "100", name: "Paseo" };
+  if (provider === "google-chat") {
+    return { provider, id: "example-project", name: "Paseo", clientEmail: "bot@example.com" };
+  }
   if (provider === "linear") return { provider, id: "linear-client", name: "Paseo" };
   return { provider, id: "A1", name: "Paseo" };
 }
@@ -936,6 +939,7 @@ function candidateConfigurationId(configuration: ProviderApplicationConfiguratio
   if (configuration.provider === "github" || configuration.provider === "slack") {
     return configuration.appId;
   }
+  if (configuration.provider === "google-chat") return configuration.projectId;
   if (configuration.provider === "linear") return configuration.clientId;
   return configuration.applicationId;
 }

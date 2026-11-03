@@ -7,6 +7,7 @@ const PROVIDER_NAMES = {
   github: "GitHub",
   discord: "Discord",
   slack: "Slack",
+  "google-chat": "Google Chat",
   linear: "Linear",
 } as const;
 

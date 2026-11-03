@@ -8,6 +8,7 @@ it("keeps provider readiness separate from connection inventory", () => {
     github: { status: "connected" },
     discord: { status: "connected" },
     slack: { status: "disconnected" },
+    "google-chat": { status: "disconnected" },
     linear: { status: "disconnected" },
   });
   assert.deepEqual(status, {
@@ -15,6 +16,7 @@ it("keeps provider readiness separate from connection inventory", () => {
     github: { status: "connected" },
     discord: { status: "connected" },
     slack: { status: "disconnected" },
+    "google-chat": { status: "disconnected" },
     linear: { status: "disconnected" },
   });
 });

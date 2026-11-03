@@ -75,7 +75,13 @@ describe("Linear registration", () => {
     });
 
     assert.deepEqual(
-      registration.connection.status({ github: [], discord: [], slack: [], linear: [] }),
+      registration.connection.status({
+        github: [],
+        discord: [],
+        slack: [],
+        googleChat: [],
+        linear: [],
+      }),
       { status: "notConfigured" },
     );
     assert.deepEqual(registration.sources, []);
@@ -125,6 +131,7 @@ describe("Linear registration", () => {
         github: [],
         discord: [],
         slack: [],
+        googleChat: [],
         linear: [
           {
             id: "linear-connection",
@@ -158,7 +165,13 @@ describe("Linear registration", () => {
       scopes: ["read", "comments:create"],
     };
     assert.deepEqual(
-      registration.connection.status({ github: [], discord: [], slack: [], linear: [expired] }),
+      registration.connection.status({
+        github: [],
+        discord: [],
+        slack: [],
+        googleChat: [],
+        linear: [expired],
+      }),
       { status: "requiresReauthorization" },
     );
     assert.deepEqual(
@@ -166,6 +179,7 @@ describe("Linear registration", () => {
         github: [],
         discord: [],
         slack: [],
+        googleChat: [],
         linear: [{ ...expired, refreshToken: "refresh-token" }],
       }),
       { status: "connected" },

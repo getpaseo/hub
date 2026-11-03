@@ -671,7 +671,7 @@ async function compileTriggers(
     if (typeof authoredConnection === "string" && candidates.length === 0) {
       issues.push({
         path: triggerFilterPath(trigger, "connection"),
-        message: `"${authoredConnection}" does not match any ${providerLabel(provider)} connection (${formatConnectionCandidates(provider, usage[provider])})`,
+        message: `"${authoredConnection}" does not match any ${providerLabel(provider)} connection (${formatConnectionCandidates(provider, usageForProvider(usage, provider))})`,
       });
       continue;
     }
@@ -736,9 +736,17 @@ function providerForEvent(eventName: string): ConnectionProvider | undefined {
   return provider === "github" ||
     provider === "slack" ||
     provider === "discord" ||
+    provider === "google-chat" ||
     provider === "linear"
     ? provider
     : undefined;
+}
+
+function usageForProvider(
+  usage: Awaited<ReturnType<Database["organizationConnectionUsage"]>>,
+  provider: ConnectionProvider,
+) {
+  return provider === "google-chat" ? usage.googleChat : usage[provider];
 }
 
 function readAuthoredResource(
@@ -748,7 +756,7 @@ function readAuthoredResource(
   if (filters === undefined) return undefined;
   let value: string | undefined;
   if (provider === "github") value = filters.repo;
-  else if (provider === "slack") value = filters.workspace;
+  else if (provider === "slack" || provider === "google-chat") value = filters.workspace;
   else if (provider === "discord") value = filters.guild;
   else value = filters.project;
   return typeof value === "string" && value.length > 0 ? value : undefined;
@@ -759,7 +767,7 @@ function connectionCandidates(
   usage: Awaited<ReturnType<Database["organizationConnectionUsage"]>>,
   filters: CompiledTrigger["filters"] | undefined,
 ) {
-  const connections = usage[provider];
+  const connections = usageForProvider(usage, provider);
   const authoredSlug = filters?.["connection"];
   if (typeof authoredSlug !== "string") return connections;
   return connections.filter((connection) => connection.slug === authoredSlug);
@@ -789,6 +797,15 @@ async function resolveResource(
       ? undefined
       : { connectionId: connection.id, resourceId: connection.teamId };
   }
+  if (provider === "google-chat") {
+    const connection = (await database.organizationConnectionUsage(organizationId)).googleChat.find(
+      ({ id, slug, projectId }) =>
+        (slug === resource || projectId === resource) && allowedConnectionIds.has(id),
+    );
+    return connection === undefined
+      ? undefined
+      : { connectionId: connection.id, resourceId: connection.projectId };
+  }
   if (provider === "linear") {
     const connections = (await database.organizationConnectionUsage(organizationId)).linear.filter(
       ({ id }) => allowedConnectionIds.has(id),
@@ -810,13 +827,14 @@ function triggerFilterPath(trigger: CompiledTrigger, field: string): readonly (s
 
 function resourceField(provider: ConnectionProvider): "repo" | "workspace" | "guild" | "project" {
   if (provider === "github") return "repo";
-  if (provider === "slack") return "workspace";
+  if (provider === "slack" || provider === "google-chat") return "workspace";
   return provider === "discord" ? "guild" : "project";
 }
 
 function providerLabel(provider: ConnectionProvider): string {
   if (provider === "github") return "GitHub";
   if (provider === "slack") return "Slack";
+  if (provider === "google-chat") return "Google Chat";
   return provider === "discord" ? "Discord" : "Linear";
 }
 
@@ -837,6 +855,7 @@ function formatConnectionCandidates(
     slug: string;
     guildName?: string;
     teamName?: string;
+    appName?: string;
     linearOrganizationName?: string;
   }[],
 ): string {
@@ -846,6 +865,8 @@ function formatConnectionCandidates(
         return `${connection.slug} "${connection.guildName}"`;
       if (provider === "slack" && connection.teamName !== undefined)
         return `${connection.slug} "${connection.teamName}"`;
+      if (provider === "google-chat" && connection.appName !== undefined)
+        return `${connection.slug} "${connection.appName}"`;
       if (provider === "linear" && connection.linearOrganizationName !== undefined)
         return `${connection.slug} "${connection.linearOrganizationName}"`;
       return connection.slug;
@@ -862,6 +883,7 @@ async function formatResourceCandidates(
     slug: string;
     guildName?: string;
     teamName?: string;
+    appName?: string;
     linearOrganizationName?: string;
   }[],
 ): Promise<string> {

@@ -109,7 +109,13 @@ describe("pre-provider-app connection upgrade", () => {
         });
 
         assert.deepEqual(failures, []);
-        assert.deepEqual(runtime.published, ["github", "slack", "discord", "linear"]);
+        assert.deepEqual(runtime.published, [
+          "github",
+          "slack",
+          "discord",
+          "google-chat",
+          "linear",
+        ]);
         for (const provider of ["github", "slack", "discord"] as const) {
           assert.deepEqual(
             (await inventory.connectedIdentities(provider)).map(
@@ -118,6 +124,7 @@ describe("pre-provider-app connection upgrade", () => {
             [identity(ENVIRONMENT_APPLICATIONS[provider]).id],
           );
         }
+        assert.deepEqual(await inventory.connectedIdentities("google-chat"), []);
         assert.deepEqual(await inventory.connectedIdentities("linear"), []);
 
         const changed = new RecordingRuntime();
@@ -167,6 +174,14 @@ const ENVIRONMENT_APPLICATIONS = {
     applicationId: "discord-app",
     clientSecret: "discord-secret",
     botToken: "discord-token",
+  },
+  "google-chat": {
+    provider: "google-chat",
+    transport: "pubsub",
+    projectId: "google-chat-project",
+    appName: "Google Chat app",
+    serviceAccountJson: "{}",
+    subscription: "projects/google-chat-project/subscriptions/chat-events",
   },
   linear: {
     provider: "linear",
@@ -324,6 +339,14 @@ function identity(configuration: ProviderApplicationConfiguration): ProviderAppl
   }
   if (configuration.provider === "slack") {
     return { provider: "slack", id: configuration.appId, name: "Slack app" };
+  }
+  if (configuration.provider === "google-chat") {
+    return {
+      provider: "google-chat",
+      id: configuration.projectId,
+      name: configuration.appName,
+      clientEmail: "bot@example.com",
+    };
   }
   if (configuration.provider === "linear") {
     return { provider: "linear", id: configuration.clientId, name: "Linear app" };

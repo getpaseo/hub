@@ -14,7 +14,7 @@ export type WorkflowDeadlineKind = "step_hard" | "step_idle" | "whole_run";
 export interface ProviderEventReceiptRecord {
   id: string;
   organizationId: string;
-  provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule";
+  provider: "github" | "slack" | "discord" | "linear" | "google-chat" | "manual" | "schedule";
   connectionId: string | null;
   resourceId: string | null;
   deliveryId: string;
@@ -281,6 +281,7 @@ export interface OrganizationConnectionUsage {
   discord: DiscordConnectionRecord[];
   slack: SlackConnectionRecord[];
   linear: LinearConnectionRecord[];
+  googleChat: GoogleChatConnectionRecord[];
 }
 
 export interface GitHubRepositoryRecord {
@@ -375,7 +376,9 @@ export interface PendingProjectTriggerMigration {
   revision: ProjectConfigurationRevisionRecord;
 }
 
-export type ConnectionProvider = "github" | "discord" | "slack" | "linear";
+export type ConnectionProvider = "github" | "discord" | "slack" | "linear" | "google-chat";
+
+export type ConnectionAttemptProvider = Exclude<ConnectionProvider, "google-chat">;
 
 export type ConnectionAttemptPhase =
   | "github_setup"
@@ -397,7 +400,7 @@ export interface ConnectionStartAuthority extends ConnectionAccountAccess {
 
 export interface ConnectionAttemptRecord {
   id: string;
-  provider: ConnectionProvider;
+  provider: ConnectionAttemptProvider;
   phase: ConnectionAttemptPhase;
   organizationId: string;
   returnRoute: string;
@@ -470,8 +473,18 @@ export interface LinearConnectionRecord {
   scopes: string[];
 }
 
+export interface GoogleChatConnectionRecord {
+  id: string;
+  organizationId: string;
+  slug: string;
+  providerApplicationId: string | null;
+  projectId: string;
+  appName: string;
+  clientEmail: string;
+}
+
 export interface StartConnectionAttemptInput {
-  provider: ConnectionProvider;
+  provider: ConnectionAttemptProvider;
   stateVerifier: string;
   access: ConnectionStartAuthority;
   lifetimeMinutes: number;
@@ -514,6 +527,15 @@ export interface BindDiscordConnectionInput extends ReadConnectionAttemptInput {
   providerApplicationId: string;
   guildId: string;
   guildName: string;
+}
+
+export interface BindGoogleChatConnectionInput {
+  access: ConnectionStartAuthority;
+  providerApplicationId: string;
+  configurationVersion: number;
+  projectId: string;
+  appName: string;
+  clientEmail: string;
 }
 
 export interface BindSlackConnectionInput extends ReadConnectionAttemptInput {
@@ -581,6 +603,10 @@ export type DisconnectConnectionResult =
       provider: "linear";
       linearOrganizationId: string | undefined;
       accessToken: string | undefined;
+    }
+  | {
+      provider: "google-chat";
+      projectId: string | undefined;
     };
 
 export type GitHubLifecycleIdentity = Omit<
@@ -656,6 +682,10 @@ export interface AcceptSlackEventInput extends ProviderEventEvidence {
 export interface AcceptLinearEventInput extends ProviderEventEvidence {
   linearOrganizationId: string;
   projectId?: string;
+}
+
+export interface AcceptGoogleChatEventInput extends ProviderEventEvidence {
+  projectId: string;
 }
 
 export interface PersistManualEventInput extends InsertProviderEventInput {
@@ -1306,6 +1336,7 @@ export interface Database {
   acceptDiscordEvent(input: AcceptDiscordEventInput): Promise<ProviderEventAcceptance>;
   acceptSlackEvent(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance>;
   acceptLinearEvent(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance>;
+  acceptGoogleChatEvent(input: AcceptGoogleChatEventInput): Promise<ProviderEventAcceptance>;
   persistManualEvent(input: PersistManualEventInput): Promise<ManualEventPersistence>;
   synchronizeGitHubInstallation<T>(installationId: number, operation: () => Promise<T>): Promise<T>;
   pendingGitHubInstallationSyncs(
@@ -1632,6 +1663,7 @@ export interface Database {
   advanceGitHubConnectionAttempt(input: AdvanceGitHubConnectionAttemptInput): Promise<void>;
   bindGitHubConnection(input: BindGitHubConnectionInput): Promise<void>;
   bindDiscordConnection(input: BindDiscordConnectionInput): Promise<void>;
+  bindGoogleChatConnection(input: BindGoogleChatConnectionInput): Promise<void>;
   bindSlackConnection(input: BindSlackConnectionInput): Promise<void>;
   completeSlackProviderApplication(input: CompleteSlackProviderApplicationInput): Promise<void>;
   bindLinearConnection(input: BindLinearConnectionInput): Promise<void>;
@@ -1655,6 +1687,7 @@ export interface Database {
   findDiscordConnection(guildId: string): Promise<DiscordConnectionRecord | undefined>;
   findSlackConnection(teamId: string): Promise<SlackConnectionRecord | undefined>;
   findLinearConnection(linearOrganizationId: string): Promise<LinearConnectionRecord | undefined>;
+  findGoogleChatConnection(projectId: string): Promise<GoogleChatConnectionRecord | undefined>;
   findSlackConnectionForOrganization(
     organizationId: string,
     teamId: string,
@@ -1667,6 +1700,10 @@ export interface Database {
     organizationId: string,
     guildId: string,
   ): Promise<DiscordConnectionRecord | undefined>;
+  findGoogleChatConnectionForOrganization(
+    organizationId: string,
+    projectId: string,
+  ): Promise<GoogleChatConnectionRecord | undefined>;
   removeDiscordConnection(guildId: string): Promise<void>;
   close(): Promise<void>;
 }
