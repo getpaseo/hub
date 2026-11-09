@@ -14,7 +14,7 @@ export type WorkflowDeadlineKind = "step_hard" | "step_idle" | "whole_run";
 export interface ProviderEventReceiptRecord {
   id: string;
   organizationId: string;
-  provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule";
+  provider: string;
   connectionId: string | null;
   resourceId: string | null;
   deliveryId: string;
@@ -276,13 +276,6 @@ export interface TenantRouteAccess {
   project?: ProjectRecord;
 }
 
-export interface OrganizationConnectionUsage {
-  github: GitHubConnectionRecord[];
-  discord: DiscordConnectionRecord[];
-  slack: SlackConnectionRecord[];
-  linear: LinearConnectionRecord[];
-}
-
 export interface GitHubRepositoryRecord {
   id: string;
   organizationId: string;
@@ -375,7 +368,7 @@ export interface PendingProjectTriggerMigration {
   revision: ProjectConfigurationRevisionRecord;
 }
 
-export type ConnectionProvider = "github" | "discord" | "slack" | "linear";
+export type ConnectionProvider = string;
 
 export type ConnectionAttemptPhase =
   | "github_setup"
@@ -1568,7 +1561,6 @@ export interface Database {
     input: RecordConfigurationSyncAttemptInput,
   ): Promise<ConfigurationSyncAttemptRecord>;
   projectConfigurationReadModel(projectId: string): Promise<ProjectConfigurationReadModel>;
-  organizationConnectionUsage(organizationId: string): Promise<OrganizationConnectionUsage>;
   listGitHubRepositories(organizationId: string): Promise<GitHubRepositoryRecord[]>;
   findGitHubRepositoryForOrganization(
     organizationId: string,

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
+import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
 import { acceptingAgentValidator } from "../test-utils/agent-validator.js";
 import { enrollTestDaemon } from "../test-utils/project-configuration.js";
 import { OrganizationTriggerStore } from "../triggers/store.js";
 import { createDatabasePublicOperationRepository } from "./database-adapter.js";
+const compositionProviders = createCompositionProviders();
 
 describe("public manual-run project resolution", () => {
   it("prefers an organization trigger runtime and retains the legacy project fallback", async () => {
@@ -19,12 +21,13 @@ describe("public manual-run project resolution", () => {
     const trigger = await new OrganizationTriggerStore(
       database,
       "org",
+      compositionProviders,
       acceptingAgentValidator(),
     ).save({
       yaml: triggerYaml(true),
       userId: null,
     });
-    const repository = createDatabasePublicOperationRepository(database);
+    const repository = createDatabasePublicOperationRepository(database, compositionProviders);
 
     assert.deepEqual(await repository.resolveManualRunProject("org", "deploy", "default"), {
       status: "resolved",
@@ -45,17 +48,21 @@ describe("public manual-run project resolution", () => {
       slug: "default",
       createdByUserId: null,
     });
-    await new OrganizationTriggerStore(database, "org", acceptingAgentValidator()).save({
+    await new OrganizationTriggerStore(
+      database,
+      "org",
+      compositionProviders,
+      acceptingAgentValidator(),
+    ).save({
       yaml: triggerYaml(false),
       userId: null,
     });
 
     assert.deepEqual(
-      await createDatabasePublicOperationRepository(database).resolveManualRunProject(
-        "org",
-        "deploy",
-        "default",
-      ),
+      await createDatabasePublicOperationRepository(
+        database,
+        compositionProviders,
+      ).resolveManualRunProject("org", "deploy", "default"),
       { status: "disabled" },
     );
   });

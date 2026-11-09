@@ -1,4 +1,3 @@
-import type { MemoryDatabaseOptions } from "./memory.js";
 import type { DatabaseRuntime } from "./runtime/index.js";
 import type { Locks } from "./runtime/locks/index.js";
 import type { ProviderEventAcceptanceRepository } from "./trigger-acceptance.js";
@@ -17,7 +16,7 @@ export interface PostgresProviderContext {
 }
 export interface MemoryProviderContext {
   findProjectById(projectId: string): import("./types.js").ProjectRecord | undefined;
-  options: MemoryDatabaseOptions;
+  initialData: unknown;
   withLock<T>(key: string, operation: () => Promise<T>): Promise<T>;
   accept(
     provider: ConnectionProvider,
@@ -59,6 +58,7 @@ export interface MemoryProviderContext {
   }[];
 }
 export interface ProviderPersistenceFactory<T> {
+  id: string;
   postgres(context: PostgresProviderContext): T;
   memory(context: MemoryProviderContext): T;
 }

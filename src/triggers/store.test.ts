@@ -2,17 +2,24 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database } from "../db/types.js";
+import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
 import {
   acceptingAgentValidator,
   catalogAgentValidator,
   disconnectedAgentValidator,
 } from "../test-utils/agent-validator.js";
 import { OrganizationTriggerStore } from "./store.js";
+const compositionProviders = createCompositionProviders();
 
 describe("organization trigger store", () => {
   it("creates and updates one hidden runtime without exposing a project", async () => {
     const database = await enrolledDatabase();
-    const store = new OrganizationTriggerStore(database, "org", acceptingAgentValidator());
+    const store = new OrganizationTriggerStore(
+      database,
+      "org",
+      compositionProviders,
+      acceptingAgentValidator(),
+    );
     const first = await store.save({ yaml: triggerYaml(true), userId: null });
     const second = await store.save({
       triggerId: first.id,
@@ -29,7 +36,12 @@ describe("organization trigger store", () => {
 
   it("fails validation before creating storage when the daemon is unknown", async () => {
     const database = createMemoryDatabase({ organizationIds: ["org"] });
-    const store = new OrganizationTriggerStore(database, "org", acceptingAgentValidator());
+    const store = new OrganizationTriggerStore(
+      database,
+      "org",
+      compositionProviders,
+      acceptingAgentValidator(),
+    );
 
     await assert.rejects(store.save({ yaml: triggerYaml(true), userId: null }), /daemon/u);
     assert.equal((await store.list()).length, 0);
@@ -41,7 +53,12 @@ describe("organization trigger store", () => {
     ["an omitted execution mode", "provider: codex, mode: full-access", /mode.*required/iu],
   ])("rejects %s at the authoring boundary", async (_name, authored, expected) => {
     const database = createMemoryDatabase({ organizationIds: ["org"] });
-    const store = new OrganizationTriggerStore(database, "org", acceptingAgentValidator());
+    const store = new OrganizationTriggerStore(
+      database,
+      "org",
+      compositionProviders,
+      acceptingAgentValidator(),
+    );
     const yaml = triggerYaml(true).replace(
       authored === "cwd: workspace" ? "cwd: /workspace" : authored,
       authored === "cwd: workspace" ? authored : "provider: codex",
@@ -60,6 +77,7 @@ describe("organization trigger store", () => {
     const store = new OrganizationTriggerStore(
       database,
       "org",
+      compositionProviders,
       catalogAgentValidator({ opencode: { modes: ["build", "plan"] } }),
     );
 
@@ -81,6 +99,7 @@ describe("organization trigger store", () => {
     const store = new OrganizationTriggerStore(
       database,
       "org",
+      compositionProviders,
       catalogAgentValidator({ codex: { models: ["gpt-5.4"], modes: ["full-access"] } }),
     );
 
@@ -106,6 +125,7 @@ describe("organization trigger store", () => {
     const store = new OrganizationTriggerStore(
       database,
       "org",
+      compositionProviders,
       catalogAgentValidator({ omp: { modes: ["full-access"] } }),
     );
 
@@ -120,7 +140,12 @@ describe("organization trigger store", () => {
 
   it("refuses a new trigger while the target daemon cannot be asked", async () => {
     const database = await enrolledDatabase();
-    const store = new OrganizationTriggerStore(database, "org", disconnectedAgentValidator());
+    const store = new OrganizationTriggerStore(
+      database,
+      "org",
+      compositionProviders,
+      disconnectedAgentValidator(),
+    );
 
     await assert.rejects(
       store.save({ yaml: triggerYaml(true), userId: null }),
@@ -130,9 +155,19 @@ describe("organization trigger store", () => {
 
   it("still saves a prompt edit while the daemon is offline when the agent is unchanged", async () => {
     const database = await enrolledDatabase();
-    const connected = new OrganizationTriggerStore(database, "org", acceptingAgentValidator());
+    const connected = new OrganizationTriggerStore(
+      database,
+      "org",
+      compositionProviders,
+      acceptingAgentValidator(),
+    );
     const trigger = await connected.save({ yaml: triggerYaml(true), userId: null });
-    const offline = new OrganizationTriggerStore(database, "org", disconnectedAgentValidator());
+    const offline = new OrganizationTriggerStore(
+      database,
+      "org",
+      compositionProviders,
+      disconnectedAgentValidator(),
+    );
 
     const edited = await offline.save({
       triggerId: trigger.id,
@@ -156,6 +191,7 @@ describe("organization trigger store", () => {
     const store = new OrganizationTriggerStore(
       database,
       "org",
+      compositionProviders,
       catalogAgentValidator({
         codex: { modes: ["full-access"] },
         opencode: { modes: ["build"] },

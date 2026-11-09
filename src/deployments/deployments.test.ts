@@ -1,11 +1,16 @@
+import { dump } from "js-yaml";
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { createMemoryDatabase } from "../db/memory.js";
-import { createActiveProjectConfiguration } from "../test-utils/project-configuration.js";
 import { ProjectConfigurationStore } from "../configuration/store.js";
-import { dump } from "js-yaml";
+import { createMemoryDatabase } from "../db/memory.js";
+import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
-import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
+import {
+  createActiveProjectConfiguration,
+  enrollTestDaemon,
+  TEST_DAEMON_SLUG,
+} from "../test-utils/project-configuration.js";
+const compositionProviders = createCompositionProviders();
 
 const validConfig = {
   environments: [{ name: "production", kind: "daemon", daemon: TEST_DAEMON_SLUG, cwd: "/repo" }],
@@ -65,7 +70,9 @@ describe("project configuration lifecycle", () => {
       /environments and triggers/u,
     );
     await assert.rejects(
-      new ProjectConfigurationStore(database, projectA.project.id).activate(projectB.revision.id),
+      new ProjectConfigurationStore(database, projectA.project.id, compositionProviders).activate(
+        projectB.revision.id,
+      ),
       /configuration revision not found/u,
     );
   });

@@ -6,6 +6,7 @@ import {
   type PromptPartialReadResult,
 } from "../config/prompt-partials.js";
 import { createMemoryDatabase } from "../db/memory.js";
+import { createProviderRegistry } from "../providers/server.js";
 import {
   createActiveProjectConfiguration,
   enrollTestDaemon,
@@ -16,6 +17,8 @@ import {
   synchronizeGitHubProjectConfiguration,
   type GitHubConfigurationProvider,
 } from "./github-sync.js";
+import { ProjectConfigurationStore } from "./store.js";
+const syncProviders = createProviderRegistry();
 
 const INITIAL = {
   environments: [{ name: "runner", kind: "daemon", daemon: TEST_DAEMON_SLUG, cwd: "/repo" }],
@@ -166,6 +169,8 @@ describe("exact-commit GitHub configuration bundle sync", () => {
       });
     assert.deepEqual(
       await synchronizeGitHubDefaultBranch({
+        configurationForProject: (targetProjectId) =>
+          new ProjectConfigurationStore(database, targetProjectId, syncProviders),
         database,
         client,
         projectId: project.id,
@@ -220,6 +225,8 @@ function sync(
   commitSha: string,
 ) {
   return synchronizeGitHubProjectConfiguration({
+    configurationForProject: (targetProjectId) =>
+      new ProjectConfigurationStore(database, targetProjectId, syncProviders),
     database,
     client,
     projectId,

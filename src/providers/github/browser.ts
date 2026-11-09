@@ -1,9 +1,9 @@
-import { connectionPresentation } from "./connection-presentation.js";
-import { failure } from "./failure.js";
-import { setup } from "./presentation.js";
-import { glyph, runHint, identityLabel } from "./presentation.js";
 import { isSecureOrigin, type ProviderGuide } from "../presentation.js";
 import { normalizeRequest, requestSchema, requestSecrets } from "./application-configuration.js";
+import { connectionPresentation } from "./connection-presentation.js";
+import { failure } from "./failure.js";
+import { glyph, identityLabel, runHint, setup } from "./presentation.js";
+import { resourceSchemas } from "./public-resources.js";
 export const GITHUB_GUIDE: ProviderGuide = {
   provider: "github",
   name: "GitHub",
@@ -206,6 +206,7 @@ export const GITHUB_GUIDE: ProviderGuide = {
 };
 
 export const githubBrowserProvider = {
+  resourceSchemas,
   connection: connectionPresentation,
   failure,
   request: {

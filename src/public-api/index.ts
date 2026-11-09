@@ -7,25 +7,25 @@ import type {
   InstallConfigurationResult,
   InstallTriggerResult,
   IssueEnrollmentTokenResult,
-  ListProjectsResult,
-  ListTriggersResult,
   ListConfigurationResourcesResult,
+  ListProjectsResult,
   ListSetupResourcesResult,
+  ListTriggersResult,
   PublicAuthorization,
   PublicOperations,
   ValidateConfigurationResult,
   ValidateTriggerResult,
 } from "../public-operations/index.js";
 import {
+  ConfigurationResourcesSchema,
   DispatchedManualRunSchema,
   EnrollmentTokenSchema,
   InstalledConfigurationSchema,
   InstalledTriggerSchema,
-  ProjectListSchema,
-  TriggerListSchema,
-  ConfigurationResourcesSchema,
-  SetupResourcesSchema,
   ProblemSchema,
+  ProjectListSchema,
+  SetupResourcesSchema,
+  TriggerListSchema,
   ValidatedConfigurationSchema,
   ValidatedTriggerSchema,
   type Problem,
@@ -34,8 +34,8 @@ import { publicOpenApiDocument } from "./openapi.js";
 import {
   publicOperation,
   publicOperationManifest,
-  type PublicOperationId,
   type PublicOperationDefinition,
+  type PublicOperationId,
 } from "./operation-manifest.js";
 
 export type { PublicOperationId } from "./operation-manifest.js";
@@ -324,25 +324,14 @@ function configurationResourcesResponse(
   requestId: string,
   result: ListConfigurationResourcesResult,
 ): Response {
-  return result.status === "listed"
-    ? success(requestId, 200, ConfigurationResourcesSchema, {
-        daemons: result.daemons,
-        github: result.github,
-        discord: result.discord,
-        slack: result.slack,
-        linear: result.linear,
-      })
-    : infrastructureProblem(requestId);
+  if (result.status !== "listed") return infrastructureProblem(requestId);
+  const { status: _status, ...resources } = result;
+  return success(requestId, 200, ConfigurationResourcesSchema, resources);
 }
-
 function setupResourcesResponse(requestId: string, result: ListSetupResourcesResult): Response {
-  return result.status === "listed"
-    ? success(requestId, 200, SetupResourcesSchema, {
-        github: result.github,
-        discord: result.discord,
-        slack: result.slack,
-      })
-    : infrastructureProblem(requestId);
+  if (result.status !== "listed") return infrastructureProblem(requestId);
+  const { status: _status, ...resources } = result;
+  return success(requestId, 200, SetupResourcesSchema, resources);
 }
 
 function validationResponse(requestId: string, result: ValidateConfigurationResult): Response {
@@ -692,6 +681,6 @@ function isEnrollmentResult(result: PublicOperationResult): result is IssueEnrol
   return ["issued", "credential_revoked", "infrastructure_unavailable"].includes(result.status);
 }
 
+export * from "./contracts.js";
 export { publicOpenApiDocument } from "./openapi.js";
 export { publicOperationManifest } from "./operation-manifest.js";
-export * from "./contracts.js";

@@ -1,8 +1,8 @@
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
-  boolean,
   bigint,
+  boolean,
   check,
   foreignKey,
   index,
@@ -16,9 +16,9 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
-import { INVITATION_ROLES, ORGANIZATION_ROLES } from "../auth/organization-contract.js";
 import { API_KEY_SCOPES } from "../auth/api-key-contract.js";
+import { INVITATION_ROLES, ORGANIZATION_ROLES } from "../auth/organization-contract.js";
+import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 
 export { INVITATION_ROLES, ORGANIZATION_ROLES };
 
@@ -32,7 +32,6 @@ export type AgentExecutionStatus = (typeof AGENT_EXECUTION_STATUSES)[number];
 export const PROJECT_STATUSES = ["active", "archived"] as const;
 export const CONFIGURATION_SOURCE_KINDS = ["github", "manual"] as const;
 export const TRIGGER_FORMATS = ["single_run", "legacy_multistep"] as const;
-export const CONNECTION_PROVIDERS = ["github", "slack", "discord", "linear"] as const;
 
 export type MachineSource =
   | { kind: "manual"; userId?: string }
@@ -48,9 +47,7 @@ export const providerEventReceipts = pgTable(
     organizationId: text("organization_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    provider: text()
-      .$type<(typeof CONNECTION_PROVIDERS)[number] | "manual" | "schedule">()
-      .notNull(),
+    provider: text().$type<string>().notNull(),
     connectionId: uuid("connection_id"),
     resourceId: text("resource_id"),
     deliveryId: text("delivery_id").notNull(),
@@ -220,7 +217,7 @@ export const projectTriggerRoutes = pgTable(
     organizationId: text("organization_id").notNull(),
     projectId: uuid("project_id").notNull(),
     configurationRevisionId: uuid("configuration_revision_id").notNull(),
-    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().notNull(),
+    provider: text().$type<string>().notNull(),
     connectionId: uuid("connection_id").notNull(),
     resourceId: text("resource_id"),
     triggerName: text("trigger_name").notNull(),
@@ -346,7 +343,7 @@ export const organizationTriggerRoutes = pgTable(
     organizationId: text("organization_id").notNull(),
     triggerId: uuid("trigger_id").notNull(),
     triggerRevisionId: uuid("trigger_revision_id").notNull(),
-    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().notNull(),
+    provider: text().$type<string>().notNull(),
     connectionId: uuid("connection_id").notNull(),
     resourceId: text("resource_id"),
     configuredEventName: text("configured_event_name").notNull(),
@@ -861,7 +858,7 @@ export const organizationConnectionAttempts = pgTable(
   "organization_connection_attempts",
   {
     id: uuid().defaultRandom().primaryKey(),
-    provider: text().$type<"github" | "discord" | "slack" | "linear">().notNull(),
+    provider: text().$type<string>().notNull(),
     phase: text()
       .$type<
         | "github_setup"
@@ -1278,7 +1275,7 @@ export const runtimeConfiguration = pgTable(
 export const runtimeProviderConfiguration = pgTable(
   "runtime_provider_configuration",
   {
-    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().primaryKey(),
+    provider: text().$type<string>().primaryKey(),
     configuration: jsonb().notNull(),
     verifiedExternalIdentity: jsonb("verified_external_identity").notNull(),
     version: integer().default(1).notNull(),
@@ -1300,7 +1297,7 @@ export const runtimeProviderConfiguration = pgTable(
 export const runtimeProviderActivations = pgTable(
   "runtime_provider_activation",
   {
-    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().primaryKey(),
+    provider: text().$type<string>().primaryKey(),
     providerApplicationId: text("provider_application_id").notNull(),
     configurationVersion: integer("configuration_version").notNull(),
     activatedAt: timestamp("activated_at", { withTimezone: true }).defaultNow().notNull(),

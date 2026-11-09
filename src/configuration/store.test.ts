@@ -6,9 +6,11 @@ import { createMemoryDatabase } from "../db/memory.js";
 import type { DiscordConnectionRecord, LinearConnectionRecord } from "../db/types.js";
 import { discordPersistence } from "../providers/discord/persistence.js";
 import { linearPersistence } from "../providers/linear/persistence.js";
+import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
 import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
 import { ProjectConfigurationStore, revisionBundleFiles } from "./store.js";
+const compositionProviders = createCompositionProviders();
 
 const primary: DiscordConnectionRecord = {
   id: "00000000-0000-4000-8000-000000000001",
@@ -51,7 +53,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
       slug: "provider-options-project",
       createdByUserId: "user-1",
     });
-    const store = new ProjectConfigurationStore(database, project.id);
+    const store = new ProjectConfigurationStore(database, project.id, compositionProviders);
     const options = {
       sandbox_workspace_write: {
         writable_roots: ["/var/cache/npm"],
@@ -104,18 +106,19 @@ describe("ProjectConfigurationStore resource compilation", () => {
   });
 
   it("accepts guild and scopes an authored resource to an optional connection slug", async () => {
-    const database = createMemoryDatabase();
-    await enrollTestDaemon(database);
     const connections = [primary, secondary];
-    database.organizationConnectionUsage = () =>
-      Promise.resolve({ github: [], slack: [], discord: connections, linear: [] });
+    const database = createMemoryDatabase({
+      providerData: { discord: { connections: connections } },
+    });
+    await enrollTestDaemon(database);
+
     const project = await database.createProject({
       organizationId: "org_1",
       name: "Guild project",
       slug: "guild-project",
       createdByUserId: "user-1",
     });
-    const store = new ProjectConfigurationStore(database, project.id);
+    const store = new ProjectConfigurationStore(database, project.id, compositionProviders);
 
     const revision = await store.insertManualBundleRevision({
       files: configurationBundleFixture(
@@ -148,19 +151,16 @@ describe("ProjectConfigurationStore resource compilation", () => {
   });
 
   it("routes a project-scoped autonomous Linear scout through one Linear connection", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase({ providerData: { linear: { connections: [linear] } } });
     await enrollTestDaemon(database);
-    database.organizationConnectionUsage = () =>
-      Promise.resolve({ github: [], slack: [], discord: [], linear: [linear] });
-    linearPersistence(database).findLinearConnection = async (linearOrganizationId) =>
-      linearOrganizationId === linear.linearOrganizationId ? linear : undefined;
+
     const project = await database.createProject({
       organizationId: "org_1",
       name: "Linear scout project",
       slug: "linear-scout-project",
       createdByUserId: "user-1",
     });
-    const store = new ProjectConfigurationStore(database, project.id);
+    const store = new ProjectConfigurationStore(database, project.id, compositionProviders);
     const revision = await store.insertManualBundleRevision({
       files: configurationBundleFixture(
         dump({
@@ -208,10 +208,10 @@ describe("ProjectConfigurationStore resource compilation", () => {
     assert.equal(accepted.status, "accepted");
     if (accepted.status === "accepted") assert.equal(accepted.events[0]?.projectId, project.id);
 
-    linearPersistence(database).findLinearConnection = async (linearOrganizationId) =>
-      linearOrganizationId === linear.linearOrganizationId
-        ? { ...linear, scopes: ["read"] }
-        : undefined;
+    await linearPersistence(database).withLinearConnectionRefresh(
+      linear.linearOrganizationId,
+      async (_connection, update) => update({ accessToken: linear.accessToken, scopes: ["read"] }),
+    );
     const underScoped = await linearPersistence(database).acceptLinearEvent({
       linearOrganizationId: linear.linearOrganizationId,
       projectId: "linear-project-1",
@@ -225,15 +225,6 @@ describe("ProjectConfigurationStore resource compilation", () => {
       assert.equal(underScoped.reason, "configuration_unavailable");
     }
 
-    linearPersistence(database).findLinearConnection = async (linearOrganizationId) =>
-      linearOrganizationId === linear.linearOrganizationId
-        ? {
-            ...linear,
-            scopes: ["read", "comments:create"],
-            refreshToken: null,
-            accessTokenExpiresAt: new Date(0),
-          }
-        : undefined;
     const expired = await linearPersistence(database).acceptLinearEvent({
       linearOrganizationId: linear.linearOrganizationId,
       projectId: "linear-project-1",
@@ -257,7 +248,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
       slug: "github-partials-project",
       createdByUserId: "user-1",
     });
-    const store = new ProjectConfigurationStore(database, project.id);
+    const store = new ProjectConfigurationStore(database, project.id, compositionProviders);
     const rawConfiguration = includeConfiguration();
     const files = [
       ...configurationBundleFixture(dump(rawConfiguration)),
@@ -283,17 +274,18 @@ describe("ProjectConfigurationStore resource compilation", () => {
   });
 
   it("resolves a Discord connection slug without an additional connection filter", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase({
+      providerData: { discord: { connections: [primary, secondary] } },
+    });
     await enrollTestDaemon(database);
-    database.organizationConnectionUsage = () =>
-      Promise.resolve({ github: [], slack: [], discord: [primary, secondary], linear: [] });
+
     const project = await database.createProject({
       organizationId: "org_1",
       name: "Unique guild project",
       slug: "unique-guild-project",
       createdByUserId: "user-1",
     });
-    const store = new ProjectConfigurationStore(database, project.id);
+    const store = new ProjectConfigurationStore(database, project.id, compositionProviders);
 
     const revision = await store.insertManualBundleRevision({
       files: configurationBundleFixture(dump(discordConfiguration({ guild: "discord-primary" }))),
@@ -305,17 +297,18 @@ describe("ProjectConfigurationStore resource compilation", () => {
   });
 
   it("rejects an unknown explicit connection slug", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase({
+      providerData: { discord: { connections: [primary] } },
+    });
     await enrollTestDaemon(database);
-    database.organizationConnectionUsage = () =>
-      Promise.resolve({ github: [], slack: [], discord: [primary], linear: [] });
+
     const project = await database.createProject({
       organizationId: "org_1",
       name: "Unknown connection project",
       slug: "unknown-connection-project",
       createdByUserId: "user-1",
     });
-    const store = new ProjectConfigurationStore(database, project.id);
+    const store = new ProjectConfigurationStore(database, project.id, compositionProviders);
     const revision = await store.insertManualBundleRevision({
       files: configurationBundleFixture(
         dump(discordConfiguration({ guild: "discord-primary", connection: "missing-discord" })),
@@ -336,17 +329,18 @@ describe("ProjectConfigurationStore resource compilation", () => {
   });
 
   it("reports an unknown Discord slug with the connected guild candidates", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase({
+      providerData: { discord: { connections: [primary] } },
+    });
     await enrollTestDaemon(database);
-    database.organizationConnectionUsage = () =>
-      Promise.resolve({ github: [], slack: [], discord: [primary], linear: [] });
+
     const project = await database.createProject({
       organizationId: "org_1",
       name: "Unknown guild project",
       slug: "unknown-guild-project",
       createdByUserId: "user-1",
     });
-    const store = new ProjectConfigurationStore(database, project.id);
+    const store = new ProjectConfigurationStore(database, project.id, compositionProviders);
     const revision = await store.insertManualBundleRevision({
       files: configurationBundleFixture(
         dump(discordConfiguration({ guild: "1481169421832814616" })),
@@ -374,7 +368,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
       slug: "missing-daemon-project",
       createdByUserId: "user-1",
     });
-    const store = new ProjectConfigurationStore(database, project.id);
+    const store = new ProjectConfigurationStore(database, project.id, compositionProviders);
 
     const revision = await store.insertManualBundleRevision({
       files: configurationBundleFixture(
@@ -416,22 +410,18 @@ describe("ProjectConfigurationStore resource compilation", () => {
   });
 
   it("accepts one durable trigger per project when multiple routes match", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase({
+      providerData: { discord: { connections: [primary] } },
+    });
     await enrollTestDaemon(database);
-    database.organizationConnectionUsage = () =>
-      Promise.resolve({ github: [], slack: [], discord: [primary], linear: [] });
-    discordPersistence(database).findDiscordConnection = () => Promise.resolve(primary);
-    discordPersistence(database).findDiscordConnectionForOrganization = async (
-      _organizationId,
-      guildId,
-    ) => (guildId === primary.guildId ? primary : undefined);
+
     const project = await database.createProject({
       organizationId: "org_1",
       name: "Fan-out project",
       slug: "fan-out-project",
       createdByUserId: "user-1",
     });
-    const store = new ProjectConfigurationStore(database, project.id);
+    const store = new ProjectConfigurationStore(database, project.id, compositionProviders);
     const configuration = discordConfiguration({ guild: "discord-primary" });
     configuration.triggers.push({
       ...configuration.triggers[0]!,
@@ -457,22 +447,18 @@ describe("ProjectConfigurationStore resource compilation", () => {
   });
 
   it("restores the target revision's trigger routes during rollback", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase({
+      providerData: { discord: { connections: [primary] } },
+    });
     await enrollTestDaemon(database);
-    database.organizationConnectionUsage = () =>
-      Promise.resolve({ github: [], slack: [], discord: [primary], linear: [] });
-    discordPersistence(database).findDiscordConnection = () => Promise.resolve(primary);
-    discordPersistence(database).findDiscordConnectionForOrganization = async (
-      _organizationId,
-      guildId,
-    ) => (guildId === primary.guildId ? primary : undefined);
+
     const project = await database.createProject({
       organizationId: "org_1",
       name: "Rollback routes project",
       slug: "rollback-routes-project",
       createdByUserId: "user-1",
     });
-    const store = new ProjectConfigurationStore(database, project.id);
+    const store = new ProjectConfigurationStore(database, project.id, compositionProviders);
     const first = await store.insertManualBundleRevision({
       files: configurationBundleFixture(dump(discordConfiguration({ guild: "discord-primary" }))),
       userId: "user-1",

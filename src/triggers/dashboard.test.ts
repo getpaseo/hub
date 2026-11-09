@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../auth/server.js";
 import { createMemoryDatabase } from "../db/memory.js";
+import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
 import { acceptingAgentValidator } from "../test-utils/agent-validator.js";
 import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
 import { TriggerDashboard } from "./dashboard.js";
 import { OrganizationTriggerStore } from "./store.js";
+const compositionProviders = createCompositionProviders();
 
 describe("trigger dashboard read model", () => {
   it("describes the provider and latest run on the organization trigger list", async () => {
@@ -25,12 +27,18 @@ describe("trigger dashboard read model", () => {
     const trigger = await new OrganizationTriggerStore(
       database,
       "org-1",
+      compositionProviders,
       acceptingAgentValidator(),
     ).save({
       yaml: triggerYaml,
       userId: "user-1",
     });
-    const dashboard = new TriggerDashboard(database, accountAuth(), acceptingAgentValidator());
+    const dashboard = new TriggerDashboard(
+      database,
+      accountAuth(),
+      compositionProviders,
+      acceptingAgentValidator(),
+    );
     const request = new Request("https://hub.test/o/acme/triggers");
 
     const before = await dashboard.snapshot(request, "acme");

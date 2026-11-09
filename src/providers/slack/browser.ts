@@ -1,10 +1,10 @@
-import { connectionPresentation } from "./connection-presentation.js";
-import { failure } from "./failure.js";
-import { createSetup } from "./presentation.js";
-import { glyph, runHint, identityLabel } from "./presentation.js";
 import { type GuideStep, type ProviderGuide } from "../presentation.js";
 import { normalizeRequest, requestSchema, requestSecrets } from "./application-configuration.js";
 import { SLACK_REQUIRED_BOT_SCOPES } from "./client.js";
+import { connectionPresentation } from "./connection-presentation.js";
+import { failure } from "./failure.js";
+import { createSetup, glyph, identityLabel, runHint } from "./presentation.js";
+import { resourceSchemas } from "./public-resources.js";
 function manifestFor(transport: "socket" | "webhook") {
   return {
     label: "App manifest",
@@ -197,6 +197,7 @@ ${requestUrl}    bot_events:
 }
 
 export const slackBrowserProvider = {
+  resourceSchemas,
   connection: connectionPresentation,
   failure,
   request: {

@@ -1,11 +1,8 @@
 import type { AuthServer } from "../auth/server.js";
-import type {
-  Database,
-  OrganizationConnectionUsage,
-  OrganizationRunRecord,
-  UnroutedProviderEventCount,
-} from "../db/types.js";
+import type { Database, OrganizationRunRecord, UnroutedProviderEventCount } from "../db/types.js";
 import { resolveRouteTenant } from "../projects/access.js";
+import type { ProviderRegistry } from "../providers/registry.js";
+import { organizationConnections } from "../providers/resources.js";
 import { projectTriggerForm } from "../triggers/configuration/editor.js";
 
 /** How far back the overview looks. One week is long enough to hold a first run and short enough that a nudge fades once a trigger listens. */
@@ -17,7 +14,7 @@ export interface HomeSnapshot {
   /** Whether any provider app (GitHub, Slack, Discord, Linear) is set up on this Hub at all. */
   appsConfigured: boolean;
   connections: readonly {
-    provider: "github" | "slack" | "discord" | "linear";
+    provider: string;
     slug: string;
     label: string;
   }[];
@@ -43,11 +40,12 @@ export class HomeDashboard {
   constructor(
     private readonly database: Database,
     private readonly auth: AuthServer,
+    private readonly providers: ProviderRegistry,
     /**
      * Whether any provider app is configured, answered by the same registrations the
      * connections status reads; a self-hosted Hub with none has nothing to connect yet.
      */
-    private readonly providerAppsConfigured: (bindings: OrganizationConnectionUsage) => boolean,
+    private readonly providerAppsConfigured: (organizationId: string) => boolean | Promise<boolean>,
     private readonly now: () => Date = () => new Date(),
   ) {}
 
@@ -59,7 +57,7 @@ export class HomeDashboard {
     const since = new Date(this.now().getTime() - HOME_WINDOW_DAYS * 86_400_000);
     const triggers = await this.database.listOrganizationTriggers(organizationId);
     const [connections, daemons, revisions, runs, unrouted] = await Promise.all([
-      this.database.organizationConnectionUsage(organizationId),
+      organizationConnections(this.database, this.providers, organizationId),
       this.database.listDaemonsForOrganization(organizationId),
       Promise.all(
         triggers.map((trigger) =>
@@ -71,29 +69,10 @@ export class HomeDashboard {
     ]);
     return {
       organization: tenant.organization,
-      appsConfigured: this.providerAppsConfigured(connections),
-      connections: [
-        ...connections.github.map(({ slug, accountLogin }) => ({
-          provider: "github" as const,
-          slug,
-          label: accountLogin,
-        })),
-        ...connections.slack.map(({ slug, teamName }) => ({
-          provider: "slack" as const,
-          slug,
-          label: teamName,
-        })),
-        ...connections.discord.map(({ slug, guildName }) => ({
-          provider: "discord" as const,
-          slug,
-          label: guildName,
-        })),
-        ...connections.linear.map(({ slug, linearOrganizationName }) => ({
-          provider: "linear" as const,
-          slug,
-          label: linearOrganizationName,
-        })),
-      ],
+      appsConfigured: await this.providerAppsConfigured(organizationId),
+      connections: connections.flatMap(({ provider, connections: items }) =>
+        items.map(({ slug, label }) => ({ provider, slug, label })),
+      ),
       daemons: daemons
         .filter(({ status }) => status === "active")
         .map(({ id, slug, presence, permissions }) => ({

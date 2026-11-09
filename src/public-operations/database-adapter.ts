@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Database } from "../db/types.js";
 import { DeploymentProjects } from "../project-deployments/index.js";
+import type { ProviderRegistry } from "../providers/registry.js";
 import type { PublicOperationRepository } from "./types.js";
 
 export function createDatabasePublicOperationRepository(
   database: Database,
+  providers: ProviderRegistry,
 ): PublicOperationRepository {
   const deploymentProjects = new DeploymentProjects(database);
   return {
@@ -14,8 +16,16 @@ export function createDatabasePublicOperationRepository(
         .map(({ id, name, slug }) => ({ id, name, slug }));
     },
     async listConfigurationResources(organizationId) {
-      const [{ connections, repositories }, daemons] = await Promise.all([
-        providerResources(database, organizationId),
+      const [entries, daemons] = await Promise.all([
+        Promise.all(
+          orderedProviders(providers).map(
+            async (module) =>
+              [
+                module.manifest.id,
+                Array.from(await module.resources.configuration(database, organizationId)),
+              ] as const,
+          ),
+        ),
         database.listDaemonsForOrganization(organizationId),
       ]);
       return {
@@ -24,36 +34,23 @@ export function createDatabasePublicOperationRepository(
             ({ status, permissions }) => status === "active" && permissions.includes("hub.execute"),
           )
           .map(({ id, slug }) => ({ id, slug })),
-        github: connections.github.map(({ id, slug, accountLogin, accountType }) => ({
-          slug,
-          accountLogin,
-          accountType,
-          repositories: repositories
-            .filter(({ connectionId }) => connectionId === id)
-            .map(({ fullName }) => fullName),
-        })),
-        discord: connections.discord.map(({ slug, guildName }) => ({ slug, guildName })),
-        slack: connections.slack.map(({ slug, teamName }) => ({ slug, teamName })),
-        linear: connections.linear.map(({ slug, linearOrganizationName }) => ({
-          slug,
-          organizationName: linearOrganizationName,
-        })),
+        ...Object.fromEntries(entries),
       };
     },
     async listSetupResources(organizationId) {
-      const { connections, repositories } = await providerResources(database, organizationId);
-      return {
-        github: connections.github.map(({ id, slug, accountLogin, accountType }) => ({
-          slug,
-          accountLogin,
-          accountType,
-          repositories: repositories
-            .filter(({ connectionId }) => connectionId === id)
-            .map(({ fullName }) => fullName),
-        })),
-        discord: connections.discord.map(({ guildId, guildName }) => ({ guildId, guildName })),
-        slack: connections.slack.map(({ teamId, teamName }) => ({ teamId, teamName })),
-      };
+      return Object.fromEntries(
+        await Promise.all(
+          orderedProviders(providers).flatMap((module) => {
+            return module.resources.setup === undefined
+              ? []
+              : [
+                  module.resources
+                    .setup(database, organizationId)
+                    .then((rows) => [module.manifest.id, Array.from(rows)] as const),
+                ];
+          }),
+        ),
+      );
     },
     async resolveManualRunProject(organizationId, triggerName, projectSlug) {
       const organizationTrigger = (await database.listOrganizationTriggers(organizationId)).find(
@@ -91,10 +88,8 @@ export function createDatabasePublicOperationRepository(
   };
 }
 
-async function providerResources(database: Database, organizationId: string) {
-  const [connections, repositories] = await Promise.all([
-    database.organizationConnectionUsage(organizationId),
-    database.listGitHubRepositories(organizationId),
-  ]);
-  return { connections, repositories };
+function orderedProviders(providers: ProviderRegistry) {
+  return [...providers.list()].sort(
+    (a, b) => (a.manifest.connectionOrder ?? 0) - (b.manifest.connectionOrder ?? 0),
+  );
 }

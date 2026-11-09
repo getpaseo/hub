@@ -28,6 +28,7 @@ import {
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { discordPersistence } from "../../providers/discord/persistence.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
+import { githubPersistence } from "../../providers/github/persistence.js";
 import {
   githubExecutionAuthority,
   staticGitHubExecutionAuthority,
@@ -298,6 +299,7 @@ async function main(): Promise<void> {
     githubConfiguration,
   });
   const runtime = await createApplicationRuntime({
+    providerRegistry: providerRegistry,
     database,
     auth,
     entitlements: entitlements.service,
@@ -608,7 +610,7 @@ async function acceptInstallUnroutedSlackFixture(
   database: Database,
 ): Promise<void> {
   try {
-    const store = new ProjectConfigurationStore(database, message.projectId);
+    const store = new ProjectConfigurationStore(database, message.projectId, providerRegistry);
     const revision = await store.insertManualBundleRevision({
       files: message.files,
       userId: message.userId,
@@ -651,7 +653,7 @@ async function acceptInstallProviderDispatchFixture(
       message.repository,
     );
     if (repository === undefined) throw new Error("GitHub repository unavailable");
-    const github = (await database.organizationConnectionUsage(message.organizationId)).github.find(
+    const github = (await githubPersistence(database).listConnections(message.organizationId)).find(
       (connection) => connection.id === repository.connectionId,
     );
     if (github === undefined || github.organizationId !== message.organizationId) {
@@ -670,7 +672,7 @@ async function acceptInstallProviderDispatchFixture(
     if (discord === undefined || discord.organizationId !== message.organizationId) {
       throw new Error("Discord connection unavailable");
     }
-    const store = new ProjectConfigurationStore(database, project.id);
+    const store = new ProjectConfigurationStore(database, project.id, providerRegistry);
     const revision = await store.insertManualBundleRevision({
       files: message.files,
       userId: owner.user_id,

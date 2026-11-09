@@ -66,7 +66,7 @@ describe("Linear registration", () => {
     assert.notEqual(attempt?.stateVerifier, state);
   });
 
-  it("does not construct partial behavior when Linear is not configured", () => {
+  it("does not construct partial behavior when Linear is not configured", async () => {
     const registration = createLinearRegistration({
       database: createMemoryDatabase(),
       auth: new RegistrationAuth(),
@@ -75,10 +75,7 @@ describe("Linear registration", () => {
       configuration: null,
     });
 
-    assert.deepEqual(
-      registration.connection.status({ github: [], discord: [], slack: [], linear: [] }),
-      { status: "notConfigured" },
-    );
+    assert.deepEqual(await registration.connection.status("org"), { status: "notConfigured" });
     assert.deepEqual(registration.sources, []);
     assert.deepEqual(registration.outputs, []);
     assert.deepEqual(registration.requests, []);
@@ -112,36 +109,35 @@ describe("Linear registration", () => {
     assert.equal(auth.organizationAccessReads, 0);
   });
 
-  it("requires reconnection for missing authority or an expired non-refreshable token", () => {
-    const registration = createLinearRegistration({
-      database: createMemoryDatabase(),
-      auth: null,
-      applicationBaseUrl: "https://hub.test",
-      publicBaseUrl: "https://hub.test",
-      configuration: linearConfiguration(),
-    });
-
+  it("requires reconnection for missing authority or an expired non-refreshable token", async () => {
     assert.deepEqual(
-      registration.connection.status({
-        github: [],
-        discord: [],
-        slack: [],
-        linear: [
-          {
-            id: "linear-connection",
-            organizationId: "org",
-            slug: "acme-linear",
-            providerApplicationId: "client",
-            linearOrganizationId: "linear-org",
-            linearOrganizationName: "Acme",
-            appUserId: "app-user",
-            accessToken: "token",
-            refreshToken: "refresh-token",
-            accessTokenExpiresAt: null,
-            scopes: ["read"],
+      await createLinearRegistration({
+        database: createMemoryDatabase({
+          providerData: {
+            linear: {
+              connections: [
+                {
+                  id: "linear-connection",
+                  organizationId: "org",
+                  slug: "acme-linear",
+                  providerApplicationId: "client",
+                  linearOrganizationId: "linear-org",
+                  linearOrganizationName: "Acme",
+                  appUserId: "app-user",
+                  accessToken: "token",
+                  refreshToken: "refresh-token",
+                  accessTokenExpiresAt: null,
+                  scopes: ["read"],
+                },
+              ],
+            },
           },
-        ],
-      }),
+        }),
+        auth: null,
+        applicationBaseUrl: "https://hub.test",
+        publicBaseUrl: "https://hub.test",
+        configuration: linearConfiguration(),
+      }).connection.status("org"),
       { status: "requiresReauthorization" },
     );
 
@@ -159,16 +155,27 @@ describe("Linear registration", () => {
       scopes: ["read", "comments:create"],
     };
     assert.deepEqual(
-      registration.connection.status({ github: [], discord: [], slack: [], linear: [expired] }),
+      await createLinearRegistration({
+        database: createMemoryDatabase({ providerData: { linear: { connections: [expired] } } }),
+        auth: null,
+        applicationBaseUrl: "https://hub.test",
+        publicBaseUrl: "https://hub.test",
+        configuration: linearConfiguration(),
+      }).connection.status("org"),
       { status: "requiresReauthorization" },
     );
     assert.deepEqual(
-      registration.connection.status({
-        github: [],
-        discord: [],
-        slack: [],
-        linear: [{ ...expired, refreshToken: "refresh-token" }],
-      }),
+      await createLinearRegistration({
+        database: createMemoryDatabase({
+          providerData: {
+            linear: { connections: [{ ...expired, refreshToken: "refresh-token" }] },
+          },
+        }),
+        auth: null,
+        applicationBaseUrl: "https://hub.test",
+        publicBaseUrl: "https://hub.test",
+        configuration: linearConfiguration(),
+      }).connection.status("org"),
       { status: "connected" },
     );
   });

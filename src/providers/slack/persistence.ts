@@ -37,6 +37,7 @@ export interface SlackPersistence {
   ): Promise<Extract<Types.DisconnectConnectionResult, { provider: "slack" }>>;
 }
 const persistence = new ProviderPersistence<SlackPersistence>({
+  id: "slack",
   postgres: (context) => new SlackPostgresPersistence(context),
   memory: slackMemoryPersistence,
 });

@@ -1,31 +1,33 @@
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, it } from "vitest";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
 import { createApplicationRuntime } from "../application-runtime.js";
-import { createAuthServer, type AuthServer } from "../auth/server.js";
 import { composeEntitlements } from "../auth/entitlements.js";
+import { createAuthServer, type AuthServer } from "../auth/server.js";
 import { CliAuthorizations } from "../cli-authorizations/index.js";
 import {
   createDatabase,
+  createPostgresQueryRuntime,
   testDatabaseLocks,
   testDatabaseRuntime,
 } from "../db/test-utils/runtime.js";
-import { TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
+import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
+import { loadBuiltStartServer, type BuiltStartServer } from "../server/build.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
+import { TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
 import {
-  EnrollmentTokenSchema,
   CliAuthorizationPollSchema,
   CliAuthorizationSchema,
   ConfigurationResourcesSchema,
-  SetupResourcesSchema,
+  EnrollmentTokenSchema,
   InstalledConfigurationSchema,
   ProblemSchema,
   ProjectListSchema,
+  SetupResourcesSchema,
   ValidatedConfigurationSchema,
 } from "./contracts.js";
-import { loadBuiltStartServer, type BuiltStartServer } from "../server/build.js";
+const compositionProviders = createCompositionProviders();
 
 const builtServerTests = describe.runIf(process.env["RUN_BUILT_PUBLIC_API_TESTS"] === "1");
 
@@ -182,6 +184,7 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
     if (cliPoll.status !== "authorized") throw new Error("CLI login did not issue a credential");
     secrets = { "organization-a": cliPoll.credential, "organization-b": keyB.secret };
     const runtime = await createApplicationRuntime({
+      providerRegistry: compositionProviders,
       database,
       auth,
       entitlements: entitlements.service,
@@ -214,7 +217,7 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
       assert.equal(resources.status, 200);
       const configurationResources = ConfigurationResourcesSchema.parse(await resources.json());
       assert.equal(configurationResources.daemons.length, 1);
-      assert.deepEqual(configurationResources.github, [
+      assert.deepEqual(configurationResources["github"], [
         {
           slug: `github-${organizationId.at(-1)}`,
           accountLogin: `octocat-${organizationId.at(-1)}`,
@@ -222,13 +225,13 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
           repositories: [`octocat-${organizationId.at(-1)}/starter`],
         },
       ]);
-      assert.deepEqual(configurationResources.discord, [
+      assert.deepEqual(configurationResources["discord"], [
         {
           slug: `discord-${organizationId.at(-1)}`,
           guildName: `Discord ${organizationId.at(-1)?.toUpperCase()}`,
         },
       ]);
-      assert.deepEqual(configurationResources.slack, [
+      assert.deepEqual(configurationResources["slack"], [
         {
           slug: `slack-${organizationId.at(-1)}`,
           teamName: `Slack ${organizationId.at(-1)?.toUpperCase()}`,

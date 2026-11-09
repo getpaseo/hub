@@ -1,28 +1,20 @@
-import { createScheduleSource, createScheduleProvider } from "./triggers/schedule/index.js";
-import { createExecutionCapabilityServer } from "./execution-capabilities/server.js";
-import { OutputExecutorRegistry } from "./execution-capabilities/outputs.js";
 import {
   createAttachmentCapabilityRegistry,
   type AttachmentCapabilityRegistry,
   type AttachmentProvider,
   type AttachmentResolver,
 } from "./attachments/capabilities.js";
+import type { BrowserOrganizationAccess } from "./auth/browser-organization-access.js";
+import { CliAuthorizations } from "./cli-authorizations/index.js";
 import {
   ProjectConfigurationStore,
-  type DaemonAgentConfigurationValidator,
   validateHubBundleForOrganization,
+  type DaemonAgentConfigurationValidator,
 } from "./configuration/store.js";
-import type {
-  AcceptedTriggerRunRecord,
-  Database,
-  TriggerRunRecord,
-  WorkflowDeadlineRecovery,
-} from "./db/types.js";
-import { DatabaseUnavailableError } from "./db/errors.js";
 import {
   ActiveDaemonRegistry,
-  createDaemonUpgradeHandler,
   createDaemonModule,
+  createDaemonUpgradeHandler,
   enrollDaemon,
   revokeDaemon,
   updateDaemonPermissions,
@@ -30,30 +22,40 @@ import {
   type DaemonConnection,
   type DaemonModule,
 } from "./daemons/index.js";
-import { createDispatcherWithEngine } from "./dispatcher/index.js";
 import type {
   DaemonDispatchLifecycleOptions,
   ExecutionDeadlineClock,
 } from "./daemons/lifecycle.js";
+import { DaemonRegistration } from "./daemons/registration.js";
+import { DatabaseUnavailableError } from "./db/errors.js";
+import type {
+  AcceptedTriggerRunRecord,
+  Database,
+  TriggerRunRecord,
+  WorkflowDeadlineRecovery,
+} from "./db/types.js";
+import { createDispatcherWithEngine } from "./dispatcher/index.js";
+import type { EntitlementsService } from "./entitlements/service.js";
+import type { ExecutionAuthority } from "./execution-authority/index.js";
+import { OutputExecutorRegistry } from "./execution-capabilities/outputs.js";
+import { createExecutionCapabilityServer } from "./execution-capabilities/server.js";
 import type { TriggerProviderFactory, TriggerProviderResources } from "./providers/registration.js";
+import type { ProviderRegistry } from "./providers/registry.js";
+import { createPublicApi, type PublicApi, type PublicApiComposition } from "./public-api/index.js";
+import { createDatabasePublicOperationRepository } from "./public-operations/database-adapter.js";
+import { createPublicOperations } from "./public-operations/index.js";
 import type { TriggerProvider, TriggerSource } from "./triggers/index.js";
+import { createManualRunProvider } from "./triggers/manual/provider.js";
 import {
   createManualTriggerSource,
   dispatchManualTrigger,
   handleManualTriggerRequest,
 } from "./triggers/manual/source.js";
-import { createManualRunProvider } from "./triggers/manual/provider.js";
+import { createScheduleProvider, createScheduleSource } from "./triggers/schedule/index.js";
 import { OrganizationTriggerStore } from "./triggers/store.js";
-import { DaemonRegistration } from "./daemons/registration.js";
-import { CliAuthorizations } from "./cli-authorizations/index.js";
-import type { BrowserOrganizationAccess } from "./auth/browser-organization-access.js";
-import { createPublicApi, type PublicApi, type PublicApiComposition } from "./public-api/index.js";
-import { createPublicOperations } from "./public-operations/index.js";
-import { createDatabasePublicOperationRepository } from "./public-operations/database-adapter.js";
-import type { EntitlementsService } from "./entitlements/service.js";
-import type { ExecutionAuthority } from "./execution-authority/index.js";
 
 export interface HubRuntimeOptions {
+  providerRegistry: ProviderRegistry;
   database: Database | null;
   /** Required end to end so the executions meter can never be silently skipped. */
   entitlements: EntitlementsService | null;
@@ -130,7 +132,12 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
   const agentValidator = createAgentValidator(daemons, connectionForDaemon);
   const storeForProject = (projectId: string) => {
     if (options.database === null) throw new DatabaseUnavailableError();
-    return new ProjectConfigurationStore(options.database, projectId, daemons ?? undefined);
+    return new ProjectConfigurationStore(
+      options.database,
+      projectId,
+      options.providerRegistry,
+      daemons ?? undefined,
+    );
   };
   const manualProvider =
     options.database === null ? undefined : createManualRunProvider(storeForProject);
@@ -350,10 +357,15 @@ function createAppPublicOperations(
   }
   const database = options.database;
   return createPublicOperations(
-    createDatabasePublicOperationRepository(database),
+    createDatabasePublicOperationRepository(database, options.providerRegistry),
     {
       triggerForOrganization: (organizationId) => {
-        const store = new OrganizationTriggerStore(database, organizationId, daemonAgentValidator);
+        const store = new OrganizationTriggerStore(
+          database,
+          organizationId,
+          options.providerRegistry,
+          daemonAgentValidator,
+        );
         return {
           async list() {
             return Promise.all(
@@ -399,6 +411,7 @@ function createAppPublicOperations(
       validateBundleForOrganization: (organizationId, files) =>
         validateHubBundleForOrganization(
           database,
+          options.providerRegistry,
           organizationId,
           files,
           daemonAgentValidator ?? undefined,

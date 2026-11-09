@@ -200,7 +200,7 @@ describe("GitHub registration", () => {
     assert.match(body.url, /^https:\/\/github\.test\/setup/u);
   });
 
-  it("reports readiness without constructing partial provider behavior", () => {
+  it("reports readiness without constructing partial provider behavior", async () => {
     const registration = createGitHubRegistration({
       database: createMemoryDatabase(),
       auth: new RegistrationAuth(),
@@ -209,38 +209,36 @@ describe("GitHub registration", () => {
       configuration: null,
     });
 
-    assert.deepEqual(
-      registration.connection.status({ github: [], discord: [], slack: [], linear: [] }),
-      {
-        status: "notConfigured",
-      },
-    );
+    assert.deepEqual(await registration.connection.status("org"), {
+      status: "notConfigured",
+    });
     assert.deepEqual(registration.sources, []);
     assert.deepEqual(registration.outputs, []);
   });
 
   it("resolves the project's active GitHub installation token", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase({
+      providerData: {
+        github: {
+          connections: [
+            {
+              id: "github-connection",
+              organizationId: "org_1",
+              slug: "getpaseo-github",
+              installationId: 142,
+              accountId: "501",
+              accountLogin: "getpaseo",
+              accountType: "Organization",
+              status: "active",
+              providerApplicationId: "42",
+            },
+          ],
+        },
+      },
+    });
     database.findProjectById = async (projectId) =>
       testProject(projectId, projectId === "project-1" ? "org_1" : "org_2");
-    database.organizationConnectionUsage = async (_organizationId) => ({
-      github: [
-        {
-          id: "github-connection",
-          organizationId: "org_1",
-          slug: "getpaseo-github",
-          installationId: 142,
-          accountId: "501",
-          accountLogin: "getpaseo",
-          accountType: "Organization",
-          status: "active",
-          providerApplicationId: "42",
-        },
-      ],
-      discord: [],
-      slack: [],
-      linear: [],
-    });
+
     const installations: number[] = [];
     const registration = createGitHubRegistration({
       database,
@@ -283,27 +281,28 @@ describe("GitHub registration", () => {
   });
 
   it("mints and revokes explicit scoped authority only for the project's active organization connection", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase({
+      providerData: {
+        github: {
+          connections: [
+            {
+              id: "github-connection",
+              organizationId: "org_1",
+              slug: "getpaseo-github",
+              installationId: 142,
+              accountId: "501",
+              accountLogin: "getpaseo",
+              accountType: "Organization",
+              status: "active",
+              providerApplicationId: "42",
+            },
+          ],
+        },
+      },
+    });
     database.findProjectById = async (projectId) =>
       testProject(projectId, projectId === "project-1" ? "org_1" : "org_2");
-    database.organizationConnectionUsage = async (_organizationId) => ({
-      github: [
-        {
-          id: "github-connection",
-          organizationId: "org_1",
-          slug: "getpaseo-github",
-          installationId: 142,
-          accountId: "501",
-          accountLogin: "getpaseo",
-          accountType: "Organization",
-          status: "active",
-          providerApplicationId: "42",
-        },
-      ],
-      discord: [],
-      slack: [],
-      linear: [],
-    });
+
     const requests: unknown[] = [];
     const revoked: string[] = [];
     const identityTokens: string[] = [];

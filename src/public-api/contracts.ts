@@ -5,6 +5,7 @@ import {
   MAX_PROMPT_PARTIAL_COUNT,
   MAX_PROMPT_PARTIAL_PATH_LENGTH,
 } from "../config/prompt-partials.js";
+import { connectionBrowserProviders } from "../providers/browser.js";
 
 extendZodWithOpenApi(z);
 
@@ -234,41 +235,29 @@ export const TriggerListSchema = z
   .strict()
   .openapi("TriggerList");
 
-export const ConfigurationResourcesSchema = z
+export const ConfigurationResourcesSchema: z.ZodType<
+  import("../public-operations/types.js").ConfigurationResources
+> = z
   .object({
     daemons: z.array(z.object({ id: z.string().uuid(), slug: z.string() }).strict()),
-    github: z.array(
-      z
-        .object({
-          slug: z.string(),
-          accountLogin: z.string(),
-          accountType: z.string(),
-          repositories: z.array(z.string()),
-        })
-        .strict(),
+    ...Object.fromEntries(
+      connectionBrowserProviders.map((module) => [module.id, module.resourceSchemas.configuration]),
     ),
-    discord: z.array(z.object({ slug: z.string(), guildName: z.string() }).strict()),
-    slack: z.array(z.object({ slug: z.string(), teamName: z.string() }).strict()),
-    linear: z.array(z.object({ slug: z.string(), organizationName: z.string() }).strict()),
   })
   .strict()
   .openapi("ConfigurationResources");
-
-export const SetupResourcesSchema = z
-  .object({
-    github: z.array(
-      z
-        .object({
-          slug: z.string(),
-          accountLogin: z.string(),
-          accountType: z.string(),
-          repositories: z.array(z.string()),
-        })
-        .strict(),
+export const SetupResourcesSchema: z.ZodType<
+  import("../public-operations/types.js").SetupResources
+> = z
+  .object(
+    Object.fromEntries(
+      connectionBrowserProviders.flatMap((module) =>
+        module.resourceSchemas.setup === undefined
+          ? []
+          : [[module.id, module.resourceSchemas.setup]],
+      ),
     ),
-    discord: z.array(z.object({ guildId: z.string(), guildName: z.string() }).strict()),
-    slack: z.array(z.object({ teamId: z.string(), teamName: z.string() }).strict()),
-  })
+  )
   .strict()
   .openapi("SetupResources");
 

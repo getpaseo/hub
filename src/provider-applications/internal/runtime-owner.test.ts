@@ -160,6 +160,60 @@ describe("dynamic provider runtime", () => {
     assert.ok(trigger.eventNames.includes(eventName));
   });
 
+  it("finishes a pending readiness read against its original provider after replacement", async () => {
+    const entered = readinessGate();
+    const release = readinessGate();
+    const stopped: string[] = [];
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registry: registrationRegistry(({ configuration }) =>
+        readinessRegistration(
+          configurationId(configuration),
+          stopped,
+          entered.open,
+          release.promise,
+        ),
+      ),
+    });
+    const stable = runtime
+      .registrations()
+      .find((registration) => registration.connection.name === "slack");
+    assert.ok(stable !== undefined);
+    const source = stable.sources[0];
+    assert.ok(source !== undefined);
+    await source.start(() => Promise.resolve());
+    const first = await runtime.prepare(
+      "slack",
+      slackConfiguration("A1"),
+      "https://hub.test",
+      { provider: "slack", id: "A1", name: "A1" },
+      1,
+    );
+    await first.start();
+    first.publish();
+    const pending = stable.connection.status("org");
+    await entered.promise;
+    const second = await runtime.prepare(
+      "slack",
+      slackConfiguration("A2"),
+      "https://hub.test",
+      { provider: "slack", id: "A2", name: "A2" },
+      2,
+    );
+    await second.start();
+    second.publish();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(stopped, ["A1"]);
+    assert.deepEqual(await stable.connection.status("org"), { status: "connected", id: "A2" });
+    release.open();
+    assert.deepEqual(await pending, { status: "connected", id: "A1" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(stopped, ["A1"]);
+    await source.stop();
+  });
+
   it("publishes a started replacement and routes later callbacks through it", async () => {
     const started: string[] = [];
     const stopped: string[] = [];
@@ -924,5 +978,41 @@ function testAuth(): AuthServer {
     resolveAccount: () => Promise.reject(new Error("unused")),
     rejectCookieMutation: () => undefined,
     close: () => Promise.resolve(),
+  };
+}
+
+function readinessGate() {
+  let resolve: (() => void) | undefined;
+  const promise = new Promise<void>((complete) => {
+    resolve = complete;
+  });
+  return {
+    promise,
+    open: () => {
+      if (resolve === undefined) throw new Error("readiness gate unavailable");
+      resolve();
+    },
+  };
+}
+function readinessRegistration(
+  id: string,
+  stopped: string[],
+  entered: () => void,
+  pending: Promise<void>,
+): ProviderRegistration {
+  const base = fakeRegistration(id, [], stopped, []);
+  return {
+    ...base,
+    connection: {
+      ...base.connection,
+      async status(organizationId) {
+        assert.equal(organizationId, "org");
+        if (id === "A1") {
+          entered();
+          await pending;
+        }
+        return { status: "connected", id };
+      },
+    },
   };
 }

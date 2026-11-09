@@ -3,14 +3,15 @@ import { randomUUID } from "node:crypto";
 import { describe, it } from "vitest";
 import { deriveAgentExecutionCompletionToken } from "../agent-executions/completion-token.js";
 import { ProjectConfigurationStore } from "../configuration/store.js";
-import { createMemoryDatabase } from "../db/memory.js";
-import type { Database } from "../db/types.js";
 import {
   createDaemonDispatchLifecycle,
   type DaemonDispatchLifecycle,
 } from "../daemons/lifecycle.js";
 import type { DaemonConnection } from "../daemons/protocol.js";
+import { createMemoryDatabase } from "../db/memory.js";
+import type { Database } from "../db/types.js";
 import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
+import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
 import {
   createActiveProjectConfiguration,
   TEST_DAEMON_ID,
@@ -20,10 +21,11 @@ import type { DiscordBotClient } from "../triggers/discord/bot.js";
 import { createDiscordTriggerProvider } from "../triggers/discord/provider.js";
 import type { GitHubReactionClient } from "../triggers/github/provider.js";
 import { createGitHubTriggerProvider } from "../triggers/github/provider.js";
+import type { TriggerProvider } from "../triggers/index.js";
 import type { SlackBotClient } from "../triggers/slack/client.js";
 import { createSlackTriggerProvider } from "../triggers/slack/provider.js";
-import type { TriggerProvider } from "../triggers/index.js";
 import { createDurableWorkflowHandler } from "./engine.js";
+const compositionProviders = createCompositionProviders();
 
 describe("workflow-owned provider reactions", () => {
   it("uses one reaction sequence for a two-step Discord workflow", async () => {
@@ -135,7 +137,7 @@ function createDiscordReactionFixture() {
   const bot = new RecordingDiscordBot();
   const provider = createDiscordTriggerProvider({
     configurationStoreForProject: () =>
-      new ProjectConfigurationStore(createMemoryDatabase(), "unused"),
+      new ProjectConfigurationStore(createMemoryDatabase(), "unused", compositionProviders),
     bot,
   });
   return {
@@ -170,7 +172,7 @@ function createSlackReactionFixture() {
   const client = new RecordingSlackClient();
   const provider = createSlackTriggerProvider({
     configurationStoreForProject: () =>
-      new ProjectConfigurationStore(createMemoryDatabase(), "unused"),
+      new ProjectConfigurationStore(createMemoryDatabase(), "unused", compositionProviders),
     botUserIdForWorkspace: async () => "bot-1",
     client,
   });
@@ -205,7 +207,7 @@ function createGitHubReactionFixture() {
   const reactions = new RecordingGitHubReactions();
   const provider = createGitHubTriggerProvider({
     configurationStoreForProject: () =>
-      new ProjectConfigurationStore(createMemoryDatabase(), "unused"),
+      new ProjectConfigurationStore(createMemoryDatabase(), "unused", compositionProviders),
     reactions,
   });
   return {

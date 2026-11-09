@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import type { AuthServer } from "./auth/server.js";
+import { createApplicationRuntime } from "./application-runtime.js";
 import type { OrganizationAccessValue } from "./auth/organization-access.js";
+import type { AuthServer } from "./auth/server.js";
 import { createMemoryDatabase } from "./db/memory.js";
 import type { Database } from "./db/types.js";
 import { EntitlementsService } from "./entitlements/service.js";
-import type { ProviderRegistration, TriggerProviderResources } from "./providers/registration.js";
-import { createApplicationRuntime } from "./application-runtime.js";
 import { replyOutputTool } from "./execution-capabilities/outputs.js";
+import type { ProviderRegistration, TriggerProviderResources } from "./providers/registration.js";
+import { createProviderRegistry as createCompositionProviders } from "./providers/server.js";
+const compositionProviders = createCompositionProviders();
 
 describe("application runtime provider composition", () => {
   it("collects a fake registration without a concrete-provider case", async () => {
@@ -53,6 +55,7 @@ describe("application runtime provider composition", () => {
     let closed = false;
     const database = await runtimeDatabase("owner");
     const runtime = await createApplicationRuntime({
+      providerRegistry: compositionProviders,
       database,
       auth: new RuntimeAuth(),
       entitlements: entitlementsForTest(database),
@@ -112,6 +115,7 @@ describe("application runtime provider composition", () => {
     await assert.rejects(
       () =>
         createApplicationRuntime({
+          providerRegistry: compositionProviders,
           database,
           auth: new RuntimeAuth(),
           entitlements: entitlementsForTest(database),
@@ -135,6 +139,7 @@ describe("application runtime provider composition", () => {
   it("reports member connection status as read-only", async () => {
     const database = await runtimeDatabase("member");
     const runtime = await createApplicationRuntime({
+      providerRegistry: compositionProviders,
       database,
       auth: new RuntimeAuth("member"),
       entitlements: entitlementsForTest(database),
@@ -153,7 +158,66 @@ describe("application runtime provider composition", () => {
   it("shares provider integrations with every trigger provider for the same organization", async () => {
     const calls: Array<{ projectId: string; slug: string; value: string }> = [];
     let providerResources: TriggerProviderResources | undefined;
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase({
+      providerData: {
+        discord: {
+          connections: [
+            {
+              id: "discord-1",
+              organizationId: "org-1",
+              slug: "workspace-discord",
+              guildId: "guild-1",
+              guildName: "Workspace",
+              providerApplicationId: "app-1",
+            },
+          ],
+        },
+        linear: {
+          connections: [
+            {
+              id: "linear-1",
+              organizationId: "org-1",
+              slug: "workspace-linear",
+              linearOrganizationId: "linear-1",
+              linearOrganizationName: "Workspace",
+              providerApplicationId: "app-1",
+              appUserId: "U1",
+              accessToken: "token",
+              refreshToken: null,
+              accessTokenExpiresAt: null,
+              scopes: ["read", "comments:create"],
+            },
+          ],
+        },
+
+        github: {
+          connections: [
+            {
+              id: "connection-1",
+              organizationId: "org-1",
+              slug: "getpaseo-github",
+              installationId: 42,
+              accountId: "account-1",
+              accountLogin: "getpaseo",
+              accountType: "Organization",
+              status: "active",
+              providerApplicationId: "42",
+            },
+            {
+              id: "connection-2",
+              organizationId: "org-1",
+              slug: "secondary-getpaseo-github",
+              installationId: 84,
+              accountId: "account-2",
+              accountLogin: "paseo",
+              accountType: "Organization",
+              status: "active",
+              providerApplicationId: "42",
+            },
+          ],
+        },
+      },
+    });
     database.findProjectById = async () => ({
       id: "project-1",
       organizationId: "org-1",
@@ -166,35 +230,7 @@ describe("application runtime provider composition", () => {
       archivedAt: null,
       activeConfigurationRevisionId: null,
     });
-    database.organizationConnectionUsage = async () => ({
-      github: [
-        {
-          id: "connection-1",
-          organizationId: "org-1",
-          slug: "getpaseo-github",
-          installationId: 42,
-          accountId: "account-1",
-          accountLogin: "getpaseo",
-          accountType: "Organization",
-          status: "active",
-          providerApplicationId: "42",
-        },
-        {
-          id: "connection-2",
-          organizationId: "org-1",
-          slug: "secondary-getpaseo-github",
-          installationId: 84,
-          accountId: "account-2",
-          accountLogin: "paseo",
-          accountType: "Organization",
-          status: "active",
-          providerApplicationId: "42",
-        },
-      ],
-      discord: [],
-      slack: [],
-      linear: [],
-    });
+
     const registration: ProviderRegistration = {
       ...fakeRegistration("github"),
       integration: {
@@ -211,6 +247,7 @@ describe("application runtime provider composition", () => {
       ],
     };
     const runtime = await createApplicationRuntime({
+      providerRegistry: compositionProviders,
       database,
       auth: new RuntimeAuth(),
       entitlements: entitlementsForTest(database),
@@ -234,6 +271,14 @@ describe("application runtime provider composition", () => {
     );
     await assert.rejects(
       async () => resolveConnection("org-2-github", "token"),
+      /connection slug is unavailable/u,
+    );
+    await assert.rejects(
+      async () => resolveConnection("workspace-discord", "token"),
+      /connection capability is unavailable/u,
+    );
+    await assert.rejects(
+      async () => resolveConnection("workspace-linear", "token"),
       /connection slug is unavailable/u,
     );
     await runtime.stop();

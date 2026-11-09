@@ -48,6 +48,7 @@ export interface GitHubPersistence {
   ): Promise<Extract<Types.DisconnectConnectionResult, { provider: "github" }>>;
 }
 const persistence = new ProviderPersistence<GitHubPersistence>({
+  id: "github",
   postgres: (context) => new GitHubPostgresPersistence(context),
   memory: githubMemoryPersistence,
 });

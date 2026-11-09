@@ -71,7 +71,7 @@ describe("Slack registration", () => {
     assert.notEqual(attempt?.stateVerifier, state);
   });
 
-  it("does not construct partial behavior when app configuration is absent", () => {
+  it("does not construct partial behavior when app configuration is absent", async () => {
     const registration = createSlackRegistration({
       database: createMemoryDatabase(),
       auth: new RegistrationAuth(),
@@ -79,12 +79,9 @@ describe("Slack registration", () => {
       publicBaseUrl: "https://hub.test",
       configuration: null,
     });
-    assert.deepEqual(
-      registration.connection.status({ github: [], discord: [], slack: [], linear: [] }),
-      {
-        status: "notConfigured",
-      },
-    );
+    assert.deepEqual(await registration.connection.status("org"), {
+      status: "notConfigured",
+    });
     assert.deepEqual(registration.sources, []);
     assert.deepEqual(registration.outputs, []);
     assert.deepEqual(registration.requests, []);
@@ -275,33 +272,33 @@ describe("Slack registration", () => {
     assert.equal(callback.boundInstallation, undefined);
   });
 
-  it("surfaces legacy Slack installations that need the expanded grant", () => {
-    const registration = createSlackRegistration({
-      database: createMemoryDatabase(),
-      auth: null,
-      applicationBaseUrl: "https://hub.test",
-      publicBaseUrl: "https://hub.test",
-      configuration: slackConfiguration(),
-    });
+  it("surfaces legacy Slack installations that need the expanded grant", async () => {
     assert.deepEqual(
-      registration.connection.status({
-        github: [],
-        discord: [],
-        slack: [
-          {
-            id: "slack-connection",
-            organizationId: "org",
-            slug: "slack-workspace",
-            teamId: "T1",
-            teamName: "Workspace",
-            botUserId: "UBOT",
-            botAccessToken: "token",
-            scopes: [],
-            providerApplicationId: "A1",
+      await createSlackRegistration({
+        database: createMemoryDatabase({
+          providerData: {
+            slack: {
+              connections: [
+                {
+                  id: "slack-connection",
+                  organizationId: "org",
+                  slug: "slack-workspace",
+                  teamId: "T1",
+                  teamName: "Workspace",
+                  botUserId: "UBOT",
+                  botAccessToken: "token",
+                  scopes: [],
+                  providerApplicationId: "A1",
+                },
+              ],
+            },
           },
-        ],
-        linear: [],
-      }),
+        }),
+        auth: null,
+        applicationBaseUrl: "https://hub.test",
+        publicBaseUrl: "https://hub.test",
+        configuration: slackConfiguration(),
+      }).connection.status("org"),
       { status: "requiresReauthorization" },
     );
   });

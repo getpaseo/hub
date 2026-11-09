@@ -22,6 +22,8 @@ import type {
   ProviderIntegrationRegistration,
   ProviderRegistration,
 } from "./providers/registration.js";
+import type { ProviderRegistry } from "./providers/registry.js";
+import { organizationConnections } from "./providers/resources.js";
 import {
   BillingForbiddenError,
   type ApplicationRuntime,
@@ -37,6 +39,7 @@ export interface ExecutionAuthorityContext {
   isExecutionActive(executionId: string): Promise<boolean>;
 }
 export interface ApplicationCompositionOptions {
+  providerRegistry: ProviderRegistry;
   createExecutionAuthority?: (context: ExecutionAuthorityContext) => ExecutionAuthority;
   database: Database | null;
   auth: AuthServer | null;
@@ -83,7 +86,11 @@ async function createOwnedApplicationRuntime(
       integrations.set(registration.connection.name, registration.integration);
     }
   }
-  const connectionsForProject = createConnectionsForProject(options.database, integrations);
+  const connectionsForProject = createConnectionsForProject(
+    options.database,
+    options.providerRegistry,
+    integrations,
+  );
   const executionAuthority = createRuntimeExecutionAuthority(
     options.database,
     connectionsForProject,
@@ -95,6 +102,7 @@ async function createOwnedApplicationRuntime(
   }
 
   const application = createHubApplication({
+    providerRegistry: options.providerRegistry,
     database: options.database,
     entitlements: options.entitlements,
     providerFactories: registrations.flatMap((registration) => registration.triggerProviders),
@@ -142,7 +150,7 @@ async function createOwnedApplicationRuntime(
     projectDashboard:
       options.database === null || options.auth === null
         ? null
-        : new ProjectDashboard(options.database, options.auth),
+        : new ProjectDashboard(options.database, options.auth, options.providerRegistry),
     triggerDashboard: triggerDashboardFor(options, application.hub),
     daemonProviderCatalog: daemonProviderCatalogFor(options, application.hub),
     homeDashboard: homeDashboardFor(options, connections),
@@ -234,12 +242,15 @@ async function createOwnedApplicationRuntime(
       const { tenant } = await resolveRouteTenant(options.auth, options.database, request, {
         organizationSlug,
       });
-      const bindings = await options.database.organizationConnectionUsage(tenant.organization.id);
       const statuses = Object.fromEntries(
-        [...connections.values()].map((connection) => [
-          connection.name,
-          connection.status(bindings),
-        ]),
+        await Promise.all(
+          [...connections.values()].map(
+            async (connection): Promise<readonly [string, unknown]> => [
+              connection.name,
+              await connection.status(tenant.organization.id),
+            ],
+          ),
+        ),
       );
       return Response.json({
         canManage: tenant.membership.role !== "member",
@@ -350,7 +361,12 @@ function triggerDashboardFor(
 ): TriggerDashboard | null {
   return options.database === null || options.auth === null || hub.agentValidator === null
     ? null
-    : new TriggerDashboard(options.database, options.auth, hub.agentValidator);
+    : new TriggerDashboard(
+        options.database,
+        options.auth,
+        options.providerRegistry,
+        hub.agentValidator,
+      );
 }
 
 function homeDashboardFor(
@@ -360,8 +376,16 @@ function homeDashboardFor(
   if (options.database === null || options.auth === null) return null;
   // The same registrations `connectionStatus` answers from: a provider whose status is anything
   // but "not configured" has an app behind it.
-  return new HomeDashboard(options.database, options.auth, (bindings) =>
-    [...connections.values()].some((connection) => isConfigured(connection.status(bindings))),
+  return new HomeDashboard(
+    options.database,
+    options.auth,
+    options.providerRegistry,
+    async (organizationId) =>
+      (
+        await Promise.all(
+          [...connections.values()].map((connection) => connection.status(organizationId)),
+        )
+      ).some(isConfigured),
   );
 }
 
@@ -391,21 +415,21 @@ function providerApplicationsFor(
 
 function createConnectionsForProject(
   database: Database | null,
+  providers: ProviderRegistry,
   integrations: ReadonlyMap<string, ProviderIntegrationRegistration>,
 ): (projectId: string) => ConnectionResolver {
   return (projectId) => async (connectionSlug, value, context) => {
     if (database === null) throw new Error("connection inventory unavailable");
     const project = await database.findProjectById(projectId);
     if (project === undefined) throw new Error("execution project unavailable");
-    const usage = await database.organizationConnectionUsage(project.organizationId);
-    const candidates = [
-      ...usage.github.map((connection) => ({ provider: "github" as const, connection })),
-      ...usage.discord.map((connection) => ({ provider: "discord" as const, connection })),
-      ...usage.slack.map((connection) => ({ provider: "slack" as const, connection })),
-    ].filter(
-      ({ connection }) =>
-        connection.organizationId === project.organizationId && connection.slug === connectionSlug,
-    );
+    const usage = await organizationConnections(database, providers, project.organizationId);
+    const candidates = usage
+      .filter((entry) => providers.require(entry.provider).resources.connectionReferences === true)
+      .flatMap(({ provider, connections }) =>
+        connections
+          .filter((connection) => connection.slug === connectionSlug)
+          .map((connection) => ({ provider, connection })),
+      );
     if (candidates.length === 0) {
       throw new Error(`connection slug is unavailable: ${connectionSlug}`);
     }

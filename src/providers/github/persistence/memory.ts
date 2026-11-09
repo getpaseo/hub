@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import type { MemoryProviderContext } from "../../../db/provider-persistence.js";
 import type {
   AcceptGitHubEventInput,
@@ -15,6 +16,37 @@ import type {
   GitHubRepositorySnapshot,
   ProviderEventAcceptance,
 } from "../../../db/types.js";
+const initialDataSchema = z
+  .object({
+    connections: z
+      .array(
+        z.object({
+          id: z.string(),
+          organizationId: z.string(),
+          slug: z.string(),
+          installationId: z.number(),
+          accountId: z.string(),
+          accountLogin: z.string(),
+          accountType: z.string(),
+          status: z.enum(["active", "suspended"]),
+          providerApplicationId: z.string().nullable(),
+        }),
+      )
+      .default([]),
+    repositories: z
+      .array(
+        z.object({
+          id: z.string(),
+          organizationId: z.string(),
+          connectionId: z.string(),
+          repositoryId: z.number(),
+          fullName: z.string(),
+          defaultBranch: z.string(),
+        }),
+      )
+      .default([]),
+  })
+  .default({ connections: [], repositories: [] });
 export class GitHubMemoryPersistence {
   private readonly githubConnections = new Map<number, GitHubConnectionRecord>();
   private readonly githubRepositories = new Map<string, GitHubRepositoryRecord>();
@@ -23,7 +55,13 @@ export class GitHubMemoryPersistence {
     GitHubLifecycleReceiptClaimInput & { connectionId: string | null; retryAt: number | null }
   >();
   private readonly githubSyncs = new Map<number, Promise<unknown>>();
-  constructor(private readonly context: MemoryProviderContext) {}
+  constructor(private readonly context: MemoryProviderContext) {
+    const data = initialDataSchema.parse(context.initialData);
+    for (const connection of data.connections)
+      this.githubConnections.set(connection.installationId, connection);
+    for (const repository of data.repositories)
+      this.githubRepositories.set(repository.id, repository);
+  }
   async acceptGitHubEvent(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance> {
     const binding = await this.findGitHubConnection(input.installationId);
     const reason = githubDropReason(input, binding);

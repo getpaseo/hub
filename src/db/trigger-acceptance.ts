@@ -310,7 +310,7 @@ export async function claimProviderReceipt(
   transaction: HubTransaction,
   input: {
     organizationId: string;
-    provider: "github" | "slack" | "discord" | "linear" | "manual";
+    provider: string;
     connectionId: string | null;
     resourceId: string | null;
     input: ProviderEventEvidence;

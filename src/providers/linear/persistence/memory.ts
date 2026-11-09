@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { MemoryProviderContext } from "../../../db/provider-persistence.js";
 import type {
   AcceptLinearEventInput,
@@ -10,9 +11,34 @@ import type {
   UpdateLinearConnectionTokensInput,
 } from "../../../db/types.js";
 import { linearConnectionRequiresReauthorization } from "../../linear/client.js";
+const initialDataSchema = z
+  .object({
+    connections: z
+      .array(
+        z.object({
+          id: z.string(),
+          organizationId: z.string(),
+          slug: z.string(),
+          providerApplicationId: z.string().nullable(),
+          linearOrganizationId: z.string(),
+          linearOrganizationName: z.string(),
+          appUserId: z.string(),
+          accessToken: z.string(),
+          refreshToken: z.string().nullable(),
+          accessTokenExpiresAt: z.date().nullable(),
+          scopes: z.array(z.string()),
+        }),
+      )
+      .default([]),
+  })
+  .default({ connections: [] });
 export class LinearMemoryPersistence {
   private readonly linearConnections = new Map<string, LinearConnectionRecord>();
-  constructor(private readonly context: MemoryProviderContext) {}
+  constructor(private readonly context: MemoryProviderContext) {
+    const data = initialDataSchema.parse(context.initialData);
+    for (const connection of data.connections)
+      this.linearConnections.set(connection.linearOrganizationId, connection);
+  }
   async acceptLinearEvent(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance> {
     const binding = await this.findLinearConnection(input.linearOrganizationId);
     const reason = linearDropReason(input, binding);

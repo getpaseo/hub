@@ -5,7 +5,6 @@ import type {
 } from "../attachments/capabilities.js";
 import type { ConnectionResolutionContext, ConnectionResolver } from "../config/connections.js";
 import type { ProjectConfigurationStore } from "../configuration/store.js";
-import type { OrganizationConnectionUsage } from "../db/types.js";
 import type { OutputExecutor, OutputToolDefinition } from "../execution-capabilities/outputs.js";
 import type { TriggerProvider, TriggerSource } from "../triggers/index.js";
 
@@ -30,7 +29,7 @@ export interface ProviderIntegrationRegistration {
 
 export interface ProviderConnectionRegistration {
   name: string;
-  status(connections: OrganizationConnectionUsage): unknown;
+  status(organizationId: string): unknown;
   actions: Readonly<Record<string, (request: Request) => Promise<Response>>>;
 }
 

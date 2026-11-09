@@ -6,7 +6,9 @@ import { connectionInventory } from "./application-persistence.js";
 import { beginLinearConfiguration, completeLinearInstallation } from "./application.js";
 import { readEnvironment } from "./environment.js";
 import { createLinearRegistration } from "./index.js";
+import { resources } from "./resources.js";
 export const linearProvider: ProviderModule = {
+  resources,
   summarizeEvent,
   manifest: {
     id: "linear",

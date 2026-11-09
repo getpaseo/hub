@@ -1,26 +1,28 @@
+import { dump } from "js-yaml";
 import { randomUUID } from "node:crypto";
-import { createExecutionAuthority } from "../../execution-authority/index.js";
-import { z } from "zod";
 import { appendFile, writeFile } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
+import { z } from "zod";
 import { createHubApplication } from "../../app.js";
+import { composeEntitlements } from "../../auth/entitlements.js";
+import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
+import { createAuthServer } from "../../auth/server.js";
+import { parseProjectConfiguration, ProjectConfigurationStore } from "../../configuration/store.js";
 import { createPostgresTestRuntime } from "../../db/test-utils/runtime.js";
-import { dump } from "js-yaml";
+import { hashTemplate, UNLIMITED_TEMPLATE } from "../../entitlements/catalog.js";
+import { createExecutionAuthority } from "../../execution-authority/index.js";
 import {
-  OutputExecutorRegistry,
   outputContextProvider,
+  OutputExecutorRegistry,
   replyOutputTool,
 } from "../../execution-capabilities/outputs.js";
 import { createFetchServer } from "../../http/node-server.js";
-import { loadBuiltStartServer } from "../../server/build.js";
-import { createAuthServer } from "../../auth/server.js";
-import { composeEntitlements } from "../../auth/entitlements.js";
-import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
 import { OrganizationResources } from "../../organizations/resources.js";
-import { parseProjectConfiguration, ProjectConfigurationStore } from "../../configuration/store.js";
-import { hashTemplate, UNLIMITED_TEMPLATE } from "../../entitlements/catalog.js";
+import { createProviderRegistry as createCompositionProviders } from "../../providers/server.js";
+import { loadBuiltStartServer } from "../../server/build.js";
 import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
+const compositionProviders = createCompositionProviders();
 
 const E2E_PROJECT_ID = "00000000-0000-4000-8000-000000000001";
 
@@ -57,7 +59,11 @@ async function main(): Promise<void> {
      values ($1, $2, $3, $4, 'hub-e2e') on conflict (id) do nothing`,
     [E2E_PROJECT_ID, organizationId, "Default", "default"],
   );
-  const configuration = new ProjectConfigurationStore(database, E2E_PROJECT_ID);
+  const configuration = new ProjectConfigurationStore(
+    database,
+    E2E_PROJECT_ID,
+    compositionProviders,
+  );
   const outputs = new OutputExecutorRegistry();
   outputs.register({
     type: "discord.reply",
@@ -173,6 +179,7 @@ async function main(): Promise<void> {
     },
   });
   const application = createHubApplication({
+    providerRegistry: compositionProviders,
     database,
     executionAuthority,
     entitlements: entitlements.service,

@@ -1,24 +1,26 @@
-import { createHubRuntime, createHubApplication } from "../../app.js";
-import { ScheduleTestDaemon } from "./test-daemon.js";
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { beforeAll, afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createHubApplication, createHubRuntime } from "../../app.js";
+import { createDatabase } from "../../db/pg.js";
 import {
   embeddedDatabaseRuntime,
   postgresDatabaseRuntime,
   type DatabaseRuntimeBundle,
 } from "../../db/runtime/index.js";
-import { createDatabase } from "../../db/pg.js";
-import { OrganizationTriggerStore } from "../store.js";
+import { createUnlimitedEntitlementsService } from "../../entitlements/test-utils.js";
+import { createProviderRegistry as createCompositionProviders } from "../../providers/server.js";
+import { DispatchedManualRunSchema } from "../../public-api/contracts.js";
 import { acceptingAgentValidator } from "../../test-utils/agent-validator.js";
 import { DurableWorkflowEngine } from "../../workflows/engine.js";
-import { createUnlimitedEntitlementsService } from "../../entitlements/test-utils.js";
-import { scheduleYaml } from "./test-fixture.js";
+import { OrganizationTriggerStore } from "../store.js";
 import { createScheduleProvider } from "./index.js";
-import { DispatchedManualRunSchema } from "../../public-api/contracts.js";
+import { ScheduleTestDaemon } from "./test-daemon.js";
+import { scheduleYaml } from "./test-fixture.js";
+const compositionProviders = createCompositionProviders();
 
 let postgres: StartedPostgreSqlContainer;
 beforeAll(async () => {
@@ -130,6 +132,7 @@ describe.each(["embedded", "postgres"] as const)("schedule on %s", (kind) => {
     const connection = new ScheduleTestDaemon();
     let time = new Date();
     const runtime = createHubRuntime({
+      providerRegistry: compositionProviders,
       database: fixture.database,
       entitlements: createUnlimitedEntitlementsService(),
       publicApi: { status: "unavailable" },
@@ -233,8 +236,13 @@ it("Hub runtime dispatches through the peer daemon port and completes ordinary s
     completionTokenSecret: "schedule-test-secret",
     executionDeadlineClock: { now: () => time.getTime(), schedule: () => () => {} },
   };
-  const first = createHubRuntime({ ...options, database: fixture.database });
+  const first = createHubRuntime({
+    providerRegistry: compositionProviders,
+    ...options,
+    database: fixture.database,
+  });
   const second = createHubRuntime({
+    providerRegistry: compositionProviders,
     ...options,
     database: peerDatabase,
     daemonConnectionForId: (id) => (connected && id === fixture.daemonId ? connection : undefined),
@@ -314,6 +322,7 @@ it("an expired worker cannot release a newer worker’s wakeup lease", async () 
 it("validates, installs, exports and edits scheduled YAML through the existing public API", async () => {
   const fixture = await setup("embedded");
   const application = createHubApplication({
+    providerRegistry: compositionProviders,
     database: fixture.database,
     entitlements: createUnlimitedEntitlementsService(),
     // Installing asks the daemon about the agent, so the fixture daemon answers for it.
@@ -366,6 +375,7 @@ it("validates, installs, exports and edits scheduled YAML through the existing p
 it("runs one trigger from its schedule and from a manual dispatch by the trigger's name", async () => {
   const fixture = await setup("embedded");
   const application = createHubApplication({
+    providerRegistry: compositionProviders,
     database: fixture.database,
     entitlements: createUnlimitedEntitlementsService(),
     daemonConnectionForId: (id) => (id === fixture.daemonId ? new ScheduleTestDaemon() : undefined),
@@ -471,7 +481,12 @@ async function setup(kind: "embedded" | "postgres") {
       return database;
     },
     get store() {
-      return new OrganizationTriggerStore(database, "schedule-org", acceptingAgentValidator());
+      return new OrganizationTriggerStore(
+        database,
+        "schedule-org",
+        compositionProviders,
+        acceptingAgentValidator(),
+      );
     },
     daemonId,
     connectionString: connectionString?.href,

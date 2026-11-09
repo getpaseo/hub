@@ -1,18 +1,20 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
+import type { HubBundleFile } from "../config/bundle.js";
+import { parseCompiledHubConfig } from "../config/compiler.js";
+import { hashPromptPartialContent } from "../config/prompt-partials.js";
 import {
-  revisionBundleFiles,
   ProjectConfigurationStore,
+  revisionBundleFiles,
   validateHubBundleForOrganization,
   type DaemonAgentConfigurationValidator,
 } from "../configuration/store.js";
-import { parseCompiledHubConfig } from "../config/compiler.js";
-import type { HubBundleFile } from "../config/bundle.js";
-import { hashPromptPartialContent } from "../config/prompt-partials.js";
 import { createMemoryDatabase } from "../db/memory.js";
+import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
 import { enrollTestDaemon } from "../test-utils/project-configuration.js";
 import { createDatabasePublicOperationRepository } from "./database-adapter.js";
 import { createPublicOperations } from "./index.js";
+const compositionProviders = createCompositionProviders();
 
 const authorization = {
   kind: "apiKey" as const,
@@ -317,12 +319,16 @@ describe("public configuration bundle installation", () => {
 async function deploymentHarness() {
   const database = createMemoryDatabase({ organizationIds: [authorization.organizationId] });
   await enrollTestDaemon(database, authorization.organizationId);
-  const operations = createPublicOperations(createDatabasePublicOperationRepository(database), {
-    configurationForProject: (projectId) => new ProjectConfigurationStore(database, projectId),
-    validateBundleForOrganization: (organizationId, bundle) =>
-      validateHubBundleForOrganization(database, organizationId, bundle),
-    dispatchManualEvent: () => Promise.resolve(),
-  });
+  const operations = createPublicOperations(
+    createDatabasePublicOperationRepository(database, compositionProviders),
+    {
+      configurationForProject: (projectId) =>
+        new ProjectConfigurationStore(database, projectId, compositionProviders),
+      validateBundleForOrganization: (organizationId, bundle) =>
+        validateHubBundleForOrganization(database, compositionProviders, organizationId, bundle),
+      dispatchManualEvent: () => Promise.resolve(),
+    },
+  );
   return {
     database,
     createProject: (slug: string) =>
@@ -363,20 +369,34 @@ async function installHarness(validator?: DaemonAgentConfigurationValidator) {
     createdByUserId: "user-1",
   });
   let insertions = 0;
-  const store = new ProjectConfigurationStore(database, project.id, validator);
-  const operations = createPublicOperations(createDatabasePublicOperationRepository(database), {
-    configurationForProject: () => ({
-      validateBundle: (bundle) => store.validateBundle(bundle),
-      async insertManualBundleRevision(input) {
-        insertions += 1;
-        return store.insertManualBundleRevision(input);
-      },
-      activate: (id) => store.activate(id),
-    }),
-    validateBundleForOrganization: (organizationId, bundle) =>
-      validateHubBundleForOrganization(database, organizationId, bundle, validator),
-    dispatchManualEvent: () => Promise.resolve(),
-  });
+  const store = new ProjectConfigurationStore(
+    database,
+    project.id,
+    compositionProviders,
+    validator,
+  );
+  const operations = createPublicOperations(
+    createDatabasePublicOperationRepository(database, compositionProviders),
+    {
+      configurationForProject: () => ({
+        validateBundle: (bundle) => store.validateBundle(bundle),
+        async insertManualBundleRevision(input) {
+          insertions += 1;
+          return store.insertManualBundleRevision(input);
+        },
+        activate: (id) => store.activate(id),
+      }),
+      validateBundleForOrganization: (organizationId, bundle) =>
+        validateHubBundleForOrganization(
+          database,
+          compositionProviders,
+          organizationId,
+          bundle,
+          validator,
+        ),
+      dispatchManualEvent: () => Promise.resolve(),
+    },
+  );
   return {
     install: (bundle: readonly HubBundleFile[]) =>
       operations.installConfiguration(authorization, {
