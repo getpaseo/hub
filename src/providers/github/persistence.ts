@@ -2,7 +2,18 @@ import { ProviderPersistence } from "../../db/provider-persistence.js";
 import type * as Types from "../../db/types.js";
 import { githubMemoryPersistence } from "./persistence/memory.js";
 import { GitHubPostgresPersistence } from "./persistence/postgres.js";
+import type * as Source from "./source-types.js";
 export interface GitHubPersistence {
+  setProjectGitHubConfigurationSource(
+    input: Source.SetProjectGitHubConfigurationSourceInput,
+  ): Promise<void>;
+  recordConfigurationSyncAttempt(
+    input: Source.RecordConfigurationSyncAttemptInput,
+  ): Promise<Source.ConfigurationSyncAttemptRecord>;
+  latestConfigurationSyncAttempt(
+    projectId: string,
+  ): Promise<Source.ConfigurationSyncAttemptRecord | null>;
+
   acceptGitHubEvent(input: Types.AcceptGitHubEventInput): Promise<Types.ProviderEventAcceptance>;
   synchronizeGitHubInstallation<T>(installationId: number, operation: () => Promise<T>): Promise<T>;
   pendingGitHubInstallationSyncs(

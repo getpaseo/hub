@@ -170,7 +170,7 @@ describe.each(["embedded", "postgres"] as const)("schedule on %s", (kind) => {
 it("two independent Hub workers leave queued work for the process with the daemon connection", async () => {
   const fixture = await setup("postgres");
   const peer = await postgresDatabaseRuntime(fixture.connectionString!);
-  const peerDatabase = createDatabase(peer.runtime, peer.locks);
+  const peerDatabase = createDatabase(peer.runtime, peer.locks, compositionProviders);
   const dispatches: { worker: string; prompt: string }[] = [];
   let connected = false;
   let time = new Date();
@@ -225,7 +225,7 @@ it("two independent Hub workers leave queued work for the process with the daemo
 it("Hub runtime dispatches through the peer daemon port and completes ordinary scheduled history", async () => {
   const fixture = await setup("postgres");
   const peer = await postgresDatabaseRuntime(fixture.connectionString!);
-  const peerDatabase = createDatabase(peer.runtime, peer.locks);
+  const peerDatabase = createDatabase(peer.runtime, peer.locks, compositionProviders);
   const connection = new ScheduleTestDaemon();
   let time = new Date();
   let connected = false;
@@ -450,7 +450,7 @@ async function setup(kind: "embedded" | "postgres") {
       : postgresDatabaseRuntime(connectionString.href);
   let bundle = await open();
   await bundle.runtime.migrate();
-  let database = createDatabase(bundle.runtime, bundle.locks);
+  let database = createDatabase(bundle.runtime, bundle.locks, compositionProviders);
   await bundle.runtime.query(
     "insert into organization (id, name, slug) values ('schedule-org', 'Schedule test', 'schedule-test')",
   );
@@ -513,7 +513,7 @@ async function setup(kind: "embedded" | "postgres") {
     async reopen() {
       await bundle.runtime.close();
       bundle = await open();
-      database = createDatabase(bundle.runtime, bundle.locks);
+      database = createDatabase(bundle.runtime, bundle.locks, compositionProviders);
     },
     async close() {
       await bundle.runtime.close();

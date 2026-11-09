@@ -35,6 +35,11 @@ import type {
   GitHubRepositoryRecord,
   ProviderEventAcceptance,
 } from "../../../db/types.js";
+import type {
+  ConfigurationSyncAttemptRecord,
+  RecordConfigurationSyncAttemptInput,
+  SetProjectGitHubConfigurationSourceInput,
+} from "../source-types.js";
 type HubTransaction = DrizzleHandle;
 export class GitHubPostgresPersistence {
   private readonly database: DrizzleHandle;
@@ -48,6 +53,129 @@ export class GitHubPostgresPersistence {
     this.locks = context.locks;
     this.events = context.events;
     this.database = this.runtime.drizzle();
+  }
+  async setProjectGitHubConfigurationSource(
+    input: SetProjectGitHubConfigurationSourceInput,
+  ): Promise<void> {
+    const result = await query(
+      this.pool,
+      `insert into project_configuration_sources
+         (organization_id, project_id, kind, github_connection_id, github_repository_id,
+          github_repository_full_name, github_default_branch,
+          automatic_deployment_enabled, selected_by_user_id)
+       select p.organization_id, p.id, 'github', $2, r.repository_id,
+              r.full_name, r.default_branch, $4, $5
+       from projects p
+       join member m on m.organization_id = p.organization_id
+       join github_repositories r
+         on r.organization_id = p.organization_id and r.connection_id = $2
+        and r.repository_id = $3
+       join github_connections c
+         on c.id = r.connection_id and c.organization_id = p.organization_id
+       where p.id = $1 and p.status = 'active'
+         and m.user_id = $5 and m.role in ('owner', 'admin')
+       on conflict (project_id) do update
+         set kind = 'github',
+             github_connection_id = excluded.github_connection_id,
+             github_repository_id = excluded.github_repository_id,
+             github_repository_full_name = excluded.github_repository_full_name,
+             github_default_branch = excluded.github_default_branch,
+             automatic_deployment_enabled = excluded.automatic_deployment_enabled,
+             selected_by_user_id = excluded.selected_by_user_id,
+             updated_at = clock_timestamp()
+       returning project_id`,
+      [
+        input.projectId,
+        input.githubConnectionId,
+        input.githubRepositoryId,
+        input.automaticDeploymentEnabled,
+        input.userId,
+      ],
+    );
+    if (result.rowCount !== 1) throw new Error("project access denied");
+  }
+  async recordConfigurationSyncAttempt(
+    input: RecordConfigurationSyncAttemptInput,
+  ): Promise<ConfigurationSyncAttemptRecord> {
+    const result = await query<{
+      id: string;
+      project_id: string;
+      github_connection_id: string | null;
+      github_repository_id: number | null;
+      webhook_delivery_id: string | null;
+      commit_sha: string | null;
+      outcome: string;
+      evidence: unknown;
+      created_at: Date;
+    }>(
+      this.pool,
+      `insert into configuration_sync_attempts
+         (organization_id, project_id, github_connection_id, github_repository_id,
+          webhook_delivery_id, commit_sha, outcome, evidence)
+       select p.organization_id, p.id, $2, $3, $4, $5, $6, $7::jsonb
+       from projects p
+       where p.id = $1 and p.organization_id = (select organization_id from github_connections where id = $2)
+       returning id, project_id, github_connection_id, github_repository_id, webhook_delivery_id,
+                 commit_sha, outcome, evidence, created_at`,
+      [
+        input.projectId,
+        input.githubConnectionId,
+        input.githubRepositoryId,
+        input.webhookDeliveryId,
+        input.commitSha,
+        input.outcome,
+        JSON.stringify(input.evidence),
+      ],
+    );
+    const row = result.rows[0];
+    if (row === undefined) throw new Error("configuration source unavailable");
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      githubConnectionId: row.github_connection_id,
+      githubRepositoryId: row.github_repository_id,
+      webhookDeliveryId: row.webhook_delivery_id,
+      commitSha: row.commit_sha,
+      outcome: row.outcome,
+      evidence: row.evidence,
+      createdAt: row.created_at,
+    };
+  }
+  async latestConfigurationSyncAttempt(
+    projectId: string,
+  ): Promise<ConfigurationSyncAttemptRecord | null> {
+    const attempts = await query<{
+      id: string;
+      project_id: string;
+      github_connection_id: string | null;
+      github_repository_id: number | null;
+      webhook_delivery_id: string | null;
+      commit_sha: string | null;
+      outcome: string;
+      evidence: unknown;
+      created_at: Date;
+    }>(
+      this.pool,
+      `select * from configuration_sync_attempts
+       where project_id = $1 order by created_at desc, id desc limit 1`,
+      [projectId],
+    );
+    const attempt = attempts.rows[0];
+    const lastSyncAttempt =
+      attempt === undefined
+        ? null
+        : {
+            id: attempt.id,
+            projectId: attempt.project_id,
+            githubConnectionId: attempt.github_connection_id,
+            githubRepositoryId: attempt.github_repository_id,
+            webhookDeliveryId: attempt.webhook_delivery_id,
+            commitSha: attempt.commit_sha,
+            outcome: attempt.outcome,
+            evidence: attempt.evidence,
+            createdAt: attempt.created_at,
+          };
+    return lastSyncAttempt;
   }
   async advanceGitHubConnectionAttempt(input: AdvanceGitHubConnectionAttemptInput): Promise<void> {
     await this.runtime.transaction(async (runtimeTransaction) => {

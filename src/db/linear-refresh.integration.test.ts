@@ -4,11 +4,13 @@ import { createHmac } from "node:crypto";
 import { describe, it } from "vitest";
 import { createLinearRegistration } from "../providers/linear/index.js";
 import { linearPersistence } from "../providers/linear/persistence.js";
+import { createProviderRegistry as createDatabaseProviders } from "../providers/server.js";
 import { createDatabase } from "./pg.js";
 import type { DatabaseRuntimeBundle, TransactionHandle } from "./runtime/index.js";
 import { postgresDatabaseRuntime } from "./runtime/index.js";
 import type { Locks } from "./runtime/locks/index.js";
 import type { Database } from "./types.js";
+const databaseProviders = createDatabaseProviders();
 
 const START_ACCESS = {
   sessionId: "session",
@@ -32,7 +34,7 @@ describe("Linear token refresh persistence", () => {
     const bundle = await postgresDatabaseRuntime(postgres.getConnectionUri());
     try {
       await seedAuthority(bundle);
-      const database = createDatabase(bundle.runtime, bundle.locks);
+      const database = createDatabase(bundle.runtime, bundle.locks, databaseProviders);
       await startLinearAttempt(database, "refresh-webhook");
       await bindLinearConnection(database, "refresh-webhook", {
         accessToken: "expired-token",
@@ -128,8 +130,8 @@ describe("Linear token refresh persistence", () => {
       };
       // Separate database facades model independent Hub processes. Their only coordination is
       // the PostgreSQL transaction lock, not the client-local refresh promise map.
-      const refreshDatabase = createDatabase(bundle.runtime, locks);
-      const rebindDatabase = createDatabase(bundle.runtime, locks);
+      const refreshDatabase = createDatabase(bundle.runtime, locks, databaseProviders);
+      const rebindDatabase = createDatabase(bundle.runtime, locks, databaseProviders);
 
       await startLinearAttempt(rebindDatabase, "initial");
       await bindLinearConnection(rebindDatabase, "initial", {

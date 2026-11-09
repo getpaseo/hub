@@ -1,15 +1,20 @@
-import { compareBundlePaths } from "../config/bundle-contract.js";
+import { compareBundlePaths } from "../../config/bundle-contract.js";
 import {
   compileHubBundle,
   HUB_RESOURCE_PATH,
   HubBundleError,
   type HubBundleFile,
-} from "../config/bundle.js";
-import { rawConfigurationHash } from "../config/compiler.js";
-import type { PromptPartialReadResult } from "../config/prompt-partials.js";
-import type { Database, ProjectConfigurationRevisionRecord } from "../db/types.js";
-import { reportFailure } from "../failures/index.js";
-import { ConfigurationActivationValidationError, ProjectConfigurationStore } from "./store.js";
+} from "../../config/bundle.js";
+import { rawConfigurationHash } from "../../config/compiler.js";
+import type { PromptPartialReadResult } from "../../config/prompt-partials.js";
+import {
+  ConfigurationActivationValidationError,
+  ProjectConfigurationStore,
+} from "../../configuration/store.js";
+import type { Database, ProjectConfigurationRevisionRecord } from "../../db/types.js";
+import { reportFailure } from "../../failures/index.js";
+import { insertGitHubBundleRevision } from "./configuration-revisions.js";
+import { githubPersistence } from "./persistence.js";
 
 export interface GitHubConfigurationProvider {
   listInstallationRepositories(input: {
@@ -120,7 +125,7 @@ export async function synchronizeGitHubProjectConfiguration(input: {
     return { outcome: "invalid", revision };
   }
   const store = input.configurationForProject(input.projectId);
-  const revision = await store.insertGitHubBundleRevision({
+  const revision = await insertGitHubBundleRevision(store, {
     files,
     githubConnectionId: input.githubConnectionId,
     githubRepositoryId: input.repositoryId,
@@ -154,7 +159,7 @@ export async function synchronizeGitHubDefaultBranch(input: {
   webhookDeliveryId: string | null;
   configurationForProject: (projectId: string) => ProjectConfigurationStore;
 }): Promise<GitHubConfigurationSyncResult | undefined> {
-  const target = await input.database.findGitHubConfigurationTarget(
+  const target = await githubPersistence(input.database).findGitHubConfigurationTarget(
     input.projectId,
     input.repositoryId,
   );
@@ -168,7 +173,7 @@ export async function synchronizeGitHubDefaultBranch(input: {
     });
   } catch (error) {
     reportConfigurationSyncFailure(error, "default-branch-head", input.projectId);
-    await input.database.recordConfigurationSyncAttempt({
+    await githubPersistence(input.database).recordConfigurationSyncAttempt({
       projectId: input.projectId,
       githubConnectionId: target.connectionId,
       githubRepositoryId: target.repositoryId,
@@ -180,7 +185,7 @@ export async function synchronizeGitHubDefaultBranch(input: {
     return { outcome: "fetch_failed" };
   }
   if (input.expectedCommitSha !== undefined && branchHead !== input.expectedCommitSha) {
-    await input.database.recordConfigurationSyncAttempt({
+    await githubPersistence(input.database).recordConfigurationSyncAttempt({
       projectId: input.projectId,
       githubConnectionId: target.connectionId,
       githubRepositoryId: target.repositoryId,
@@ -247,7 +252,7 @@ async function recordAttempt(
   outcome: "activated" | "invalid" | "fetch_failed",
   evidence: unknown,
 ) {
-  return input.database.recordConfigurationSyncAttempt({
+  return githubPersistence(input.database).recordConfigurationSyncAttempt({
     projectId: input.projectId,
     githubConnectionId: input.githubConnectionId,
     githubRepositoryId: input.repositoryId,

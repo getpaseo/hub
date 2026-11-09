@@ -6,7 +6,6 @@ import {
   entitlementOverridesSchema,
   mergeOverrides,
 } from "../entitlements/catalog.js";
-import { githubPersistence } from "../providers/github/persistence.js";
 import {
   isProviderEventDropReasonCode,
   type ProviderEventDropReasonCode,
@@ -27,7 +26,6 @@ import type {
   CliAuthorizationDecisionInput,
   CliAuthorizationPollResult,
   CliAuthorizationRecord,
-  ConfigurationSyncAttemptRecord,
   ConnectionProvider,
   ConsumeOrganizationUsageInput,
   CreateAcceptedTriggerRunInput,
@@ -58,6 +56,7 @@ import type {
   PersistManualEventInput,
   ProjectActivityRunListRecord,
   ProjectConfigurationRevisionRecord,
+  ProjectConfigurationState,
   ProjectRecord,
   ProjectTriggerRoute,
   ProviderEventAcceptance,
@@ -65,10 +64,8 @@ import type {
   ProviderEventReceiptRecord,
   ReadConnectionAttemptInput,
   ReconcileOrganizationBillingInput,
-  RecordConfigurationSyncAttemptInput,
   RejectedTriggerRunRecord,
   SaveOrganizationTriggerInput,
-  SetProjectGitHubConfigurationSourceInput,
   StampOrganizationEntitlementsInput,
   StartCliAuthorizationInput,
   StartConnectionAttemptInput,
@@ -174,18 +171,10 @@ class MemoryDatabase implements Database {
   private readonly advisoryLocks = new Map<string, Promise<void>>();
   private readonly projects = new Map<string, ProjectRecord>();
   private readonly configurationRevisions = new Map<string, ProjectConfigurationRevisionRecord>();
-  private readonly configurationAuthorities = new Map<string, "manual" | "github">();
-  private readonly githubConfigurationSources = new Map<
+  private readonly configurationSources = new Map<
     string,
-    {
-      githubConnectionId: string;
-      githubRepositoryId: number;
-      githubRepositoryFullName: string;
-      githubDefaultBranch: string;
-      automaticDeploymentEnabled: boolean;
-    }
+    import("./types.js").ProjectConfigurationSourceRecord
   >();
-  private readonly configurationSyncAttempts = new Map<string, ConfigurationSyncAttemptRecord[]>();
   private readonly projectTriggerRoutes = new Map<string, ProjectTriggerRoute[]>();
   private readonly organizationTriggers = new Map<string, OrganizationTriggerRecord>();
   private readonly organizationTriggerRevisions = new Map<
@@ -206,15 +195,16 @@ class MemoryDatabase implements Database {
       findReceiptId: (...args) => this.findReceiptId(...args),
       insertReceipt: (input) => this.insertProviderEventReceipt(input),
       removeConnectionReferences: (connectionId) => this.removeConnectionReferences(connectionId),
-      configurationSource: (projectId) => {
-        const source = this.githubConfigurationSources.get(projectId);
-        return source === undefined ? undefined : { kind: "github", ...source };
-      },
+      now: () => this.now(),
+      configurationSource: (projectId) => structuredClone(this.configurationSources.get(projectId)),
       configurationSources: () =>
-        Array.from(this.githubConfigurationSources, ([projectId, source]) => ({
+        Array.from(this.configurationSources, ([projectId, source]) => ({
           projectId,
-          source: { kind: "github" as const, ...source },
+          source: structuredClone(source),
         })),
+      setConfigurationSource: (projectId, source) => {
+        this.configurationSources.set(projectId, structuredClone(source));
+      },
     };
     this.providerPersistence = {
       create: (factory) =>
@@ -1916,7 +1906,10 @@ class MemoryDatabase implements Database {
     };
     this.organizationIds.add(input.organizationId);
     this.projects.set(project.id, project);
-    this.configurationAuthorities.set(project.id, "manual");
+    this.configurationSources.set(project.id, {
+      kind: "manual",
+      data: { formattingPreserved: false },
+    });
     return project;
   }
 
@@ -2524,7 +2517,7 @@ class MemoryDatabase implements Database {
       archivedAt: null,
       activeConfigurationRevisionId: null,
     });
-    this.configurationAuthorities.set(id, "manual");
+    this.configurationSources.set(id, { kind: "manual", data: { formattingPreserved: false } });
     return id;
   }
 
@@ -2755,83 +2748,21 @@ class MemoryDatabase implements Database {
       contentHash: input.contentHash,
       createdByUserId: input.userId,
     });
-    this.configurationAuthorities.set(input.projectId, "manual");
-    this.githubConfigurationSources.delete(input.projectId);
+    this.configurationSources.set(input.projectId, {
+      kind: "manual",
+      data: { formattingPreserved: false },
+    });
     return this.activateProjectConfigurationRevision(input.projectId, revision.id, input.routes);
   }
 
-  async setProjectGitHubConfigurationSource(
-    input: SetProjectGitHubConfigurationSourceInput,
-  ): Promise<void> {
-    const project = this.projects.get(input.projectId);
-    if (project?.status !== "active") throw new Error("project access denied");
-    this.configurationAuthorities.set(input.projectId, "github");
-    this.githubConfigurationSources.set(input.projectId, {
-      githubConnectionId: input.githubConnectionId,
-      githubRepositoryId: input.githubRepositoryId,
-      githubRepositoryFullName: input.githubRepositoryFullName,
-      githubDefaultBranch: input.githubDefaultBranch,
-      automaticDeploymentEnabled: input.automaticDeploymentEnabled,
-    });
-  }
-
-  async recordConfigurationSyncAttempt(
-    input: RecordConfigurationSyncAttemptInput,
-  ): Promise<ConfigurationSyncAttemptRecord> {
-    const attempt: ConfigurationSyncAttemptRecord = {
-      id: randomUUID(),
-      projectId: input.projectId,
-      githubConnectionId: input.githubConnectionId,
-      githubRepositoryId: input.githubRepositoryId,
-      webhookDeliveryId: input.webhookDeliveryId,
-      commitSha: input.commitSha,
-      outcome: input.outcome,
-      evidence: structuredClone(input.evidence),
-      createdAt: this.options.now?.() ?? new Date(),
-    };
-    const attempts = this.configurationSyncAttempts.get(input.projectId) ?? [];
-    attempts.push(attempt);
-    this.configurationSyncAttempts.set(input.projectId, attempts);
-    return attempt;
-  }
-
-  async projectConfigurationReadModel(projectId: string) {
-    const authority = this.configurationAuthorities.get(projectId);
-    if (authority === undefined) throw new Error("configuration authority not found");
+  async readProjectConfigurationState(projectId: string): Promise<ProjectConfigurationState> {
+    const source = this.configurationSources.get(projectId);
+    if (source === undefined) throw new Error("configuration authority not found");
     return {
-      authority,
+      source: structuredClone(source),
       activeRevision: (await this.findActiveProjectConfiguration(projectId)) ?? null,
-      lastSyncAttempt: this.configurationSyncAttempts.get(projectId)?.at(-1) ?? null,
-      sourceState:
-        authority === "manual"
-          ? ({ kind: "manual", formattingPreserved: false } as const)
-          : ({
-              kind: "github",
-              githubConnectionId:
-                this.githubConfigurationSources.get(projectId)?.githubConnectionId ?? "unavailable",
-              githubRepositoryId:
-                this.githubConfigurationSources.get(projectId)?.githubRepositoryId ?? 0,
-              githubRepositoryFullName:
-                this.githubConfigurationSources.get(projectId)?.githubRepositoryFullName ??
-                "unavailable",
-              githubDefaultBranch:
-                this.githubConfigurationSources.get(projectId)?.githubDefaultBranch ?? "main",
-              automaticDeploymentEnabled:
-                this.githubConfigurationSources.get(projectId)?.automaticDeploymentEnabled ?? false,
-            } as const),
     };
   }
-
-  listGitHubRepositories(organizationId: string) {
-    return githubPersistence(this).listGitHubRepositories(organizationId);
-  }
-  findGitHubRepositoryForOrganization(organizationId: string, fullName: string) {
-    return githubPersistence(this).findGitHubRepositoryForOrganization(organizationId, fullName);
-  }
-  findGitHubConfigurationTarget(projectId: string, repositoryId?: number) {
-    return githubPersistence(this).findGitHubConfigurationTarget(projectId, repositoryId);
-  }
-
   async listUnroutedProviderEventsForOrganization(organizationId: string) {
     const routedReceiptIds = new Set(
       [...this.triggerRuns.values()].map((run) => run.providerEventReceiptId),
@@ -2941,21 +2872,6 @@ class MemoryDatabase implements Database {
   async close(): Promise<void> {}
 
   private removeConnectionReferences(connectionId: string): void {
-    for (const [projectId, source] of this.githubConfigurationSources) {
-      if (source.githubConnectionId !== connectionId) continue;
-      this.configurationAuthorities.set(projectId, "manual");
-      this.githubConfigurationSources.delete(projectId);
-    }
-    for (const [projectId, attempts] of this.configurationSyncAttempts) {
-      this.configurationSyncAttempts.set(
-        projectId,
-        attempts.map((attempt) =>
-          attempt.githubConnectionId === connectionId
-            ? Object.assign({}, attempt, { githubConnectionId: null })
-            : attempt,
-        ),
-      );
-    }
     for (const [projectId, routes] of this.projectTriggerRoutes) {
       this.projectTriggerRoutes.set(
         projectId,

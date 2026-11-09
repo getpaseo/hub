@@ -1,7 +1,9 @@
+import { createProviderRegistry as createDatabaseProviders } from "../../providers/server.js";
 import { createDatabase } from "../pg.js";
-import { postgresDatabaseRuntime } from "../runtime/index.js";
 import type { DatabaseRuntimeBundle } from "../runtime/index.js";
+import { postgresDatabaseRuntime } from "../runtime/index.js";
 import type { Database } from "../types.js";
+const databaseProviders = createDatabaseProviders();
 
 const testRuntimes = new WeakMap<Database, DatabaseRuntimeBundle>();
 
@@ -9,7 +11,7 @@ export async function createPostgresTestRuntime(connectionString: string) {
   const bundle = await postgresDatabaseRuntime(connectionString);
   try {
     await bundle.runtime.migrate();
-    return { ...bundle, database: createDatabase(bundle.runtime, bundle.locks) };
+    return { ...bundle, database: createDatabase(bundle.runtime, bundle.locks, databaseProviders) };
   } catch (error) {
     await bundle.runtime.close().catch(() => undefined);
     throw error;

@@ -1,16 +1,18 @@
+import { isAPIError } from "better-auth/api";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "vitest";
-import { embeddedDatabaseRuntime } from "../db/runtime/index.js";
-import { createDatabase } from "../db/pg.js";
-import { composeEntitlements } from "./entitlements.js";
-import { createAuthServer } from "./server.js";
-import type { AccountMailer } from "./account-emails.js";
 import { z } from "zod";
+import { createDatabase } from "../db/pg.js";
+import { embeddedDatabaseRuntime } from "../db/runtime/index.js";
+import { createProviderRegistry as createDatabaseProviders } from "../providers/server.js";
+import type { AccountMailer } from "./account-emails.js";
+import { composeEntitlements } from "./entitlements.js";
 import type { AuthServer } from "./server.js";
-import { isAPIError } from "better-auth/api";
+import { createAuthServer } from "./server.js";
+const databaseProviders = createDatabaseProviders();
 
 const ORIGIN = "http://localhost:3000";
 
@@ -21,7 +23,7 @@ describe("verified account recovery boundary", () => {
       const directory = await mkdtemp(join(tmpdir(), "paseo-account-recovery-"));
       const { runtime, locks } = await embeddedDatabaseRuntime(directory);
       await runtime.migrate();
-      const database = createDatabase(runtime, locks);
+      const database = createDatabase(runtime, locks, databaseProviders);
       const entitlements = composeEntitlements(database, runtime);
       const mailer = new RecordingAccountMailer();
       const auth = createAuthServer({

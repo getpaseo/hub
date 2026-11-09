@@ -32,7 +32,7 @@ it("runs the bootstrap, credential lock, and lease claim flows on embedded stora
   const root = await mkdtemp(join(tmpdir(), "hub-pglite-smoke-"));
   const { runtime, locks } = await embeddedDatabaseRuntime(join(root, "database"));
   await runtime.migrate();
-  const database = createDatabase(runtime, locks);
+  const database = createDatabase(runtime, locks, compositionProviders);
   const entitlements = composeEntitlements(database, runtime);
   const auth = createAuthServer({
     database: runtime,

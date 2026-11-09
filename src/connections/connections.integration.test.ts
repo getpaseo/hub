@@ -148,7 +148,7 @@ describe("provider connection facades PostgreSQL authority", () => {
     });
     const githubConnection = await githubPersistence(database).findGitHubConnection(42);
     assert(githubConnection !== undefined);
-    await database.recordConfigurationSyncAttempt({
+    await githubPersistence(database).recordConfigurationSyncAttempt({
       projectId: project.id,
       githubConnectionId: githubConnection.id,
       githubRepositoryId: 9001,
@@ -374,7 +374,9 @@ describe("provider connection facades PostgreSQL authority", () => {
     }
     assert.equal(result(await callback), "github_connected");
     assert.deepEqual(
-      (await database.listGitHubRepositories("acme")).map((item) => item.fullName).sort(),
+      (await githubPersistence(database).listGitHubRepositories("acme"))
+        .map((item) => item.fullName)
+        .sort(),
       ["acme-inc/app", "acme-inc/docs"],
     );
   });
@@ -392,7 +394,7 @@ describe("provider connection facades PostgreSQL authority", () => {
       result(await githubCallback(connections, state, "retry-code")),
       "github_connected",
     );
-    assert.equal((await database.listGitHubRepositories("acme")).length, 2);
+    assert.equal((await githubPersistence(database).listGitHubRepositories("acme")).length, 2);
   });
 
   it("retains repository changes received while the first callback is fetching its snapshot", async () => {
@@ -438,7 +440,9 @@ describe("provider connection facades PostgreSQL authority", () => {
     await source.start(async () => undefined);
     await source.stop();
     assert.deepEqual(
-      (await database.listGitHubRepositories("acme")).map((item) => item.fullName),
+      (await githubPersistence(database).listGitHubRepositories("acme")).map(
+        (item) => item.fullName,
+      ),
       ["acme-inc/new"],
     );
   });
@@ -464,7 +468,9 @@ describe("provider connection facades PostgreSQL authority", () => {
     gate.release();
     await Promise.all([callback, webhook]);
     assert.deepEqual(
-      (await database.listGitHubRepositories("acme")).map((item) => item.fullName),
+      (await githubPersistence(database).listGitHubRepositories("acme")).map(
+        (item) => item.fullName,
+      ),
       ["acme-inc/new"],
     );
     assert.equal(

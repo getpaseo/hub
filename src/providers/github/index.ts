@@ -3,8 +3,6 @@ import { PushPayloadSchema } from "../../auth/github-events.js";
 import { createGitHubAuth, repositoryNamesForAccount, type GitHubAuth } from "../../auth/github.js";
 import type { AuthServer } from "../../auth/server.js";
 import type { ConnectionResolutionContext } from "../../config/connections.js";
-import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
-import { synchronizeGitHubDefaultBranch } from "../../configuration/github-sync.js";
 import type { ProjectConfigurationStore } from "../../configuration/store.js";
 import {
   callbackConnectionAccess,
@@ -39,6 +37,8 @@ import {
   type GitHubConnectionClient,
   type GitHubInstallationIdentity,
 } from "./client.js";
+import type { GitHubConfigurationProvider } from "./configuration-source.js";
+import { synchronizeGitHubDefaultBranch } from "./configuration-source.js";
 import { createGitHubConfigurationProvider } from "./configuration.js";
 import { createGitHubLifecycle } from "./lifecycle.js";
 import { githubPersistence } from "./persistence.js";

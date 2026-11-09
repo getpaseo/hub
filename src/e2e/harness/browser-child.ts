@@ -390,7 +390,7 @@ async function createBrowserDatabase() {
   try {
     await bundle.runtime.migrate();
     process.stdout.write("database runtime ready: embedded\n");
-    return { ...bundle, database: createDatabase(bundle.runtime, bundle.locks) };
+    return { ...bundle, database: createDatabase(bundle.runtime, bundle.locks, providerRegistry) };
   } catch (error) {
     await bundle.runtime.close().catch(() => undefined);
     throw error;
@@ -648,7 +648,7 @@ async function acceptInstallProviderDispatchFixture(
       )
     ).rows;
     if (owner === undefined) throw new Error("organization owner unavailable");
-    const repository = await database.findGitHubRepositoryForOrganization(
+    const repository = await githubPersistence(database).findGitHubRepositoryForOrganization(
       message.organizationId,
       message.repository,
     );
@@ -659,7 +659,7 @@ async function acceptInstallProviderDispatchFixture(
     if (github === undefined || github.organizationId !== message.organizationId) {
       throw new Error("GitHub connection unavailable");
     }
-    await database.setProjectGitHubConfigurationSource({
+    await githubPersistence(database).setProjectGitHubConfigurationSource({
       projectId: project.id,
       githubConnectionId: github.id,
       githubRepositoryId: repository.repositoryId,

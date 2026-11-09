@@ -23,7 +23,7 @@ export interface SaveTriggerInput {
   triggerId?: string;
   yaml: string;
   userId: string | null;
-  sourceKind?: "manual" | "github";
+  sourceKind?: string;
   sourceEvidence?: unknown;
 }
 

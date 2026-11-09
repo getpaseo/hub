@@ -5,6 +5,7 @@ import { compiledConfigurationHash, parseCompiledHubConfig } from "../config/com
 import { createMemoryDatabase } from "../db/memory.js";
 import type { DiscordConnectionRecord, LinearConnectionRecord } from "../db/types.js";
 import { discordPersistence } from "../providers/discord/persistence.js";
+import { insertGitHubBundleRevision } from "../providers/github/configuration-source.js";
 import { linearPersistence } from "../providers/linear/persistence.js";
 import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
@@ -254,7 +255,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
       ...configurationBundleFixture(dump(rawConfiguration)),
       { path: ".paseo/workflows/partials/triage.md", content: PARTIAL_CONTENT },
     ];
-    const revision = await store.insertGitHubBundleRevision({
+    const revision = await insertGitHubBundleRevision(store, {
       files,
       githubConnectionId: "github-connection-1",
       githubRepositoryId: 9001,

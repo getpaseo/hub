@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, it } from "vitest";
+import { insertGitHubBundleRevision } from "../providers/github/configuration-source.js";
 import { githubPersistence } from "../providers/github/persistence.js";
 import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
 import { slackPersistence } from "../providers/slack/persistence.js";
@@ -842,7 +843,7 @@ describe("database migration application", () => {
         ...configurationBundleFixture(dump(rawConfiguration)),
         { path: ".paseo/workflows/partials/triage.md", content: partialContent },
       ];
-      const githubRevision = await store.insertGitHubBundleRevision({
+      const githubRevision = await insertGitHubBundleRevision(store, {
         files,
         githubConnectionId: "github-connection-1",
         githubRepositoryId: 9251,
@@ -955,7 +956,7 @@ describe("database migration application", () => {
           ],
         });
       }
-      assert.equal((await database.listGitHubRepositories("org")).length, 2);
+      assert.equal((await githubPersistence(database).listGitHubRepositories("org")).length, 2);
       assert.deepEqual(
         await githubPersistence(database).pendingGitHubInstallationSyncs(GITHUB_OWNER),
         [],
@@ -996,6 +997,96 @@ describe("database migration application", () => {
         "claimed",
         "duplicate",
       ]);
+    } finally {
+      await database.close();
+    }
+  }, 120_000);
+
+  it("clears native configuration state atomically when switching to manual or archiving", async () => {
+    const url = databaseUrl(postgres, "native_configuration_cleanup");
+    const database = await createDatabase(url);
+    try {
+      const [project] = await createProjectFixtures(database, url);
+      const connectionId = randomUUID();
+      await poolQuery(
+        url,
+        `insert into github_connections
+        (id, organization_id, installation_id, slug, account_id, account_login, account_type, status)
+        values ($1, 'organization-a', 9871, 'source', '9871', 'acme', 'Organization', 'active');`,
+        [connectionId],
+      );
+      const selectNativeSource = () =>
+        poolQuery(
+          url,
+          `update project_configuration_sources
+        set kind = 'github', github_connection_id = $2, github_repository_id = 9872,
+        github_repository_full_name = 'acme/source', github_default_branch = 'main',
+        automatic_deployment_enabled = true where project_id = $1`,
+          [project.id, connectionId],
+        );
+      const readSource = async () =>
+        (
+          await poolQuery(
+            url,
+            `select kind, github_connection_id,
+        github_repository_id, github_repository_full_name, github_default_branch,
+        automatic_deployment_enabled from project_configuration_sources where project_id = $1`,
+            [project.id],
+          )
+        ).rows[0];
+      await selectNativeSource();
+      const active = await database.insertProjectConfigurationRevision({
+        projectId: project.id,
+        sourceKind: "github",
+        sourceEvidence: {},
+        normalizedConfiguration: {},
+        contentHash: "native-source",
+      });
+      await database.activateProjectConfigurationRevision(project.id, active.id);
+      const original = await readSource();
+      const input = {
+        projectId: project.id,
+        userId: "project-user",
+        rawYaml: "",
+        normalizedConfiguration: {},
+        contentHash: "manual-source",
+        bundle: { authoredHash: "manual-source", files: [] },
+        routes: [],
+      };
+      // The route constraint fails after native cleanup. Both cleanup and the revision must roll back.
+      await assert.rejects(
+        database.switchProjectConfigurationToManual({
+          ...input,
+          routes: [
+            { provider: "unregistered", connectionId, resourceId: null, triggerName: "invalid" },
+          ],
+        }),
+        /project_trigger_routes_provider_check/,
+      );
+      assert.deepEqual(await readSource(), original);
+      assert.equal(
+        (
+          await poolQuery(
+            url,
+            "select * from project_configuration_revisions where project_id = $1",
+            [project.id],
+          )
+        ).rows.length,
+        1,
+      );
+      await database.switchProjectConfigurationToManual(input);
+      const cleared = {
+        kind: "manual",
+        github_connection_id: null,
+        github_repository_id: null,
+        github_repository_full_name: null,
+        github_default_branch: null,
+        automatic_deployment_enabled: false,
+      };
+      assert.deepEqual(await readSource(), cleared);
+      await selectNativeSource();
+      await database.archiveProject("organization-a", project.id, "project-user");
+      assert.deepEqual(await readSource(), cleared);
     } finally {
       await database.close();
     }
