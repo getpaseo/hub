@@ -1,3 +1,4 @@
+import { browserProvider } from "../providers/browser.js";
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop -- one screen binds one snapshot; a row's action and status are that row's own slots */
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- generated routes cannot express server-resolved organization URLs */
 import { useSnapshotQuery } from "../queries/index.js";
@@ -402,17 +403,10 @@ function runHint(triggers: HomeSnapshot["triggers"]): string {
   const hints = new Set<string>();
   for (const { event } of triggers) {
     const provider = event.split(".")[0];
-    if (provider === "slack" || provider === "discord") {
-      hints.add("Mention the bot in a channel it can see.");
-    } else if (provider === "github") {
-      hints.add("Open or comment on an issue or pull request in a connected repository.");
-    } else if (provider === "linear") {
-      hints.add("Update an issue in the connected Linear workspace.");
-    } else if (provider === "schedule") {
-      hints.add("It runs on its schedule.");
-    } else {
+    if (provider === "schedule") hints.add("It runs on its schedule.");
+    else if (provider === "manual")
       hints.add("Dispatch it with an API key: POST /api/v1/manual-runs.");
-    }
+    else hints.add(browserProvider(provider ?? "").runHint);
   }
   return [...hints].join(" ");
 }
@@ -426,11 +420,8 @@ function unroutedSentence(unrouted: HomeSnapshot["unrouted"], windowDays: number
 }
 
 function providerName(provider: HomeSnapshot["unrouted"][number]["provider"]): string {
-  if (provider === "github") return "GitHub";
-  if (provider === "slack") return "Slack";
-  if (provider === "discord") return "Discord";
-  if (provider === "linear") return "Linear";
-  return statusLabel(provider);
+  if (provider === "manual" || provider === "schedule") return statusLabel(provider);
+  return browserProvider(provider).guide.name;
 }
 
 function runOutcomes(runs: HomeSnapshot["runs"]): string {

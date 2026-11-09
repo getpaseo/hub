@@ -1,3 +1,4 @@
+import { summarizeEvent } from "./activity.js";
 import { replyOutputTool } from "../../execution-capabilities/outputs.js";
 import type { ProviderModule } from "../registry.js";
 import { configurationSchema, identitySchema } from "./application-configuration.js";
@@ -7,6 +8,7 @@ import { readEnvironment } from "./environment.js";
 import { createSlackRegistration } from "./index.js";
 import { configureSocket } from "./socket-application.js";
 export const slackProvider: ProviderModule = {
+  summarizeEvent,
   manifest: {
     id: "slack",
     connectionOrder: 2,

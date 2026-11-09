@@ -115,6 +115,9 @@ export function isSecureOrigin(origin: string): boolean {
   return origin.startsWith("https://");
 }
 export interface BrowserProviderModule {
+  glyph: { viewBox: string; paths: readonly string[] };
+  runHint: string;
+  identityLabel(value: unknown): string;
   id: string;
   guide: ProviderGuide;
   request: {
@@ -128,4 +131,15 @@ export interface BrowserProviderModule {
     ): import("../provider-applications/index.js").ProviderApplicationConfiguration;
     secrets(input: unknown): readonly string[];
   };
+}
+
+export interface ProviderEventSummary {
+  provider: string;
+  headline: string;
+  actor: string | null;
+  externalUrl: string | null;
+}
+
+export function truncateEventText(value: string, max: number): string {
+  return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
 }

@@ -1,3 +1,4 @@
+import { summarizeEvent } from "./activity.js";
 import { replyOutputTool } from "../../execution-capabilities/outputs.js";
 import type { ProviderModule } from "../registry.js";
 import { activationError } from "./activation-error.js";
@@ -7,6 +8,7 @@ import { readEnvironment } from "./environment.js";
 import { createDiscordRegistration } from "./index.js";
 import { verifyDiscord } from "./verification.js";
 export const discordProvider: ProviderModule = {
+  summarizeEvent,
   manifest: {
     id: "discord",
     connectionOrder: 1,

@@ -1,4 +1,4 @@
-import { browserProviders } from "../providers/browser.js";
+import { browserProvider, browserProviders } from "../providers/browser.js";
 import type { GuideField, GuideGroup, ProviderGuide, Tone } from "../providers/presentation.js";
 import type { Provider, ProviderApplicationIdentity, ProviderApplicationStatus } from "./index.js";
 export { DISCORD_GUIDE } from "../providers/discord/browser.js";
@@ -53,7 +53,5 @@ export function statusPresentation(status: ProviderApplicationStatus): {
 }
 
 export function identityLabel(identity: ProviderApplicationIdentity): string {
-  if (identity.provider === "github") return `${identity.name} · owned by ${identity.ownerLogin}`;
-  if (identity.provider === "discord") return `${identity.name} · application ${identity.id}`;
-  return identity.name;
+  return browserProvider(identity.provider).identityLabel(identity);
 }
