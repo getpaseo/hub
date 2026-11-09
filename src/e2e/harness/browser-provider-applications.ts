@@ -1,27 +1,27 @@
+type Provider = ProviderApplicationConfiguration["provider"];
 import type { AuthServer } from "../../auth/server.js";
 import type { Database } from "../../db/types.js";
-import { createDiscordRegistration } from "../../providers/discord/index.js";
-import { createGitHubRegistration } from "../../providers/github/index.js";
-import { createLinearRegistration } from "../../providers/linear/index.js";
-import { createSlackRegistration } from "../../providers/slack/index.js";
-import { createSlackSocketInstallationVerifier } from "../../providers/slack/installation.js";
-import { startSlackSocketFixture } from "../../test-utils/slack-socket-fixture.js";
-import type { SlackConnectionClient, SlackInstallation } from "../../providers/slack/client.js";
-import type { LinearConnectionClient, LinearInstallation } from "../../providers/linear/client.js";
-import type { ProviderRegistration } from "../../providers/registration.js";
 import {
   ProviderVerificationError,
-  type Provider,
   type ProviderApplicationConfiguration,
   type ProviderApplicationIdentity,
   type ProviderApplicationVerifier,
 } from "../../provider-applications/index.js";
+import { createDiscordRegistration } from "../../providers/discord/index.js";
+import { createGitHubRegistration } from "../../providers/github/index.js";
+import type { LinearConnectionClient, LinearInstallation } from "../../providers/linear/client.js";
+import { createLinearRegistration } from "../../providers/linear/index.js";
+import type { ProviderRegistration } from "../../providers/registration.js";
+import type { SlackConnectionClient, SlackInstallation } from "../../providers/slack/client.js";
+import { createSlackRegistration } from "../../providers/slack/index.js";
+import { createSlackSocketInstallationVerifier } from "../../providers/slack/installation.js";
+import { startSlackSocketFixture } from "../../test-utils/slack-socket-fixture.js";
 import {
   BrowserDiscordBot,
   BrowserDiscordConnections,
   BrowserGitHubAuth,
-  BrowserGitHubConnections,
   BrowserGitHubConfiguration,
+  BrowserGitHubConnections,
   BrowserGitHubReactions,
   BrowserSlackBot,
   type BrowserProviderScenario,

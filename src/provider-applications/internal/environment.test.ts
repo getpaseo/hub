@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
+import { createProviderRegistry } from "../../providers/server.js";
 import { readProviderApplicationEnvironment } from "./environment.js";
+const providerRegistry = createProviderRegistry();
 
 describe("Slack provider environment", () => {
   const webhook = {
@@ -38,7 +40,10 @@ describe("Slack provider environment", () => {
       },
     ],
   ] as const)("accepts a complete Slack group", async (environment, expected) => {
-    assert.deepEqual((await readProviderApplicationEnvironment(environment)).slack, expected);
+    assert.deepEqual(
+      (await readProviderApplicationEnvironment(environment, providerRegistry))["slack"],
+      expected,
+    );
   });
 
   it("rejects partial, mixed, and unknown Slack groups", async () => {
@@ -54,7 +59,7 @@ describe("Slack provider environment", () => {
       { SLACK_TRANSPORT: "magic", SLACK_APP_ID: "A1" },
     ]) {
       await assert.rejects(
-        readProviderApplicationEnvironment(environment),
+        readProviderApplicationEnvironment(environment, providerRegistry),
         /Slack environment configuration/i,
       );
     }

@@ -1,60 +1,30 @@
 import type { AccountAccessValue } from "../auth/organization-access.js";
 import type { BindLinearConnectionInput, BindSlackConnectionInput } from "../db/types.js";
+import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 import type { LinearInstallation } from "../providers/linear/client.js";
+import type { ProviderRegistry } from "../providers/registry.js";
 import type { SlackSocketInstallationVerifier } from "../providers/slack/installation.js";
 import type { SlackDeliveryStatus } from "../triggers/slack/source/index.js";
-import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
-import { parseProviderApplicationConfiguration } from "./internal/store.js";
-import { reportFailure } from "../failures/index.js";
+import {
+  closeCandidate,
+  identityConflictsWithConnections,
+  isConfigurationConflict,
+  isIdentityConflict,
+  requireHttpsOrigin,
+  withoutExpectedVersion,
+} from "./workflow.js";
 
 export const PROVIDERS = ["github", "slack", "discord", "linear"] as const;
-export type Provider = (typeof PROVIDERS)[number];
+export type Provider = string;
 
-export interface GitHubProviderApplicationConfiguration {
-  provider: "github";
-  appId: string;
-  appSlug: string;
-  clientId: string;
-  clientSecret: string;
-  privateKey: string;
-  /** Absent until the operator sets up event triggers, which need a public HTTPS address. */
-  webhookSecret?: string;
-  expectedVersion?: number;
-}
-
-export type SlackProviderApplicationConfiguration =
-  | {
-      provider: "slack";
-      transport: "socket";
-      appId: string;
-      appToken: string;
-      expectedVersion?: number;
-    }
-  | {
-      provider: "slack";
-      transport: "webhook";
-      appId: string;
-      clientId: string;
-      clientSecret: string;
-      signingSecret: string;
-      expectedVersion?: number;
-    };
-
-export interface DiscordProviderApplicationConfiguration {
-  provider: "discord";
-  applicationId: string;
-  clientSecret: string;
-  botToken: string;
-  expectedVersion?: number;
-}
-
-export interface LinearProviderApplicationConfiguration {
-  provider: "linear";
-  clientId: string;
-  clientSecret: string;
-  webhookSecret: string;
-  expectedVersion?: number;
-}
+import type { DiscordProviderApplicationConfiguration } from "../providers/discord/application-configuration.js";
+import type { GitHubProviderApplicationConfiguration } from "../providers/github/application-configuration.js";
+import type { LinearProviderApplicationConfiguration } from "../providers/linear/application-configuration.js";
+import type { SlackProviderApplicationConfiguration } from "../providers/slack/application-configuration.js";
+export type { DiscordProviderApplicationConfiguration } from "../providers/discord/application-configuration.js";
+export type { GitHubProviderApplicationConfiguration } from "../providers/github/application-configuration.js";
+export type { LinearProviderApplicationConfiguration } from "../providers/linear/application-configuration.js";
+export type { SlackProviderApplicationConfiguration } from "../providers/slack/application-configuration.js";
 
 export type ProviderApplicationConfiguration =
   | GitHubProviderApplicationConfiguration
@@ -63,10 +33,10 @@ export type ProviderApplicationConfiguration =
   | LinearProviderApplicationConfiguration;
 
 export type ProviderApplicationIdentity =
-  | { provider: "github"; id: string; name: string; ownerLogin: string }
-  | { provider: "slack"; id: string; name: string }
-  | { provider: "discord"; id: string; name: string }
-  | { provider: "linear"; id: string; name: string };
+  | import("../providers/github/application-configuration.js").GitHubProviderApplicationIdentity
+  | import("../providers/slack/application-configuration.js").SlackProviderApplicationIdentity
+  | import("../providers/discord/application-configuration.js").DiscordProviderApplicationIdentity
+  | import("../providers/linear/application-configuration.js").LinearProviderApplicationIdentity;
 
 export interface StoredProviderApplication {
   provider: Provider;
@@ -139,25 +109,9 @@ export interface ProviderRuntimeOwner {
     },
   ): Promise<ProviderRuntimeCandidate>;
   identity?(provider: Provider): ProviderApplicationIdentity | undefined;
-  onSlackInstallation?(
-    handler: (input: {
-      configuration: unknown;
-      expectedConfigurationVersion: number | undefined;
-      callbackOrigin: string;
-      userId: string;
-      installation: VerifiedSlackInstallation;
-      binding: BindSlackConnectionInput;
-    }) => Promise<void>,
-  ): void;
-  onLinearInstallation?(
-    handler: (input: {
-      configuration: unknown;
-      expectedConfigurationVersion: number | undefined;
-      callbackOrigin: string;
-      userId: string;
-      installation: LinearInstallation;
-      binding: BindLinearConnectionInput;
-    }) => Promise<void>,
+  onInstallation?(
+    provider: string,
+    handler: (operation: import("../providers/registry.js").ProviderInstallation) => Promise<void>,
   ): void;
 }
 
@@ -217,7 +171,8 @@ export interface ProviderApplicationView {
 
 export interface ProviderApplicationOverview {
   callbackOrigin: string;
-  providers: Record<Provider, ProviderApplicationView>;
+  providers: Record<(typeof PROVIDERS)[number], ProviderApplicationView> &
+    Record<string, ProviderApplicationView>;
 }
 
 export interface ProviderApplicationResult {
@@ -346,7 +301,8 @@ export interface ProviderApplications {
   retrySlackSocket(request: Request): Promise<void>;
 }
 
-interface ProviderApplicationsOptions {
+export interface ProviderApplicationsOptions {
+  registry: ProviderRegistry;
   auth: {
     resolveAccount(request: Request): Promise<AccountAccessValue>;
     rejectCookieMutation(request: Request): Response | undefined;
@@ -371,12 +327,11 @@ export function createProviderApplications(
   options: ProviderApplicationsOptions,
 ): ProviderApplications {
   const queues = new Map<Provider, Promise<void>>();
-  options.runtime.onSlackInstallation?.((input) =>
-    serialize(queues, "slack", () => completeSlackInstallation(options, input)),
-  );
-  options.runtime.onLinearInstallation?.((input) =>
-    serialize(queues, "linear", () => completeLinearInstallation(options, input)),
-  );
+  for (const module of options.registry.list()) {
+    options.runtime.onInstallation?.(module.manifest.id, (operation) =>
+      serialize(queues, module.manifest.id, () => operation(options)),
+    );
+  }
 
   return {
     async overview(request) {
@@ -387,7 +342,8 @@ export function createProviderApplications(
       );
       const entries = await Promise.all(
         // eslint-disable-next-line complexity -- this is the single projection of provider state.
-        PROVIDERS.map(async (provider) => {
+        options.registry.list().map(async ({ manifest, application }) => {
+          const provider = manifest.id;
           const environment = options.environment[provider];
           const persisted = stored.get(provider);
           const resolved = environment ?? persisted?.configuration;
@@ -395,17 +351,17 @@ export function createProviderApplications(
           const identity = options.runtime.identity?.(provider) ?? persisted?.identity ?? null;
           const status = providerStatus(environment !== undefined, identity, connections);
           const configurationVersion = environment === undefined ? (persisted?.version ?? null) : 0;
-          const deliveryStatus = provider === "slack" ? options.slackDelivery?.status() : undefined;
+          const deliveryStatus = application.deliveryStatus?.(options);
           const view: ProviderApplicationView = {
             provider,
             status,
             managedByEnvironment: environment !== undefined,
-            identifiers: resolved === undefined ? {} : publicIdentifiers(resolved),
+            identifiers: resolved === undefined ? {} : application.identifiers(resolved),
             identity,
             connections,
-            eventsConfigured: acceptsEvents(resolved),
+            eventsConfigured: resolved !== undefined && application.acceptsEvents(resolved),
             lastEventAt:
-              provider === "discord" || identity === null || configurationVersion === null
+              !application.receivesEvents || identity === null || configurationVersion === null
                 ? null
                 : ((
                     await options.inventory.lastEventAt(provider, identity, configurationVersion)
@@ -417,19 +373,23 @@ export function createProviderApplications(
           return [provider, view] as const;
         }),
       );
-      const [github, slack, discord, linear] = entries.map(([, view]) => view);
+      const providers = Object.fromEntries(entries);
+      const github = providers["github"],
+        slack = providers["slack"],
+        discord = providers["discord"],
+        linear = providers["linear"];
       if (
         github === undefined ||
         slack === undefined ||
         discord === undefined ||
         linear === undefined
-      ) {
+      )
         throw new Error("provider overview is incomplete");
-      }
-      return { callbackOrigin, providers: { github, slack, discord, linear } };
+      return { callbackOrigin, providers: { ...providers, github, slack, discord, linear } };
     },
 
     async verifyAndSave(request, provider, input, surface) {
+      options.registry.require(provider);
       rejectMutation(options, request);
       const account = await requireOperator(options, request);
       const callbackOrigin = await safeCallbackOrigin(options, request);
@@ -439,24 +399,11 @@ export function createProviderApplications(
       if (input.provider !== provider) throw new ProviderApplicationError("invalidInput");
       return serialize<ProviderApplicationSaveResult>(queues, provider, () => {
         const returnRoute = providerApplicationReturnRoute(surface);
-        if (provider === "slack" && input.provider === "slack") {
-          return beginSlackConfiguration(
-            options,
-            request,
-            account,
-            callbackOrigin,
+        const application = options.registry.require(provider).application;
+        if (application.configure !== undefined) {
+          return application.configure(
+            { options, request, account, callbackOrigin, returnRoute },
             input,
-            returnRoute,
-          );
-        }
-        if (provider === "linear" && input.provider === "linear") {
-          return beginLinearConfiguration(
-            options,
-            request,
-            account,
-            callbackOrigin,
-            input,
-            returnRoute,
           );
         }
         return verifyAndActivateProvider(options, account, provider, input, callbackOrigin);
@@ -467,7 +414,8 @@ export function createProviderApplications(
       rejectMutation(options, request);
       await requireOperator(options, request);
       const callbackOrigin = await safeCallbackOrigin(options, request);
-      if (provider === "linear") requireHttpsOrigin(callbackOrigin);
+      if (options.registry.require(provider).application.connectionRequiresHttps)
+        requireHttpsOrigin(callbackOrigin);
       return serialize(queues, provider, async () => {
         const stored = await options.store.read(provider);
         const configuration = options.environment[provider] ?? stored?.configuration;
@@ -508,76 +456,20 @@ export function createProviderApplications(
     async configureSlackSocket(request, input) {
       rejectMutation(options, request);
       const account = await requireOperator(options, request);
-      if (options.environment.slack !== undefined) {
+      if (options.environment["slack"] !== undefined)
         throw new ProviderApplicationError("managedByEnvironment");
-      }
-      if (options.slackSocketVerifier === undefined) {
-        throw new ProviderApplicationError("internal");
-      }
-      return serialize(queues, "slack", async () => {
-        if (!input.appToken.startsWith("xapp-") || !input.botToken.startsWith("xoxb-")) {
-          throw new ProviderApplicationError("invalidInput");
-        }
-        const organizationId = account.session.activeOrganizationId;
-        if (organizationId === null) throw new ProviderApplicationError("invalidInput");
-        let installation: Awaited<ReturnType<SlackSocketInstallationVerifier["verify"]>>;
-        try {
-          installation = await options.slackSocketVerifier!.verify(input.appToken, input.botToken);
-        } catch (error) {
-          if (error instanceof ProviderVerificationError) {
-            throw new ProviderApplicationError(error.reason, error.subject, { cause: error });
-          }
-          throw new ProviderApplicationError("internal", undefined, { cause: error });
-        }
-        const configuration = {
-          provider: "slack" as const,
-          transport: "socket" as const,
-          appId: installation.appId,
-          appToken: input.appToken,
-        };
-        const identity = {
-          provider: "slack" as const,
-          id: installation.appId,
-          name: installation.appId,
-        };
-        let candidate: ProviderRuntimeCandidate | undefined;
-        try {
-          candidate = await options.runtime.prepare(
-            "slack",
-            configuration,
-            await safeCallbackOrigin(options, request),
-            identity,
-            (input.expectedVersion ?? 0) + 1,
-          );
-          await candidate.start();
-          const saved = await options.store.completeSlackSocketApplication({
-            configuration,
-            identity,
-            expectedVersion: input.expectedVersion,
-            updatedByUserId: account.account.id,
-            organizationId,
-            installation,
-          });
-          candidate.publish();
-          candidate = undefined;
-          return {
-            status: "verified",
-            provider: "slack",
-            identity,
-            configurationVersion: saved.version,
-          };
-        } catch (error) {
-          await closeCandidate(candidate, "slack", "configure_socket");
-          if (isConfigurationConflict(error)) {
-            throw new ProviderApplicationError("configurationConflict");
-          }
-          if (isIdentityConflict(error)) {
-            throw new ProviderApplicationError("identityConflict");
-          }
-          if (error instanceof ProviderApplicationError) throw error;
-          throw new ProviderApplicationError("internal", undefined, { cause: error });
-        }
-      });
+      const socket = options.registry.require("slack").application.socket;
+      if (socket === undefined) throw new ProviderApplicationError("invalidInput");
+      return serialize(queues, "slack", () =>
+        socket.configure(
+          {
+            options,
+            request,
+            account,
+          },
+          input,
+        ),
+      );
     },
     async retrySlackSocket(request) {
       rejectMutation(options, request);
@@ -651,92 +543,6 @@ function providerStatus(
   return identity === null ? "notConfigured" : "verified";
 }
 
-/**
- * GitHub admits a delivery only when it can check the signature, so an App saved without a
- * webhook secret has repository access and no event triggers. Slack and Linear signing secrets
- * are part of their credentials, and Discord never delivers anything here.
- */
-function acceptsEvents(configuration: ProviderApplicationConfiguration | undefined): boolean {
-  if (configuration === undefined) return false;
-  if (configuration.provider === "github") return (configuration.webhookSecret ?? "") !== "";
-  return configuration.provider === "slack" || configuration.provider === "linear";
-}
-
-function publicIdentifiers(
-  configuration: ProviderApplicationConfiguration,
-): Readonly<Record<string, string>> {
-  switch (configuration.provider) {
-    case "github":
-      return {
-        appId: configuration.appId,
-        appSlug: configuration.appSlug,
-        clientId: configuration.clientId,
-      };
-    case "slack":
-      return configuration.transport === "webhook"
-        ? {
-            appId: configuration.appId,
-            transport: configuration.transport,
-            clientId: configuration.clientId,
-          }
-        : { appId: configuration.appId, transport: configuration.transport };
-    case "discord":
-      return { applicationId: configuration.applicationId };
-    case "linear":
-      return { clientId: configuration.clientId };
-  }
-  throw new Error("unknown provider configuration");
-}
-
-function withoutExpectedVersion(
-  input: ProviderApplicationConfiguration,
-): ProviderApplicationConfiguration {
-  const { expectedVersion: _expectedVersion, ...configuration } = input;
-  return configuration as ProviderApplicationConfiguration;
-}
-
-function sameExternalIdentity(
-  left: ProviderApplicationIdentity,
-  right: ProviderApplicationIdentity,
-): boolean {
-  return left.provider === right.provider && left.id === right.id;
-}
-
-function identityConflictsWithConnections(
-  identity: ProviderApplicationIdentity,
-  previous: StoredProviderApplication | undefined,
-  connections: readonly ConnectedProviderIdentity[],
-): boolean {
-  if (connections.length === 0) return false;
-  if (
-    connections.some(
-      (connection) => connection.applicationId !== null && connection.applicationId !== identity.id,
-    )
-  ) {
-    return true;
-  }
-  return (
-    connections.some((connection) => connection.applicationId === null) &&
-    (previous === undefined || !sameExternalIdentity(previous.identity, identity))
-  );
-}
-
-function isConfigurationConflict(error: unknown): boolean {
-  return (
-    error !== null &&
-    typeof error === "object" &&
-    Reflect.get(error, "name") === "ProviderConfigurationConflictError"
-  );
-}
-
-function isIdentityConflict(error: unknown): boolean {
-  return (
-    error !== null &&
-    typeof error === "object" &&
-    Reflect.get(error, "name") === "ProviderApplicationIdentityConflictError"
-  );
-}
-
 export { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 
 export function resolveCallbackOrigin(request: Request, explicitAppUrl?: string): string {
@@ -753,18 +559,21 @@ export function resolveCallbackOrigin(request: Request, explicitAppUrl?: string)
   return browserOrigin;
 }
 
-export { createProviderApplicationStore } from "./internal/store.js";
-export { parseProviderApplicationConfiguration } from "./internal/store.js";
 export { readProviderApplicationEnvironment } from "./internal/environment.js";
-export { createProviderApplicationVerifier } from "./internal/verifier.js";
-export { DynamicProviderRuntime } from "./internal/runtime-owner.js";
 export { createProviderApplicationInventory } from "./internal/inventory.js";
+export { DynamicProviderRuntime } from "./internal/runtime-owner.js";
+export {
+  createProviderApplicationStore,
+  parseProviderApplicationConfiguration,
+} from "./internal/store.js";
+export { createProviderApplicationVerifier } from "./internal/verifier.js";
 
 export async function activateProviderApplicationsAtStartup(options: {
   store: ProviderApplicationStore;
   environment: Partial<Record<Provider, ProviderApplicationConfiguration>>;
   runtime: ProviderRuntimeOwner;
   verifier: ProviderApplicationVerifier;
+  registry: ProviderRegistry;
   inventory: ProviderApplicationInventory;
   callbackOrigin: string;
 }): Promise<readonly { provider: Provider; error: unknown }[]> {
@@ -772,7 +581,9 @@ export async function activateProviderApplicationsAtStartup(options: {
   const storedProviders = new Map(
     (await options.store.readAll()).map((configuration) => [configuration.provider, configuration]),
   );
-  for (const provider of PROVIDERS) {
+  for (const {
+    manifest: { id: provider },
+  } of options.registry.list()) {
     const environmentConfiguration = options.environment[provider];
     const stored = storedProviders.get(provider);
     const configuration = environmentConfiguration ?? stored?.configuration;
@@ -783,6 +594,7 @@ export async function activateProviderApplicationsAtStartup(options: {
         environmentConfiguration,
         stored,
         options.verifier,
+        options.registry,
       );
       const connections = await options.inventory.connectedIdentities(provider);
       const claimLegacyConnections =
@@ -831,17 +643,16 @@ async function startupIdentity(
   environmentConfiguration: ProviderApplicationConfiguration | undefined,
   stored: StoredProviderApplication | undefined,
   verifier: ProviderApplicationVerifier,
+  registry: ProviderRegistry,
 ): Promise<ProviderApplicationIdentity> {
   if (environmentConfiguration === undefined) {
     if (stored === undefined) throw new Error("stored provider application unavailable");
     return stored.identity;
   }
-  if (provider === "slack" && environmentConfiguration.provider === "slack") {
-    return { provider: "slack", id: environmentConfiguration.appId, name: "Slack app" };
-  }
-  if (provider === "linear" && environmentConfiguration.provider === "linear") {
-    return { provider: "linear", id: environmentConfiguration.clientId, name: "Linear app" };
-  }
+  const identity = registry
+    .require(provider)
+    .application.environmentIdentity?.(environmentConfiguration);
+  if (identity !== undefined) return identity;
   return verifier.verify(provider, environmentConfiguration);
 }
 
@@ -852,119 +663,11 @@ function parseHttpOrigin(value: string): string {
   return url.origin;
 }
 
-function requireHttpsOrigin(callbackOrigin: string): void {
-  if (!callbackOrigin.startsWith("https://")) {
-    throw new ProviderApplicationError("httpsRequired", callbackOrigin);
-  }
-}
-
-async function beginSlackConfiguration(
-  options: ProviderApplicationsOptions,
-  request: Request,
-  account: AccountAccessValue,
-  callbackOrigin: string,
-  input: SlackProviderApplicationConfiguration,
-  returnRoute: string,
-): Promise<ProviderApplicationContinuation> {
-  requireHttpsOrigin(callbackOrigin);
-  const previous = await options.store.read("slack");
-  if (previous?.version !== input.expectedVersion) {
-    throw new ProviderApplicationError("configurationConflict");
-  }
-  const organizationId = account.session.activeOrganizationId;
-  if (organizationId === null || options.beginCandidateConnection === undefined) {
-    throw new ProviderApplicationError("invalidInput");
-  }
-  const candidate = await options.runtime.prepare(
-    "slack",
-    withoutExpectedVersion(input),
-    callbackOrigin,
-    { provider: "slack", id: input.appId, name: input.appId },
-    (input.expectedVersion ?? 0) + 1,
-    {
-      expectedConfigurationVersion: input.expectedVersion,
-      activateConfiguration: true,
-    },
-  );
-  if (candidate.beginConnection === undefined) {
-    await closeCandidate(candidate, "slack", "begin_configuration");
-    throw new ProviderApplicationError("internal");
-  }
-  try {
-    const { url } = await options.beginCandidateConnection(
-      request,
-      organizationId,
-      returnRoute,
-      (candidateRequest) => {
-        const result = candidate.beginConnection?.(candidateRequest);
-        return result ?? Promise.reject(new Error("provider unavailable"));
-      },
-    );
-    await candidate.close();
-    return { status: "continuing", provider: "slack", url };
-  } catch (error) {
-    await closeCandidate(candidate, "slack", "begin_configuration");
-    if (error instanceof ProviderApplicationError) throw error;
-    throw new ProviderApplicationError("internal", undefined, { cause: error });
-  }
-}
-
 /**
  * Linear cannot verify an OAuth client's secret without an authorization grant. Treat saving
  * credentials as a candidate connection: the callback verifies the grant, persists the app and
  * workspace binding atomically, then publishes the prepared runtime.
  */
-async function beginLinearConfiguration(
-  options: ProviderApplicationsOptions,
-  request: Request,
-  account: AccountAccessValue,
-  callbackOrigin: string,
-  input: LinearProviderApplicationConfiguration,
-  returnRoute: string,
-): Promise<ProviderApplicationContinuation> {
-  requireHttpsOrigin(callbackOrigin);
-  const previous = await options.store.read("linear");
-  if (previous?.version !== input.expectedVersion) {
-    throw new ProviderApplicationError("configurationConflict");
-  }
-  const organizationId = account.session.activeOrganizationId;
-  if (organizationId === null || options.beginCandidateConnection === undefined) {
-    throw new ProviderApplicationError("invalidInput");
-  }
-  const candidate = await options.runtime.prepare(
-    "linear",
-    withoutExpectedVersion(input),
-    callbackOrigin,
-    { provider: "linear", id: input.clientId, name: "Linear app" },
-    (input.expectedVersion ?? 0) + 1,
-    {
-      expectedConfigurationVersion: input.expectedVersion,
-      activateConfiguration: true,
-    },
-  );
-  if (candidate.beginConnection === undefined) {
-    await closeCandidate(candidate, "linear", "begin_configuration");
-    throw new ProviderApplicationError("internal");
-  }
-  try {
-    const { url } = await options.beginCandidateConnection(
-      request,
-      organizationId,
-      returnRoute,
-      (candidateRequest) => {
-        const result = candidate.beginConnection?.(candidateRequest);
-        return result ?? Promise.reject(new Error("provider unavailable"));
-      },
-    );
-    await candidate.close();
-    return { status: "continuing", provider: "linear", url };
-  } catch (error) {
-    await closeCandidate(candidate, "linear", "begin_configuration");
-    if (error instanceof ProviderApplicationError) throw error;
-    throw new ProviderApplicationError("internal", undefined, { cause: error });
-  }
-}
-
 async function verifyAndActivateProvider(
   options: ProviderApplicationsOptions,
   account: AccountAccessValue,
@@ -1012,12 +715,8 @@ async function verifyAndActivateProvider(
   } catch (error) {
     await closeCandidate(candidate, provider, "verify_and_save");
     if (error instanceof ProviderApplicationError) throw error;
-    const gateway = provider === "discord" ? discordGatewayFailure(error) : undefined;
-    if (gateway !== undefined) {
-      throw new ProviderApplicationError(gateway.code, discordGatewayContext(gateway.failure), {
-        cause: error,
-      });
-    }
+    const activationError = options.registry.require(provider).application.activationError?.(error);
+    if (activationError !== undefined) throw activationError;
     if (isIdentityConflict(error)) {
       throw new ProviderApplicationError("identityConflict", previous?.identity.name);
     }
@@ -1025,148 +724,5 @@ async function verifyAndActivateProvider(
       throw new ProviderApplicationError("configurationConflict");
     }
     throw new ProviderApplicationError("internal", undefined, { cause: error });
-  }
-}
-
-function discordGatewayContext(failure: string): string {
-  return `discordGateway${failure[0]?.toUpperCase()}${failure.slice(1)}`;
-}
-
-function discordGatewayFailure(error: unknown):
-  | {
-      code: "credentialsRejected" | "permissionMissing" | "internal";
-      failure: string;
-    }
-  | undefined {
-  if (!(error instanceof Error) || error.name !== "DiscordGatewayError") return undefined;
-  const code: unknown = Reflect.get(error, "code");
-  const failure: unknown = Reflect.get(error, "gatewayFailure");
-  if (
-    (code !== "credentialsRejected" && code !== "permissionMissing" && code !== "internal") ||
-    typeof failure !== "string"
-  ) {
-    return undefined;
-  }
-  return { code, failure };
-}
-
-async function completeSlackInstallation(
-  options: ProviderApplicationsOptions,
-  input: {
-    configuration: unknown;
-    expectedConfigurationVersion: number | undefined;
-    callbackOrigin: string;
-    userId: string;
-    installation: VerifiedSlackInstallation;
-    binding: BindSlackConnectionInput;
-  },
-): Promise<void> {
-  const configuration = parseProviderApplicationConfiguration(input.configuration);
-  if (configuration.provider !== "slack" || configuration.appId !== input.installation.appId) {
-    throw new ProviderApplicationError("credentialsRejected");
-  }
-  const previous = await options.store.read("slack");
-  const connections = await options.inventory.connectedIdentities("slack");
-  const identity: ProviderApplicationIdentity = {
-    provider: "slack",
-    id: input.installation.appId,
-    name: input.installation.appId,
-  };
-  if (identityConflictsWithConnections(identity, previous, connections)) {
-    throw new ProviderApplicationError("identityConflict", previous?.identity.name);
-  }
-  let candidate: ProviderRuntimeCandidate | undefined;
-  try {
-    candidate = await options.runtime.prepare(
-      "slack",
-      configuration,
-      input.callbackOrigin,
-      identity,
-      (input.expectedConfigurationVersion ?? 0) + 1,
-    );
-    await candidate.start();
-    await options.store.completeSlackInstallation({
-      configuration,
-      identity,
-      expectedVersion: input.expectedConfigurationVersion,
-      updatedByUserId: input.userId,
-      binding: input.binding,
-    });
-    candidate.publish();
-    candidate = undefined;
-  } catch (error) {
-    await closeCandidate(candidate, "slack", "complete_installation");
-    throw error;
-  }
-}
-
-async function completeLinearInstallation(
-  options: ProviderApplicationsOptions,
-  input: {
-    configuration: unknown;
-    expectedConfigurationVersion: number | undefined;
-    callbackOrigin: string;
-    userId: string;
-    installation: LinearInstallation;
-    binding: BindLinearConnectionInput;
-  },
-): Promise<void> {
-  const configuration = parseProviderApplicationConfiguration(input.configuration);
-  if (
-    configuration.provider !== "linear" ||
-    configuration.clientId !== input.binding.providerApplicationId
-  ) {
-    throw new ProviderApplicationError("credentialsRejected");
-  }
-  const previous = await options.store.read("linear");
-  const connections = await options.inventory.connectedIdentities("linear");
-  const identity: ProviderApplicationIdentity = {
-    provider: "linear",
-    id: configuration.clientId,
-    name: "Linear app",
-  };
-  if (identityConflictsWithConnections(identity, previous, connections)) {
-    throw new ProviderApplicationError("identityConflict", previous?.identity.name);
-  }
-  let candidate: ProviderRuntimeCandidate | undefined;
-  try {
-    candidate = await options.runtime.prepare(
-      "linear",
-      configuration,
-      input.callbackOrigin,
-      identity,
-      (input.expectedConfigurationVersion ?? 0) + 1,
-    );
-    await candidate.start();
-    await options.store.completeLinearInstallation({
-      configuration,
-      identity,
-      expectedVersion: input.expectedConfigurationVersion,
-      updatedByUserId: input.userId,
-      installation: input.installation,
-      binding: input.binding,
-    });
-    candidate.publish();
-    candidate = undefined;
-  } catch (error) {
-    await closeCandidate(candidate, "linear", "complete_installation");
-    throw error;
-  }
-}
-
-async function closeCandidate(
-  candidate: ProviderRuntimeCandidate | undefined,
-  provider: Provider,
-  parentOperation: string,
-): Promise<void> {
-  if (candidate === undefined) return;
-  try {
-    await candidate.close();
-  } catch (error) {
-    reportFailure(error, {
-      operation: `provider_application.${parentOperation}.cleanup`,
-      component: "provider_applications",
-      provider,
-    });
   }
 }

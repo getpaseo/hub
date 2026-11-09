@@ -1,16 +1,18 @@
+import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterEach, describe, it } from "vitest";
+import { createDatabase } from "../db/pg.js";
 import {
   embeddedDatabaseRuntime,
   postgresDatabaseRuntime,
   type DatabaseRuntimeBundle,
 } from "../db/runtime/index.js";
-import { createDatabase } from "../db/pg.js";
+import { createProviderRegistry } from "../providers/server.js";
 import { createProviderApplicationInventory, createProviderApplicationStore } from "./index.js";
+const providerRegistry = createProviderRegistry();
 
 const roots: string[] = [];
 
@@ -30,9 +32,11 @@ describe("provider application persistence", () => {
 
     const reopened = await embeddedDatabaseRuntime(root);
     await reopened.runtime.migrate();
-    const stored = await createProviderApplicationStore(reopened.runtime, reopened.locks).read(
-      "github",
-    );
+    const stored = await createProviderApplicationStore(
+      reopened.runtime,
+      reopened.locks,
+      providerRegistry,
+    ).read("github");
     assert.equal(stored?.version, 2);
     assert.equal(stored?.configuration.provider, "github");
     if (stored?.configuration.provider === "github") {
@@ -51,9 +55,11 @@ describe("provider application persistence", () => {
       await bundle.runtime.close();
 
       const reopened = await postgresDatabaseRuntime(postgres.getConnectionUri());
-      const stored = await createProviderApplicationStore(reopened.runtime, reopened.locks).read(
-        "github",
-      );
+      const stored = await createProviderApplicationStore(
+        reopened.runtime,
+        reopened.locks,
+        providerRegistry,
+      ).read("github");
       assert.equal(stored?.version, 2);
       await reopened.runtime.close();
     } finally {
@@ -69,7 +75,7 @@ async function exercisePersistence(bundle: DatabaseRuntimeBundle) {
                          must_change_password, is_instance_operator)
      values ('operator', 'Operator', 'operator@example.test', true, now(), now(), false, true)`,
   );
-  const store = createProviderApplicationStore(bundle.runtime, bundle.locks);
+  const store = createProviderApplicationStore(bundle.runtime, bundle.locks, providerRegistry);
   const configuration = {
     provider: "github" as const,
     appId: "42",
@@ -140,7 +146,12 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
     clientSecret: "secret",
     signingSecret: "signing-secret",
   };
-  const store = createProviderApplicationStore(bundle.runtime, bundle.locks, database);
+  const store = createProviderApplicationStore(
+    bundle.runtime,
+    bundle.locks,
+    providerRegistry,
+    database,
+  );
   const startAttempt = async (stateVerifier: string, expectedVersion: number | null) => {
     await database.startConnectionAttempt({
       provider: "slack",

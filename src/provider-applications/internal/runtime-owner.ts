@@ -1,28 +1,23 @@
-import type { AuthServer } from "../../auth/server.js";
 import { createHash } from "node:crypto";
+import type { AuthServer } from "../../auth/server.js";
 import type { Database } from "../../db/types.js";
-import { replyOutputTool } from "../../execution-capabilities/outputs.js";
-import { logger } from "../../logger.js";
+
 import { reportFailure } from "../../failures/index.js";
-import { createDiscordRegistration } from "../../providers/discord/index.js";
-import { createGitHubRegistration } from "../../providers/github/index.js";
-import { createLinearRegistration } from "../../providers/linear/index.js";
+import { logger } from "../../logger.js";
 import type {
   ProviderRegistration,
   TriggerProviderResources,
 } from "../../providers/registration.js";
-import { createSlackRegistration } from "../../providers/slack/index.js";
 import type { TriggerHandler, TriggerProvider, TriggerSource } from "../../triggers/index.js";
 import type {
-  Provider,
   ProviderApplicationConfiguration,
   ProviderApplicationIdentity,
   ProviderRuntimeCandidate,
   ProviderRuntimeOwner,
 } from "../index.js";
-import { parseProviderApplicationConfiguration } from "./store.js";
+
+import type { ProviderInstallation, ProviderRegistry } from "../../providers/registry.js";
 import type { SlackDeliveryStatus } from "../../triggers/slack/source/index.js";
-import { GITHUB_TRIGGER_SOURCE_NAMES } from "../../triggers/github/classification.js";
 
 interface Slot {
   active: ActiveRegistration | undefined;
@@ -32,7 +27,7 @@ interface Slot {
 }
 
 interface ActiveRegistration {
-  provider: Provider;
+  provider: string;
   registration: ProviderRegistration;
   triggers: readonly TriggerProvider[];
   sourcesStarted: boolean;
@@ -53,79 +48,57 @@ function unavailable(code: string): ProviderRuntimeUnavailableError {
   return new ProviderRuntimeUnavailableError(code);
 }
 
-type SlackInstallationHandler = Parameters<
-  NonNullable<ProviderRuntimeOwner["onSlackInstallation"]>
->[0];
-type LinearInstallationHandler = Parameters<
-  NonNullable<ProviderRuntimeOwner["onLinearInstallation"]>
->[0];
-
 interface DynamicProviderRuntimeOptions {
   database: Database;
   auth: AuthServer;
   applicationBaseUrl: string;
   fetch?: typeof fetch;
-  registrationFactory?: (input: {
-    provider: Provider;
-    configuration: ProviderApplicationConfiguration;
-    callbackOrigin: string;
-    configurationVersion: number;
-    expectedConfigurationVersion: number | undefined;
-    activateConfiguration: boolean;
-    onVerifiedSlackInstallation: SlackInstallationHandler;
-    onVerifiedLinearInstallation: LinearInstallationHandler;
-  }) => ProviderRegistration;
+  registry: ProviderRegistry;
 }
 
 /** @package */
 export class DynamicProviderRuntime implements ProviderRuntimeOwner {
-  private readonly slots = new Map<Provider, Slot>([
-    ["github", emptySlot()],
-    ["slack", emptySlot()],
-    ["discord", emptySlot()],
-    ["linear", emptySlot()],
-  ]);
-  private readonly stable = new Map<Provider, ProviderRegistration>();
-  private slackInstallationHandler: SlackInstallationHandler | undefined;
-  private linearInstallationHandler: LinearInstallationHandler | undefined;
+  private readonly slots = new Map<string, Slot>();
+  private readonly stable = new Map<string, ProviderRegistration>();
+  private readonly installationHandlers = new Map<
+    string,
+    (operation: ProviderInstallation) => Promise<void>
+  >();
 
   constructor(private readonly options: DynamicProviderRuntimeOptions) {
-    for (const provider of ["github", "slack", "discord", "linear"] as const) {
-      this.stable.set(provider, this.stableRegistration(provider));
+    for (const module of options.registry.list()) this.slots.set(module.manifest.id, emptySlot());
+    // Preserve the existing connection projection order independently of application setup order.
+    for (const module of [...options.registry.list()].sort(
+      (left, right) => (left.manifest.connectionOrder ?? 0) - (right.manifest.connectionOrder ?? 0),
+    )) {
+      this.stable.set(module.manifest.id, this.stableRegistration(module.manifest.id));
     }
   }
 
   registrations(): readonly ProviderRegistration[] {
-    return [
-      this.stable.get("github")!,
-      this.stable.get("discord")!,
-      this.stable.get("slack")!,
-      this.stable.get("linear")!,
-    ];
+    return [...this.stable.values()];
   }
 
-  identity(provider: Provider): ProviderApplicationIdentity | undefined {
+  onInstallation(
+    provider: string,
+    handler: (operation: ProviderInstallation) => Promise<void>,
+  ): void {
+    this.options.registry.require(provider);
+    this.installationHandlers.set(provider, handler);
+  }
+
+  identity(provider: string): ProviderApplicationIdentity | undefined {
     return this.slot(provider).identity;
   }
 
-  slackDelivery(): { status(): SlackDeliveryStatus; retry(): Promise<void> } | undefined {
-    return this.slot("slack").active?.registration.slackDelivery;
-  }
-
-  onSlackInstallation(
-    handler: NonNullable<DynamicProviderRuntime["slackInstallationHandler"]>,
-  ): void {
-    this.slackInstallationHandler = handler;
-  }
-
-  onLinearInstallation(
-    handler: NonNullable<DynamicProviderRuntime["linearInstallationHandler"]>,
-  ): void {
-    this.linearInstallationHandler = handler;
+  delivery(
+    provider: string,
+  ): { status(): SlackDeliveryStatus; retry(): Promise<void> } | undefined {
+    return this.slot(provider).active?.registration.slackDelivery;
   }
 
   async prepare(
-    provider: Provider,
+    provider: string,
     configuration: ProviderApplicationConfiguration,
     callbackOrigin: string,
     identity: ProviderApplicationIdentity,
@@ -201,8 +174,8 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
   }
 
   private build(
-    provider: Provider,
-    configuration: ProviderApplicationConfiguration,
+    provider: string,
+    configuration: unknown,
     callbackOrigin: string,
     configurationVersion: number,
     activation?: {
@@ -210,103 +183,31 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       activateConfiguration: boolean;
     },
   ): ProviderRegistration {
-    if (this.options.registrationFactory !== undefined) {
-      return this.options.registrationFactory(
-        this.customRegistrationInput(
-          provider,
-          configuration,
-          callbackOrigin,
-          configurationVersion,
-          activation,
-        ),
-      );
-    }
-    const shared = {
+    const module = this.options.registry.require(provider);
+    const parsed = module.application.parseConfiguration(configuration);
+    if (parsed.provider !== provider) throw new Error("provider configuration mismatch");
+    return module.createRuntime({
       database: this.options.database,
       auth: this.options.auth,
       applicationBaseUrl: this.options.applicationBaseUrl,
-      publicBaseUrl: callbackOrigin,
-      configurationVersion,
       ...(this.options.fetch === undefined ? {} : { fetch: this.options.fetch }),
-    };
-    if (provider === "github" && configuration.provider === "github") {
-      return createGitHubRegistration({ ...shared, configuration });
-    }
-    if (provider === "slack" && configuration.provider === "slack") {
-      return createSlackRegistration({
-        ...shared,
-        configuration,
-        ...(activation?.expectedConfigurationVersion === undefined
-          ? {}
-          : { expectedConfigurationVersion: activation.expectedConfigurationVersion }),
-        activateConfiguration: activation?.activateConfiguration ?? false,
-        onVerifiedInstallation: (input) => this.handleSlackInstallation(input),
-      });
-    }
-    if (provider === "discord" && configuration.provider === "discord") {
-      return createDiscordRegistration({
-        ...shared,
-        configuration: {
-          clientId: configuration.applicationId,
-          clientSecret: configuration.clientSecret,
-          botToken: configuration.botToken,
-        },
-      });
-    }
-    if (provider === "linear" && configuration.provider === "linear") {
-      return createLinearRegistration({
-        ...shared,
-        configuration,
-        ...(activation?.expectedConfigurationVersion === undefined
-          ? {}
-          : { expectedConfigurationVersion: activation.expectedConfigurationVersion }),
-        activateConfiguration: activation?.activateConfiguration ?? false,
-        onVerifiedInstallation: (input) => this.handleLinearInstallation(input),
-      });
-    }
-    throw new Error("provider configuration mismatch");
-  }
-
-  private customRegistrationInput(
-    provider: Provider,
-    configuration: ProviderApplicationConfiguration,
-    callbackOrigin: string,
-    configurationVersion: number,
-    activation:
-      | {
-          expectedConfigurationVersion: number | undefined;
-          activateConfiguration: boolean;
-        }
-      | undefined,
-  ): Parameters<NonNullable<DynamicProviderRuntimeOptions["registrationFactory"]>>[0] {
-    return {
-      provider,
-      configuration,
+      configuration: parsed,
       callbackOrigin,
       configurationVersion,
       expectedConfigurationVersion: activation?.expectedConfigurationVersion,
       activateConfiguration: activation?.activateConfiguration ?? false,
-      onVerifiedSlackInstallation: (input) => this.handleSlackInstallation(input),
-      onVerifiedLinearInstallation: (input) => this.handleLinearInstallation(input),
-    };
+      onInstallation: (operation) => {
+        const handler = this.installationHandlers.get(provider);
+        if (handler === undefined)
+          throw unavailable(`${provider}_installation_handler_unavailable`);
+        return handler(operation);
+      },
+    });
   }
 
-  private handleSlackInstallation(input: Parameters<SlackInstallationHandler>[0]): Promise<void> {
-    if (this.slackInstallationHandler === undefined) {
-      throw unavailable("slack_installation_handler_unavailable");
-    }
-    return this.slackInstallationHandler(input);
-  }
-
-  private handleLinearInstallation(input: Parameters<LinearInstallationHandler>[0]): Promise<void> {
-    if (this.linearInstallationHandler === undefined) {
-      throw unavailable("linear_installation_handler_unavailable");
-    }
-    return this.linearInstallationHandler(input);
-  }
-
-  private stableRegistration(provider: Provider): ProviderRegistration {
+  private stableRegistration(provider: string): ProviderRegistration {
     const slot = this.slot(provider);
+    const manifest = this.options.registry.require(provider).manifest;
     const source: TriggerSource = {
       start: async (handler) => {
         slot.handler = handler;
@@ -321,7 +222,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       },
     };
     const connectionActions = Object.fromEntries(
-      actionNames(provider).map((action) => [
+      manifest.actions.map((action) => [
         action,
         async (request: Request) => {
           const active = await this.registrationForAction(provider, slot, action, request);
@@ -346,7 +247,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
           },
         actions: connectionActions,
       },
-      ...(provider === "github"
+      ...(manifest.integration !== undefined
         ? {
             integration: {
               resolve: (
@@ -355,34 +256,38 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
                 const active = slot.active;
                 const integration = active?.registration.integration;
                 if (active === undefined || integration === undefined) {
-                  throw unavailable("github_integration_unavailable");
+                  throw unavailable(`${provider}_integration_unavailable`);
                 }
                 return this.withLease(active, () => integration.resolve(...args));
               },
-              githubAuthority: {
-                mint: (
-                  input: Parameters<
-                    NonNullable<
-                      NonNullable<ProviderRegistration["integration"]>["githubAuthority"]
-                    >["mint"]
-                  >[0],
-                ) => {
-                  const active = slot.active;
-                  const authority = active?.registration.integration?.githubAuthority;
-                  if (active === undefined || authority === undefined) {
-                    throw unavailable("github_authority_unavailable");
+              ...(manifest.integration.repositoryAuthority
+                ? {
+                    githubAuthority: {
+                      mint: (
+                        input: Parameters<
+                          NonNullable<
+                            NonNullable<ProviderRegistration["integration"]>["githubAuthority"]
+                          >["mint"]
+                        >[0],
+                      ) => {
+                        const active = slot.active;
+                        const authority = active?.registration.integration?.githubAuthority;
+                        if (active === undefined || authority === undefined) {
+                          throw unavailable(`${provider}_authority_unavailable`);
+                        }
+                        return this.withLease(active, () => authority.mint(input));
+                      },
+                      revoke: (token: string) => {
+                        const active = slot.active;
+                        const authority = active?.registration.integration?.githubAuthority;
+                        if (active === undefined || authority === undefined) {
+                          throw unavailable(`${provider}_authority_unavailable`);
+                        }
+                        return this.withLease(active, () => authority.revoke(token));
+                      },
+                    },
                   }
-                  return this.withLease(active, () => authority.mint(input));
-                },
-                revoke: (token: string) => {
-                  const active = slot.active;
-                  const authority = active?.registration.integration?.githubAuthority;
-                  if (active === undefined || authority === undefined) {
-                    throw unavailable("github_authority_unavailable");
-                  }
-                  return this.withLease(active, () => authority.revoke(token));
-                },
-              },
+                : {}),
             },
           }
         : {}),
@@ -398,47 +303,41 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         },
       ],
       sources: [source],
-      outputs: [
-        {
-          type: `${provider}.reply`,
-          tool: replyOutputTool,
-          available: (context) => {
-            const output = slot.active?.registration.outputs.find(
-              (candidate) => candidate.type === `${provider}.reply`,
-            );
-            return output !== undefined && (output.available?.(context) ?? true);
-          },
-          execute: (input) => {
-            const active = slot.active;
-            const output = active?.registration.outputs.find(
-              (candidate) => candidate.type === `${provider}.reply`,
-            );
-            if (active === undefined || output === undefined) {
-              throw unavailable(`${provider}_output_unavailable`);
-            }
-            return this.withLease(active, () => output.execute(input));
-          },
+      outputs: manifest.outputs.map((declaration) => ({
+        ...declaration,
+        available: (context) => {
+          const output = slot.active?.registration.outputs.find(
+            (candidate) => candidate.type === declaration.type,
+          );
+          return output !== undefined && (output.available?.(context) ?? true);
         },
-      ],
-      requests:
-        provider === "discord"
-          ? []
-          : [
-              {
-                name: provider === "github" ? "webhook" : `${provider}.events`,
-                handle: (request) => {
-                  const active = slot.active;
-                  const handler = active?.registration.requests[0];
-                  return active === undefined || handler === undefined
-                    ? Promise.resolve(new Response("Not Found", { status: 404 }))
-                    : this.withLease(active, () => handler.handle(request));
-                },
-              },
-            ],
-      ...(provider === "slack" || provider === "discord"
+        execute: (input) => {
+          const active = slot.active;
+          const output = active?.registration.outputs.find(
+            (candidate) => candidate.type === declaration.type,
+          );
+          if (active === undefined || output === undefined) {
+            throw unavailable(`${provider}_output_unavailable`);
+          }
+          return this.withLease(active, () => output.execute(input));
+        },
+      })),
+      requests: manifest.requests.map((name) => ({
+        name,
+        handle: (request) => {
+          const active = slot.active;
+          const handler = active?.registration.requests.find(
+            (candidate) => candidate.name === name,
+          );
+          return active === undefined || handler === undefined
+            ? Promise.resolve(new Response("Not Found", { status: 404 }))
+            : this.withLease(active, () => handler.handle(request));
+        },
+      })),
+      ...(manifest.attachment !== undefined
         ? {
             attachment: {
-              provider,
+              provider: manifest.attachment,
               resolve: (input) => {
                 const active = slot.active;
                 const attachment = active?.registration.attachment;
@@ -453,13 +352,13 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     };
   }
 
-  private slot(provider: Provider): Slot {
+  private slot(provider: string): Slot {
     const slot = this.slots.get(provider);
     if (slot === undefined) throw new Error(`unknown provider: ${provider}`);
     return slot;
   }
 
-  private dynamicTrigger(provider: Provider, slot: Slot): TriggerProvider {
+  private dynamicTrigger(provider: string, slot: Slot): TriggerProvider {
     const current = () => {
       const active = slot.active;
       const trigger = active?.triggers[0];
@@ -474,7 +373,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     };
     return {
       name: provider,
-      eventNames: eventNames(provider),
+      eventNames: this.options.registry.require(provider).manifest.events,
       match: async (external) => {
         const selected = current();
         return this.withLease(selected.active, () => selected.trigger.match(external));
@@ -541,14 +440,14 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     }
   }
 
-  private retireWhenDrained(provider: Provider, active: ActiveRegistration): Promise<void> {
+  private retireWhenDrained(provider: string, active: ActiveRegistration): Promise<void> {
     if (active.leases > 0) return Promise.resolve();
     active.retirement ??= retire(provider, active);
     return active.retirement;
   }
 
   private async registrationForAction(
-    provider: Provider,
+    provider: string,
     slot: Slot,
     action: string,
     request: Request,
@@ -567,7 +466,9 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         : undefined;
     if (existing !== undefined) return existing;
     try {
-      const configuration = parseProviderApplicationConfiguration(snapshot.configurationSnapshot);
+      const configuration = this.options.registry
+        .require(provider)
+        .application.parseConfiguration(snapshot.configurationSnapshot);
       if (configuration.provider !== provider) return slot.active;
       const registration = this.build(
         provider,
@@ -610,18 +511,6 @@ function emptySlot(): Slot {
   };
 }
 
-function actionNames(provider: Provider): readonly string[] {
-  if (provider === "github") return ["start", "disconnect", "setup", "callback"];
-  return ["start", "disconnect", "callback"];
-}
-
-function eventNames(provider: Provider): TriggerProvider["eventNames"] {
-  if (provider === "slack") return ["slack.mention"];
-  if (provider === "discord") return ["discord.mention"];
-  if (provider === "linear") return ["linear.issue", "linear.comment"];
-  return GITHUB_TRIGGER_SOURCE_NAMES;
-}
-
 async function startSources(active: ActiveRegistration, handler: TriggerHandler): Promise<void> {
   if (active.sourcesStarted) return;
   const started: TriggerSource[] = [];
@@ -660,7 +549,7 @@ async function stopSources(active: ActiveRegistration): Promise<void> {
   if (rejected?.status === "rejected") throw rejected.reason;
 }
 
-async function retire(provider: Provider, active: ActiveRegistration): Promise<void> {
+async function retire(provider: string, active: ActiveRegistration): Promise<void> {
   try {
     await stopSources(active);
   } catch (error) {

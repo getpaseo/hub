@@ -1,8 +1,8 @@
-import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
 import { respondError, type Err } from "../contract/respond.js";
-import { errorForLog, logger as defaultLogger, redact } from "../logger.js";
+import { logger as defaultLogger, errorForLog, redact } from "../logger.js";
 import { withReference } from "./reference.js";
 
 export { withReference } from "./reference.js";
@@ -24,7 +24,7 @@ export type FailureKind =
 export interface FailureContext {
   operation: string;
   component: string;
-  provider?: "github" | "slack" | "discord" | "linear" | "stripe";
+  provider?: string;
   requestId?: string;
   status?: number;
   organizationSlug?: string;

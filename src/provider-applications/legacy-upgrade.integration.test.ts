@@ -1,16 +1,17 @@
+import { PGlite } from "@electric-sql/pglite";
+import { PostgreSqlContainer } from "@testcontainers/postgresql";
+import { readMigrationFiles } from "drizzle-orm/migrator";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PostgreSqlContainer } from "@testcontainers/postgresql";
-import { PGlite } from "@electric-sql/pglite";
-import { readMigrationFiles } from "drizzle-orm/migrator";
 import { afterEach, describe, it } from "vitest";
 import {
   embeddedDatabaseRuntime,
   postgresDatabaseRuntime,
   type DatabaseRuntimeBundle,
 } from "../db/runtime/index.js";
+import { createProviderRegistry } from "../providers/server.js";
 import { SLACK_REQUIRED_BOT_SCOPES } from "../providers/slack/client.js";
 import {
   activateProviderApplicationsAtStartup,
@@ -22,6 +23,7 @@ import {
   type ProviderRuntimeCandidate,
   type ProviderRuntimeOwner,
 } from "./index.js";
+const providerRegistry = createProviderRegistry();
 
 const roots: string[] = [];
 const migrations = readMigrationFiles({ migrationsFolder: join(process.cwd(), "drizzle") });
@@ -40,6 +42,7 @@ describe("pre-provider-app connection upgrade", () => {
       const saved = await createProviderApplicationStore(
         fixture.bundle.runtime,
         fixture.bundle.locks,
+        providerRegistry,
       ).read("slack");
       assert.deepEqual(saved?.configuration, ENVIRONMENT_APPLICATIONS.slack);
       assert.equal(saved?.version, 4);
@@ -98,7 +101,12 @@ describe("pre-provider-app connection upgrade", () => {
         const inventory = createProviderApplicationInventory(fixture.bundle.runtime);
         const runtime = new RecordingRuntime();
         const failures = await activateProviderApplicationsAtStartup({
-          store: createProviderApplicationStore(fixture.bundle.runtime, fixture.bundle.locks),
+          registry: providerRegistry,
+          store: createProviderApplicationStore(
+            fixture.bundle.runtime,
+            fixture.bundle.locks,
+            providerRegistry,
+          ),
           environment: ENVIRONMENT_APPLICATIONS,
           runtime,
           verifier: {
@@ -122,7 +130,12 @@ describe("pre-provider-app connection upgrade", () => {
 
         const changed = new RecordingRuntime();
         const changedFailures = await activateProviderApplicationsAtStartup({
-          store: createProviderApplicationStore(fixture.bundle.runtime, fixture.bundle.locks),
+          registry: providerRegistry,
+          store: createProviderApplicationStore(
+            fixture.bundle.runtime,
+            fixture.bundle.locks,
+            providerRegistry,
+          ),
           environment: {
             ...ENVIRONMENT_APPLICATIONS,
             github: { ...ENVIRONMENT_APPLICATIONS.github, appId: "different-app" },

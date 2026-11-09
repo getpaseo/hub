@@ -2,59 +2,62 @@ import { readFile, writeFile } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { createApplicationRuntime } from "../../application-runtime.js";
-import { createAuthServer, type AuthServer, type AuthServerOptions } from "../../auth/server.js";
-import { composeBilling, type BillingConfig, type BillingRuntime } from "../../billing/index.js";
 import { composeEntitlements } from "../../auth/entitlements.js";
 import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
-import { embeddedDatabaseRuntime, type DatabaseRuntime } from "../../db/runtime/index.js";
+import { createAuthServer, type AuthServer, type AuthServerOptions } from "../../auth/server.js";
+import { composeBilling, type BillingConfig, type BillingRuntime } from "../../billing/index.js";
+import type { HubBundleFile } from "../../config/bundle.js";
+import { compileHubConfig, compiledConfigurationHash } from "../../config/compiler.js";
+import { ProjectConfigurationStore } from "../../configuration/store.js";
 import { createDatabase } from "../../db/pg.js";
+import { embeddedDatabaseRuntime, type DatabaseRuntime } from "../../db/runtime/index.js";
 import type { Database } from "../../db/types.js";
 import { createFetchServer } from "../../http/node-server.js";
-import { loadBuiltStartServer } from "../../server/build.js";
-import { createGitHubRegistration } from "../../providers/github/index.js";
-import type { ProviderRegistration } from "../../providers/registration.js";
-import { createDiscordRegistration } from "../../providers/discord/index.js";
-import { createSlackRegistration } from "../../providers/slack/index.js";
-import { createLinearRegistration } from "../../providers/linear/index.js";
+import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../../http/request-origin.js";
 import {
-  BrowserDiscordBot,
-  BrowserDiscordConnections,
-  BrowserGitHubAuth,
-  BrowserGitHubConnections,
-  BrowserGitHubConfiguration,
-  BrowserGitHubReactions,
-  BrowserSlackBot,
-  type BrowserDiscordEvent,
-  isBrowserProviderScenario,
-  type BrowserProviderScenario,
-} from "./browser-providers.js";
+  DynamicProviderRuntime,
+  activateProviderApplicationsAtStartup,
+  createProviderApplicationInventory,
+  createProviderApplicationStore,
+  createProviderApplications,
+  readProviderApplicationEnvironment,
+  resolveCallbackOrigin,
+  type ProviderApplicationIdentity,
+  type ProviderApplications,
+} from "../../provider-applications/index.js";
+import { createDiscordRegistration } from "../../providers/discord/index.js";
+import { createGitHubRegistration } from "../../providers/github/index.js";
+import { createLinearRegistration } from "../../providers/linear/index.js";
+import type { ProviderRegistration } from "../../providers/registration.js";
+import { createProviderRegistry } from "../../providers/server.js";
+import { createSlackRegistration } from "../../providers/slack/index.js";
+import { registrationRegistry } from "../../providers/testing.js";
+import { loadBuiltStartServer } from "../../server/build.js";
+import { BrowserAccountEmails, type BrowserAccountEmailKind } from "./browser-account-emails.js";
+import { BrowserAccountSetupFaults } from "./browser-account-setup.js";
 import {
   FixtureStripeBillingClient,
   FixtureStripeCatalogSource,
   type FixtureBillingProduct,
 } from "./browser-billing.js";
-import { BrowserAccountSetupFaults } from "./browser-account-setup.js";
 import {
   BrowserProviderApplicationVerifier,
   BrowserSlackSocketFixture,
   browserRegistrationFactory,
 } from "./browser-provider-applications.js";
 import {
-  activateProviderApplicationsAtStartup,
-  DynamicProviderRuntime,
-  createProviderApplicationInventory,
-  createProviderApplicationStore,
-  createProviderApplications,
-  readProviderApplicationEnvironment,
-  resolveCallbackOrigin,
-  type ProviderApplications,
-  type ProviderApplicationIdentity,
-} from "../../provider-applications/index.js";
-import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../../http/request-origin.js";
-import { compileHubConfig, compiledConfigurationHash } from "../../config/compiler.js";
-import { ProjectConfigurationStore } from "../../configuration/store.js";
-import type { HubBundleFile } from "../../config/bundle.js";
-import { BrowserAccountEmails, type BrowserAccountEmailKind } from "./browser-account-emails.js";
+  BrowserDiscordBot,
+  BrowserDiscordConnections,
+  BrowserGitHubAuth,
+  BrowserGitHubConfiguration,
+  BrowserGitHubConnections,
+  BrowserGitHubReactions,
+  BrowserSlackBot,
+  isBrowserProviderScenario,
+  type BrowserDiscordEvent,
+  type BrowserProviderScenario,
+} from "./browser-providers.js";
+const providerRegistry = createProviderRegistry();
 
 interface DiscordCommand {
   id: string;
@@ -1146,7 +1149,12 @@ async function activateStaticProviderApplications(
   if (input.scenario === "slack-only") {
     identities.push({ provider: "slack", id: "browser-slack-app", name: "Paseo" });
   }
-  const store = createProviderApplicationStore(input.databaseRuntime, input.locks, input.database);
+  const store = createProviderApplicationStore(
+    input.databaseRuntime,
+    input.locks,
+    providerRegistry,
+    input.database,
+  );
   for (const identity of identities) {
     await store.activate({ provider: identity.provider, identity, configurationVersion: 0 });
   }
@@ -1173,26 +1181,34 @@ async function composeProviderApplications(input: {
   registrations: readonly ProviderRegistration[];
 } | null> {
   if (process.env["PASEO_BROWSER_PROVIDER_APPS"] !== "dynamic") return null;
-  const environment = await readProviderApplicationEnvironment(process.env);
-  const store = createProviderApplicationStore(input.databaseRuntime, input.locks, input.database);
+  const environment = await readProviderApplicationEnvironment(process.env, providerRegistry);
+  const store = createProviderApplicationStore(
+    input.databaseRuntime,
+    input.locks,
+    providerRegistry,
+    input.database,
+  );
   const verifier = new BrowserProviderApplicationVerifier(input.scenario);
   const inventory = createProviderApplicationInventory(input.databaseRuntime);
   const providerRuntime = new DynamicProviderRuntime({
     database: input.database,
     auth: input.auth,
     applicationBaseUrl: input.publicBaseUrl,
-    registrationFactory: browserRegistrationFactory({
-      database: input.database,
-      auth: input.auth,
-      applicationBaseUrl: input.publicBaseUrl,
-      scenario: input.scenario,
-      bot: input.bot,
-      slackBot: input.slackBot,
-      slackSocket: input.slackSocket,
-      githubConfiguration: input.githubConfiguration,
-    }),
+    registry: registrationRegistry(
+      browserRegistrationFactory({
+        database: input.database,
+        auth: input.auth,
+        applicationBaseUrl: input.publicBaseUrl,
+        scenario: input.scenario,
+        bot: input.bot,
+        slackBot: input.slackBot,
+        slackSocket: input.slackSocket,
+        githubConfiguration: input.githubConfiguration,
+      }),
+    ),
   });
   const failures = await activateProviderApplicationsAtStartup({
+    registry: providerRegistry,
     store,
     environment,
     runtime: providerRuntime,
@@ -1204,6 +1220,7 @@ async function composeProviderApplications(input: {
     throw failures[0].error;
   }
   const capability = createProviderApplications({
+    registry: providerRegistry,
     auth: input.auth,
     store,
     environment,
@@ -1211,8 +1228,8 @@ async function composeProviderApplications(input: {
     verifier,
     slackSocketVerifier: input.slackSocket.verifier(),
     slackDelivery: {
-      status: () => providerRuntime.slackDelivery()?.status() ?? { state: "stopped" },
-      retry: () => providerRuntime.slackDelivery()?.retry() ?? Promise.resolve(),
+      status: () => providerRuntime.delivery("slack")?.status() ?? { state: "stopped" },
+      retry: () => providerRuntime.delivery("slack")?.retry() ?? Promise.resolve(),
     },
     inventory,
     callbackOrigin: (request) => resolveCallbackOrigin(request, process.env["PASEO_HUB_APP_URL"]),

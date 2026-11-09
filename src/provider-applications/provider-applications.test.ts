@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AccountAccessValue } from "../auth/organization-access.js";
+import { completeLinearInstallation } from "../providers/linear/application.js";
+import type { ProviderInstallation } from "../providers/registry.js";
+import { createProviderRegistry } from "../providers/server.js";
+import { completeSlackInstallation } from "../providers/slack/application.js";
 import {
   ProviderApplicationError,
   activateProviderApplicationsAtStartup,
@@ -8,11 +12,12 @@ import {
   providerApplicationReturnRoute,
   type ProviderApplicationConfiguration,
   type ProviderApplicationIdentity,
-  type Provider,
   type ProviderApplicationStore,
   type ProviderRuntimeCandidate,
   type ProviderRuntimeOwner,
 } from "./index.js";
+type Provider = ProviderApplicationConfiguration["provider"];
+const providerRegistry = createProviderRegistry();
 
 const githubConfiguration: ProviderApplicationConfiguration = {
   provider: "github",
@@ -70,7 +75,7 @@ describe("provider applications", () => {
     assert.equal(serialized.includes("client-secret"), false);
     assert.equal(serialized.includes("private-key"), false);
     assert.equal(serialized.includes("webhook-secret"), false);
-    assert.deepEqual(overview.providers.github.identifiers, {
+    assert.deepEqual(overview.providers["github"].identifiers, {
       appId: "42",
       appSlug: "paseo",
       clientId: "client",
@@ -81,7 +86,7 @@ describe("provider applications", () => {
     const fixture = createFixture({ eventEvidenceVersion: 1 });
     await fixture.applications.verifyAndSave(request("POST"), "github", githubConfiguration);
     assert.equal(
-      (await fixture.applications.overview(request())).providers.github.lastEventAt,
+      (await fixture.applications.overview(request())).providers["github"].lastEventAt,
       "2026-08-14T10:00:00.000Z",
     );
 
@@ -92,7 +97,7 @@ describe("provider applications", () => {
     });
 
     assert.equal(
-      (await fixture.applications.overview(request())).providers.github.lastEventAt,
+      (await fixture.applications.overview(request())).providers["github"].lastEventAt,
       null,
     );
   });
@@ -108,7 +113,7 @@ describe("provider applications", () => {
     });
 
     assert.equal(
-      (await fixture.applications.overview(request())).providers.github.status,
+      (await fixture.applications.overview(request())).providers["github"].status,
       "actionNeeded",
     );
   });
@@ -239,8 +244,8 @@ describe("provider applications", () => {
     });
 
     const overridden = await fixture.applications.overview(request());
-    assert.equal(overridden.providers.github.status, "managedByEnvironment");
-    assert.deepEqual(overridden.providers.github.identifiers, {
+    assert.equal(overridden.providers["github"].status, "managedByEnvironment");
+    assert.deepEqual(overridden.providers["github"].identifiers, {
       appId: "84",
       appSlug: "environment-app",
       clientId: "environment-client",
@@ -250,7 +255,7 @@ describe("provider applications", () => {
     const resumed = createFixture();
     resumed.store.values.set("github", fixture.store.values.get("github")!);
     assert.deepEqual(
-      (await resumed.applications.overview(request())).providers.github.identifiers,
+      (await resumed.applications.overview(request())).providers["github"].identifiers,
       {
         appId: "42",
         appSlug: "paseo",
@@ -269,6 +274,7 @@ describe("provider applications", () => {
       updatedByUserId: "operator",
     });
     const failures = await activateProviderApplicationsAtStartup({
+      registry: providerRegistry,
       store: fixture.store,
       environment: { github: { ...githubConfiguration, appId: "84", clientSecret: "rotated" } },
       runtime: fixture.runtime,
@@ -294,6 +300,7 @@ describe("provider applications", () => {
       updatedByUserId: "operator",
     });
     const failures = await activateProviderApplicationsAtStartup({
+      registry: providerRegistry,
       store: fixture.store,
       environment: { github: { ...githubConfiguration, clientSecret: "rotated" } },
       runtime: fixture.runtime,
@@ -480,6 +487,7 @@ describe("provider applications", () => {
     });
     assert.deepEqual(
       await activateProviderApplicationsAtStartup({
+        registry: providerRegistry,
         store: fixture.store,
         environment: {},
         runtime: fixture.runtime,
@@ -590,6 +598,7 @@ function createFixture(
     ownerLogin: "acme",
   };
   const applications = createProviderApplications({
+    registry: providerRegistry,
     auth: {
       resolveAccount: () =>
         Promise.resolve({
@@ -660,13 +669,13 @@ function createFixture(
 }
 
 function identityFor(
-  provider: Provider,
+  provider: string,
   github: ProviderApplicationIdentity,
 ): ProviderApplicationIdentity {
   if (provider === "github") return github;
   if (provider === "discord") return { provider, id: "100", name: "Paseo" };
   if (provider === "linear") return { provider, id: "linear-client", name: "Paseo" };
-  return { provider, id: "A1", name: "Paseo" };
+  return { provider: "slack", id: "A1", name: "Paseo" };
 }
 
 function connectedInventory(applicationId: string) {
@@ -778,37 +787,22 @@ class BlockingRuntime implements ProviderRuntimeOwner {
   private readonly failures = new Set<string>();
   private readonly blocked = new Set<string>();
   private readonly unavailableConnections = new Set<string>();
-  private slackInstallationHandler:
-    | Parameters<NonNullable<ProviderRuntimeOwner["onSlackInstallation"]>>[0]
-    | undefined;
-  private linearInstallationHandler:
-    | Parameters<NonNullable<ProviderRuntimeOwner["onLinearInstallation"]>>[0]
-    | undefined;
-
-  onSlackInstallation(
-    handler: Parameters<NonNullable<ProviderRuntimeOwner["onSlackInstallation"]>>[0],
-  ) {
-    this.slackInstallationHandler = handler;
+  private readonly installationHandlers = new Map<
+    string,
+    (operation: ProviderInstallation) => Promise<void>
+  >();
+  onInstallation(provider: string, handler: (operation: ProviderInstallation) => Promise<void>) {
+    this.installationHandlers.set(provider, handler);
   }
-
-  completeSlack(
-    input: Parameters<Parameters<NonNullable<ProviderRuntimeOwner["onSlackInstallation"]>>[0]>[0],
-  ) {
-    if (this.slackInstallationHandler === undefined) throw new Error("handler unavailable");
-    return this.slackInstallationHandler(input);
+  completeSlack(input: Parameters<typeof completeSlackInstallation>[1]) {
+    const handler = this.installationHandlers.get("slack");
+    if (handler === undefined) throw new Error("handler unavailable");
+    return handler((options) => completeSlackInstallation(options, input));
   }
-
-  onLinearInstallation(
-    handler: Parameters<NonNullable<ProviderRuntimeOwner["onLinearInstallation"]>>[0],
-  ) {
-    this.linearInstallationHandler = handler;
-  }
-
-  completeLinear(
-    input: Parameters<Parameters<NonNullable<ProviderRuntimeOwner["onLinearInstallation"]>>[0]>[0],
-  ) {
-    if (this.linearInstallationHandler === undefined) throw new Error("handler unavailable");
-    return this.linearInstallationHandler(input);
+  completeLinear(input: Parameters<typeof completeLinearInstallation>[1]) {
+    const handler = this.installationHandlers.get("linear");
+    if (handler === undefined) throw new Error("handler unavailable");
+    return handler((options) => completeLinearInstallation(options, input));
   }
 
   prepare(
