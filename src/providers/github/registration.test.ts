@@ -343,7 +343,7 @@ describe("GitHub registration", () => {
       },
     });
 
-    const authority = registration.integration?.githubAuthority;
+    const authority = registration.githubAuthority;
     assert.ok(authority);
     const minted = await authority.mint({
       projectId: "project-1",

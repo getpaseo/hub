@@ -1,3 +1,4 @@
+import type { SlackDeliveryStatus } from "../../../../providers/slack/delivery.js";
 import { createHash } from "node:crypto";
 import { WebSocket, type RawData } from "ws";
 import { reportFailure } from "../../../../failures/index.js";
@@ -23,13 +24,7 @@ import {
 
 const MAX_FRAME_BYTES = 1_048_576;
 
-export type SlackDeliveryStatus =
-  | { state: "connecting" | "reconnecting" | "connected" }
-  | {
-      state: "actionNeeded";
-      reason: "appTokenRejected" | "socketModeOff" | "appIdentityMismatch";
-    }
-  | { state: "stopped" };
+export type { SlackDeliveryStatus } from "../../../../providers/slack/delivery.js";
 
 export interface SlackSocketSource extends TriggerSource {
   status(): SlackDeliveryStatus;

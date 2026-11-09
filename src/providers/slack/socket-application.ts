@@ -21,9 +21,8 @@ export async function configureSocket(
     account,
   }: Pick<ProviderApplicationContext, "options" | "request" | "account">,
   input: { appToken: string; botToken: string; expectedVersion?: number },
+  verifier: SlackSocketInstallationVerifier,
 ): Promise<ProviderApplicationResult> {
-  if (options.slackSocketVerifier === undefined) throw new ProviderApplicationError("internal");
-
   if (!input.appToken.startsWith("xapp-") || !input.botToken.startsWith("xoxb-")) {
     throw new ProviderApplicationError("invalidInput");
   }
@@ -31,7 +30,7 @@ export async function configureSocket(
   if (organizationId === null) throw new ProviderApplicationError("invalidInput");
   let installation: Awaited<ReturnType<SlackSocketInstallationVerifier["verify"]>>;
   try {
-    installation = await options.slackSocketVerifier.verify(input.appToken, input.botToken);
+    installation = await verifier.verify(input.appToken, input.botToken);
   } catch (error) {
     if (error instanceof ProviderVerificationError) {
       throw new ProviderApplicationError(error.reason, error.subject, { cause: error });

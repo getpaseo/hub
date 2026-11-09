@@ -43,8 +43,8 @@ import {
   readProviderApplicationEnvironment,
   resolveCallbackOrigin,
 } from "./provider-applications/index.js";
+import { githubExecutionAuthority } from "./providers/github/runtime.js";
 import { createProviderRegistry } from "./providers/server.js";
-import { createSlackSocketInstallationVerifier } from "./providers/slack/installation.js";
 import { ReceiptRetention } from "./receipt-retention/index.js";
 import { createRuntimeConfiguration } from "./runtime-configuration/index.js";
 import { loadBuiltStartServer } from "./server/build.js";
@@ -149,11 +149,6 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       environment: providerEnvironment,
       runtime: providerRuntime,
       verifier: providerVerifier,
-      slackSocketVerifier: createSlackSocketInstallationVerifier(),
-      slackDelivery: {
-        status: () => providerRuntime.delivery("slack")?.status() ?? { state: "stopped" },
-        retry: () => providerRuntime.delivery("slack")?.retry() ?? Promise.resolve(),
-      },
       inventory: providerInventory,
       callbackOrigin: (request) => resolveCallbackOrigin(request, identity.explicitAppUrl),
       beginCandidateConnection: async (request, organizationId, returnRoute, begin) => {
@@ -171,6 +166,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       entitlements: entitlements.service,
       billing,
       registrations: providerRuntime.registrations(),
+      createExecutionAuthority: (context) => githubExecutionAuthority(context, providerRuntime),
       providerApplications,
       publicBaseUrl: identity.appUrl,
       completionTokenSecret: identity.authSecret,

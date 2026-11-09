@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import type { AuthServer } from "../../auth/server.js";
 import type { Database } from "../../db/types.js";
+import type {
+  ActiveProviderRuntime,
+  ProviderRuntimeDefinition,
+} from "../../providers/active-runtime.js";
 
 import { reportFailure } from "../../failures/index.js";
 import { logger } from "../../logger.js";
@@ -17,7 +21,6 @@ import type {
 } from "../index.js";
 
 import type { ProviderInstallation, ProviderRegistry } from "../../providers/registry.js";
-import type { SlackDeliveryStatus } from "../../triggers/slack/source/index.js";
 
 interface Slot {
   active: ActiveRegistration | undefined;
@@ -57,7 +60,7 @@ interface DynamicProviderRuntimeOptions {
 }
 
 /** @package */
-export class DynamicProviderRuntime implements ProviderRuntimeOwner {
+export class DynamicProviderRuntime implements ProviderRuntimeOwner, ActiveProviderRuntime {
   private readonly slots = new Map<string, Slot>();
   private readonly stable = new Map<string, ProviderRegistration>();
   private readonly installationHandlers = new Map<
@@ -91,10 +94,20 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     return this.slot(provider).identity;
   }
 
-  delivery(
-    provider: string,
-  ): { status(): SlackDeliveryStatus; retry(): Promise<void> } | undefined {
-    return this.slot(provider).active?.registration.slackDelivery;
+  read<Registration extends ProviderRegistration, Value>(
+    definition: ProviderRuntimeDefinition<Registration>,
+    operation: (registration: Registration | undefined) => Value,
+  ): Value {
+    const active = this.slot(definition.provider).active;
+    return operation(active === undefined ? undefined : definition.require(active.registration));
+  }
+  use<Registration extends ProviderRegistration, Value>(
+    definition: ProviderRuntimeDefinition<Registration>,
+    operation: (registration: Registration | undefined) => Promise<Value>,
+  ): Promise<Value> {
+    const active = this.slot(definition.provider).active;
+    if (active === undefined) return operation(undefined);
+    return this.withLease(active, () => operation(definition.require(active.registration)));
   }
 
   async prepare(
@@ -260,34 +273,6 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
                 }
                 return this.withLease(active, () => integration.resolve(...args));
               },
-              ...(manifest.integration.repositoryAuthority
-                ? {
-                    githubAuthority: {
-                      mint: (
-                        input: Parameters<
-                          NonNullable<
-                            NonNullable<ProviderRegistration["integration"]>["githubAuthority"]
-                          >["mint"]
-                        >[0],
-                      ) => {
-                        const active = slot.active;
-                        const authority = active?.registration.integration?.githubAuthority;
-                        if (active === undefined || authority === undefined) {
-                          throw unavailable(`${provider}_authority_unavailable`);
-                        }
-                        return this.withLease(active, () => authority.mint(input));
-                      },
-                      revoke: (token: string) => {
-                        const active = slot.active;
-                        const authority = active?.registration.integration?.githubAuthority;
-                        if (active === undefined || authority === undefined) {
-                          throw unavailable(`${provider}_authority_unavailable`);
-                        }
-                        return this.withLease(active, () => authority.revoke(token));
-                      },
-                    },
-                  }
-                : {}),
             },
           }
         : {}),

@@ -33,6 +33,7 @@ import {
   type SlackInstallation,
 } from "./client.js";
 import { slackPersistence, type SlackPersistence } from "./persistence.js";
+import { slackRuntime, type SlackRegistration } from "./runtime.js";
 
 export type SlackRegistrationConfiguration =
   | {
@@ -85,7 +86,10 @@ interface SlackConnectionOptions {
 
 export function createSlackRegistration(
   options: CreateSlackRegistrationOptions,
-): ProviderRegistration {
+): SlackRegistration {
+  return slackRuntime.register(buildSlackRegistration(options));
+}
+function buildSlackRegistration(options: CreateSlackRegistrationOptions): SlackRegistration {
   const configuration = options.configuration ?? null;
   if (configuration === null || options.publicBaseUrl === undefined) {
     return emptySlackRegistration(options);

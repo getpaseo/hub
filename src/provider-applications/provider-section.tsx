@@ -1,3 +1,4 @@
+import { readSlackDeliveryStatus, type SlackDeliveryStatus } from "../providers/slack/delivery.js";
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop, typescript-eslint/no-unsafe-type-assertion -- each section owns callbacks bound to its own provider, the glyph and pill are the disclosure header's own slots, and the server functions are typed through the provider-applications boundary */
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
@@ -395,7 +396,7 @@ function SectionBody({
             )}
             {guide.provider === "slack" &&
             view.identifiers["transport"] === "socket" &&
-            view.deliveryStatus?.state === "actionNeeded" ? (
+            readSlackDeliveryStatus(view)?.state === "actionNeeded" ? (
               <Button type="button" variant="outline" disabled={busy} onClick={onRetry}>
                 Retry
               </Button>
@@ -502,7 +503,7 @@ function eventState(
   origin: string,
 ): ReactNode {
   if (guide.provider === "slack" && view.identifiers["transport"] === "socket") {
-    const socketState = slackSocketEventState(view.deliveryStatus);
+    const socketState = slackSocketEventState(readSlackDeliveryStatus(view));
     if (socketState !== undefined) return socketState;
   }
   if (guide.provider === "github" && !isSecureOrigin(origin)) {
@@ -518,9 +519,7 @@ function eventState(
   );
 }
 
-function slackSocketEventState(
-  delivery: ProviderApplicationView["deliveryStatus"],
-): ReactNode | undefined {
+function slackSocketEventState(delivery: SlackDeliveryStatus | undefined): ReactNode | undefined {
   if (delivery?.state === "connected") return <>Connected</>;
   if (delivery?.state === "connecting" || delivery?.state === "reconnecting") {
     return <>Reconnecting</>;

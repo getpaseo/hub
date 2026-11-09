@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AccountAccessValue } from "../auth/organization-access.js";
+import type { ActiveProviderRuntime } from "../providers/active-runtime.js";
 import { completeLinearInstallation } from "../providers/linear/application.js";
 import type { ProviderInstallation } from "../providers/registry.js";
+import { ProviderRegistry } from "../providers/registry.js";
 import { createProviderRegistry } from "../providers/server.js";
+import { configureSlackSocket } from "../providers/slack/application-capability.js";
 import { completeSlackInstallation } from "../providers/slack/application.js";
+import { createSlackProvider } from "../providers/slack/module.js";
 import {
   ProviderApplicationError,
   activateProviderApplicationsAtStartup,
@@ -17,7 +21,26 @@ import {
   type ProviderRuntimeOwner,
 } from "./index.js";
 type Provider = ProviderApplicationConfiguration["provider"];
-const providerRegistry = createProviderRegistry();
+const providerRegistry = new ProviderRegistry(
+  createProviderRegistry()
+    .list()
+    .map((module) =>
+      module.manifest.id === "slack"
+        ? createSlackProvider({
+            verify: (_appToken, botToken) =>
+              Promise.resolve({
+                appId: "A1",
+                teamId: "T1",
+                teamName: "Acme",
+                botId: "B1",
+                botUserId: "U1",
+                botAccessToken: botToken,
+                scopes: ["app_mentions:read", "chat:write"],
+              }),
+          })
+        : module,
+    ),
+);
 
 const githubConfiguration: ProviderApplicationConfiguration = {
   provider: "github",
@@ -428,7 +451,7 @@ describe("provider applications", () => {
   it("verifies and atomically publishes Socket Mode with its first workspace", async () => {
     const fixture = createFixture();
 
-    const result = await fixture.applications.configureSlackSocket(request("POST"), {
+    const result = await configureSlackSocket(fixture.applications, request("POST"), {
       appToken: "xapp-secret",
       botToken: "xoxb-secret",
     });
@@ -615,18 +638,6 @@ function createFixture(
     verifier: {
       verify: (provider) => Promise.resolve(identityFor(provider, verificationIdentity)),
     },
-    slackSocketVerifier: {
-      verify: (_appToken, botToken) =>
-        Promise.resolve({
-          appId: "A1",
-          teamId: "T1",
-          teamName: "Acme",
-          botId: "B1",
-          botUserId: "U1",
-          botAccessToken: botToken,
-          scopes: ["app_mentions:read", "chat:write"],
-        }),
-    },
     inventory: {
       connectedIdentities: (provider) =>
         Promise.resolve(
@@ -782,6 +793,8 @@ class MemoryStore implements ProviderApplicationStore {
 }
 
 class BlockingRuntime implements ProviderRuntimeOwner {
+  read: ActiveProviderRuntime["read"] = (_definition, operation) => operation(undefined);
+  use: ActiveProviderRuntime["use"] = (_definition, operation) => operation(undefined);
   private readonly candidates = new Map<string, Candidate[]>();
   private readonly activeCandidates = new Map<string, Candidate>();
   private readonly failures = new Set<string>();

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { respondOk, type Result } from "../contract/respond.js";
 import { respondWithFailure } from "../failures/index.js";
 import { browserProvider } from "../providers/browser.js";
+import { slackSocketSchema } from "../providers/slack/application-configuration.js";
 import { getApplication } from "../server/runtime.js";
 import {
   type ProviderApplicationConfiguration,
@@ -14,7 +15,6 @@ import { providerApplicationSaveFailure, providerHost, providerName } from "./sa
 
 const providerSchema = z.enum(["github", "slack", "discord", "linear"]);
 const surfaceSchema = z.enum(["appSetup", "apps"]).optional();
-const expectedVersionSchema = z.number().int().positive().optional();
 const configurationSchema = z
   .object({ provider: z.string() })
   .passthrough()
@@ -32,11 +32,6 @@ const connectionSchema = z.object({
   provider: providerSchema,
   organizationId: z.string().min(1),
   surface: surfaceSchema,
-});
-const slackSocketSchema = z.object({
-  appToken: z.string().trim().startsWith("xapp-").min(6),
-  botToken: z.string().trim().startsWith("xoxb-").min(6),
-  expectedVersion: expectedVersionSchema,
 });
 
 export const providerApplicationsOverview = createServerFn({ method: "GET" }).handler(
@@ -125,40 +120,14 @@ export const beginProviderConnection = createServerFn({ method: "POST" })
 
 export const configureSlackSocketApplication = createServerFn({ method: "POST" })
   .validator(slackSocketSchema)
-  .handler(async ({ data }): Promise<Result<ProviderApplicationSaveResult>> => {
-    try {
-      const capability = (await getApplication()).providerApplications;
-      if (capability === null) throw new Error("unavailable");
-      return respondOk(
-        await capability.configureSlackSocket(getRequest(), {
-          appToken: data.appToken,
-          botToken: data.botToken,
-          ...(data.expectedVersion === undefined ? {} : { expectedVersion: data.expectedVersion }),
-        }),
-      );
-    } catch (error) {
-      return providerApplicationSaveFailure("slack", error, [data.appToken, data.botToken]);
-    }
+  .handler(async (context) => {
+    const { configureSlackSocketHandler } = await import("../providers/slack/endpoints.js");
+    return configureSlackSocketHandler(context);
   });
-
-export const retrySlackSocketDelivery = createServerFn({ method: "POST" }).handler(
-  async (): Promise<Result<void>> => {
-    try {
-      const capability = (await getApplication()).providerApplications;
-      if (capability === null) throw new Error("unavailable");
-      await capability.retrySlackSocket(getRequest());
-      return respondOk(undefined);
-    } catch (error) {
-      return respondWithFailure(
-        error,
-        { operation: "slack.socket.retry", component: "provider_applications", provider: "slack" },
-        {
-          fallback: "Hub couldn't retry Slack. Sign in as the instance operator, then try again.",
-        },
-      );
-    }
-  },
-);
+export const retrySlackSocketDelivery = createServerFn({ method: "POST" }).handler(async () => {
+  const { retrySlackSocketHandler } = await import("../providers/slack/endpoints.js");
+  return retrySlackSocketHandler();
+});
 
 function sensitiveConfigurationValues(
   configuration: z.infer<typeof configurationSchema>,

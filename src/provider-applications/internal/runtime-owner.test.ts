@@ -1,10 +1,10 @@
-type Provider = ProviderApplicationConfiguration["provider"];
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../../auth/server.js";
 import { createMemoryDatabase } from "../../db/memory.js";
 import type { DurableProviderEvent } from "../../db/types.js";
 import { OutputExecutorRegistry, replyOutputTool } from "../../execution-capabilities/outputs.js";
+import { githubAuthority, type GitHubRegistration } from "../../providers/github/runtime.js";
 import type { ProviderRegistration } from "../../providers/registration.js";
 import { createProviderRegistry } from "../../providers/server.js";
 import { registrationRegistry } from "../../providers/testing.js";
@@ -16,6 +16,7 @@ import type {
   SlackProviderApplicationConfiguration,
 } from "../index.js";
 import { DynamicProviderRuntime } from "./runtime-owner.js";
+type Provider = ProviderApplicationConfiguration["provider"];
 const providerRegistry = createProviderRegistry();
 
 describe("dynamic provider runtime", () => {
@@ -353,7 +354,7 @@ describe("dynamic provider runtime", () => {
     await github.integration!.resolve("project", "github", "token", {
       executionId: "execution-1",
     });
-    const authority = await github.integration!.githubAuthority!.mint({
+    const authority = await githubAuthority(runtime).mint({
       projectId: "project",
       connectionSlug: "github",
       repositories: ["acme/repository"],
@@ -361,7 +362,7 @@ describe("dynamic provider runtime", () => {
     });
 
     assert.deepEqual(used, ["launch:D1", "integration:A1", "authority-mint:A1"]);
-    await github.integration!.githubAuthority!.revoke(authority.token);
+    await githubAuthority(runtime).revoke(authority.token);
   });
 
   it("reports an unavailable capability with a stable diagnostic code", async () => {
@@ -371,13 +372,10 @@ describe("dynamic provider runtime", () => {
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
     });
-    const github = runtime
-      .registrations()
-      .find((registration) => registration.connection.name === "github")!;
 
     await assert.rejects(
       async () =>
-        github.integration!.githubAuthority!.mint({
+        githubAuthority(runtime).mint({
           projectId: "project",
           connectionSlug: "github",
           repositories: ["acme/repository"],
@@ -444,7 +442,7 @@ describe("dynamic provider runtime", () => {
     await stable.integration!.resolve("project", "github", "token", {
       executionId: "execution-1",
     });
-    const authority = await stable.integration!.githubAuthority!.mint({
+    const authority = await githubAuthority(runtime).mint({
       projectId: "project",
       connectionSlug: "github",
       repositories: ["acme/repository"],
@@ -457,7 +455,7 @@ describe("dynamic provider runtime", () => {
     await trigger.onAgentExecutionTerminal?.("execution-1", match.triggerContext);
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(stopped, ["A1"]);
-    await stable.integration!.githubAuthority!.revoke(authority.token);
+    await githubAuthority(runtime).revoke(authority.token);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(used.at(-1), "authority-revoke:A2");
     assert.deepEqual(stopped, ["A1"]);
@@ -806,11 +804,7 @@ function fakeRegistration(
   };
 }
 
-function downstreamRegistration(
-  id: string,
-  used: string[],
-  stopped: string[],
-): ProviderRegistration {
+function downstreamRegistration(id: string, used: string[], stopped: string[]): GitHubRegistration {
   const trigger: TriggerProvider = {
     name: id.startsWith("A") ? "github" : "slack",
     eventNames: ["github.push", "slack.mention"],
@@ -836,25 +830,25 @@ function downstreamRegistration(
       status: () => ({ status: "connected" }),
       actions: {},
     },
+    githubAuthority: {
+      mint: () => {
+        used.push(`authority-mint:${id}`);
+        return Promise.resolve({
+          token: `authority:${id}`,
+          expiresAt: Date.now() + 60_000,
+          botUserId: 1,
+          botLogin: "paseo-bot",
+        });
+      },
+      revoke: () => {
+        used.push(`authority-revoke:${id}`);
+        return Promise.resolve();
+      },
+    },
     integration: {
       resolve: () => {
         used.push(`integration:${id}`);
         return Promise.resolve(`token:${id}`);
-      },
-      githubAuthority: {
-        mint: () => {
-          used.push(`authority-mint:${id}`);
-          return Promise.resolve({
-            token: `authority:${id}`,
-            expiresAt: Date.now() + 60_000,
-            botUserId: 1,
-            botLogin: "paseo-bot",
-          });
-        },
-        revoke: () => {
-          used.push(`authority-revoke:${id}`);
-          return Promise.resolve();
-        },
       },
     },
     triggerProviders: [() => trigger],

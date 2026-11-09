@@ -1,7 +1,7 @@
-import { summarizeEvent } from "./activity.js";
 import { replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { GITHUB_TRIGGER_SOURCE_NAMES } from "../../triggers/github/classification.js";
 import type { ProviderModule } from "../registry.js";
+import { summarizeEvent } from "./activity.js";
 import { configurationSchema, identitySchema } from "./application-configuration.js";
 import { connectionInventory } from "./application-persistence.js";
 import { readEnvironment } from "./environment.js";
@@ -16,7 +16,7 @@ export const githubProvider: ProviderModule = {
     events: GITHUB_TRIGGER_SOURCE_NAMES,
     requests: ["webhook"],
     outputs: [{ type: "github.reply", tool: replyOutputTool }],
-    integration: { repositoryAuthority: true },
+    integration: true,
   },
   application: {
     persistence: connectionInventory,
