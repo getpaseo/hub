@@ -230,10 +230,11 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       configurationVersion,
       ...(this.options.fetch === undefined ? {} : { fetch: this.options.fetch }),
     };
-    if (provider === "github" && configuration.provider === "github") {
+    if (provider !== configuration.provider) throw new Error("provider configuration mismatch");
+    if (configuration.provider === "github") {
       return createGitHubRegistration({ ...shared, configuration });
     }
-    if (provider === "slack" && configuration.provider === "slack") {
+    if (configuration.provider === "slack") {
       return createSlackRegistration({
         ...shared,
         configuration,
@@ -244,7 +245,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         onVerifiedInstallation: (input) => this.handleSlackInstallation(input),
       });
     }
-    if (provider === "discord" && configuration.provider === "discord") {
+    if (configuration.provider === "discord") {
       return createDiscordRegistration({
         ...shared,
         configuration: {
@@ -254,7 +255,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         },
       });
     }
-    if (provider === "linear" && configuration.provider === "linear") {
+    if (configuration.provider === "linear") {
       return createLinearRegistration({
         ...shared,
         configuration,
@@ -265,7 +266,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         onVerifiedInstallation: (input) => this.handleLinearInstallation(input),
       });
     }
-    throw new Error("provider configuration mismatch");
+    return assertNever(configuration);
   }
 
   private customRegistrationInput(

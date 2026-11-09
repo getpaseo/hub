@@ -1,3 +1,4 @@
+import { assertNever } from "../../exhaustive.js";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import type {
@@ -45,7 +46,10 @@ export function createProviderApplicationVerifier(
       }
       // Slack client credentials have no honest verification endpoint. They are verified only
       // by the OAuth installation callback, where the returned bot token is tested.
-      return Promise.reject(new ProviderVerificationError("credentialsRejected"));
+      if (configuration.provider === "slack" || configuration.provider === "linear") {
+        return Promise.reject(new ProviderVerificationError("credentialsRejected"));
+      }
+      return assertNever(configuration);
     },
   };
 }
