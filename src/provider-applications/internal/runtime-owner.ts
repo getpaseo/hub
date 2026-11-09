@@ -1,3 +1,4 @@
+import { assertNever } from "../../exhaustive.js";
 import type { AuthServer } from "../../auth/server.js";
 import { createHash } from "node:crypto";
 import type { Database } from "../../db/types.js";
@@ -612,14 +613,22 @@ function emptySlot(): Slot {
 
 function actionNames(provider: Provider): readonly string[] {
   if (provider === "github") return ["start", "disconnect", "setup", "callback"];
-  return ["start", "disconnect", "callback"];
+  switch (provider) {
+    case "slack":
+    case "discord":
+    case "linear":
+      return ["start", "disconnect", "callback"];
+    default:
+      return assertNever(provider);
+  }
 }
 
 function eventNames(provider: Provider): TriggerProvider["eventNames"] {
   if (provider === "slack") return ["slack.mention"];
   if (provider === "discord") return ["discord.mention"];
   if (provider === "linear") return ["linear.issue", "linear.comment"];
-  return GITHUB_TRIGGER_SOURCE_NAMES;
+  if (provider === "github") return GITHUB_TRIGGER_SOURCE_NAMES;
+  return assertNever(provider);
 }
 
 async function startSources(active: ActiveRegistration, handler: TriggerHandler): Promise<void> {

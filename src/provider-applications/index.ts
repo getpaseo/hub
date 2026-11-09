@@ -7,7 +7,8 @@ import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 import { parseProviderApplicationConfiguration } from "./internal/store.js";
 import { reportFailure } from "../failures/index.js";
 
-export const PROVIDERS = ["github", "slack", "discord", "linear"] as const;
+import { CONNECTION_PROVIDERS } from "../connection-providers.js";
+export const PROVIDERS = CONNECTION_PROVIDERS;
 export type Provider = (typeof PROVIDERS)[number];
 
 export interface GitHubProviderApplicationConfiguration {

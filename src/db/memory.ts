@@ -3563,7 +3563,7 @@ function providerForInput(
     | AcceptDiscordEventInput
     | AcceptSlackEventInput
     | AcceptLinearEventInput,
-): "github" | "discord" | "slack" | "linear" {
+): ConnectionProvider {
   if ("installationId" in input) return "github";
   if ("guildId" in input) return "discord";
   return "teamId" in input ? "slack" : "linear";

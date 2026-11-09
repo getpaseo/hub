@@ -1,3 +1,4 @@
+import { assertNever } from "../exhaustive.js";
 import { respondError } from "../contract/respond.js";
 import { respondWithFailure } from "../failures/index.js";
 import { guideFor } from "./guides.js";
@@ -117,20 +118,29 @@ export function providerHost(provider: Provider): string {
   if (provider === "github") return "api.github.com";
   if (provider === "slack") return "slack.com";
   if (provider === "linear") return "linear.app";
-  return "discord.com";
+  if (provider === "discord") return "discord.com";
+  return assertNever(provider);
 }
 
 export function providerName(provider: Provider): string {
   if (provider === "github") return "GitHub";
   if (provider === "slack") return "Slack";
   if (provider === "linear") return "Linear";
-  return "Discord";
+  if (provider === "discord") return "Discord";
+  return assertNever(provider);
 }
 
 /** GitHub calls it an App, Discord an application, Slack an app. Use each provider's own word. */
 function applicationNoun(provider: Provider): string {
   if (provider === "github") return "App";
-  return "application";
+  switch (provider) {
+    case "slack":
+    case "discord":
+    case "linear":
+      return "application";
+    default:
+      return assertNever(provider);
+  }
 }
 
 function environmentVariables(provider: Provider): string {
@@ -163,6 +173,7 @@ function credentialMessage(provider: Provider, subject: string | undefined): str
   if (provider === "linear") {
     return "Linear rejected these app credentials. Nothing was saved. Check the Client ID and Client Secret in the Linear application, then continue again.";
   }
+  if (provider !== "slack") return assertNever(provider);
   if (subject === "appToken") {
     return "Slack rejected the app-level token. Nothing was saved. Open Basic Information → App-Level Tokens, generate one with connections:write, then connect again.";
   }
@@ -189,6 +200,7 @@ function identityMismatchMessage(provider: Provider): string {
   if (provider === "linear") {
     return "The Linear Client ID and Client Secret do not belong to the same application. Nothing was saved. Copy both from one Linear application, then continue again.";
   }
+  if (provider !== "slack") return assertNever(provider);
   return "The app-level token and bot token belong to different Slack apps. Nothing was saved. Copy both tokens from the same app, then connect again.";
 }
 

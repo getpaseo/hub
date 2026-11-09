@@ -1,3 +1,4 @@
+import { isConnectionProvider } from "../connection-providers.js";
 import { parseTriggerDocument } from "../triggers/configuration/index.js";
 import { dump, load } from "js-yaml";
 import { assertNever } from "../exhaustive.js";
@@ -732,21 +733,9 @@ async function compileTriggers(
   return { triggers: compiled, routes, issues };
 }
 
-/**
- * Keyed by every connection provider, so widening `ConnectionProvider` fails to compile here
- * rather than silently classifying a new provider's events as belonging to no provider at all.
- */
-const PROVIDERS_BY_EVENT_PREFIX: ReadonlyMap<string, ConnectionProvider> = new Map(
-  Object.entries({
-    github: "github",
-    slack: "slack",
-    discord: "discord",
-    linear: "linear",
-  } satisfies Record<ConnectionProvider, ConnectionProvider>),
-);
-
 function providerForEvent(eventName: string): ConnectionProvider | undefined {
-  return PROVIDERS_BY_EVENT_PREFIX.get(eventName.slice(0, eventName.indexOf(".")));
+  const prefix = eventName.slice(0, eventName.indexOf("."));
+  return isConnectionProvider(prefix) ? prefix : undefined;
 }
 
 function readAuthoredResource(

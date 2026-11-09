@@ -1,3 +1,4 @@
+import type { ConnectionProvider } from "../connection-providers.js";
 import type { AuthServer } from "../auth/server.js";
 import type {
   Database,
@@ -17,7 +18,7 @@ export interface HomeSnapshot {
   /** Whether any provider app (GitHub, Slack, Discord, Linear) is set up on this Hub at all. */
   appsConfigured: boolean;
   connections: readonly {
-    provider: "github" | "slack" | "discord" | "linear";
+    provider: ConnectionProvider;
     slug: string;
     label: string;
   }[];

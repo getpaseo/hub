@@ -1,3 +1,4 @@
+import { isConnectionProvider } from "../../connection-providers.js";
 import { createHash } from "node:crypto";
 import { dump, load } from "js-yaml";
 import {
@@ -136,12 +137,7 @@ function withAutomaticReply(trigger: CompiledTrigger): CompiledTrigger {
 
 function automaticReplyType(event: string): string | undefined {
   const provider = event.split(".", 1)[0];
-  return provider === "slack" ||
-    provider === "discord" ||
-    provider === "linear" ||
-    provider === "github"
-    ? `${provider}.reply`
-    : undefined;
+  return isConnectionProvider(provider) ? `${provider}.reply` : undefined;
 }
 
 function authoredFilters(

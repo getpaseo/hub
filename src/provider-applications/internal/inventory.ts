@@ -76,8 +76,7 @@ export function createProviderApplicationInventory(
   };
 }
 
-/** @package — exported for tests only; treat as internal to this directory. */
-export function connectionTable(provider: Provider): string {
+function connectionTable(provider: Provider): string {
   switch (provider) {
     case "github":
       return "github_connections";
@@ -92,8 +91,7 @@ export function connectionTable(provider: Provider): string {
   }
 }
 
-/** @package — exported for tests only; treat as internal to this directory. */
-export function connectionIdentityQuery(provider: Provider): string {
+function connectionIdentityQuery(provider: Provider): string {
   switch (provider) {
     case "github":
       return `select id::text as id, account_login as name,

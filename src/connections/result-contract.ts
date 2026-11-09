@@ -10,7 +10,8 @@ import { withReference } from "../failures/reference.js";
  * nobody mapped cannot leak through as raw text.
  */
 
-export const CONNECTION_PROVIDERS = ["github", "discord", "slack", "linear"] as const;
+import { CONNECTION_PROVIDERS } from "../connection-providers.js";
+export { CONNECTION_PROVIDERS } from "../connection-providers.js";
 export type ConnectionProvider = (typeof CONNECTION_PROVIDERS)[number];
 
 export const connectionResultSchema = z.enum([

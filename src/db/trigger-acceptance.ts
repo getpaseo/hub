@@ -1,3 +1,5 @@
+import type { ConnectionProvider } from "../connection-providers.js";
+import { assertNever } from "../exhaustive.js";
 import type { Locks } from "./runtime/locks/index.js";
 import { and, eq, isNull, or, lte, sql, isNotNull } from "drizzle-orm";
 import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
@@ -52,7 +54,7 @@ export class ProviderEventAcceptanceRepository {
   }
 
   private async acceptProvider(
-    provider: "github" | "slack" | "discord" | "linear",
+    provider: ConnectionProvider,
     externalId: number | string,
     resourceId: number | string | undefined,
     input: ProviderEventEvidence,
@@ -557,7 +559,7 @@ function selectFirstRoutePerProject<Route extends { projectId: string }>(
 
 async function findConnection(
   transaction: HubTransaction,
-  provider: "github" | "slack" | "discord" | "linear",
+  provider: ConnectionProvider,
   externalId: number | string,
 ) {
   if (provider === "github") {
@@ -597,6 +599,7 @@ async function findConnection(
       .limit(1);
     return row;
   }
+  if (provider !== "discord") return assertNever(provider);
   const [row] = await transaction
     .select({
       id: schema.discordConnections.id,
@@ -612,7 +615,7 @@ async function claimProviderReceipt(
   transaction: HubTransaction,
   input: {
     organizationId: string;
-    provider: "github" | "slack" | "discord" | "linear" | "manual";
+    provider: ConnectionProvider | "manual";
     connectionId: string | null;
     resourceId: string | null;
     input: ProviderEventEvidence;

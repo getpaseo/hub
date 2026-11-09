@@ -1,3 +1,4 @@
+import { isConnectionProvider, type ConnectionProvider } from "../connection-providers.js";
 import type { AuthServer } from "../auth/server.js";
 import { capabilitiesFor } from "../auth/organization-policy.js";
 import type { Database, OrganizationTriggerRecord } from "../db/types.js";
@@ -199,17 +200,9 @@ function triggerEvent(yaml: string, fallback: string | undefined): string {
 function triggerProvider(
   event: string,
   fallback: string | undefined,
-): "github" | "discord" | "slack" | "linear" | "manual" | "schedule" {
+): ConnectionProvider | "manual" | "schedule" {
   const provider = event.split(".")[0] ?? fallback;
-  if (
-    provider === "schedule" ||
-    provider === "github" ||
-    provider === "discord" ||
-    provider === "slack" ||
-    provider === "linear"
-  ) {
-    return provider;
-  }
+  if (provider === "schedule" || isConnectionProvider(provider)) return provider;
   return "manual";
 }
 

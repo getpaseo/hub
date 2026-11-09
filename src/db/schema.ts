@@ -32,7 +32,8 @@ export type AgentExecutionStatus = (typeof AGENT_EXECUTION_STATUSES)[number];
 export const PROJECT_STATUSES = ["active", "archived"] as const;
 export const CONFIGURATION_SOURCE_KINDS = ["github", "manual"] as const;
 export const TRIGGER_FORMATS = ["single_run", "legacy_multistep"] as const;
-export const CONNECTION_PROVIDERS = ["github", "slack", "discord", "linear"] as const;
+import { CONNECTION_PROVIDERS } from "../connection-providers.js";
+export { CONNECTION_PROVIDERS } from "../connection-providers.js";
 
 export type MachineSource =
   | { kind: "manual"; userId?: string }
@@ -861,7 +862,7 @@ export const organizationConnectionAttempts = pgTable(
   "organization_connection_attempts",
   {
     id: uuid().defaultRandom().primaryKey(),
-    provider: text().$type<"github" | "discord" | "slack" | "linear">().notNull(),
+    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().notNull(),
     phase: text()
       .$type<
         | "github_setup"

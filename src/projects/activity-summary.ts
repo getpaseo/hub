@@ -1,3 +1,4 @@
+import { isConnectionProvider } from "../connection-providers.js";
 import { z } from "zod";
 import { assertNever } from "../exhaustive.js";
 import { reportFailure } from "../failures/index.js";
@@ -13,8 +14,12 @@ import {
 import { NormalizedDiscordMessageEventSchema } from "../triggers/discord/events.js";
 import { NormalizedSlackMentionEventSchema } from "../triggers/slack/events.js";
 import { NormalizedLinearEventSchema } from "../triggers/linear/events.js";
-import { classifyGitHubEvent, type GitHubSemanticEvent } from "../triggers/github/classification.js";
+import {
+  classifyGitHubEvent,
+  type GitHubSemanticEvent,
+} from "../triggers/github/classification.js";
 import type { ConnectionProvider } from "../db/types.js";
+
 export interface TriggerSummary {
   provider: ConnectionProvider | "manual" | "schedule";
   headline: string;
@@ -32,7 +37,8 @@ const ManualTriggerPayloadSchema = z
  * everywhere else treats a trigger as an opaque id.
  */
 export function summarizeTrigger(source: string, payload: unknown): TriggerSummary {
-  if (source.split(".")[0] === "schedule") return { provider: "schedule", headline: "Scheduled run", actor: null, externalUrl: null };
+  if (source.split(".")[0] === "schedule")
+    return { provider: "schedule", headline: "Scheduled run", actor: null, externalUrl: null };
   const provider = providerForSource(source);
   // A manual run, and anything whose prefix names no provider, has no payload shape to read.
   if (provider === undefined) return summarizeManual(payload);
@@ -50,24 +56,9 @@ export function summarizeTrigger(source: string, payload: unknown): TriggerSumma
   }
 }
 
-/**
- * Keyed by every connection provider, so a provider added to `ConnectionProvider` without a
- * summarizer here fails to compile. Without it the event falls through to `summarizeManual` and
- * a thing a person did on Slack or Discord is reported as a manual run.
- */
-const PROVIDERS_BY_SOURCE_PREFIX: ReadonlyMap<string, ConnectionProvider> = new Map(
-  Object.entries({
-    github: "github",
-    slack: "slack",
-    discord: "discord",
-    linear: "linear",
-  } satisfies Record<ConnectionProvider, ConnectionProvider>),
-);
-
 function providerForSource(source: string): ConnectionProvider | undefined {
   const [prefix] = source.split(".");
-  return prefix === undefined ? undefined : PROVIDERS_BY_SOURCE_PREFIX.get(prefix);
-
+  return isConnectionProvider(prefix) ? prefix : undefined;
 }
 
 interface GitHubHeadline {

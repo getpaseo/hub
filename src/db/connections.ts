@@ -1,3 +1,4 @@
+import { assertNever } from "../exhaustive.js";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Locks } from "./runtime/locks/index.js";
 import type { DatabaseRuntime, DrizzleHandle, TransactionHandle } from "./runtime/index.js";
@@ -649,6 +650,7 @@ export class ConnectionRepository {
           accessToken: connection.accessToken,
         } as const;
       }
+      if (provider !== "slack") return assertNever(provider);
       const [connection] = await transaction
         .select({
           teamId: schema.slackConnections.teamId,
@@ -1061,7 +1063,9 @@ async function consumeLockedAttempt(transaction: HubTransaction, attemptId: stri
 function initialConnectionAttemptPhase(provider: ConnectionProvider): ConnectionAttemptPhase {
   if (provider === "github") return "github_setup";
   if (provider === "discord") return "discord_authorization";
-  return provider === "slack" ? "slack_authorization" : "linear_authorization";
+  if (provider === "slack") return "slack_authorization";
+  if (provider === "linear") return "linear_authorization";
+  return assertNever(provider);
 }
 
 function toAttempt(row: AttemptRow): ConnectionAttemptRecord {

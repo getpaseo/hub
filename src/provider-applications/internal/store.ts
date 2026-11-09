@@ -1,3 +1,4 @@
+import { assertNever } from "../../exhaustive.js";
 import { z } from "zod";
 import type { DatabaseRuntime, QueryRow } from "../../db/runtime/index.js";
 import type { Locks } from "../../db/runtime/locks/index.js";
@@ -337,7 +338,8 @@ function connectionTable(provider: Provider): string {
   if (provider === "github") return "github_connections";
   if (provider === "slack") return "slack_connections";
   if (provider === "linear") return "linear_connections";
-  return "discord_connections";
+  if (provider === "discord") return "discord_connections";
+  return assertNever(provider);
 }
 
 function parseRow(row: ProviderConfigurationRow): StoredProviderApplication {

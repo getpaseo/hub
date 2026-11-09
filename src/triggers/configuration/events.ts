@@ -1,3 +1,4 @@
+import type { ConnectionProvider } from "../../connection-providers.js";
 /** The YAML filter keys the form knows how to qualify. */
 export type QualifierKey = "label";
 
@@ -13,7 +14,7 @@ export interface QualifierDefinition {
 }
 
 interface EventDefinition {
-  provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule";
+  provider: ConnectionProvider | "manual" | "schedule";
   label: string;
   origin: "hub" | "provider";
   qualifiers: readonly QualifierDefinition[];
