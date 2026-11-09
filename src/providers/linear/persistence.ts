@@ -25,7 +25,11 @@ export interface LinearPersistence {
   disconnectConnection(
     connectionId: string,
     access: Types.ConnectionStartAuthority,
-  ): Promise<Extract<Types.DisconnectConnectionResult, { provider: "linear" }>>;
+  ): Promise<{
+    provider: "linear";
+    linearOrganizationId: string | undefined;
+    accessToken: string | undefined;
+  }>;
 }
 const persistence = new ProviderPersistence<LinearPersistence>({
   id: "linear",

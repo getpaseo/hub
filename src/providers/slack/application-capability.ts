@@ -25,6 +25,8 @@ export interface SlackSocketConfiguration {
 }
 
 export class SlackApplication implements ProviderApplication {
+  initialConnectionPhase = "slack_authorization";
+  connectionConfigurationActivation = true as const;
   persistence = connectionInventory;
   readEnvironment = readEnvironment;
   receivesEvents = true;

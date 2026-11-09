@@ -56,7 +56,7 @@ export interface GitHubPersistence {
   disconnectConnection(
     connectionId: string,
     access: Types.ConnectionStartAuthority,
-  ): Promise<Extract<Types.DisconnectConnectionResult, { provider: "github" }>>;
+  ): Promise<{ provider: "github" }>;
 }
 const persistence = new ProviderPersistence<GitHubPersistence>({
   id: "github",

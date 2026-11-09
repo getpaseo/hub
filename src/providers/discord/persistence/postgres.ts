@@ -8,7 +8,6 @@ import {
   lockStartAuthority,
   lockStoredAuthority,
   requireCurrentAttempt,
-  uniqueConnectionSlug,
 } from "../../../db/connections.js";
 import { ConnectionAccessDeniedError, ConnectionConflictError } from "../../../db/errors.js";
 import type { PostgresProviderContext } from "../../../db/provider-persistence.js";
@@ -23,11 +22,13 @@ import type {
   ProviderEventAcceptance,
 } from "../../../db/types.js";
 export class DiscordPostgresPersistence {
+  private readonly connections: PostgresProviderContext["connections"];
   private readonly database: DrizzleHandle;
   private readonly runtime: DatabaseRuntime;
   private readonly locks: Locks;
   private readonly events: PostgresProviderContext["events"];
   constructor(context: PostgresProviderContext) {
+    this.connections = context.connections;
     this.runtime = context.runtime;
     this.locks = context.locks;
     this.events = context.events;
@@ -55,8 +56,8 @@ export class DiscordPostgresPersistence {
           guildId: input.guildId,
           providerApplicationId: input.providerApplicationId,
           guildName: input.guildName,
-          slug: await uniqueConnectionSlug(
-            transaction,
+          slug: await this.connections.uniqueSlug(
+            runtimeTransaction,
             attempt.organizationId,
             "discord",
             input.guildName,

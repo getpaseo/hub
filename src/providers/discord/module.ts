@@ -21,6 +21,7 @@ export const discordProvider: ProviderModule = {
     attachment: "discord",
   },
   application: {
+    initialConnectionPhase: "discord_authorization",
     persistence: connectionInventory,
     parseConfiguration(value) {
       const parsed = configurationSchema.parse(value);

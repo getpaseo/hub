@@ -115,6 +115,28 @@ describe("provider connection facades PostgreSQL authority", () => {
     }
   });
 
+  it("allocates a connection slug across every provider inventory inside the binding transaction", async () => {
+    await pool.query(`insert into github_connections
+      (organization_id, slug, installation_id, account_id, account_login, account_type, status)
+      values ('acme', 'acme-inc-github', 99, '99', 'other', 'Organization', 'active');
+      insert into slack_connections (organization_id, slug, team_id, team_name, bot_user_id, bot_access_token)
+      values ('acme', 'acme-inc-github-2', 'slug-team', 'Other', 'bot', 'token');
+      insert into discord_connections (organization_id, slug, guild_id, guild_name)
+      values ('acme', 'acme-inc-github-3', 'slug-guild', 'Other');
+      insert into linear_connections (organization_id, slug, linear_organization_id, linear_organization_name, app_user_id, access_token)
+      values ('acme', 'acme-inc-github-4', 'slug-linear', 'Other', 'app', 'token');`);
+    const attempt = await start(connections, "github");
+    const state = await completeSetup(connections, attempt.state, 42);
+    assert.equal(
+      result(await githubCallback(connections, state, "github-code")),
+      "github_connected",
+    );
+    assert.equal(
+      (await githubPersistence(database).findGitHubConnection(42))?.slug,
+      "acme-inc-github-5",
+    );
+  });
+
   it("binds verified providers once and disconnects only the active organization", async () => {
     const githubStart = await start(connections, "github");
     assert.equal(githubStart.state.includes("acme"), false);
