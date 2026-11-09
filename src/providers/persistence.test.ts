@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
-import type { SlackConnectionRecord } from "../db/types.js";
+import type { SlackConnectionRecord } from "./slack/persistence-types.js";
+
 import { organizationConnections } from "./resources.js";
 import {
   createProviderRegistry as createCodecProviders,

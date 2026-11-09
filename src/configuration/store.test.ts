@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { compiledConfigurationHash, parseCompiledHubConfig } from "../config/compiler.js";
 import { createMemoryDatabase } from "../db/memory.js";
-import type { DiscordConnectionRecord, LinearConnectionRecord } from "../db/types.js";
+import type { DiscordConnectionRecord } from "../providers/discord/persistence-types.js";
+import type { LinearConnectionRecord } from "../providers/linear/persistence-types.js";
+
 import { discordPersistence } from "../providers/discord/persistence.js";
 import { insertGitHubBundleRevision } from "../providers/github/configuration-source.js";
 import { linearPersistence } from "../providers/linear/persistence.js";

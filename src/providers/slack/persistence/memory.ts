@@ -1,13 +1,12 @@
 import { z } from "zod";
 import type { MemoryProviderContext } from "../../../db/provider-persistence.js";
+import type { ConnectionStartAuthority, ProviderEventAcceptance } from "../../../db/types.js";
 import type {
   AcceptSlackEventInput,
   BindSlackConnectionInput,
   CompleteSlackProviderApplicationInput,
-  ConnectionStartAuthority,
-  ProviderEventAcceptance,
   SlackConnectionRecord,
-} from "../../../db/types.js";
+} from "../persistence-types.js";
 import type { SlackSocketApplicationCommit } from "../persistence.js";
 const initialDataSchema = z
   .object({

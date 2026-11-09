@@ -276,21 +276,6 @@ export interface TenantRouteAccess {
   project?: ProjectRecord;
 }
 
-export interface GitHubRepositoryRecord {
-  id: string;
-  organizationId: string;
-  connectionId: string;
-  repositoryId: number;
-  fullName: string;
-  defaultBranch: string;
-}
-
-export interface GitHubConfigurationTarget extends GitHubRepositoryRecord {
-  projectId: string;
-  installationId: number;
-  automaticDeploymentEnabled: boolean;
-}
-
 export interface ProjectConfigurationSourceRecord {
   kind: string;
   data: unknown;
@@ -391,53 +376,6 @@ export interface ConnectionAttemptConfigurationSnapshot {
   activateConfiguration: boolean;
 }
 
-export interface GitHubConnectionRecord {
-  id: string;
-  organizationId: string;
-  slug: string;
-  installationId: number;
-  accountId: string;
-  accountLogin: string;
-  accountType: string;
-  status: "active" | "suspended";
-  providerApplicationId: string | null;
-}
-
-export interface DiscordConnectionRecord {
-  id: string;
-  organizationId: string;
-  slug: string;
-  guildId: string;
-  guildName: string;
-  providerApplicationId: string | null;
-}
-
-export interface SlackConnectionRecord {
-  id: string;
-  organizationId: string;
-  slug: string;
-  teamId: string;
-  teamName: string;
-  botUserId: string;
-  botAccessToken: string;
-  scopes: string[];
-  providerApplicationId: string | null;
-}
-
-export interface LinearConnectionRecord {
-  id: string;
-  organizationId: string;
-  slug: string;
-  providerApplicationId: string | null;
-  linearOrganizationId: string;
-  linearOrganizationName: string;
-  appUserId: string;
-  accessToken: string;
-  refreshToken: string | null;
-  accessTokenExpiresAt: Date | null;
-  scopes: string[];
-}
-
 export interface StartConnectionAttemptInput {
   provider: ConnectionProvider;
   stateVerifier: string;
@@ -456,91 +394,6 @@ export interface ReadConnectionAttemptInput {
   phase: ConnectionAttemptPhase;
   access: ConnectionAccountAccess;
 }
-
-export interface AdvanceGitHubConnectionAttemptInput extends ReadConnectionAttemptInput {
-  nextStateVerifier: string;
-  installationId: number;
-  pkceVerifier: string;
-}
-
-export type GitHubRepositorySnapshot = Pick<
-  GitHubRepositoryRecord,
-  "repositoryId" | "fullName" | "defaultBranch"
->[];
-
-export interface BindGitHubConnectionInput extends ReadConnectionAttemptInput {
-  repositories: GitHubRepositorySnapshot;
-  providerApplicationId: string;
-  installationId: number;
-  accountId: string;
-  accountLogin: string;
-  accountType: string;
-  status: "active" | "suspended";
-}
-
-export interface BindDiscordConnectionInput extends ReadConnectionAttemptInput {
-  providerApplicationId: string;
-  guildId: string;
-  guildName: string;
-}
-
-export interface BindSlackConnectionInput extends ReadConnectionAttemptInput {
-  providerApplicationId: string;
-  teamId: string;
-  teamName: string;
-  botUserId: string;
-  botAccessToken: string;
-  scopes: string[];
-}
-
-export interface CompleteSlackProviderApplicationInput extends BindSlackConnectionInput {
-  providerConfiguration: {
-    configuration: unknown;
-    identity: { id: string };
-    expectedVersion: number | undefined;
-    updatedByUserId: string;
-  };
-}
-
-export interface BindLinearConnectionInput extends ReadConnectionAttemptInput {
-  providerApplicationId: string;
-  linearOrganizationId: string;
-  linearOrganizationName: string;
-  appUserId: string;
-  accessToken: string;
-  refreshToken?: string | null;
-  accessTokenExpiresAt?: Date | null;
-  scopes: string[];
-}
-
-export interface CompleteLinearProviderApplicationInput extends BindLinearConnectionInput {
-  providerConfiguration: {
-    configuration: unknown;
-    identity: { id: string };
-    expectedVersion: number | undefined;
-    updatedByUserId: string;
-  };
-}
-
-export interface UpdateLinearConnectionTokensInput {
-  connectionId: string;
-  accessToken: string;
-  refreshToken?: string | null;
-  accessTokenExpiresAt?: Date | null;
-  scopes?: string[];
-}
-
-export type LinearConnectionTokenUpdate = Omit<UpdateLinearConnectionTokensInput, "connectionId">;
-
-export type LinearConnectionRefreshOperation<T> = (
-  connection: LinearConnectionRecord | undefined,
-  updateTokens: (input: LinearConnectionTokenUpdate) => Promise<void>,
-) => Promise<T>;
-
-export type GitHubLifecycleIdentity = Omit<
-  GitHubConnectionRecord,
-  "id" | "organizationId" | "installationId" | "slug" | "providerApplicationId"
->;
 
 export interface InsertProviderEventInput {
   organizationId: string;
@@ -594,24 +447,6 @@ export interface ProviderEventEvidence {
   dropReason?: string;
 }
 
-export interface AcceptGitHubEventInput extends ProviderEventEvidence {
-  installationId: number;
-  repositoryId?: number;
-}
-
-export interface AcceptDiscordEventInput extends ProviderEventEvidence {
-  guildId: string;
-}
-
-export interface AcceptSlackEventInput extends ProviderEventEvidence {
-  teamId: string;
-}
-
-export interface AcceptLinearEventInput extends ProviderEventEvidence {
-  linearOrganizationId: string;
-  projectId?: string;
-}
-
 export interface PersistManualEventInput extends InsertProviderEventInput {
   organizationId: string;
   projectId: string;
@@ -620,33 +455,6 @@ export interface PersistManualEventInput extends InsertProviderEventInput {
 export type ManualEventPersistence =
   | { status: "accepted"; event: DurableProviderEvent }
   | { status: "duplicate"; providerEventReceiptId: string };
-
-export interface GitHubInstallationSyncOwner {
-  providerApplicationId: string;
-  configurationVersion: number;
-}
-
-export interface GitHubLifecycleReceiptClaimInput {
-  providerApplicationId: string;
-  installationId: number;
-  deliveryId: string;
-  signatureHash: string;
-  source: string;
-  payload: unknown;
-  receivedAt: Date;
-}
-
-export type GitHubInstallationSyncClaim =
-  | { status: "claimed"; installationSyncId: string; installationId: number }
-  | { status: "duplicate"; installationSyncId: string };
-
-export type GitHubInstallationSyncResult =
-  | { status: "absent"; removeBinding: boolean }
-  | {
-      status: "present";
-      identity: GitHubLifecycleIdentity;
-      repositories: GitHubRepositorySnapshot;
-    };
 
 export interface InsertMachineInput {
   orgId: string;

@@ -6,6 +6,12 @@ import type {
   SlackProviderApplicationIdentity,
 } from "./application-configuration.js";
 import type { VerifiedSlackInstallation } from "./installation.js";
+import type {
+  AcceptSlackEventInput,
+  BindSlackConnectionInput,
+  CompleteSlackProviderApplicationInput,
+  SlackConnectionRecord,
+} from "./persistence-types.js";
 import { slackMemoryPersistence } from "./persistence/memory.js";
 import { SlackPostgresPersistence } from "./persistence/postgres.js";
 export interface SlackSocketApplicationCommit {
@@ -20,17 +26,15 @@ export interface SlackPersistence {
   completeSlackSocketApplication(
     input: SlackSocketApplicationCommit,
   ): Promise<StoredProviderApplication>;
-  acceptSlackEvent(input: Types.AcceptSlackEventInput): Promise<Types.ProviderEventAcceptance>;
-  bindSlackConnection(input: Types.BindSlackConnectionInput): Promise<void>;
-  completeSlackProviderApplication(
-    input: Types.CompleteSlackProviderApplicationInput,
-  ): Promise<void>;
-  findSlackConnection(teamId: string): Promise<Types.SlackConnectionRecord | undefined>;
+  acceptSlackEvent(input: AcceptSlackEventInput): Promise<Types.ProviderEventAcceptance>;
+  bindSlackConnection(input: BindSlackConnectionInput): Promise<void>;
+  completeSlackProviderApplication(input: CompleteSlackProviderApplicationInput): Promise<void>;
+  findSlackConnection(teamId: string): Promise<SlackConnectionRecord | undefined>;
   findSlackConnectionForOrganization(
     organizationId: string,
     teamId: string,
-  ): Promise<Types.SlackConnectionRecord | undefined>;
-  listConnections(organizationId?: string): Promise<Types.SlackConnectionRecord[]>;
+  ): Promise<SlackConnectionRecord | undefined>;
+  listConnections(organizationId?: string): Promise<SlackConnectionRecord[]>;
   disconnectConnection(
     connectionId: string,
     access: Types.ConnectionStartAuthority,

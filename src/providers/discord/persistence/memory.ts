@@ -1,12 +1,11 @@
 import { z } from "zod";
 import type { MemoryProviderContext } from "../../../db/provider-persistence.js";
+import type { ConnectionStartAuthority, ProviderEventAcceptance } from "../../../db/types.js";
 import type {
   AcceptDiscordEventInput,
   BindDiscordConnectionInput,
-  ConnectionStartAuthority,
   DiscordConnectionRecord,
-  ProviderEventAcceptance,
-} from "../../../db/types.js";
+} from "../persistence-types.js";
 const initialDataSchema = z
   .object({
     connections: z

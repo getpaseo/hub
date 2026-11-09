@@ -1,16 +1,15 @@
 import { z } from "zod";
 import type { MemoryProviderContext } from "../../../db/provider-persistence.js";
+import type { ConnectionStartAuthority, ProviderEventAcceptance } from "../../../db/types.js";
+import { linearConnectionRequiresReauthorization } from "../../linear/client.js";
 import type {
   AcceptLinearEventInput,
   BindLinearConnectionInput,
   CompleteLinearProviderApplicationInput,
-  ConnectionStartAuthority,
   LinearConnectionRecord,
   LinearConnectionRefreshOperation,
-  ProviderEventAcceptance,
   UpdateLinearConnectionTokensInput,
-} from "../../../db/types.js";
-import { linearConnectionRequiresReauthorization } from "../../linear/client.js";
+} from "../persistence-types.js";
 const initialDataSchema = z
   .object({
     connections: z

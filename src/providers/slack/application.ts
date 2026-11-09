@@ -1,5 +1,6 @@
 import type { AccountAccessValue } from "../../auth/organization-access.js";
-import type { BindSlackConnectionInput } from "../../db/types.js";
+import type { BindSlackConnectionInput } from "./persistence-types.js";
+
 import type {
   ProviderApplicationContinuation,
   ProviderApplicationIdentity,

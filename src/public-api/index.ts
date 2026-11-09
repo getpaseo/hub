@@ -646,10 +646,7 @@ function isConfigurationResourcesResult(
 }
 
 function isSetupResourcesResult(result: PublicOperationResult): result is ListSetupResourcesResult {
-  return (
-    result.status === "infrastructure_unavailable" ||
-    (result.status === "listed" && "github" in result)
-  );
+  return result.status === "infrastructure_unavailable" || result.status === "listed";
 }
 
 function isValidationResult(result: PublicOperationResult): result is ValidateConfigurationResult {

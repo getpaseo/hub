@@ -5,7 +5,8 @@ import type {
   LinearConnectionRecord,
   LinearConnectionTokenUpdate,
   UpdateLinearConnectionTokensInput,
-} from "../../db/types.js";
+} from "./persistence-types.js";
+
 import { createProviderRegistry as createCodecProviders } from "../server.js";
 import {
   createLinearApiClient,

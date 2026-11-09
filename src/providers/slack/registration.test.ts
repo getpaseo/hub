@@ -4,11 +4,7 @@ import { z } from "zod";
 import type { OrganizationAccessValue } from "../../auth/organization-access.js";
 import type { AuthServer } from "../../auth/server.js";
 import { createMemoryDatabase } from "../../db/memory.js";
-import type {
-  BindSlackConnectionInput,
-  ConnectionAttemptRecord,
-  StartConnectionAttemptInput,
-} from "../../db/types.js";
+import type { ConnectionAttemptRecord, StartConnectionAttemptInput } from "../../db/types.js";
 import type { SlackBotClient } from "../../triggers/slack/client.js";
 import { createProviderRegistry as createCodecProviders } from "../server.js";
 import {
@@ -17,6 +13,7 @@ import {
   type SlackInstallation,
 } from "./client.js";
 import { createSlackRegistration } from "./index.js";
+import type { BindSlackConnectionInput } from "./persistence-types.js";
 import { slackPersistence } from "./persistence.js";
 
 const codecCatalog = createCodecProviders().configuration;

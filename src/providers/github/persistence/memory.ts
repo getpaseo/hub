@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { MemoryProviderContext } from "../../../db/provider-persistence.js";
+import type { ConnectionStartAuthority, ProviderEventAcceptance } from "../../../db/types.js";
 import type {
   AcceptGitHubEventInput,
   AdvanceGitHubConnectionAttemptInput,
   BindGitHubConnectionInput,
-  ConnectionStartAuthority,
   GitHubConfigurationTarget,
   GitHubConnectionRecord,
   GitHubInstallationSyncClaim,
@@ -14,8 +14,7 @@ import type {
   GitHubLifecycleReceiptClaimInput,
   GitHubRepositoryRecord,
   GitHubRepositorySnapshot,
-  ProviderEventAcceptance,
-} from "../../../db/types.js";
+} from "../persistence-types.js";
 import { parseSourceState } from "../source-state.js";
 import type {
   ConfigurationSyncAttemptRecord,

@@ -14,7 +14,7 @@ import {
   stateHash,
 } from "../../connections/shared.js";
 import { DatabaseUnavailableError } from "../../db/errors.js";
-import type { BindSlackConnectionInput, Database, SlackConnectionRecord } from "../../db/types.js";
+import type { Database } from "../../db/types.js";
 import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { reportFailure } from "../../failures/index.js";
 import { organizationBillingUrl } from "../../triggers/failure-notice.js";
@@ -32,6 +32,7 @@ import {
   type SlackConnectionClient,
   type SlackInstallation,
 } from "./client.js";
+import type { BindSlackConnectionInput, SlackConnectionRecord } from "./persistence-types.js";
 import { slackPersistence, type SlackPersistence } from "./persistence.js";
 import { slackRuntime, type SlackRegistration } from "./runtime.js";
 

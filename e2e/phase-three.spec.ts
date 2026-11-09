@@ -15,6 +15,8 @@ const bob = {
 test("connects verified providers per organization and disconnects through confirmation", async ({
   hub,
 }) => {
+  // Two accounts, two organizations, OAuth, dispatch and revocation share one test budget.
+  test.slow();
   await hub.signUpAs("alice", alice);
   await hub.createOrganization("alice", "Acme");
   await hub.expectConnections("alice");
