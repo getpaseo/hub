@@ -1,3 +1,4 @@
+import { testApplicationConfiguration } from "../providers/testing.js";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { describe, it } from "vitest";
@@ -60,15 +61,18 @@ describe("provider application verification", () => {
     });
 
     assert.deepEqual(
-      await verifier.verify("github", {
-        provider: "github",
-        appId: "42",
-        appSlug: "paseo",
-        clientId: "client",
-        clientSecret: "secret",
-        privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
-        webhookSecret: "webhook",
-      }),
+      await verifier.verify(
+        "github",
+        testApplicationConfiguration({
+          provider: "github",
+          appId: "42",
+          appSlug: "paseo",
+          clientId: "client",
+          clientSecret: "secret",
+          privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+          webhookSecret: "webhook",
+        }),
+      ),
       { provider: "github", id: "42", name: "Paseo Hub", ownerLogin: "acme" },
     );
     assert.deepEqual(requests, ["https://api.github.com/app"]);
@@ -82,14 +86,17 @@ describe("provider application verification", () => {
     });
 
     await assert.rejects(
-      verifier.verify("github", {
-        provider: "github",
-        appId: "42",
-        appSlug: "paseo",
-        clientId: "client",
-        clientSecret: "secret",
-        privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
-      }),
+      verifier.verify(
+        "github",
+        testApplicationConfiguration({
+          provider: "github",
+          appId: "42",
+          appSlug: "paseo",
+          clientId: "client",
+          clientSecret: "secret",
+          privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+        }),
+      ),
       (error: unknown) =>
         error instanceof ProviderVerificationError && error.subject === "identityMismatch",
     );
@@ -134,7 +141,10 @@ describe("provider application verification", () => {
       fetch: discordProvider().fetch,
     });
     await assert.rejects(
-      wrongApplication.verify("discord", { ...DISCORD_CONFIGURATION, applicationId: "200" }),
+      wrongApplication.verify(
+        "discord",
+        testApplicationConfiguration({ ...DISCORD_CONFIGURATION, applicationId: "200" }),
+      ),
       (error: unknown) =>
         error instanceof ProviderVerificationError && error.subject === "identityMismatch",
     );
@@ -170,7 +180,10 @@ describe("provider application verification", () => {
       fetch: () => Promise.reject(new Error("token=super-secret")),
     });
     await assert.rejects(
-      verifier.verify("discord", { ...DISCORD_CONFIGURATION, botToken: "super-secret" }),
+      verifier.verify(
+        "discord",
+        testApplicationConfiguration({ ...DISCORD_CONFIGURATION, botToken: "super-secret" }),
+      ),
       (error: unknown) =>
         error instanceof ProviderVerificationError &&
         error.reason === "network" &&
@@ -196,12 +209,15 @@ describe("provider application verification", () => {
         fetch: () => Promise.resolve(response),
       });
       await assert.rejects(
-        verifier.verify("discord", {
-          provider: "discord",
-          applicationId: "100",
-          clientSecret: "PRIVATE-CLIENT-SECRET",
-          botToken: "PRIVATE-BOT-TOKEN",
-        }),
+        verifier.verify(
+          "discord",
+          testApplicationConfiguration({
+            provider: "discord",
+            applicationId: "100",
+            clientSecret: "PRIVATE-CLIENT-SECRET",
+            botToken: "PRIVATE-BOT-TOKEN",
+          }),
+        ),
         (error: unknown) =>
           error instanceof ProviderVerificationError &&
           error.reason === reason &&

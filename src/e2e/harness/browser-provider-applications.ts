@@ -1,10 +1,7 @@
-type Provider = ProviderApplicationConfiguration["provider"];
 import type { AuthServer } from "../../auth/server.js";
 import type { Database } from "../../db/types.js";
 import {
   ProviderVerificationError,
-  type ProviderApplicationConfiguration,
-  type ProviderApplicationIdentity,
   type ProviderApplicationVerifier,
 } from "../../provider-applications/index.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
@@ -15,6 +12,10 @@ import type { ProviderRegistration } from "../../providers/registration.js";
 import type { SlackConnectionClient, SlackInstallation } from "../../providers/slack/client.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
 import { createSlackSocketInstallationVerifier } from "../../providers/slack/installation.js";
+import type {
+  TestProviderApplicationConfiguration as ProviderApplicationConfiguration,
+  TestProviderApplicationIdentity as ProviderApplicationIdentity,
+} from "../../providers/testing.js";
 import { startSlackSocketFixture } from "../../test-utils/slack-socket-fixture.js";
 import {
   BrowserDiscordBot,
@@ -26,6 +27,7 @@ import {
   BrowserSlackBot,
   type BrowserProviderScenario,
 } from "./browser-providers.js";
+type Provider = ProviderApplicationConfiguration["provider"];
 
 /**
  * The credentials the fixture providers accept. A browser journey types exactly these to make
@@ -137,8 +139,10 @@ export const FIXTURE_APP_IDENTITIES: Readonly<Record<Provider, ProviderApplicati
 };
 
 /** The identity an environment-configured provider activates with at boot. */
-export function fixtureEnvironmentIdentity(provider: Provider): ProviderApplicationIdentity {
-  return FIXTURE_APP_IDENTITIES[provider];
+export function fixtureEnvironmentIdentity(provider: string): ProviderApplicationIdentity {
+  const identity = new Map(Object.entries(FIXTURE_APP_IDENTITIES)).get(provider);
+  if (identity === undefined) throw new Error(`fixture provider unavailable: ${provider}`);
+  return identity;
 }
 
 /**

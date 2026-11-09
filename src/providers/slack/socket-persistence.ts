@@ -1,6 +1,5 @@
 import type { DatabaseRuntime } from "../../db/runtime/index.js";
 import type { Locks } from "../../db/runtime/locks/index.js";
-import type { ProviderApplicationStore } from "../../provider-applications/index.js";
 import {
   type ProviderConfigurationRow,
   ProviderConfigurationConflictError,
@@ -8,13 +7,13 @@ import {
   parseRow,
   writeProviderActivation,
 } from "../../provider-applications/storage.js";
-import type { ProviderRegistry } from "../registry.js";
+import { configurationSchema, identitySchema } from "./application-configuration.js";
 import { connectionInventory } from "./application-persistence.js";
+import type { SlackSocketApplicationCommit } from "./persistence.js";
 export function completeSocketApplication(
   database: DatabaseRuntime,
   locks: Locks,
-  registry: ProviderRegistry,
-  input: Parameters<ProviderApplicationStore["completeSlackSocketApplication"]>[0],
+  input: SlackSocketApplicationCommit,
 ) {
   return locks.withLock("provider-configuration:slack", () =>
     database.transaction(async (transaction) => {
@@ -84,7 +83,10 @@ export function completeSocketApplication(
       );
       const row = saved.rows[0];
       if (row === undefined) throw new Error("Slack Socket Mode save returned no row");
-      const parsed = parseRow(row, registry);
+      const parsed = parseRow(row, {
+        parseConfiguration: (value) => configurationSchema.parse(value),
+        parseIdentity: (value) => identitySchema.parse(value),
+      });
       await writeProviderActivation(transaction, "slack", input.identity.id, parsed.version);
       return parsed;
     }),

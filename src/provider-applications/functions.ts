@@ -13,7 +13,16 @@ import {
 } from "./index.js";
 import { providerApplicationSaveFailure, providerHost, providerName } from "./save-failure.js";
 
-const providerSchema = z.enum(["github", "slack", "discord", "linear"]);
+const providerSchema = z
+  .string()
+  .min(1)
+  .superRefine((provider, context) => {
+    try {
+      browserProvider(provider);
+    } catch {
+      context.addIssue({ code: "custom", message: "Unknown provider" });
+    }
+  });
 const surfaceSchema = z.enum(["appSetup", "apps"]).optional();
 const configurationSchema = z
   .object({ provider: z.string() })

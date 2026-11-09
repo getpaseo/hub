@@ -16,6 +16,7 @@ import {
 import type { LinearInstallation } from "../linear/client.js";
 import type { LinearProviderApplicationConfiguration } from "./application-configuration.js";
 import { configurationSchema } from "./application-configuration.js";
+import { linearPersistence, type LinearPersistence } from "./persistence.js";
 const parseProviderApplicationConfiguration = (input: unknown) => configurationSchema.parse(input);
 export async function beginLinearConfiguration(
   options: ProviderApplicationsOptions,
@@ -78,6 +79,9 @@ export async function completeLinearInstallation(
     installation: LinearInstallation;
     binding: BindLinearConnectionInput;
   },
+  persistence: Pick<LinearPersistence, "completeLinearProviderApplication"> = linearPersistence(
+    options.database,
+  ),
 ): Promise<void> {
   const configuration = parseProviderApplicationConfiguration(input.configuration);
   if (
@@ -106,13 +110,14 @@ export async function completeLinearInstallation(
       (input.expectedConfigurationVersion ?? 0) + 1,
     );
     await candidate.start();
-    await options.store.completeLinearInstallation({
-      configuration,
-      identity,
-      expectedVersion: input.expectedConfigurationVersion,
-      updatedByUserId: input.userId,
-      installation: input.installation,
-      binding: input.binding,
+    await persistence.completeLinearProviderApplication({
+      ...input.binding,
+      providerConfiguration: {
+        configuration,
+        identity,
+        expectedVersion: input.expectedConfigurationVersion,
+        updatedByUserId: input.userId,
+      },
     });
     candidate.publish();
     candidate = undefined;

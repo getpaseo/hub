@@ -5,7 +5,6 @@ import type {
   ProviderApplicationIdentity,
   ProviderApplicationsOptions,
   ProviderRuntimeCandidate,
-  VerifiedSlackInstallation,
 } from "../../provider-applications/index.js";
 import { ProviderApplicationError } from "../../provider-applications/index.js";
 import {
@@ -16,6 +15,8 @@ import {
 } from "../../provider-applications/workflow.js";
 import type { SlackProviderApplicationConfiguration } from "./application-configuration.js";
 import { configurationSchema } from "./application-configuration.js";
+import type { VerifiedSlackInstallation } from "./installation.js";
+import { slackPersistence, type SlackPersistence } from "./persistence.js";
 const parseProviderApplicationConfiguration = (input: unknown) => configurationSchema.parse(input);
 export async function beginSlackConfiguration(
   options: ProviderApplicationsOptions,
@@ -78,6 +79,9 @@ export async function completeSlackInstallation(
     installation: VerifiedSlackInstallation;
     binding: BindSlackConnectionInput;
   },
+  persistence: Pick<SlackPersistence, "completeSlackProviderApplication"> = slackPersistence(
+    options.database,
+  ),
 ): Promise<void> {
   const configuration = parseProviderApplicationConfiguration(input.configuration);
   if (configuration.provider !== "slack" || configuration.appId !== input.installation.appId) {
@@ -103,12 +107,14 @@ export async function completeSlackInstallation(
       (input.expectedConfigurationVersion ?? 0) + 1,
     );
     await candidate.start();
-    await options.store.completeSlackInstallation({
-      configuration,
-      identity,
-      expectedVersion: input.expectedConfigurationVersion,
-      updatedByUserId: input.userId,
-      binding: input.binding,
+    await persistence.completeSlackProviderApplication({
+      ...input.binding,
+      providerConfiguration: {
+        configuration,
+        identity,
+        expectedVersion: input.expectedConfigurationVersion,
+        updatedByUserId: input.userId,
+      },
     });
     candidate.publish();
     candidate = undefined;

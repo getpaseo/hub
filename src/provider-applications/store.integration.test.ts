@@ -1,3 +1,6 @@
+import { configurationSchema as githubConfigurationSchema } from "../providers/github/application-configuration.js";
+import { configurationSchema as slackConfigurationSchema } from "../providers/slack/application-configuration.js";
+import { testApplicationConfiguration } from "../providers/testing.js";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -11,6 +14,7 @@ import {
   type DatabaseRuntimeBundle,
 } from "../db/runtime/index.js";
 import { createProviderRegistry } from "../providers/server.js";
+import { identitySchema as slackIdentitySchema } from "../providers/slack/application-configuration.js";
 import { slackPersistence } from "../providers/slack/persistence.js";
 import { createProviderApplicationInventory, createProviderApplicationStore } from "./index.js";
 const providerRegistry = createProviderRegistry();
@@ -41,7 +45,7 @@ describe("provider application persistence", () => {
     assert.equal(stored?.version, 2);
     assert.equal(stored?.configuration.provider, "github");
     if (stored?.configuration.provider === "github") {
-      assert.equal(stored.configuration.clientSecret, "rotated");
+      assert.equal(githubConfigurationSchema.parse(stored.configuration).clientSecret, "rotated");
     }
     await reopened.runtime.close();
   });
@@ -118,7 +122,7 @@ async function exercisePersistence(bundle: DatabaseRuntimeBundle) {
 
   const rotated = await store.save({
     provider: "github",
-    configuration: { ...configuration, clientSecret: "rotated" },
+    configuration: testApplicationConfiguration({ ...configuration, clientSecret: "rotated" }),
     identity,
     expectedVersion: 1,
     updatedByUserId: "operator",
@@ -147,12 +151,7 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
     clientSecret: "secret",
     signingSecret: "signing-secret",
   };
-  const store = createProviderApplicationStore(
-    bundle.runtime,
-    bundle.locks,
-    providerRegistry,
-    database,
-  );
+  const store = createProviderApplicationStore(bundle.runtime, bundle.locks, providerRegistry);
   const startAttempt = async (stateVerifier: string, expectedVersion: number | null) => {
     await database.startConnectionAttempt({
       provider: "slack",
@@ -174,22 +173,22 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
     });
   };
   const complete = (stateVerifier: string, teamId: string, expectedVersion: number | undefined) =>
-    store.completeSlackInstallation({
-      configuration,
-      identity: { provider: "slack", id: "A1", name: "Acme" },
-      expectedVersion,
-      updatedByUserId: "operator",
-      binding: {
-        providerApplicationId: "A1",
-        stateVerifier,
-        phase: "slack_authorization",
-        access: { sessionId: "session", userId: "operator" },
-        teamId,
-        teamName: "Acme",
-        botUserId: "UBOT",
-        botAccessToken: "xoxb-token",
-        scopes: ["chat:write"],
+    slackPersistence(database).completeSlackProviderApplication({
+      providerConfiguration: {
+        configuration,
+        identity: slackIdentitySchema.parse({ provider: "slack", id: "A1", name: "Acme" }),
+        expectedVersion,
+        updatedByUserId: "operator",
       },
+      providerApplicationId: "A1",
+      stateVerifier,
+      phase: "slack_authorization",
+      access: { sessionId: "session", userId: "operator" },
+      teamId,
+      teamName: "Acme",
+      botUserId: "UBOT",
+      botAccessToken: "xoxb-token",
+      scopes: ["chat:write"],
     });
 
   await startAttempt("state-ok", null);
@@ -257,7 +256,7 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
     null,
   );
 
-  const socket = await store.completeSlackSocketApplication({
+  const socket = await slackPersistence(database).completeSlackSocketApplication({
     configuration: {
       provider: "slack",
       transport: "socket",
@@ -288,7 +287,9 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
   assert.equal(socket.version, 2);
   assert.equal(socket.configuration.provider, "slack");
   assert.equal(
-    socket.configuration.provider === "slack" ? socket.configuration.transport : undefined,
+    socket.configuration.provider === "slack"
+      ? slackConfigurationSchema.parse(socket.configuration).transport
+      : undefined,
     "socket",
   );
   assert.equal(

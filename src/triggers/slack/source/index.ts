@@ -1,4 +1,5 @@
-import type { SlackProviderApplicationConfiguration } from "../../../provider-applications/index.js";
+import type { SlackProviderApplicationConfiguration } from "../../../providers/slack/application-configuration.js";
+
 import type { TriggerSource } from "../../index.js";
 import { createSlackWebhookSource } from "../webhook.js";
 import type { SlackEventIntakeOptions } from "./internal/intake.js";

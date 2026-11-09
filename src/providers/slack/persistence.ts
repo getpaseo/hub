@@ -1,8 +1,25 @@
 import { ProviderPersistence } from "../../db/provider-persistence.js";
 import type * as Types from "../../db/types.js";
+import type { StoredProviderApplication } from "../../provider-applications/index.js";
+import type {
+  SlackProviderApplicationConfiguration,
+  SlackProviderApplicationIdentity,
+} from "./application-configuration.js";
+import type { VerifiedSlackInstallation } from "./installation.js";
 import { slackMemoryPersistence } from "./persistence/memory.js";
 import { SlackPostgresPersistence } from "./persistence/postgres.js";
+export interface SlackSocketApplicationCommit {
+  configuration: Extract<SlackProviderApplicationConfiguration, { transport: "socket" }>;
+  identity: SlackProviderApplicationIdentity;
+  expectedVersion: number | undefined;
+  updatedByUserId: string;
+  organizationId: string;
+  installation: VerifiedSlackInstallation;
+}
 export interface SlackPersistence {
+  completeSlackSocketApplication(
+    input: SlackSocketApplicationCommit,
+  ): Promise<StoredProviderApplication>;
   acceptSlackEvent(input: Types.AcceptSlackEventInput): Promise<Types.ProviderEventAcceptance>;
   bindSlackConnection(input: Types.BindSlackConnectionInput): Promise<void>;
   completeSlackProviderApplication(

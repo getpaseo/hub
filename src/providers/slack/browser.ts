@@ -1,10 +1,18 @@
+import { failure } from "./failure.js";
+import { createSetup } from "./presentation.js";
 import { glyph, runHint, identityLabel } from "./presentation.js";
 import { type GuideStep, type ProviderGuide } from "../presentation.js";
 import { normalizeRequest, requestSchema, requestSecrets } from "./application-configuration.js";
 import { SLACK_REQUIRED_BOT_SCOPES } from "./client.js";
+function manifestFor(transport: "socket" | "webhook") {
+  return {
+    label: "App manifest",
+    action: "Copy manifest",
+    build: (origin: string) => slackManifest(origin, transport),
+  };
+}
 export const SLACK_WEBHOOK_GUIDE: ProviderGuide = {
   provider: "slack",
-  transport: "webhook",
   name: "Slack",
   summary: "Reads mentions in your workspace and replies in the thread.",
   portal: { label: "Create a Slack app", href: "https://api.slack.com/apps?new_app=1" },
@@ -35,7 +43,7 @@ export const SLACK_WEBHOOK_GUIDE: ProviderGuide = {
         },
         {
           segments: [{ kind: "text", value: "Pick your workspace, then paste this manifest:" }],
-          manifest: true,
+          manifest: manifestFor("webhook"),
         },
         { segments: [{ kind: "text", value: "Create the app." }] },
         {
@@ -94,14 +102,12 @@ export const SLACK_WEBHOOK_GUIDE: ProviderGuide = {
   receivesEvents: true,
 };
 
-const slackStep = (value: string, manifest = false): GuideStep => ({
+const slackStep = (value: string): GuideStep => ({
   segments: [{ kind: "text", value }],
-  ...(manifest ? { manifest: true } : {}),
 });
 
 export const SLACK_GUIDE: ProviderGuide = {
   provider: "slack",
-  transport: "socket",
   name: "Slack",
   summary: "Reads mentions in your workspace and replies in the thread.",
   portal: { label: "Create a Slack app", href: "https://api.slack.com/apps?new_app=1" },
@@ -122,7 +128,7 @@ export const SLACK_GUIDE: ProviderGuide = {
             },
             { kind: "text", value: ", choose From a manifest, select the workspace, and paste:" },
           ],
-          manifest: true,
+          manifest: manifestFor("socket"),
         },
         slackStep(
           "Under Basic Information → App-Level Tokens, generate a token named Paseo with connections:write.",
@@ -190,6 +196,7 @@ ${requestUrl}    bot_events:
 }
 
 export const slackBrowserProvider = {
+  failure,
   request: {
     parse: (input: unknown) => {
       const data = requestSchema.parse(input);
@@ -201,6 +208,7 @@ export const slackBrowserProvider = {
     normalize: (input: unknown) => normalizeRequest(requestSchema.parse(input)),
     secrets: (input: unknown) => requestSecrets(requestSchema.parse(input)),
   },
+  setup: createSetup(SLACK_GUIDE, SLACK_WEBHOOK_GUIDE),
   glyph,
   runHint,
   identityLabel,

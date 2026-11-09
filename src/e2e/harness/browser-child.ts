@@ -38,7 +38,7 @@ import { ProviderRegistry } from "../../providers/registry.js";
 import { createProviderRegistry } from "../../providers/server.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
 import { createSlackProvider } from "../../providers/slack/module.js";
-import { registrationRegistry } from "../../providers/testing.js";
+import { registrationRegistry, testApplicationIdentity } from "../../providers/testing.js";
 import { loadBuiltStartServer } from "../../server/build.js";
 import { BrowserAccountEmails, type BrowserAccountEmailKind } from "./browser-account-emails.js";
 import { BrowserAccountSetupFaults } from "./browser-account-setup.js";
@@ -1158,7 +1158,14 @@ async function activateStaticProviderApplications(
 ): Promise<void> {
   const identities: ProviderApplicationIdentity[] = [];
   if (hasBrowserGitHub(input.scenario)) {
-    identities.push({ provider: "github", id: "42", name: "paseo", ownerLogin: "acme-inc" });
+    identities.push(
+      testApplicationIdentity({
+        provider: "github",
+        id: "42",
+        name: "paseo",
+        ownerLogin: "acme-inc",
+      }),
+    );
   }
   if (input.scenario !== "not-configured" && input.scenario !== "slack-only") {
     identities.push({ provider: "discord", id: "900", name: "Paseo" });
@@ -1170,7 +1177,6 @@ async function activateStaticProviderApplications(
     input.databaseRuntime,
     input.locks,
     providerRegistry,
-    input.database,
   );
   for (const identity of identities) {
     await store.activate({ provider: identity.provider, identity, configurationVersion: 0 });
@@ -1206,7 +1212,6 @@ async function composeProviderApplications(input: {
     input.databaseRuntime,
     input.locks,
     providerRegistry,
-    input.database,
   );
   const verifier = new BrowserProviderApplicationVerifier(input.scenario);
   const inventory = createProviderApplicationInventory(input.databaseRuntime, providerRegistry);
@@ -1247,6 +1252,7 @@ async function composeProviderApplications(input: {
       ),
   );
   const capability = createProviderApplications({
+    database: input.database,
     registry: applicationRegistry,
     auth: input.auth,
     store,

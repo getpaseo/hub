@@ -22,7 +22,7 @@ const BotInfoSchema = z.object({
     .optional(),
 });
 
-export interface VerifiedSlackSocketInstallation {
+export interface VerifiedSlackInstallation {
   appId: string;
   teamId: string;
   teamName: string;
@@ -32,7 +32,7 @@ export interface VerifiedSlackSocketInstallation {
 }
 
 export interface SlackSocketInstallationVerifier {
-  verify(appToken: string, botToken: string): Promise<VerifiedSlackSocketInstallation>;
+  verify(appToken: string, botToken: string): Promise<VerifiedSlackInstallation>;
 }
 
 export function createSlackSocketInstallationVerifier(

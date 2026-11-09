@@ -1,8 +1,10 @@
+import { load } from "js-yaml";
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { load } from "js-yaml";
 import { z } from "zod";
+import { SLACK_WEBHOOK_GUIDE, slackManifest } from "../providers/slack/browser.js";
 import { SLACK_REQUIRED_BOT_SCOPES } from "../providers/slack/client.js";
+import { testApplicationIdentity } from "../providers/testing.js";
 import {
   PROVIDER_GUIDES,
   guideFields,
@@ -11,8 +13,6 @@ import {
   guideUrl,
   identityLabel,
   isSecureOrigin,
-  slackManifest,
-  SLACK_WEBHOOK_GUIDE,
   statusPresentation,
   type GuideStep,
 } from "./guides.js";
@@ -117,7 +117,14 @@ test("only non-secret identifiers can be echoed back into the form", () => {
 
 test("identity lines name the app the operator created", () => {
   assert.equal(
-    identityLabel({ provider: "github", id: "42", name: "Paseo Hub", ownerLogin: "acme-inc" }),
+    identityLabel(
+      testApplicationIdentity({
+        provider: "github",
+        id: "42",
+        name: "Paseo Hub",
+        ownerLogin: "acme-inc",
+      }),
+    ),
     "Paseo Hub · owned by acme-inc",
   );
   assert.equal(

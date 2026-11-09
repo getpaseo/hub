@@ -27,6 +27,8 @@ import type {
   ProviderEventAcceptance,
   SlackConnectionRecord,
 } from "../../../db/types.js";
+import type { SlackSocketApplicationCommit } from "../persistence.js";
+import { completeSocketApplication } from "../socket-persistence.js";
 type HubTransaction = DrizzleHandle;
 type AttemptRow = typeof schema.organizationConnectionAttempts.$inferSelect;
 export class SlackPostgresPersistence {
@@ -39,6 +41,9 @@ export class SlackPostgresPersistence {
     this.locks = context.locks;
     this.events = context.events;
     this.database = this.runtime.drizzle();
+  }
+  completeSlackSocketApplication(input: SlackSocketApplicationCommit) {
+    return completeSocketApplication(this.runtime, this.locks, input);
   }
   async bindSlackConnection(input: BindSlackConnectionInput): Promise<void> {
     await this.bindSlackTransition(input);

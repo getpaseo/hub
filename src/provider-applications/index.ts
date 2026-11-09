@@ -1,8 +1,6 @@
 import type { AccountAccessValue } from "../auth/organization-access.js";
-import type { BindLinearConnectionInput, BindSlackConnectionInput } from "../db/types.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 import type { ActiveProviderRuntime } from "../providers/active-runtime.js";
-import type { LinearInstallation } from "../providers/linear/client.js";
 import type { ProviderRegistry } from "../providers/registry.js";
 import {
   closeCandidate,
@@ -13,29 +11,16 @@ import {
   withoutExpectedVersion,
 } from "./workflow.js";
 
-export const PROVIDERS = ["github", "slack", "discord", "linear"] as const;
 export type Provider = string;
-
-import type { DiscordProviderApplicationConfiguration } from "../providers/discord/application-configuration.js";
-import type { GitHubProviderApplicationConfiguration } from "../providers/github/application-configuration.js";
-import type { LinearProviderApplicationConfiguration } from "../providers/linear/application-configuration.js";
-import type { SlackProviderApplicationConfiguration } from "../providers/slack/application-configuration.js";
-export type { DiscordProviderApplicationConfiguration } from "../providers/discord/application-configuration.js";
-export type { GitHubProviderApplicationConfiguration } from "../providers/github/application-configuration.js";
-export type { LinearProviderApplicationConfiguration } from "../providers/linear/application-configuration.js";
-export type { SlackProviderApplicationConfiguration } from "../providers/slack/application-configuration.js";
-
-export type ProviderApplicationConfiguration =
-  | GitHubProviderApplicationConfiguration
-  | SlackProviderApplicationConfiguration
-  | DiscordProviderApplicationConfiguration
-  | LinearProviderApplicationConfiguration;
-
-export type ProviderApplicationIdentity =
-  | import("../providers/github/application-configuration.js").GitHubProviderApplicationIdentity
-  | import("../providers/slack/application-configuration.js").SlackProviderApplicationIdentity
-  | import("../providers/discord/application-configuration.js").DiscordProviderApplicationIdentity
-  | import("../providers/linear/application-configuration.js").LinearProviderApplicationIdentity;
+export interface ProviderApplicationConfiguration {
+  provider: string;
+  expectedVersion?: number;
+}
+export interface ProviderApplicationIdentity {
+  provider: string;
+  id: string;
+  name: string;
+}
 
 export interface StoredProviderApplication {
   provider: Provider;
@@ -61,29 +46,6 @@ export interface ProviderApplicationStore {
     provider: Provider;
     identity: ProviderApplicationIdentity;
     configurationVersion: number;
-  }): Promise<void>;
-  completeSlackInstallation(input: {
-    configuration: SlackProviderApplicationConfiguration;
-    identity: Extract<ProviderApplicationIdentity, { provider: "slack" }>;
-    expectedVersion: number | undefined;
-    updatedByUserId: string;
-    binding: BindSlackConnectionInput;
-  }): Promise<void>;
-  completeSlackSocketApplication(input: {
-    configuration: Extract<SlackProviderApplicationConfiguration, { transport: "socket" }>;
-    identity: Extract<ProviderApplicationIdentity, { provider: "slack" }>;
-    expectedVersion: number | undefined;
-    updatedByUserId: string;
-    organizationId: string;
-    installation: VerifiedSlackInstallation;
-  }): Promise<StoredProviderApplication>;
-  completeLinearInstallation(input: {
-    configuration: LinearProviderApplicationConfiguration;
-    identity: Extract<ProviderApplicationIdentity, { provider: "linear" }>;
-    expectedVersion: number | undefined;
-    updatedByUserId: string;
-    installation: LinearInstallation;
-    binding: BindLinearConnectionInput;
   }): Promise<void>;
 }
 
@@ -169,8 +131,7 @@ export interface ProviderApplicationView {
 
 export interface ProviderApplicationOverview {
   callbackOrigin: string;
-  providers: Record<(typeof PROVIDERS)[number], ProviderApplicationView> &
-    Record<string, ProviderApplicationView>;
+  providers: Record<string, ProviderApplicationView>;
 }
 
 export interface ProviderApplicationResult {
@@ -182,22 +143,13 @@ export interface ProviderApplicationResult {
 
 export interface ProviderApplicationContinuation {
   status: "continuing";
-  provider: "slack" | "linear";
+  provider: string;
   url: string;
 }
 
 export type ProviderApplicationSaveResult =
   | ProviderApplicationResult
   | ProviderApplicationContinuation;
-
-export interface VerifiedSlackInstallation {
-  appId: string;
-  teamId: string;
-  teamName: string;
-  botUserId: string;
-  botAccessToken: string;
-  scopes: string[];
-}
 
 export type ProviderApplicationErrorCode =
   | "forbidden"
@@ -306,6 +258,7 @@ export interface ProviderApplicationCommandContext {
 }
 
 export interface ProviderApplicationsOptions {
+  database: Pick<import("../db/types.js").Database, "providerPersistence">;
   registry: ProviderRegistry;
   auth: {
     resolveAccount(request: Request): Promise<AccountAccessValue>;
@@ -374,18 +327,7 @@ export function createProviderApplications(
         }),
       );
       const providers = Object.fromEntries(entries);
-      const github = providers["github"],
-        slack = providers["slack"],
-        discord = providers["discord"],
-        linear = providers["linear"];
-      if (
-        github === undefined ||
-        slack === undefined ||
-        discord === undefined ||
-        linear === undefined
-      )
-        throw new Error("provider overview is incomplete");
-      return { callbackOrigin, providers: { ...providers, github, slack, discord, linear } };
+      return { callbackOrigin, providers };
     },
 
     async verifyAndSave(request, provider, input, surface) {
