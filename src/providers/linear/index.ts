@@ -139,7 +139,7 @@ export function createLinearRegistration(
   });
   if (database === null) {
     return {
-      connection: linearConnectionStatus(true),
+      connection: linearConnectionStatus(true, options.database),
       triggerProviders: [],
       sources: [webhook],
       outputs: [],
@@ -148,7 +148,7 @@ export function createLinearRegistration(
   }
   const connection =
     options.auth === null
-      ? linearConnectionStatus(true)
+      ? linearConnectionStatus(true, options.database)
       : createLinearConnection(
           {
             database,
@@ -197,7 +197,7 @@ function emptyLinearRegistration(
 ): ProviderRegistration {
   const connection =
     options.database === null || options.auth === null
-      ? linearConnectionStatus(false)
+      ? linearConnectionStatus(false, options.database)
       : createLinearConnection(
           {
             database: options.database,
@@ -219,10 +219,17 @@ function emptyLinearRegistration(
   return { connection, triggerProviders: [], sources: [], outputs: [], requests: [] };
 }
 
-function linearConnectionStatus(configured: boolean): ProviderConnectionRegistration {
+function linearConnectionStatus(
+  configured: boolean,
+  database: Database | null,
+): ProviderConnectionRegistration {
   return {
     name: "linear",
-    status: (connections) => linearStatus(configured, connections.linear),
+    status: async (organizationId) =>
+      linearStatus(
+        configured,
+        database === null ? [] : await linearPersistence(database).listConnections(organizationId),
+      ),
     actions: {},
   };
 }
@@ -285,7 +292,11 @@ function createLinearConnection(
 
   return {
     name: "linear",
-    status: (connections) => linearStatus(client !== undefined, connections.linear),
+    status: async (organizationId) =>
+      linearStatus(
+        client !== undefined,
+        await linearPersistence(options.database).listConnections(organizationId),
+      ),
     actions: {
       start,
       disconnect,

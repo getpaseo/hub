@@ -114,7 +114,7 @@ function buildGitHubRegistration(options: CreateGitHubRegistrationOptions): GitH
   });
   const connection =
     options.auth === null
-      ? githubConnectionStatus(true)
+      ? githubConnectionStatus(true, options.database)
       : createGitHubConnection(
           {
             database,
@@ -199,7 +199,7 @@ function buildGitHubRegistration(options: CreateGitHubRegistrationOptions): GitH
         const selectedConnection =
           project === undefined
             ? undefined
-            : (await database.organizationConnectionUsage(project.organizationId)).github.find(
+            : (await githubPersistence(database).listConnections(project.organizationId)).find(
                 (candidate) =>
                   candidate.organizationId === project.organizationId &&
                   candidate.slug === input.connectionSlug,
@@ -238,7 +238,7 @@ function buildGitHubRegistration(options: CreateGitHubRegistrationOptions): GitH
         const selectedConnection =
           project === undefined
             ? undefined
-            : (await database.organizationConnectionUsage(project.organizationId)).github.find(
+            : (await githubPersistence(database).listConnections(project.organizationId)).find(
                 (candidate) =>
                   candidate.organizationId === project.organizationId &&
                   candidate.slug === connectionSlug,
@@ -297,7 +297,7 @@ function emptyGitHubRegistration(
   const { database, auth } = options;
   const connection =
     database === null || auth === null
-      ? githubConnectionStatus(false)
+      ? githubConnectionStatus(false, options.database)
       : createGitHubConnection(
           {
             database,
@@ -333,7 +333,7 @@ function databaseUnavailableGitHubRegistration(
     applyLifecycle: unavailable,
   });
   return {
-    connection: githubConnectionStatus(true),
+    connection: githubConnectionStatus(true, null),
     triggerProviders: [],
     sources: [webhook],
     outputs: [],
@@ -341,10 +341,17 @@ function databaseUnavailableGitHubRegistration(
   };
 }
 
-function githubConnectionStatus(configured: boolean): ProviderConnectionRegistration {
+function githubConnectionStatus(
+  configured: boolean,
+  database: Database | null,
+): ProviderConnectionRegistration {
   return {
     name: "github",
-    status: (connections) => githubStatus(configured, connections.github),
+    status: async (organizationId) =>
+      githubStatus(
+        configured,
+        database === null ? [] : await githubPersistence(database).listConnections(organizationId),
+      ),
     actions: {},
   };
 }
@@ -403,7 +410,11 @@ function createGitHubConnection(
 
   return {
     name: "github",
-    status: (connections) => githubStatus(client !== undefined, connections.github),
+    status: async (organizationId) =>
+      githubStatus(
+        client !== undefined,
+        await githubPersistence(options.database).listConnections(organizationId),
+      ),
     actions: {
       start,
       disconnect,

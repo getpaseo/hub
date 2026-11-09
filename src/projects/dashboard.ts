@@ -1,21 +1,21 @@
-import type { AuthServer } from "../auth/server.js";
 import { capabilitiesFor } from "../auth/organization-policy.js";
+import type { AuthServer } from "../auth/server.js";
 import { revisionBundleFiles } from "../configuration/store.js";
 import type {
-  Database,
   AgentExecutionRecord,
+  Database,
   ProjectActivityRunListRecord,
   ProjectActivityRunRecord,
   ProviderEventReceiptSummary,
 } from "../db/types.js";
-import { formatInvocationRejection } from "../triggers/invocation.js";
-import { providerEventDropReasonSummary } from "../triggers/drop-reason.js";
 import {
   decodeEntitlementDenialFailureReason,
   entitlementDenialSummary,
 } from "../entitlements/denial.js";
-import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
-import { hasRequiredSlackScopes } from "../providers/slack/client.js";
+import type { ProviderRegistry } from "../providers/registry.js";
+import { organizationConnections } from "../providers/resources.js";
+import { providerEventDropReasonSummary } from "../triggers/drop-reason.js";
+import { formatInvocationRejection } from "../triggers/invocation.js";
 import { resolveRouteTenant } from "./access.js";
 import { ProjectCommandError } from "./command-error.js";
 
@@ -37,6 +37,7 @@ export class ProjectDashboard {
   constructor(
     private readonly database: Database,
     private readonly auth: AuthServer,
+    private readonly providers: ProviderRegistry,
   ) {}
 
   async tenantContext(request: Request, scope: ProjectRouteScope) {
@@ -57,7 +58,7 @@ export class ProjectDashboard {
     const { account, tenant } = await this.resolve(request, organizationScope(scope));
     const [projects, connections, unroutedEvents, daemons] = await Promise.all([
       this.database.listProjectsForOrganization(tenant.organization.id),
-      this.database.organizationConnectionUsage(tenant.organization.id),
+      organizationConnections(this.database, this.providers, tenant.organization.id),
       this.database.listUnroutedProviderEventsForOrganization(tenant.organization.id),
       this.database.listDaemonsForOrganization(tenant.organization.id),
     ]);
@@ -67,7 +68,7 @@ export class ProjectDashboard {
       membership: tenant.membership,
       capabilities: capabilitiesFor(tenant.membership.role),
       projects: projects.map(projectView),
-      connections: connectionUsageView(connections),
+      connections: connectionUsageView(connections, this.providers),
       unroutedEvents: unroutedEvents.map(unroutedEventView),
       daemons: daemons.map(daemonView),
     };
@@ -81,7 +82,7 @@ export class ProjectDashboard {
         this.database.listProjectsForOrganization(tenant.organization.id),
         this.database.projectConfigurationReadModel(project.id),
         this.database.listDaemonsForOrganization(tenant.organization.id),
-        this.database.organizationConnectionUsage(tenant.organization.id),
+        organizationConnections(this.database, this.providers, tenant.organization.id),
         this.database.listGitHubRepositories(tenant.organization.id),
         this.database.listProjectActivityRuns(project.id, 50),
       ]);
@@ -94,7 +95,7 @@ export class ProjectDashboard {
       projects: projects.map(projectView),
       configuration: configurationView(configuration),
       organizationDaemons: organizationDaemons.map(daemonView),
-      connections: connectionUsageView(connections),
+      connections: connectionUsageView(connections, this.providers),
       repositories: repositories.map((repository) => ({
         id: repository.id,
         connectionId: repository.connectionId,
@@ -228,37 +229,21 @@ function daemonView(daemon: Awaited<ReturnType<Database["findDaemonById"]>> & {}
 }
 
 function connectionUsageView(
-  connections: Awaited<ReturnType<Database["organizationConnectionUsage"]>>,
+  connections: Awaited<ReturnType<typeof organizationConnections>>,
+  providers: ProviderRegistry,
 ) {
-  return {
-    github: connections.github.map((connection) => ({
-      id: connection.id,
-      slug: connection.slug,
-      installationId: connection.installationId,
-      accountLogin: connection.accountLogin,
-      status: connection.status,
-    })),
-    discord: connections.discord.map((connection) => ({
-      id: connection.id,
-      slug: connection.slug,
-      guildId: connection.guildId,
-      guildName: connection.guildName,
-    })),
-    slack: connections.slack.map((connection) => ({
-      id: connection.id,
-      slug: connection.slug,
-      teamId: connection.teamId,
-      teamName: connection.teamName,
-      requiresReauthorization: !hasRequiredSlackScopes(connection.scopes),
-    })),
-    linear: connections.linear.map((connection) => ({
-      id: connection.id,
-      slug: connection.slug,
-      linearOrganizationId: connection.linearOrganizationId,
-      linearOrganizationName: connection.linearOrganizationName,
-      requiresReauthorization: linearConnectionRequiresReauthorization(connection),
-    })),
-  };
+  return Object.fromEntries(
+    [...connections]
+      .sort(
+        (a, b) =>
+          (providers.require(a.provider).manifest.connectionOrder ?? 0) -
+          (providers.require(b.provider).manifest.connectionOrder ?? 0),
+      )
+      .map(({ provider, connections: items }) => [
+        provider,
+        items.map((connection) => connection.view),
+      ]),
+  );
 }
 
 function configurationView(

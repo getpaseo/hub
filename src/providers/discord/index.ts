@@ -86,7 +86,7 @@ export function createDiscordRegistration(
     });
   const connection =
     options.auth === null
-      ? discordConnectionStatus(true)
+      ? discordConnectionStatus(true, options.database)
       : createDiscordConnection(
           {
             database,
@@ -145,7 +145,7 @@ function emptyDiscordRegistration(
   const { database, auth } = options;
   const connection =
     database === null || auth === null
-      ? discordConnectionStatus(false)
+      ? discordConnectionStatus(false, options.database)
       : createDiscordConnection(
           {
             database,
@@ -172,7 +172,7 @@ function emptyDiscordRegistration(
 
 function unavailableDiscordRegistration(): ProviderRegistration {
   return {
-    connection: discordConnectionStatus(true),
+    connection: discordConnectionStatus(true, null),
     triggerProviders: [],
     sources: [],
     outputs: [],
@@ -180,10 +180,17 @@ function unavailableDiscordRegistration(): ProviderRegistration {
   };
 }
 
-function discordConnectionStatus(configured: boolean): ProviderConnectionRegistration {
+function discordConnectionStatus(
+  configured: boolean,
+  database: Database | null,
+): ProviderConnectionRegistration {
   return {
     name: "discord",
-    status: (connections) => discordStatus(configured, connections.discord),
+    status: async (organizationId) =>
+      discordStatus(
+        configured,
+        database === null ? [] : await discordPersistence(database).listConnections(organizationId),
+      ),
     actions: {},
   };
 }
@@ -249,7 +256,11 @@ function createDiscordConnection(
 
   return {
     name: "discord",
-    status: (connections) => discordStatus(client !== undefined, connections.discord),
+    status: async (organizationId) =>
+      discordStatus(
+        client !== undefined,
+        await discordPersistence(options.database).listConnections(organizationId),
+      ),
     actions: {
       start,
       disconnect,

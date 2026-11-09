@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { MemoryProviderContext } from "../../../db/provider-persistence.js";
 import type {
   AcceptDiscordEventInput,
@@ -6,9 +7,29 @@ import type {
   DiscordConnectionRecord,
   ProviderEventAcceptance,
 } from "../../../db/types.js";
+const initialDataSchema = z
+  .object({
+    connections: z
+      .array(
+        z.object({
+          id: z.string(),
+          organizationId: z.string(),
+          slug: z.string(),
+          guildId: z.string(),
+          guildName: z.string(),
+          providerApplicationId: z.string().nullable(),
+        }),
+      )
+      .default([]),
+  })
+  .default({ connections: [] });
 export class DiscordMemoryPersistence {
   private readonly discordConnections = new Map<string, DiscordConnectionRecord>();
-  constructor(private readonly context: MemoryProviderContext) {}
+  constructor(private readonly context: MemoryProviderContext) {
+    const data = initialDataSchema.parse(context.initialData);
+    for (const connection of data.connections)
+      this.discordConnections.set(connection.guildId, connection);
+  }
   async acceptDiscordEvent(input: AcceptDiscordEventInput): Promise<ProviderEventAcceptance> {
     const binding = await this.findDiscordConnection(input.guildId);
     const reason = discordDropReason(input, binding);

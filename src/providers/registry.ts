@@ -74,6 +74,7 @@ export interface ProviderApplication {
 }
 
 export interface ProviderModule {
+  resources: import("./resources.js").ProviderResources;
   summarizeEvent(payload: unknown): import("./presentation.js").ProviderEventSummary;
   manifest: ProviderManifest;
   application: ProviderApplication;
@@ -100,6 +101,10 @@ export class ProviderRegistry {
     const module = this.modules.get(id);
     if (module === undefined) throw new Error(`unknown provider: ${id}`);
     return module;
+  }
+
+  forEvent(event: string): ProviderModule | undefined {
+    return this.modules.get(event.slice(0, event.indexOf(".")));
   }
 
   parseConfiguration(value: unknown): ProviderApplicationConfiguration {

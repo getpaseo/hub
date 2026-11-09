@@ -18,6 +18,7 @@ export interface DiscordPersistence {
   ): Promise<Extract<Types.DisconnectConnectionResult, { provider: "discord" }>>;
 }
 const persistence = new ProviderPersistence<DiscordPersistence>({
+  id: "discord",
   postgres: (context) => new DiscordPostgresPersistence(context),
   memory: discordMemoryPersistence,
 });

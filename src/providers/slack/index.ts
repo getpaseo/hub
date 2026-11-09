@@ -128,7 +128,7 @@ function buildSlackRegistration(options: CreateSlackRegistrationOptions): SlackR
   });
   if (database === null) {
     return {
-      connection: slackConnectionStatus(true),
+      connection: slackConnectionStatus(true, options.database),
       triggerProviders: [],
       sources: [events],
       outputs: [],
@@ -146,7 +146,7 @@ function buildSlackRegistration(options: CreateSlackRegistrationOptions): SlackR
     });
   const connection =
     options.auth === null
-      ? slackConnectionStatus(true)
+      ? slackConnectionStatus(true, options.database)
       : createSlackConnection(
           {
             database,
@@ -221,7 +221,7 @@ function emptySlackRegistration(
 ): ProviderRegistration {
   const connection =
     options.database === null || options.auth === null
-      ? slackConnectionStatus(false)
+      ? slackConnectionStatus(false, options.database)
       : createSlackConnection(
           {
             database: options.database,
@@ -251,10 +251,17 @@ function emptySlackRegistration(
   };
 }
 
-function slackConnectionStatus(configured: boolean): ProviderConnectionRegistration {
+function slackConnectionStatus(
+  configured: boolean,
+  database: Database | null,
+): ProviderConnectionRegistration {
   return {
     name: "slack",
-    status: (connections) => slackStatus(configured, connections.slack),
+    status: async (organizationId) =>
+      slackStatus(
+        configured,
+        database === null ? [] : await slackPersistence(database).listConnections(organizationId),
+      ),
     actions: {},
   };
 }
@@ -320,7 +327,11 @@ function createSlackConnection(
 
   return {
     name: "slack",
-    status: (connections) => slackStatus(client !== undefined, connections.slack),
+    status: async (organizationId) =>
+      slackStatus(
+        client !== undefined,
+        await slackPersistence(options.database).listConnections(organizationId),
+      ),
     actions: {
       start,
       disconnect,

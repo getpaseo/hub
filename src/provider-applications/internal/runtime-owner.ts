@@ -254,10 +254,14 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner, ActiveProvi
     return {
       connection: {
         name: provider,
-        status: (connections) =>
-          slot.active?.registration.connection.status(connections) ?? {
-            status: "notConfigured" as const,
-          },
+        status: async (organizationId) => {
+          const active = slot.active;
+          return active === undefined
+            ? { status: "notConfigured" as const }
+            : this.withLease(active, () =>
+                Promise.resolve(active.registration.connection.status(organizationId)),
+              );
+        },
         actions: connectionActions,
       },
       ...(manifest.integration !== undefined

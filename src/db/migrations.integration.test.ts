@@ -4,7 +4,9 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import { githubPersistence } from "../providers/github/persistence.js";
+import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
 import { slackPersistence } from "../providers/slack/persistence.js";
+const compositionProviders = createCompositionProviders();
 
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { dump } from "js-yaml";
@@ -761,7 +763,7 @@ describe("database migration application", () => {
          values ('${connectionId}', 'organization-a', 9251, 'manual-authority-github', 'account-9251',
                  'manual-authority', 'Organization', 'active')`,
       );
-      const store = new ProjectConfigurationStore(database, project.id);
+      const store = new ProjectConfigurationStore(database, project.id, compositionProviders);
       const configuration = {
         environments: [{ name: "runner", kind: "daemon", daemon: "daemon-10000000", cwd: "/repo" }],
         triggers: [
@@ -814,7 +816,7 @@ describe("database migration application", () => {
     try {
       const [project] = await createProjectFixtures(database, url);
       await seedTestDaemon(url, "organization-a");
-      const store = new ProjectConfigurationStore(database, project.id);
+      const store = new ProjectConfigurationStore(database, project.id, compositionProviders);
       const rawConfiguration = {
         environments: [{ name: "runner", kind: "daemon", daemon: "daemon-10000000", cwd: "/repo" }],
         triggers: [
@@ -1232,7 +1234,7 @@ describe("database migration application", () => {
           },
         ],
       };
-      const store = new ProjectConfigurationStore(database, project.id);
+      const store = new ProjectConfigurationStore(database, project.id, compositionProviders);
       const configurationRevision = await store.insertManualBundleRevision({
         files: configurationBundleFixture(dump(configuration)),
         userId: "project-user",
@@ -1965,6 +1967,7 @@ class LegacyUpgrade {
       },
     };
     const application = createHubApplication({
+      providerRegistry: compositionProviders,
       database,
       entitlements: new EntitlementsService(database, { seats: async () => 0 }),
       publicApi: { status: "enabled", authenticator: operationAuth },

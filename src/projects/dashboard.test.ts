@@ -2,11 +2,45 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../auth/server.js";
 import { createMemoryDatabase } from "../db/memory.js";
+import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
 import { ProjectDashboard } from "./dashboard.js";
+const compositionProviders = createCompositionProviders();
 
 describe("project dashboard activity read models", () => {
   it("uses canonical Linear health in project and organization snapshots", async () => {
     const database = createMemoryDatabase({
+      providerData: {
+        linear: {
+          connections: [
+            {
+              id: "expired",
+              organizationId: "org-1",
+              slug: "expired",
+              providerApplicationId: "linear-client",
+              linearOrganizationId: "linear-expired",
+              linearOrganizationName: "Expired",
+              appUserId: "linear-app-user",
+              accessToken: "expired-token",
+              refreshToken: null,
+              accessTokenExpiresAt: new Date("2000-01-01T00:00:00.000Z"),
+              scopes: ["read", "comments:create"],
+            },
+            {
+              id: "refreshable",
+              organizationId: "org-1",
+              slug: "refreshable",
+              providerApplicationId: "linear-client",
+              linearOrganizationId: "linear-refreshable",
+              linearOrganizationName: "Refreshable",
+              appUserId: "linear-app-user",
+              accessToken: "expired-token",
+              refreshToken: "refresh-token",
+              accessTokenExpiresAt: new Date("2000-01-01T00:00:00.000Z"),
+              scopes: ["read", "comments:create"],
+            },
+          ],
+        },
+      },
       memberships: [
         {
           userId: "user-1",
@@ -24,42 +58,8 @@ describe("project dashboard activity read models", () => {
       slug: "hub",
       createdByUserId: "user-1",
     });
-    database.organizationConnectionUsage = () =>
-      Promise.resolve({
-        github: [],
-        discord: [],
-        slack: [],
-        linear: [
-          {
-            id: "expired",
-            organizationId: "org-1",
-            slug: "expired",
-            providerApplicationId: "linear-client",
-            linearOrganizationId: "linear-expired",
-            linearOrganizationName: "Expired",
-            appUserId: "linear-app-user",
-            accessToken: "expired-token",
-            refreshToken: null,
-            accessTokenExpiresAt: new Date("2000-01-01T00:00:00.000Z"),
-            scopes: ["read", "comments:create"],
-          },
-          {
-            id: "refreshable",
-            organizationId: "org-1",
-            slug: "refreshable",
-            providerApplicationId: "linear-client",
-            linearOrganizationId: "linear-refreshable",
-            linearOrganizationName: "Refreshable",
-            appUserId: "linear-app-user",
-            accessToken: "expired-token",
-            refreshToken: "refresh-token",
-            accessTokenExpiresAt: new Date("2000-01-01T00:00:00.000Z"),
-            scopes: ["read", "comments:create"],
-          },
-        ],
-      });
 
-    const dashboard = new ProjectDashboard(database, accountAuth());
+    const dashboard = new ProjectDashboard(database, accountAuth(), compositionProviders);
     const request = new Request("https://hub.test/o/acme/projects/hub");
     const [organization, project] = await Promise.all([
       dashboard.organizationSnapshot(request, { organizationSlug: "acme" }),
@@ -70,10 +70,12 @@ describe("project dashboard activity read models", () => {
     ]);
 
     for (const snapshot of [organization, project]) {
+      const connections = snapshot.connections["linear"];
+      assert.ok(connections !== undefined);
       assert.deepEqual(
-        snapshot.connections.linear.map((connection) => ({
-          id: connection.id,
-          requiresReauthorization: connection.requiresReauthorization,
+        connections.map((connection) => ({
+          id: connection["id"],
+          requiresReauthorization: connection["requiresReauthorization"],
         })),
         [
           { id: "expired", requiresReauthorization: true },
@@ -148,7 +150,7 @@ describe("project dashboard activity read models", () => {
       unroutedReceipt.event.providerEventReceiptId,
       "trigger_filters_rejected",
     );
-    const dashboard = new ProjectDashboard(database, accountAuth());
+    const dashboard = new ProjectDashboard(database, accountAuth(), compositionProviders);
     const request = new Request("https://hub.test/o/acme/projects/hub");
     const list = await dashboard.projectSnapshot(request, {
       organizationSlug: "acme",

@@ -49,6 +49,7 @@ import {
   type HubExecutionControlAction,
 } from "../../hub/protocol.js";
 import type { GitHubAuthorityRegistration } from "../../providers/github/runtime.js";
+import { createProviderRegistry as createCompositionProviders } from "../../providers/server.js";
 import { startApplication, stopApplication } from "../../server/runtime.js";
 import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
 import type { TriggerProvider } from "../../triggers/index.js";
@@ -57,6 +58,7 @@ import type { SlackBotClient, SlackThreadReadResult } from "../../triggers/slack
 import { createSlackTriggerProvider } from "../../triggers/slack/provider.js";
 import { ENROLLMENT_LIFETIME_MS } from "../registration.js";
 import type { DaemonClock } from "../registry.js";
+const compositionProviders = createCompositionProviders();
 
 const HUB_ORGANIZATION_ID = "org_1";
 const HUB_PROJECT_ID = "00000000-0000-4000-8000-000000000001";
@@ -1682,7 +1684,11 @@ export class HubHarness {
       [HUB_PROJECT_ID, HUB_ORGANIZATION_ID, HUB_PROJECT_SLUG, HUB_USER_ID],
     );
     await client.close();
-    const store = new ProjectConfigurationStore(this.database, HUB_PROJECT_ID);
+    const store = new ProjectConfigurationStore(
+      this.database,
+      HUB_PROJECT_ID,
+      compositionProviders,
+    );
     await this.database.issueEnrollmentToken({
       id: "00000000-0000-4000-8000-0000000000ee",
       verifier: "seed-daemon-token",
@@ -1751,6 +1757,7 @@ export class HubHarness {
       execute: async () => undefined,
     });
     const application = createHubApplication({
+      providerRegistry: compositionProviders,
       database: this.databaseForApplication(),
       entitlements: this.entitlements,
       providers: [this.recordingProvider()],

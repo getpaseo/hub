@@ -5,6 +5,7 @@ import { parseCompiledHubConfig } from "../config/compiler.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database } from "../db/types.js";
 import { buildLaunchMachineIntent } from "../dispatcher/index.js";
+import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
 import { slackPersistence } from "../providers/slack/persistence.js";
 import { acceptingAgentValidator } from "../test-utils/agent-validator.js";
 import {
@@ -14,6 +15,7 @@ import {
 } from "../test-utils/project-configuration.js";
 import { OrganizationTriggerStore } from "../triggers/store.js";
 import { HomeDashboard } from "./dashboard.js";
+const compositionProviders = createCompositionProviders();
 
 const NOW = new Date("2026-09-21T12:00:00.000Z");
 const APPS_CONFIGURED = () => true;
@@ -25,6 +27,7 @@ describe("home read model", () => {
     const snapshot = await new HomeDashboard(
       database,
       accountAuth(),
+      compositionProviders,
       APPS_CONFIGURED,
       () => NOW,
     ).snapshot(request, "acme");
@@ -46,6 +49,7 @@ describe("home read model", () => {
     const trigger = await new OrganizationTriggerStore(
       database,
       "org-1",
+      compositionProviders,
       acceptingAgentValidator(),
     ).save({ yaml: triggerYaml, userId: "user-1" });
     await recordRun(database, trigger.runtimeProjectId, "first", "succeeded", 120_000);
@@ -54,6 +58,7 @@ describe("home read model", () => {
     const snapshot = await new HomeDashboard(
       database,
       accountAuth(),
+      compositionProviders,
       APPS_CONFIGURED,
       () => NOW,
     ).snapshot(request, "acme");
@@ -101,6 +106,7 @@ describe("home read model", () => {
     const trigger = await new OrganizationTriggerStore(
       database,
       "org-1",
+      compositionProviders,
       acceptingAgentValidator(),
     ).save({ yaml: scheduledTriggerYaml, userId: "user-1" });
     await recordRun(
@@ -115,6 +121,7 @@ describe("home read model", () => {
     const snapshot = await new HomeDashboard(
       database,
       accountAuth(),
+      compositionProviders,
       APPS_CONFIGURED,
       () => NOW,
     ).snapshot(request, "acme");
@@ -141,6 +148,7 @@ describe("home read model", () => {
     const snapshot = await new HomeDashboard(
       database,
       accountAuth(),
+      compositionProviders,
       APPS_CONFIGURED,
       () => NOW,
     ).snapshot(request, "acme");
@@ -148,21 +156,22 @@ describe("home read model", () => {
     assert.deepEqual(snapshot.unrouted, [{ provider: "slack", count: 2 }]);
   });
 
-  it("asks the provider registrations whether any app is configured, with the organization's bindings", async () => {
+  it("asks the provider registrations whether any app is configured, for the organization", async () => {
     const database = memberDatabase();
     const seen: unknown[] = [];
     const snapshot = await new HomeDashboard(
       database,
       accountAuth(),
-      (bindings) => {
-        seen.push(bindings.slack.map(({ slug }) => slug));
+      compositionProviders,
+      (organizationId) => {
+        seen.push(organizationId);
         return false;
       },
       () => NOW,
     ).snapshot(request, "acme");
 
     assert.equal(snapshot.appsConfigured, false);
-    assert.deepEqual(seen, [["acme-slack"]]);
+    assert.deepEqual(seen, ["org-1"]);
   });
 });
 
@@ -181,21 +190,25 @@ function memberDatabase({ slack = true }: { slack?: boolean } = {}): Database {
         role: "owner",
       },
     ],
-    slackConnections: slack
-      ? [
-          {
-            id: "slack-1",
-            organizationId: "org-1",
-            slug: "acme-slack",
-            teamId: "T-ACME",
-            teamName: "Acme Slack",
-            botUserId: "UBOT",
-            botAccessToken: "token",
-            scopes: ["app_mentions:read"],
-            providerApplicationId: null,
-          },
-        ]
-      : [],
+    providerData: {
+      slack: {
+        connections: slack
+          ? [
+              {
+                id: "slack-1",
+                organizationId: "org-1",
+                slug: "acme-slack",
+                teamId: "T-ACME",
+                teamName: "Acme Slack",
+                botUserId: "UBOT",
+                botAccessToken: "token",
+                scopes: ["app_mentions:read"],
+                providerApplicationId: null,
+              },
+            ]
+          : [],
+      },
+    },
   });
 }
 

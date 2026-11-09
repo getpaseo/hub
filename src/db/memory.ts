@@ -6,10 +6,7 @@ import {
   entitlementOverridesSchema,
   mergeOverrides,
 } from "../entitlements/catalog.js";
-import { discordPersistence } from "../providers/discord/persistence.js";
 import { githubPersistence } from "../providers/github/persistence.js";
-import { linearPersistence } from "../providers/linear/persistence.js";
-import { slackPersistence } from "../providers/slack/persistence.js";
 import {
   isProviderEventDropReasonCode,
   type ProviderEventDropReasonCode,
@@ -50,7 +47,6 @@ import type {
   MigrateProjectTriggersInput,
   OperatorOrganizationRecord,
   OrganizationBillingCustomerRecord,
-  OrganizationConnectionUsage,
   OrganizationEntitlementsRecord,
   OrganizationRunRecord,
   OrganizationTriggerRecord,
@@ -73,7 +69,6 @@ import type {
   RejectedTriggerRunRecord,
   SaveOrganizationTriggerInput,
   SetProjectGitHubConfigurationSourceInput,
-  SlackConnectionRecord,
   StampOrganizationEntitlementsInput,
   StartCliAuthorizationInput,
   StartConnectionAttemptInput,
@@ -108,7 +103,7 @@ export interface MemoryDatabaseOptions {
     role: "owner" | "admin" | "member";
   }[];
   now?: () => Date;
-  slackConnections?: readonly SlackConnectionRecord[];
+  providerData?: Readonly<Record<string, unknown>>;
 }
 
 function usageKey(organizationId: string, meter: string, periodStart: Date): string {
@@ -205,7 +200,7 @@ class MemoryDatabase implements Database {
     this.organizationIds = new Set(options.organizationIds);
     this.providerContext = {
       findProjectById: (id) => this.projects.get(id),
-      options,
+      initialData: undefined,
       withLock: (key, operation) => this.withAdvisoryLock(key, operation),
       accept: (...args) => this.acceptMemoryEvent(...args),
       findReceiptId: (...args) => this.findReceiptId(...args),
@@ -221,7 +216,13 @@ class MemoryDatabase implements Database {
           source: { kind: "github" as const, ...source },
         })),
     };
-    this.providerPersistence = { create: (factory) => factory.memory(this.providerContext) };
+    this.providerPersistence = {
+      create: (factory) =>
+        factory.memory({
+          ...this.providerContext,
+          initialData: options.providerData?.[factory.id],
+        }),
+    };
   }
 
   private now(): Date {
@@ -2821,15 +2822,6 @@ class MemoryDatabase implements Database {
     };
   }
 
-  async organizationConnectionUsage(organizationId: string): Promise<OrganizationConnectionUsage> {
-    const [github, discord, slack, linear] = await Promise.all([
-      githubPersistence(this).listConnections(organizationId),
-      discordPersistence(this).listConnections(organizationId),
-      slackPersistence(this).listConnections(organizationId),
-      linearPersistence(this).listConnections(organizationId),
-    ]);
-    return { github, discord, slack, linear };
-  }
   listGitHubRepositories(organizationId: string) {
     return githubPersistence(this).listGitHubRepositories(organizationId);
   }

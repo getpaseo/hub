@@ -1,9 +1,11 @@
+import { dump } from "js-yaml";
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { dump } from "js-yaml";
 import { createMemoryDatabase } from "../db/memory.js";
-import { parseProjectConfiguration, ProjectConfigurationStore } from "./store.js";
+import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
+import { parseProjectConfiguration, ProjectConfigurationStore } from "./store.js";
+const compositionProviders = createCompositionProviders();
 
 describe("compiled workflow activation", () => {
   it("activates a valid step-based configuration and stores the compiled contract", async () => {
@@ -15,7 +17,7 @@ describe("compiled workflow activation", () => {
       slug: "compiler-project",
       createdByUserId: "user-1",
     });
-    const store = new ProjectConfigurationStore(database, project.id);
+    const store = new ProjectConfigurationStore(database, project.id, compositionProviders);
     const revision = await store.insertManualBundleRevision({
       files: configurationBundleFixture(
         dump({
@@ -89,7 +91,7 @@ describe("compiled workflow activation", () => {
       slug: "compiler-project",
       createdByUserId: "user-1",
     });
-    const store = new ProjectConfigurationStore(database, project.id);
+    const store = new ProjectConfigurationStore(database, project.id, compositionProviders);
     const active = await store.insertManualBundleRevision({
       files: configurationBundleFixture(
         dump({

@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { MemoryProviderContext } from "../../../db/provider-persistence.js";
 import type {
   AcceptSlackEventInput,
@@ -8,10 +9,30 @@ import type {
   SlackConnectionRecord,
 } from "../../../db/types.js";
 import type { SlackSocketApplicationCommit } from "../persistence.js";
+const initialDataSchema = z
+  .object({
+    connections: z
+      .array(
+        z.object({
+          id: z.string(),
+          organizationId: z.string(),
+          slug: z.string(),
+          teamId: z.string(),
+          teamName: z.string(),
+          botUserId: z.string(),
+          botAccessToken: z.string(),
+          scopes: z.array(z.string()),
+          providerApplicationId: z.string().nullable(),
+        }),
+      )
+      .default([]),
+  })
+  .default({ connections: [] });
 export class SlackMemoryPersistence {
   private readonly slackConnections = new Map<string, SlackConnectionRecord>();
   constructor(private readonly context: MemoryProviderContext) {
-    for (const connection of context.options.slackConnections ?? [])
+    const data = initialDataSchema.parse(context.initialData);
+    for (const connection of data.connections)
       this.slackConnections.set(connection.teamId, connection);
   }
   async acceptSlackEvent(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance> {

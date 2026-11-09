@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { describe, it, vi } from "vitest";
 import { createAttachmentCapabilityRegistry } from "../../attachments/capabilities.js";
 import { createMemoryDatabase } from "../../db/memory.js";
-import { discordPersistence } from "../../providers/discord/persistence.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
 import { isAcceptedTriggerProviderMatch } from "../index.js";
 import type { NormalizedDiscordMessageEvent } from "./events.js";
@@ -170,7 +169,6 @@ describe("Discord Phase 1 trigger provider", () => {
   });
 
   it("routes a durable Discord receipt to the configured connection", async () => {
-    const database = createMemoryDatabase();
     const connection = {
       id: "22222222-2222-4222-8222-222222222222",
       organizationId: "org_1",
@@ -179,10 +177,10 @@ describe("Discord Phase 1 trigger provider", () => {
       guildName: "Secondary",
       providerApplicationId: "discord-app",
     };
-    database.organizationConnectionUsage = () =>
-      Promise.resolve({ github: [], slack: [], discord: [connection], linear: [] });
-    discordPersistence(database).findDiscordConnectionForOrganization = () =>
-      Promise.resolve(connection);
+    const database = createMemoryDatabase({
+      providerData: { discord: { connections: [connection] } },
+    });
+
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       discordConnectionConfiguration(),

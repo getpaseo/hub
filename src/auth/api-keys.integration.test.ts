@@ -1,20 +1,22 @@
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, it } from "vitest";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
+import { z } from "zod";
+import { createHubApplication } from "../app.js";
 import {
   createDatabase,
+  createPostgresQueryRuntime,
   testDatabaseLocks,
   testDatabaseRuntime,
 } from "../db/test-utils/runtime.js";
 import type { Database } from "../db/types.js";
-import { createAuthServer, type AuthServer } from "./server.js";
-import { composeEntitlements, type ComposedEntitlements } from "./entitlements.js";
-import { z } from "zod";
-import { createHubApplication } from "../app.js";
 import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
+import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
 import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
+import { composeEntitlements, type ComposedEntitlements } from "./entitlements.js";
+import { createAuthServer, type AuthServer } from "./server.js";
+const compositionProviders = createCompositionProviders();
 
 const createdApiKeyResponseSchema = z.object({ key: z.object({ id: z.string().uuid() }) });
 
@@ -170,6 +172,7 @@ describe("organization API-key boundary", () => {
     });
     await enrollTestDaemon(database, "organization-a");
     const application = createHubApplication({
+      providerRegistry: compositionProviders,
       database,
       entitlements: createUnlimitedEntitlementsService(),
       publicApi: { status: "enabled", authenticator: auth.publicCredentials! },

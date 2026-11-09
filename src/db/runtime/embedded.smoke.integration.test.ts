@@ -5,10 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "vitest";
 import { createApplicationRuntime } from "../../application-runtime.js";
-import { createAuthServer } from "../../auth/server.js";
 import { composeEntitlements } from "../../auth/entitlements.js";
+import { createAuthServer } from "../../auth/server.js";
+import { createProviderRegistry as createCompositionProviders } from "../../providers/server.js";
 import { createDatabase } from "../pg.js";
 import { embeddedDatabaseRuntime } from "./index.js";
+const compositionProviders = createCompositionProviders();
 
 it("joins runtime queries to the active embedded transaction", async () => {
   const root = await mkdtemp(join(tmpdir(), "hub-pglite-transaction-"));
@@ -49,6 +51,7 @@ it("runs the bootstrap, credential lock, and lease claim flows on embedded stora
     },
   });
   const application = await createApplicationRuntime({
+    providerRegistry: compositionProviders,
     database,
     auth,
     entitlements: entitlements.service,

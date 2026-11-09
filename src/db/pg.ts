@@ -7,10 +7,7 @@ import {
   mergeOverrides,
 } from "../entitlements/catalog.js";
 import { ExecutionAuthorityRepository } from "../execution-authority/index.js";
-import { discordPersistence } from "../providers/discord/persistence.js";
 import { githubPersistence } from "../providers/github/persistence.js";
-import { linearPersistence } from "../providers/linear/persistence.js";
-import { slackPersistence } from "../providers/slack/persistence.js";
 import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 import { parseInvocationInputs, parseInvocationRejection } from "../triggers/invocation.js";
 import { ScheduleRepository } from "../triggers/schedule/index.js";
@@ -65,7 +62,6 @@ import type {
   MigrateProjectTriggersInput,
   OperatorOrganizationRecord,
   OrganizationBillingCustomerRecord,
-  OrganizationConnectionUsage,
   OrganizationEntitlementsRecord,
   OrganizationRunRecord,
   OrganizationTriggerRecord,
@@ -3819,16 +3815,6 @@ class PgDatabase implements Database {
         automaticDeploymentEnabled: sourceRow.automatic_deployment_enabled,
       },
     };
-  }
-
-  async organizationConnectionUsage(organizationId: string): Promise<OrganizationConnectionUsage> {
-    const github = await githubPersistence(this).listConnections(organizationId);
-    const [discord, slack, linear] = await Promise.all([
-      discordPersistence(this).listConnections(organizationId),
-      slackPersistence(this).listConnections(organizationId),
-      linearPersistence(this).listConnections(organizationId),
-    ]);
-    return { github, discord, slack, linear };
   }
 
   listGitHubRepositories(organizationId: string) {

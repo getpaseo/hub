@@ -1,13 +1,15 @@
-import { summarizeEvent } from "./activity.js";
 import { replyOutputTool } from "../../execution-capabilities/outputs.js";
 import type { ProviderModule } from "../registry.js";
 import { activationError } from "./activation-error.js";
+import { summarizeEvent } from "./activity.js";
 import { configurationSchema, identitySchema } from "./application-configuration.js";
 import { connectionInventory } from "./application-persistence.js";
 import { readEnvironment } from "./environment.js";
 import { createDiscordRegistration } from "./index.js";
+import { resources } from "./resources.js";
 import { verifyDiscord } from "./verification.js";
 export const discordProvider: ProviderModule = {
+  resources,
   summarizeEvent,
   manifest: {
     id: "discord",

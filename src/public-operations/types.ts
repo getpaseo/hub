@@ -35,16 +35,8 @@ export type ListProjectsResult =
   | InfrastructureUnavailable;
 
 export interface ConfigurationResources {
-  daemons: readonly { id: string; slug: string }[];
-  github: readonly {
-    slug: string;
-    accountLogin: string;
-    accountType: string;
-    repositories: readonly string[];
-  }[];
-  discord: readonly { slug: string; guildName: string }[];
-  slack: readonly { slug: string; teamName: string }[];
-  linear: readonly { slug: string; organizationName: string }[];
+  daemons: { id: string; slug: string }[];
+  [key: string]: import("../config/schema.js").JsonValue;
 }
 
 export type ListConfigurationResourcesResult =
@@ -52,14 +44,7 @@ export type ListConfigurationResourcesResult =
   | InfrastructureUnavailable;
 
 export interface SetupResources {
-  github: readonly {
-    slug: string;
-    accountLogin: string;
-    accountType: string;
-    repositories: readonly string[];
-  }[];
-  discord: readonly { guildId: string; guildName: string }[];
-  slack: readonly { teamId: string; teamName: string }[];
+  [key: string]: import("../config/schema.js").JsonValue;
 }
 
 export type ListSetupResourcesResult =

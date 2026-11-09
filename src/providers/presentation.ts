@@ -1,11 +1,11 @@
-import type { FailureKind } from "../failures/index.js";
 import type { Result } from "../contract/respond.js";
+import type { FailureKind } from "../failures/index.js";
 import type {
+  ProviderApplicationConfiguration,
   ProviderApplicationSaveResult,
   ProviderApplicationSurface,
   ProviderApplicationView,
 } from "../provider-applications/index.js";
-import type { ProviderApplicationConfiguration } from "../provider-applications/index.js";
 /**
  * Presentation unions spelled here rather than imported from the components, so this module stays
  * free of JSX and buildable by the server project. Divergence from `ApplicationField` or
@@ -121,6 +121,10 @@ export function isSecureOrigin(origin: string): boolean {
   return origin.startsWith("https://");
 }
 export interface BrowserProviderModule {
+  resourceSchemas: {
+    configuration: import("zod").ZodType<import("./resources.js").ProviderResourceView[]>;
+    setup?: import("zod").ZodType<import("./resources.js").ProviderResourceView[]>;
+  };
   connection: import("./connection-presentation.js").ProviderConnectionPresentation;
   failure: ProviderSetupFailure;
   setup: ProviderSetup;

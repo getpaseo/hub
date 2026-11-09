@@ -5,6 +5,8 @@ import {
   type CompiledProjectConfiguration,
 } from "../configuration/store.js";
 import type { Database, ProjectConfigurationRevisionRecord, ProjectRecord } from "../db/types.js";
+import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
+const compositionProviders = createCompositionProviders();
 
 export const TEST_DAEMON_ID = "10000000-0000-4000-8000-000000000001";
 export const TEST_DAEMON_SLUG = "daemon-10000000";
@@ -46,7 +48,7 @@ export async function createActiveProjectConfiguration(
   return {
     project,
     revision,
-    store: new ProjectConfigurationStore(database, project.id),
+    store: new ProjectConfigurationStore(database, project.id, compositionProviders),
   };
 }
 

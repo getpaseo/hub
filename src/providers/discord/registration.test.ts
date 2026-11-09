@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import type { AuthServer } from "../../auth/server.js";
 import type { OrganizationAccessValue } from "../../auth/organization-access.js";
+import type { AuthServer } from "../../auth/server.js";
 import { createMemoryDatabase } from "../../db/memory.js";
 import type { StartConnectionAttemptInput } from "../../db/types.js";
 import { MemoryDiscordBotClient } from "../../triggers/discord/memory-bot.js";
@@ -61,7 +61,7 @@ describe("Discord registration", () => {
     assert.match(body.url, /^https:\/\/discord\.test\/authorize/u);
   });
 
-  it("reports readiness without constructing partial provider behavior", () => {
+  it("reports readiness without constructing partial provider behavior", async () => {
     const registration = createDiscordRegistration({
       database: createMemoryDatabase(),
       auth: new RegistrationAuth(),
@@ -70,12 +70,9 @@ describe("Discord registration", () => {
       configuration: null,
     });
 
-    assert.deepEqual(
-      registration.connection.status({ github: [], discord: [], slack: [], linear: [] }),
-      {
-        status: "notConfigured",
-      },
-    );
+    assert.deepEqual(await registration.connection.status("org"), {
+      status: "notConfigured",
+    });
     assert.deepEqual(registration.sources, []);
     assert.deepEqual(registration.outputs, []);
   });

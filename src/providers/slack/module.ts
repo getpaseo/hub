@@ -6,8 +6,10 @@ import { configurationSchema } from "./application-configuration.js";
 import { completeSlackInstallation } from "./application.js";
 import { createSlackRegistration } from "./index.js";
 import type { SlackSocketInstallationVerifier } from "./installation.js";
+import { resources } from "./resources.js";
 export function createSlackProvider(verifier?: SlackSocketInstallationVerifier): ProviderModule {
   return {
+    resources,
     summarizeEvent,
     manifest: {
       id: "slack",

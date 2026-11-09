@@ -157,6 +157,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       },
     });
     const application = await createApplicationRuntime({
+      providerRegistry,
       database,
       auth,
       entitlements: entitlements.service,

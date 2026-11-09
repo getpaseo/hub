@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { SlackConnectionRecord } from "../db/types.js";
+import { organizationConnections } from "./resources.js";
+import { createProviderRegistry } from "./server.js";
 import { slackPersistence } from "./slack/persistence.js";
+const providers = createProviderRegistry();
 
 describe("provider persistence ownership", () => {
   it("keeps equal external connection IDs isolated between databases and their read models", async () => {
@@ -17,9 +20,11 @@ describe("provider persistence ownership", () => {
       scopes: ["chat:write"],
       providerApplicationId: "A1",
     });
-    const first = createMemoryDatabase({ slackConnections: [connection("first", "first-token")] });
+    const first = createMemoryDatabase({
+      providerData: { slack: { connections: [connection("first", "first-token")] } },
+    });
     const second = createMemoryDatabase({
-      slackConnections: [connection("second", "second-token")],
+      providerData: { slack: { connections: [connection("second", "second-token")] } },
     });
 
     assert.equal(
@@ -34,9 +39,17 @@ describe("provider persistence ownership", () => {
       await slackPersistence(second).findSlackConnectionForOrganization("first", "T1"),
       undefined,
     );
-    assert.deepEqual((await first.organizationConnectionUsage("first")).slack, [
-      connection("first", "first-token"),
-    ]);
-    assert.deepEqual((await second.organizationConnectionUsage("first")).slack, []);
+    const firstView = await organizationConnections(first, providers, "first");
+    const secondView = await organizationConnections(second, providers, "first");
+    assert.deepEqual(
+      firstView
+        .flatMap((entry) => entry.connections)
+        .map((row) => ({ id: row.id, label: row.label })),
+      [{ id: "first", label: "Acme" }],
+    );
+    assert.deepEqual(
+      secondView.flatMap((entry) => entry.connections),
+      [],
+    );
   });
 });

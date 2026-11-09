@@ -17,10 +17,11 @@ describe("startup project trigger migration", () => {
   it("migrates mixed projects once and preserves the legacy execution lane across restart", async () => {
     const database = createMemoryDatabase({
       organizationIds: ["org"],
-      slackConnections: [
-        slackConnection("slack-a", "team-a"),
-        slackConnection("slack-b", "team-b"),
-      ],
+      providerData: {
+        slack: {
+          connections: [slackConnection("slack-a", "team-a"), slackConnection("slack-b", "team-b")],
+        },
+      },
     });
     await activeProject(
       database,

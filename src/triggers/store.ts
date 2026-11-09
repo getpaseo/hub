@@ -1,13 +1,14 @@
-import type {
-  Database,
-  OrganizationTriggerRecord,
-  OrganizationTriggerRevisionRecord,
-} from "../db/types.js";
 import {
   resolveTriggerConfigurationForOrganization,
   type CompiledProjectConfiguration,
   type DaemonAgentConfigurationValidator,
 } from "../configuration/store.js";
+import type {
+  Database,
+  OrganizationTriggerRecord,
+  OrganizationTriggerRevisionRecord,
+} from "../db/types.js";
+import type { ProviderRegistry } from "../providers/registry.js";
 import {
   compileTriggerDocument,
   parseTriggerDocument,
@@ -32,6 +33,7 @@ export class OrganizationTriggerStore {
   constructor(
     private readonly database: Database,
     private readonly organizationId: string,
+    private readonly providers: ProviderRegistry,
     /**
      * The daemon's own answer about an agent. Provider, model, mode, thinking option, and options
      * are facts about the daemon that will run the trigger, not about the document, so the store
@@ -96,6 +98,7 @@ export class OrganizationTriggerStore {
     if (options.previousYaml !== yaml) validateAuthoringContract(compiled.authored);
     const resolved = await resolveTriggerConfigurationForOrganization(
       this.database,
+      this.providers,
       this.organizationId,
       {
         environments: [compiled.environment],

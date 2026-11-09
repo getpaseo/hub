@@ -28,6 +28,7 @@ export interface LinearPersistence {
   ): Promise<Extract<Types.DisconnectConnectionResult, { provider: "linear" }>>;
 }
 const persistence = new ProviderPersistence<LinearPersistence>({
+  id: "linear",
   postgres: (context) => new LinearPostgresPersistence(context),
   memory: linearMemoryPersistence,
 });

@@ -6,8 +6,10 @@ import { configurationSchema, identitySchema } from "./application-configuration
 import { connectionInventory } from "./application-persistence.js";
 import { readEnvironment } from "./environment.js";
 import { createGitHubRegistration } from "./index.js";
+import { resources } from "./resources.js";
 import { verifyGitHub } from "./verification.js";
 export const githubProvider: ProviderModule = {
+  resources,
   summarizeEvent,
   manifest: {
     id: "github",

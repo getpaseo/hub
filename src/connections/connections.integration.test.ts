@@ -23,7 +23,10 @@ import type {
 import { createGitHubRegistration } from "../providers/github/index.js";
 import { githubPersistence } from "../providers/github/persistence.js";
 import type { ProviderRegistration } from "../providers/registration.js";
+import { organizationConnections } from "../providers/resources.js";
+import { createProviderRegistry } from "../providers/server.js";
 import { MemoryDiscordBotClient } from "../triggers/discord/memory-bot.js";
+const connectionProviders = createProviderRegistry();
 
 const TEST_WEBHOOK_SECRET = "provider-registration-test-secret";
 interface ProviderFixture {
@@ -103,8 +106,8 @@ describe("provider connection facades PostgreSQL authority", () => {
         [id, slug, name],
       );
     }
-    const usage = await database.organizationConnectionUsage("acme");
-    for (const records of [usage.github, usage.discord, usage.slack, usage.linear]) {
+    const usage = await organizationConnections(database, connectionProviders, "acme");
+    for (const { connections: records } of usage) {
       assert.deepEqual(
         records.map(({ slug }) => slug),
         ["a", "b", "z"],
@@ -1112,12 +1115,9 @@ async function resolution(
     (registration) => registration.connection.name === provider,
   )?.connection;
   assert(connection !== undefined);
-  const status = connection.status({
-    github: github === undefined ? [] : [github],
-    discord: discord === undefined ? [] : [discord],
-    slack: [],
-    linear: [],
-  });
+  const status = await connection.status(
+    github?.organizationId ?? discord?.organizationId ?? "acme",
+  );
   assert(status !== null && typeof status === "object" && "status" in status);
   if (status.status === "suspended") return { status: "suspended" as const };
   const binding = provider === "github" ? github : discord;

@@ -1,10 +1,12 @@
-import type { AuthServer } from "../auth/server.js";
 import { capabilitiesFor } from "../auth/organization-policy.js";
+import type { AuthServer } from "../auth/server.js";
+import { parseCompiledHubConfig } from "../config/compiler.js";
+import type { DaemonAgentConfigurationValidator } from "../configuration/store.js";
 import type { Database, OrganizationTriggerRecord } from "../db/types.js";
 import { resolveRouteTenant } from "../projects/access.js";
 import { ProjectCommandError } from "../projects/command-error.js";
-import { parseCompiledHubConfig } from "../config/compiler.js";
-import type { DaemonAgentConfigurationValidator } from "../configuration/store.js";
+import type { ProviderRegistry } from "../providers/registry.js";
+import { organizationConnections } from "../providers/resources.js";
 import { projectTriggerForm } from "./configuration/editor.js";
 import { OrganizationTriggerStore } from "./store.js";
 
@@ -12,6 +14,7 @@ export class TriggerDashboard {
   constructor(
     private readonly database: Database,
     private readonly auth: AuthServer,
+    private readonly providers: ProviderRegistry,
     private readonly agentValidator: DaemonAgentConfigurationValidator,
   ) {}
 
@@ -22,12 +25,13 @@ export class TriggerDashboard {
     const store = new OrganizationTriggerStore(
       this.database,
       tenant.organization.id,
+      this.providers,
       this.agentValidator,
     );
     const [triggers, daemons, connections] = await Promise.all([
       store.list(),
       this.database.listDaemonsForOrganization(tenant.organization.id),
-      this.database.organizationConnectionUsage(tenant.organization.id),
+      organizationConnections(this.database, this.providers, tenant.organization.id),
     ]);
     const activity = (
       await Promise.all(triggers.map((trigger) => this.activityForTrigger(trigger)))
@@ -55,32 +59,15 @@ export class TriggerDashboard {
           ({ status, permissions }) => status === "active" && permissions.includes("hub.execute"),
         )
         .map(({ id, slug, presence }) => ({ id, slug, presence })),
-      connections: [
-        ...connections.slack.map(({ id, slug, teamName }) => ({
-          id,
-          slug,
-          provider: "slack" as const,
-          label: teamName,
-        })),
-        ...connections.discord.map(({ id, slug, guildName }) => ({
-          id,
-          slug,
-          provider: "discord" as const,
-          label: guildName,
-        })),
-        ...connections.github.map(({ id, slug, accountLogin }) => ({
-          id,
-          slug,
-          provider: "github" as const,
-          label: accountLogin,
-        })),
-        ...connections.linear.map(({ id, slug, linearOrganizationName }) => ({
-          id,
-          slug,
-          provider: "linear" as const,
-          label: linearOrganizationName,
-        })),
-      ],
+      connections: [...connections]
+        .sort(
+          (a, b) =>
+            this.providers.require(a.provider).resources.triggerOrder -
+            this.providers.require(b.provider).resources.triggerOrder,
+        )
+        .flatMap(({ provider, connections: items }) =>
+          items.map(({ id, slug, label }) => ({ id, slug, provider, label })),
+        ),
     };
   }
 
@@ -132,6 +119,7 @@ export class TriggerDashboard {
     return new OrganizationTriggerStore(
       this.database,
       tenant.organization.id,
+      this.providers,
       this.agentValidator,
     ).save({
       ...(input.triggerId === undefined ? {} : { triggerId: input.triggerId }),
