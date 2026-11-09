@@ -15,16 +15,22 @@ import {
   enrollTestDaemon,
   TEST_DAEMON_SLUG,
 } from "../../test-utils/project-configuration.js";
-import { createProviderRegistry as createSourceProviders } from "../server.js";
+import {
+  createProviderRegistry as createCodecProviders,
+  createProviderRegistry as createSourceProviders,
+} from "../server.js";
 import type { GitHubConnectionClient } from "./client.js";
 import type { GitHubConfigurationProvider } from "./configuration-source.js";
 import { createGitHubRegistration } from "./index.js";
 import { githubPersistence } from "./persistence.js";
+
+const codecCatalog = createCodecProviders().configuration;
+
 const sourceProviders = createSourceProviders();
 
 describe("GitHub registration", () => {
   it("synchronizes the default branch at the exact push SHA and preserves the valid revision", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(codecCatalog, {
       providerData: {
         github: {
           connections: [
@@ -118,7 +124,7 @@ describe("GitHub registration", () => {
   });
 
   it("constructs the complete GitHub slice and delegates connection start", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(codecCatalog, {
       memberships: [
         {
           userId: "user",
@@ -191,7 +197,7 @@ describe("GitHub registration", () => {
 
   it("reports readiness without constructing partial provider behavior", async () => {
     const registration = createGitHubRegistration({
-      database: createMemoryDatabase(),
+      database: createMemoryDatabase(codecCatalog),
       auth: new RegistrationAuth(),
       applicationBaseUrl: "https://hub.test",
       publicBaseUrl: "https://hub.test",
@@ -206,7 +212,7 @@ describe("GitHub registration", () => {
   });
 
   it("resolves the project's active GitHub installation token", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(codecCatalog, {
       providerData: {
         github: {
           connections: [
@@ -270,7 +276,7 @@ describe("GitHub registration", () => {
   });
 
   it("mints and revokes explicit scoped authority only for the project's active organization connection", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(codecCatalog, {
       providerData: {
         github: {
           connections: [
@@ -412,7 +418,7 @@ describe("GitHub registration", () => {
 
   it("returns a setup callback that carries no session to the connections landing", async () => {
     const registration = createGitHubRegistration({
-      database: createMemoryDatabase(),
+      database: createMemoryDatabase(codecCatalog),
       auth: new SignedOutAuth(),
       applicationBaseUrl: "https://hub.test",
       publicBaseUrl: "https://hub.test",
@@ -440,7 +446,7 @@ describe("GitHub registration", () => {
 
   it("keeps provider runtime active without browser authentication", async () => {
     const registration = createGitHubRegistration({
-      database: createMemoryDatabase(),
+      database: createMemoryDatabase(codecCatalog),
       auth: null,
       applicationBaseUrl: "https://hub.test",
       publicBaseUrl: "https://hub.test",

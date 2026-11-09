@@ -1,20 +1,23 @@
-import { parseCompiledHubConfig } from "../../config/compiler.js";
-import { spawn, execFile, type ChildProcess } from "node:child_process";
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { z } from "zod";
+import { parseCompiledHubConfig } from "../../config/compiler.js";
 import type { DatabaseRuntime } from "../../db/runtime/index.js";
 import { createPostgresQueryRuntime } from "../../db/test-utils/runtime.js";
-import { z } from "zod";
 import { isHubFinishExecutionToolName } from "../../hub/protocol.js";
+import { createProviderRegistry as createCodecProviders } from "../../providers/server.js";
 import { DispatchedManualRunSchema, ProblemSchema } from "../../public-api/contracts.js";
+import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
+import { currentProjectConfigurationFiles } from "../../test-utils/current-project-configuration.js";
 import { runCommand } from "./command.js";
 import { HubFaultProxy } from "./fault-proxy.js";
 import { SourcePaseo } from "./source-paseo.js";
-import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
-import { currentProjectConfigurationFiles } from "../../test-utils/current-project-configuration.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 const exec = promisify(execFile);
 const HUB_ROOT = process.cwd();
@@ -912,7 +915,9 @@ export class HubE2E {
     );
     const row = result.rows[0];
     if (!row) throw new Error("Missing test configuration");
-    const configuration = structuredClone(parseCompiledHubConfig(row.normalized_configuration));
+    const configuration = structuredClone(
+      parseCompiledHubConfig(row.normalized_configuration, codecCatalog),
+    );
     for (const environment of configuration.environments) {
       if (environment.kind !== "daemon") throw new Error("Expected daemon environment");
       environment.worktree = {

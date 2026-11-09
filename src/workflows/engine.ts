@@ -177,7 +177,7 @@ export class DurableWorkflowEngine {
           throw new Error("accepted workflow match required");
         const acceptedMatch: AcceptedTriggerProviderMatch = match;
         const configuration = asProjectConfiguration(
-          parseCompiledHubConfig(acceptedMatch.hubConfig),
+          parseCompiledHubConfig(acceptedMatch.hubConfig, this.options.configurationCatalog),
         );
         const compiledTrigger = configuration.triggers.find(
           (candidate) => candidate.name === acceptedMatch.triggerName,
@@ -898,7 +898,7 @@ export class DurableWorkflowEngine {
       throw new Error(`workflow configuration revision not found: ${run.configurationRevisionId}`);
     return {
       configuration: asProjectConfiguration(
-        parseCompiledHubConfig(revision.normalizedConfiguration),
+        parseCompiledHubConfig(revision.normalizedConfiguration, this.options.configurationCatalog),
       ),
       triggerName:
         triggerDocumentName(revision, this.options.configurationCatalog) ??

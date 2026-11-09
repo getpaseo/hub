@@ -15,6 +15,7 @@ import {
 } from "../test-utils/project-configuration.js";
 import { OrganizationTriggerStore } from "../triggers/store.js";
 import { HomeDashboard } from "./dashboard.js";
+
 const compositionProviders = createCompositionProviders();
 
 const NOW = new Date("2026-09-21T12:00:00.000Z");
@@ -178,7 +179,7 @@ describe("home read model", () => {
 const CONNECTED_ONLY_DAEMON_ID = "20000000-0000-4000-8000-000000000002";
 
 function memberDatabase({ slack = true }: { slack?: boolean } = {}): Database {
-  return createMemoryDatabase({
+  return createMemoryDatabase(compositionProviders.configuration, {
     now: () => NOW,
     memberships: [
       {
@@ -244,9 +245,10 @@ async function recordRun(
 ): Promise<void> {
   const revision = await database.findActiveProjectConfiguration(projectId);
   assert.ok(revision);
-  const configured = parseCompiledHubConfig(revision.normalizedConfiguration).triggers.find(
-    ({ on }) => on === event,
-  );
+  const configured = parseCompiledHubConfig(
+    revision.normalizedConfiguration,
+    compositionProviders.configuration,
+  ).triggers.find(({ on }) => on === event);
   assert.ok(configured);
   const receipt = await database.persistManualEvent({
     organizationId: "org-1",

@@ -45,7 +45,7 @@ describe("durable multi-step workflow engine", () => {
     "materializes one reusable environment from each %s execution identity before persistence",
     async (providerName) => {
       const rawConfiguration = executionWorktreeConfiguration();
-      const compiled = structuredClone(compileHubConfig(rawConfiguration));
+      const compiled = structuredClone(compileHubConfig(rawConfiguration, composedEvents));
       for (const trigger of compiled.triggers) {
         for (const step of trigger.steps) step.continuation = { mode: "conversation" };
       }
@@ -665,7 +665,7 @@ describe("durable multi-step workflow engine", () => {
       sourceKind: "manual",
       sourceEvidence: { kind: "test" },
       normalizedConfiguration: fixture.configuration,
-      contentHash: compiledConfigurationHash(fixture.configuration),
+      contentHash: compiledConfigurationHash(fixture.configuration, composedEvents),
       createdByUserId: "user-1",
     });
     await fixture.database.activateProjectConfigurationRevision(
@@ -907,7 +907,7 @@ describe("durable multi-step workflow engine", () => {
   });
 
   it("activates and executes the migrated current-project classifier-to-worker fixture", async () => {
-    const bundle = compileHubBundle(await currentProjectConfigurationFiles());
+    const bundle = compileHubBundle(await currentProjectConfigurationFiles(), composedEvents);
     const fixture = await workflowFixture({ compiledConfiguration: bundle.configuration });
     const dispatches: LaunchMachineIntent[] = [];
     const { handler, engine } = engineFor(fixture, [], async (intent) => {
@@ -1676,7 +1676,7 @@ async function workflowFixture(
     namedAgents?: Record<string, CompiledAgent>;
   } = {},
 ): Promise<Fixture> {
-  const database = createMemoryDatabase({ organizationIds: ["org-1"] });
+  const database = createMemoryDatabase(composedEvents, { organizationIds: ["org-1"] });
   // A real EntitlementsService over the SAME database the engine uses — not an auto-unlimited
   // proxy over a separate store. Metering the engine performs is therefore observable here, and
   // a per-execution regression actually fails these tests. Stamped unlimited by default; tests
@@ -1694,7 +1694,7 @@ async function workflowFixture(
     (options.terminalRecovery ? terminalRecoveryConfiguration() : baseConfiguration(options));
   const compiled =
     options.compiledConfiguration ??
-    compileHubConfig(raw, {
+    compileHubConfig(raw, composedEvents, {
       ...(options.resolvedPromptPartials === undefined
         ? {}
         : { resolvedPromptPartials: options.resolvedPromptPartials }),
@@ -1719,7 +1719,7 @@ async function workflowFixture(
     sourceKind: "manual",
     sourceEvidence: { kind: "test" },
     normalizedConfiguration: configuration,
-    contentHash: compiledConfigurationHash(configuration),
+    contentHash: compiledConfigurationHash(configuration, composedEvents),
     createdByUserId: "user-1",
   });
   await database.activateProjectConfigurationRevision(project.id, revision.id, []);

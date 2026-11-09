@@ -1,8 +1,11 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "vitest";
-import type { DurableProviderEvent } from "../../db/types.js";
 import { createMemoryDatabase } from "../../db/memory.js";
+import type { DurableProviderEvent } from "../../db/types.js";
+import { createProviderRegistry as createCodecProviders } from "../../providers/server.js";
 import { createManualTriggerSource, handleManualTriggerRequest } from "./source.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 describe("manual trigger source", () => {
   it("passes arbitrary provider-namespaced payloads to the handler", async () => {
@@ -74,7 +77,7 @@ class ManualTriggers {
   ) {}
 
   static async recording(): Promise<ManualTriggers> {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const project = await database.createProject({
       organizationId: "org_1",
       name: "Manual project",

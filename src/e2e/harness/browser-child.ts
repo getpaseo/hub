@@ -65,6 +65,7 @@ import {
   type BrowserDiscordEvent,
   type BrowserProviderScenario,
 } from "./browser-providers.js";
+
 const providerRegistry = createProviderRegistry();
 
 interface DiscordCommand {
@@ -777,27 +778,32 @@ async function prepareSlackSocketWorkflow(
   );
   const row = target.rows[0];
   if (row === undefined) throw new Error("Slack browser workflow target is unavailable");
-  const compiled = compileHubConfig({
-    environments: [{ name: "runner", kind: "daemon", daemon: "browser-runner", cwd: "/workspace" }],
-    triggers: [
-      {
-        name: "socket-mention",
-        on: "slack.mention",
-        max_runtime: "5m",
-        filters: { workspace: "T-ACME", channels: ["C1"], from_users: ["U1"] },
-        steps: [
-          {
-            id: "handle",
-            environment: "runner",
-            max_runtime: "2m",
-            idle_timeout: "30s",
-            agent: { provider: "test" },
-            prompt: [{ text: "Handle the Socket Mode mention." }],
-          },
-        ],
-      },
-    ],
-  });
+  const compiled = compileHubConfig(
+    {
+      environments: [
+        { name: "runner", kind: "daemon", daemon: "browser-runner", cwd: "/workspace" },
+      ],
+      triggers: [
+        {
+          name: "socket-mention",
+          on: "slack.mention",
+          max_runtime: "5m",
+          filters: { workspace: "T-ACME", channels: ["C1"], from_users: ["U1"] },
+          steps: [
+            {
+              id: "handle",
+              environment: "runner",
+              max_runtime: "2m",
+              idle_timeout: "30s",
+              agent: { provider: "test" },
+              prompt: [{ text: "Handle the Socket Mode mention." }],
+            },
+          ],
+        },
+      ],
+    },
+    providerRegistry.configuration,
+  );
   const configuration = {
     ...compiled,
     environments: compiled.environments.map((environment) =>
@@ -816,7 +822,7 @@ async function prepareSlackSocketWorkflow(
     sourceKind: "manual",
     sourceEvidence: { kind: "browser-socket-fixture" },
     normalizedConfiguration: configuration,
-    contentHash: compiledConfigurationHash(configuration),
+    contentHash: compiledConfigurationHash(configuration, providerRegistry.configuration),
     createdByUserId: row.user_id,
   });
   await database.activateProjectConfigurationRevision(row.project_id, revision.id, [

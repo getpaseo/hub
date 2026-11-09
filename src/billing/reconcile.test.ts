@@ -4,19 +4,22 @@ import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database } from "../db/types.js";
 import { normalizeStoredEntitlements } from "../entitlements/catalog.js";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import { composeBilling, type BillingRuntime } from "./index.js";
 import type { BillingPlanPresentations } from "./plan-presentation.js";
-import type {
-  StripeCatalogPrice,
-  StripeCatalogProduct,
-  StripeCatalogSource,
-} from "./stripe-catalog-source.js";
 import type {
   ChangeSubscriptionPriceInput,
   ReportSeatQuantityInput,
   StripeBillingClient,
   StripeSubscriptionState,
 } from "./stripe-billing-client.js";
+import type {
+  StripeCatalogPrice,
+  StripeCatalogProduct,
+  StripeCatalogSource,
+} from "./stripe-catalog-source.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 // The reconciliation half of the money path: a subscription webhook converges the organization's
 // entitlements onto the subscription's live state, idempotently, and stamps Free when it ends.
@@ -179,7 +182,7 @@ async function setup(): Promise<{
   billing: BillingRuntime;
   seats: { count: number };
 }> {
-  const database = createMemoryDatabase();
+  const database = createMemoryDatabase(codecCatalog);
   const billingClient = new FakeBillingClient();
   const seats = { count: 1 };
   const billing = composeBilling({

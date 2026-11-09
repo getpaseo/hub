@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { parseCompiledHubConfig } from "../../../config/compiler.js";
 import type { DatabaseRuntime, QueryHandle, QueryRow } from "../../../db/runtime/index.js";
 import { acceptWorkflowRun } from "../../../db/workflow-intake.js";
-import { parseCompiledHubConfig } from "../../../config/compiler.js";
 import { defaultInputs } from "../../invocation.js";
-import { RecurrenceSchema, nextOccurrence, type Recurrence } from "../recurrence.js";
 import type { ScheduleStore } from "../index.js";
+import { RecurrenceSchema, nextOccurrence, type Recurrence } from "../recurrence.js";
 
 interface DueSchedule extends QueryRow {
   trigger_id: string;
@@ -18,7 +18,10 @@ interface DueSchedule extends QueryRow {
 }
 
 export class ScheduleRepository implements ScheduleStore {
-  constructor(private readonly runtime: DatabaseRuntime) {}
+  constructor(
+    private readonly runtime: DatabaseRuntime,
+    private readonly configurationCatalog: import("../../../providers/configuration.js").ProviderConfigurationCatalog,
+  ) {}
 
   /** Called by trigger save while it holds the trigger row lock. */
   static async synchronize(
@@ -74,7 +77,7 @@ export class ScheduleRepository implements ScheduleStore {
               ).rows[0];
         let runId = schedule.active_run_id;
         if (active?.status !== "running") {
-          runId = await enqueueOccurrence(transaction, schedule, now);
+          runId = await enqueueOccurrence(transaction, schedule, now, this.configurationCatalog);
           created++;
         }
         await transaction.query(
@@ -91,8 +94,12 @@ async function enqueueOccurrence(
   transaction: QueryHandle,
   schedule: DueSchedule,
   now: Date,
+  configurationCatalog: import("../../../providers/configuration.js").ProviderConfigurationCatalog,
 ): Promise<string> {
-  const configuration = parseCompiledHubConfig(schedule.normalized_configuration);
+  const configuration = parseCompiledHubConfig(
+    schedule.normalized_configuration,
+    configurationCatalog,
+  );
   const trigger = configuration.triggers.find(({ on }) => on === "schedule.tick");
   if (trigger === undefined) throw new Error("Scheduled trigger configuration is missing.");
   const occurrence = schedule.next_at.toISOString();

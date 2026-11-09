@@ -1,26 +1,8 @@
-import { createHash } from "node:crypto";
 import { load } from "js-yaml";
+import { createHash } from "node:crypto";
 import { z } from "zod";
-import {
-  compileHubConfig,
-  type CompiledAgent,
-  type CompiledHubConfig,
-  HubConfigurationCompilationError,
-  type JsonValue,
-} from "./compiler.js";
-import {
-  collectPromptPartialPaths,
-  hashPromptPartialContent,
-  type ResolvedPromptPartial,
-  type ResolvedPromptPartials,
-} from "./prompt-partials.js";
-import {
-  MAX_PROMPT_PARTIAL_BUNDLE_BYTES,
-  MAX_PROMPT_PARTIAL_CONTENT_BYTES,
-  MAX_PROMPT_PARTIAL_COUNT,
-  MAX_PROMPT_PARTIAL_PATH_LENGTH,
-} from "./prompt-partial-limits.js";
 import { projectSlugSchema } from "../project-slug.js";
+import type { ProviderConfigurationCatalog } from "../providers/configuration.js";
 import {
   compareBundlePaths,
   HUB_RESOURCE_PATH,
@@ -28,6 +10,25 @@ import {
   WORKFLOW_PARTIAL_DIRECTORY,
   type HubBundleFile,
 } from "./bundle-contract.js";
+import {
+  compileHubConfig,
+  HubConfigurationCompilationError,
+  type CompiledAgent,
+  type CompiledHubConfig,
+  type JsonValue,
+} from "./compiler.js";
+import {
+  MAX_PROMPT_PARTIAL_BUNDLE_BYTES,
+  MAX_PROMPT_PARTIAL_CONTENT_BYTES,
+  MAX_PROMPT_PARTIAL_COUNT,
+  MAX_PROMPT_PARTIAL_PATH_LENGTH,
+} from "./prompt-partial-limits.js";
+import {
+  collectPromptPartialPaths,
+  hashPromptPartialContent,
+  type ResolvedPromptPartial,
+  type ResolvedPromptPartials,
+} from "./prompt-partials.js";
 
 export {
   HUB_RESOURCE_PATH,
@@ -72,7 +73,10 @@ const JsonAgentSchema = z
   })
   .strict();
 
-export function compileHubBundle(input: readonly HubBundleFile[]): CompiledHubBundle {
+export function compileHubBundle(
+  input: readonly HubBundleFile[],
+  catalog: ProviderConfigurationCatalog,
+): CompiledHubBundle {
   const files = normalizeBundleFiles(input);
   const resourceFile = files.get(HUB_RESOURCE_PATH);
   if (resourceFile === undefined) {
@@ -119,7 +123,7 @@ export function compileHubBundle(input: readonly HubBundleFile[]): CompiledHubBu
   const partials = resolvePartials(rawConfiguration, files);
   let configuration: CompiledHubConfig;
   try {
-    configuration = compileHubConfig(rawConfiguration, {
+    configuration = compileHubConfig(rawConfiguration, catalog, {
       namedAgents: agents,
       sourceFiles,
       resolvedPromptPartials: partials,

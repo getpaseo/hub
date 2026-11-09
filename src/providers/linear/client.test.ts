@@ -6,12 +6,15 @@ import type {
   LinearConnectionTokenUpdate,
   UpdateLinearConnectionTokensInput,
 } from "../../db/types.js";
+import { createProviderRegistry as createCodecProviders } from "../server.js";
 import {
   createLinearApiClient,
   createLinearConnectionClient,
   hasRequiredLinearScopes,
 } from "./client.js";
 import { type LinearPersistence } from "./persistence.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 describe("Linear connection client", () => {
   it("uses an OAuth callback URL and records the installed workspace identity", async () => {
@@ -369,7 +372,7 @@ describe("Linear connection client", () => {
   });
 
   it("serializes rotating-token refreshes across Linear API clients", async () => {
-    const locks = createMemoryDatabase();
+    const locks = createMemoryDatabase(codecCatalog);
     const lockKeys: string[] = [];
     const connection: LinearConnectionRecord = {
       id: "connection-1",

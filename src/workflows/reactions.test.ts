@@ -142,7 +142,11 @@ function createDiscordReactionFixture() {
   const bot = new RecordingDiscordBot();
   const provider = createDiscordTriggerProvider({
     configurationStoreForProject: () =>
-      new ProjectConfigurationStore(createMemoryDatabase(), "unused", compositionProviders),
+      new ProjectConfigurationStore(
+        createMemoryDatabase(composedEvents),
+        "unused",
+        compositionProviders,
+      ),
     bot,
   });
   return {
@@ -177,7 +181,11 @@ function createSlackReactionFixture() {
   const client = new RecordingSlackClient();
   const provider = createSlackTriggerProvider({
     configurationStoreForProject: () =>
-      new ProjectConfigurationStore(createMemoryDatabase(), "unused", compositionProviders),
+      new ProjectConfigurationStore(
+        createMemoryDatabase(composedEvents),
+        "unused",
+        compositionProviders,
+      ),
     botUserIdForWorkspace: async () => "bot-1",
     client,
   });
@@ -212,7 +220,11 @@ function createGitHubReactionFixture() {
   const reactions = new RecordingGitHubReactions();
   const provider = createGitHubTriggerProvider({
     configurationStoreForProject: () =>
-      new ProjectConfigurationStore(createMemoryDatabase(), "unused", compositionProviders),
+      new ProjectConfigurationStore(
+        createMemoryDatabase(composedEvents),
+        "unused",
+        compositionProviders,
+      ),
     reactions,
   });
   return {
@@ -257,7 +269,10 @@ async function runTwoStepWorkflow<
 ) {
   let now = new Date();
   const organizationId = `org-reactions-${randomUUID()}`;
-  const database = createMemoryDatabase({ organizationIds: [organizationId], now: () => now });
+  const database = createMemoryDatabase(composedEvents, {
+    organizationIds: [organizationId],
+    now: () => now,
+  });
   const tokenVerifier = `verifier-${randomUUID()}`;
   await database.issueEnrollmentToken({
     id: randomUUID(),

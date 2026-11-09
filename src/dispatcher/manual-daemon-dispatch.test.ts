@@ -19,7 +19,7 @@ const PROJECT_ID = "00000000-0000-4000-8000-000000000001";
 
 describe("manual trigger durable workflow boundary", () => {
   it("records a manual delivery as dropped when no provider matches", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(composedEvents);
     const { project, revision } = await createManualProject(database);
     const source = createManualTriggerSource(database);
     const { handler } = createDispatcherWithEngine({
@@ -44,7 +44,7 @@ describe("manual trigger durable workflow boundary", () => {
   });
 
   it("persists one manual run and lets the workflow worker own the step dispatch", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(composedEvents);
     const project = await database.createProject({
       organizationId: "org_1",
       name: "Manual",
@@ -57,7 +57,7 @@ describe("manual trigger durable workflow boundary", () => {
       sourceKind: "manual",
       sourceEvidence: { kind: "test" },
       normalizedConfiguration: configuration,
-      contentHash: compiledConfigurationHash(configuration),
+      contentHash: compiledConfigurationHash(configuration, composedEvents),
       createdByUserId: "user-1",
     });
     await database.activateProjectConfigurationRevision(project.id, revision.id);
@@ -115,7 +115,7 @@ async function createManualProject(database: ReturnType<typeof createMemoryDatab
     sourceKind: "manual",
     sourceEvidence: { kind: "test" },
     normalizedConfiguration: configuration,
-    contentHash: compiledConfigurationHash(configuration),
+    contentHash: compiledConfigurationHash(configuration, composedEvents),
     createdByUserId: "user-1",
   });
   await database.activateProjectConfigurationRevision(project.id, revision.id);
@@ -168,27 +168,30 @@ function matchingProvider(configuration: CompiledHubConfig, revisionId: string):
 }
 
 function manualWorkflowConfiguration(): CompiledHubConfig {
-  const compiled = compileHubConfig({
-    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
-    triggers: [
-      {
-        name: "deploy",
-        on: "manual.run",
-        max_runtime: "1m",
-        filters: { from_users: ["operator"] },
-        steps: [
-          {
-            id: "deploy-agent",
-            environment: "runner",
-            max_runtime: "30s",
-            idle_timeout: "5s",
-            agent: { provider: "opencode" },
-            prompt: [{ text: "run" }],
-          },
-        ],
-      },
-    ],
-  });
+  const compiled = compileHubConfig(
+    {
+      environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
+      triggers: [
+        {
+          name: "deploy",
+          on: "manual.run",
+          max_runtime: "1m",
+          filters: { from_users: ["operator"] },
+          steps: [
+            {
+              id: "deploy-agent",
+              environment: "runner",
+              max_runtime: "30s",
+              idle_timeout: "5s",
+              agent: { provider: "opencode" },
+              prompt: [{ text: "run" }],
+            },
+          ],
+        },
+      ],
+    },
+    composedEvents,
+  );
   return {
     environments: [
       {

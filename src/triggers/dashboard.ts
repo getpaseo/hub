@@ -82,7 +82,10 @@ export class TriggerDashboard {
     const legacyTriggerName =
       migrationRevision === undefined
         ? undefined
-        : parseCompiledHubConfig(migrationRevision.normalizedConfiguration).triggers[0]?.name;
+        : parseCompiledHubConfig(
+            migrationRevision.normalizedConfiguration,
+            this.providers.configuration,
+          ).triggers[0]?.name;
     const [current, historical] = await Promise.all([
       this.database.listProjectActivityRuns(trigger.runtimeProjectId, 100),
       legacyProjectId === undefined

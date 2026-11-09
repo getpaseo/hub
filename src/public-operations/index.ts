@@ -1,11 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
-import { configurationValidationIssues } from "../configuration/validation-errors.js";
+import { HubBundleError } from "../config/bundle.js";
 import { ConfigurationActivationValidationError } from "../configuration/store.js";
-import { compileHubBundle, HubBundleError } from "../config/bundle.js";
+import { configurationValidationIssues } from "../configuration/validation-errors.js";
 import type { DaemonClock } from "../daemons/index.js";
 import { DaemonDispatchFailure } from "../daemons/index.js";
 import { ENROLLMENT_LIFETIME_MS } from "../daemons/registration.js";
 import { isDatabaseUnavailableError } from "../db/errors.js";
+import { TriggerDocumentError } from "../triggers/configuration/index.js";
 import { formatInvocationRejection } from "../triggers/invocation.js";
 import { ManualRunRejected } from "../triggers/manual/provider.js";
 import type {
@@ -15,7 +16,6 @@ import type {
   PublicOperationRepository,
   PublicOperations,
 } from "./types.js";
-import { TriggerDocumentError } from "../triggers/configuration/index.js";
 
 export type * from "./types.js";
 
@@ -101,6 +101,7 @@ export function createPublicOperations(
       try {
         const resolved = await resolveConfigurationDeployment(
           repository,
+          capabilities,
           authorization.organizationId,
           input,
           true,
@@ -137,6 +138,7 @@ export function createPublicOperations(
       try {
         const resolved = await resolveConfigurationDeployment(
           repository,
+          capabilities,
           authorization.organizationId,
           input,
           false,
@@ -293,6 +295,7 @@ async function dispatchManualRun(
 
 async function resolveConfigurationDeployment(
   repository: PublicOperationRepository,
+  capabilities: PublicOperationCapabilities,
   organizationId: string,
   input: {
     projectSlug?: string | undefined;
@@ -335,7 +338,7 @@ async function resolveConfigurationDeployment(
 
   let bundleName: string | undefined;
   try {
-    const bundle = compileHubBundle(input.files);
+    const bundle = capabilities.compileBundle(input.files);
     bundleName = bundle.name;
   } catch (error) {
     if (error instanceof HubBundleError) {

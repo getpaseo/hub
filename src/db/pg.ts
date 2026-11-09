@@ -131,7 +131,7 @@ class PgDatabase implements Database {
     private readonly locks: Locks,
     private readonly providers: ProviderRegistry,
   ) {
-    this.schedules = new ScheduleRepository(this.pool);
+    this.schedules = new ScheduleRepository(this.pool, providers.configuration);
     this.executionAuthority = new ExecutionAuthorityRepository(this.pool);
     this.connections = new ConnectionRepository(this.pool, locks, providers);
     this.triggerAcceptance = new ProviderEventAcceptanceRepository(this.pool, locks);
@@ -2890,7 +2890,7 @@ class PgDatabase implements Database {
         [input.projectId, input.configurationRevisionId],
       );
       const configurations = input.triggers.map((candidate) =>
-        parseCompiledHubConfig(candidate.normalizedConfiguration),
+        parseCompiledHubConfig(candidate.normalizedConfiguration, this.providers.configuration),
       );
       const candidateRoutes = input.triggers.map((candidate, index) => {
         const configuredEventName = configurations[index]!.triggers[0]?.on;
@@ -3198,7 +3198,10 @@ class PgDatabase implements Database {
       await client.query(`delete from project_trigger_routes where project_id = $1`, [
         trigger.runtime_project_id,
       ]);
-      const configuration = parseCompiledHubConfig(input.normalizedConfiguration);
+      const configuration = parseCompiledHubConfig(
+        input.normalizedConfiguration,
+        this.providers.configuration,
+      );
       for (const route of input.routes) {
         const configuredTriggerName =
           configuration.triggers.find(({ on }) => on === route.configuredEventName)?.name ??

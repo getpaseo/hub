@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export type QualifierKey = string;
 export type QualifierValues = Partial<Record<QualifierKey, string>>;
 export interface QualifierDefinition {
@@ -13,7 +15,18 @@ export interface EventDefinition {
   origin: "hub" | "provider";
   qualifiers: readonly QualifierDefinition[];
 }
+export const optionalTextFilter = z.string().optional();
+export const optionalNonEmptyTextFilter = z.string().min(1).optional();
+export const optionalNonEmptyListFilter = z.array(z.string().min(1)).min(1).optional();
+export interface ProviderLaunchPolicyInput {
+  name: string;
+  on: string;
+  filters?: Readonly<Record<string, unknown>> | undefined;
+}
 export interface ProviderConfigurationDefinition {
+  filterFields: Readonly<Record<string, z.ZodType>>;
+  projectLegacyFilters(value: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>>;
+  allowsLaunchWithoutActor?(trigger: ProviderLaunchPolicyInput): boolean;
   provider: string;
   order: number;
   events: Readonly<Record<string, { label: string; qualifiers?: readonly QualifierDefinition[] }>>;
@@ -22,6 +35,7 @@ export interface ProviderConfigurationDefinition {
 }
 export type EditorEvent = string;
 export class ProviderConfigurationCatalog {
+  private readonly filterFields = new Map<string, z.ZodType>();
   private readonly definitions = new Map<string, EventDefinition>();
   private readonly providers = new Map<string, ProviderConfigurationDefinition>();
   constructor(providers: readonly ProviderConfigurationDefinition[]) {
@@ -31,6 +45,12 @@ export class ProviderConfigurationCatalog {
       if (this.providers.has(provider.provider))
         throw new Error(`trigger provider already registered: ${provider.provider}`);
       this.providers.set(provider.provider, provider);
+      for (const [key, schema] of Object.entries(provider.filterFields)) {
+        const existing = this.filterFields.get(key);
+        if (existing !== undefined && existing !== schema)
+          throw new Error(`conflicting filter field: ${key}`);
+        this.filterFields.set(key, schema);
+      }
       for (const [id, event] of Object.entries(provider.events)) {
         if (!id.startsWith(`${provider.provider}.`) || this.definitions.has(id))
           throw new Error(`invalid registered event: ${id}`);
@@ -54,6 +74,41 @@ export class ProviderConfigurationCatalog {
       origin: "hub",
       qualifiers: [],
     });
+  }
+  filterSchema<Shape extends z.ZodRawShape>(base: z.ZodObject<Shape>) {
+    return base.catchall(z.unknown()).transform((value, context) => {
+      const unknownKeys: string[] = [];
+      for (const [key, field] of Object.entries(value)) {
+        if (Object.hasOwn(base.shape, key)) continue;
+        const schema = this.filterFields.get(key);
+        if (schema === undefined) {
+          unknownKeys.push(key);
+          continue;
+        }
+        const parsed = schema.safeParse(field);
+        if (parsed.success) Object.assign(value, { [key]: parsed.data });
+        else
+          for (const issue of parsed.error.issues)
+            context.addIssue({ ...issue, path: [key, ...issue.path] });
+      }
+      if (unknownKeys.length > 0)
+        context.addIssue({ code: "unrecognized_keys", keys: unknownKeys });
+      return value;
+    });
+  }
+  projectLegacyFilters(
+    value: Readonly<Record<string, unknown>>,
+  ): Readonly<Record<string, unknown>> {
+    const projected: Record<string, unknown> = {};
+    for (const provider of this.providers.values())
+      Object.assign(projected, provider.projectLegacyFilters(value));
+    return projected;
+  }
+  allowsLaunchWithoutActor(trigger: ProviderLaunchPolicyInput): boolean {
+    return (
+      this.providers.get(trigger.on.split(".")[0] ?? "")?.allowsLaunchWithoutActor?.(trigger) ===
+      true
+    );
   }
   list(): readonly string[] {
     return [...this.definitions.keys()];

@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import { createDiscordAttachmentResolver } from "../triggers/discord/attachments.js";
 import { createAttachmentCapabilityRegistry } from "./capabilities.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 describe("attachment capability boundary", () => {
   it("streams a provider attachment only through its durable workflow receipt", async () => {
@@ -191,7 +194,10 @@ describe("attachment capability boundary", () => {
   });
 });
 
-async function workflowExecution(database = createMemoryDatabase(), deliveryId = "delivery-1") {
+async function workflowExecution(
+  database = createMemoryDatabase(codecCatalog),
+  deliveryId = "delivery-1",
+) {
   let project = (await database.listProjectsForOrganization("org-1"))[0];
   project ??= await database.createProject({
     organizationId: "org-1",

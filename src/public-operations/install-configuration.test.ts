@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import type { HubBundleFile } from "../config/bundle.js";
+import { compileHubBundle, type HubBundleFile } from "../config/bundle.js";
 import { parseCompiledHubConfig } from "../config/compiler.js";
 import { hashPromptPartialContent } from "../config/prompt-partials.js";
 import { projectConfigurationReadModel } from "../configuration/source-state.js";
@@ -15,6 +15,7 @@ import { createProviderRegistry as createCompositionProviders } from "../provide
 import { enrollTestDaemon } from "../test-utils/project-configuration.js";
 import { createDatabasePublicOperationRepository } from "./database-adapter.js";
 import { createPublicOperations } from "./index.js";
+
 const compositionProviders = createCompositionProviders();
 
 const authorization = {
@@ -70,7 +71,10 @@ describe("public configuration bundle installation", () => {
       revisionBundleFiles(revision),
       files().toSorted((left, right) => left.path.localeCompare(right.path)),
     );
-    const compiled = parseCompiledHubConfig(revision.normalizedConfiguration);
+    const compiled = parseCompiledHubConfig(
+      revision.normalizedConfiguration,
+      compositionProviders.configuration,
+    );
     assert.deepEqual(compiled.triggers[0]?.steps[0]?.prompt, [
       {
         kind: "partial",
@@ -333,11 +337,15 @@ describe("public configuration bundle installation", () => {
 });
 
 async function deploymentHarness() {
-  const database = createMemoryDatabase({ organizationIds: [authorization.organizationId] });
+  const database = createMemoryDatabase(compositionProviders.configuration, {
+    organizationIds: [authorization.organizationId],
+  });
   await enrollTestDaemon(database, authorization.organizationId);
   const operations = createPublicOperations(
     createDatabasePublicOperationRepository(database, compositionProviders),
     {
+      compileBundle: (bundleFiles) =>
+        compileHubBundle(bundleFiles, compositionProviders.configuration),
       configurationForProject: (projectId) =>
         new ProjectConfigurationStore(database, projectId, compositionProviders),
       validateBundleForOrganization: (organizationId, bundle) =>
@@ -376,7 +384,9 @@ function namedFiles(name: string): HubBundleFile[] {
 }
 
 async function installHarness(validator?: DaemonAgentConfigurationValidator) {
-  const database = createMemoryDatabase({ organizationIds: [authorization.organizationId] });
+  const database = createMemoryDatabase(compositionProviders.configuration, {
+    organizationIds: [authorization.organizationId],
+  });
   await enrollTestDaemon(database, authorization.organizationId);
   const project = await database.createProject({
     organizationId: authorization.organizationId,
@@ -394,6 +404,8 @@ async function installHarness(validator?: DaemonAgentConfigurationValidator) {
   const operations = createPublicOperations(
     createDatabasePublicOperationRepository(database, compositionProviders),
     {
+      compileBundle: (bundleFiles) =>
+        compileHubBundle(bundleFiles, compositionProviders.configuration),
       configurationForProject: () => ({
         validateBundle: (bundle) => store.validateBundle(bundle),
         async insertManualBundleRevision(input) {

@@ -205,6 +205,7 @@ export interface PublicOperationRepository {
 }
 
 export interface PublicOperationCapabilities {
+  compileBundle(files: readonly HubBundleFile[]): { name?: string };
   triggerForOrganization?(organizationId: string): {
     list(): Promise<readonly PublicTrigger[]>;
     validate(yaml: string): Promise<{ name: string }>;

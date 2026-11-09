@@ -1,33 +1,30 @@
-import { z } from "zod";
 import {
-  HubConfigSchema,
-  compileHubConfig,
   compiledConfigurationHash,
-  rawConfigurationHash,
-  parseDurationMs,
+  compileHubConfig,
   parseCompiledHubConfig,
+  parseDurationMs,
+  rawConfigurationHash,
   WorktreeTargetSchema,
   type AuthoredEnvironment,
   type AuthoredHubConfig,
-  type AuthoredStep,
   type AuthoredInput,
+  type AuthoredStep,
   type AuthoredTrigger,
   type AuthoredTriggerFilter,
   type CompiledHubConfig,
-  type CompiledStep,
   type CompiledInput,
-  type CompiledTriggerFilter,
+  type CompiledStep,
   type CompiledTrigger,
+  type CompiledTriggerFilter,
 } from "./compiler.js";
 import type { CompiledGitHubAuthority, GitHubPermissionLevel } from "./github-authority.js";
 
 export {
-  HubConfigSchema,
-  compileHubConfig,
   compiledConfigurationHash,
-  rawConfigurationHash,
-  parseDurationMs,
+  compileHubConfig,
   parseCompiledHubConfig,
+  parseDurationMs,
+  rawConfigurationHash,
   WorktreeTargetSchema,
 };
 
@@ -51,10 +48,3 @@ export type InputDefinition = AuthoredInput;
 export type CompiledInputDefinition = CompiledInput;
 export type WorktreeTarget = NonNullable<DaemonEnvironment["worktree"]>;
 export type { AuthoredTriggerFilter, CompiledTriggerFilter };
-
-export const ConfigRefSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("github"), repo: z.string().min(1) }),
-  z.object({ type: z.literal("local"), path: z.string().min(1) }),
-]);
-
-export type ConfigRef = z.infer<typeof ConfigRefSchema>;

@@ -6,6 +6,7 @@ import {
 } from "./attachments/capabilities.js";
 import type { BrowserOrganizationAccess } from "./auth/browser-organization-access.js";
 import { CliAuthorizations } from "./cli-authorizations/index.js";
+import { compileHubBundle } from "./config/bundle.js";
 import {
   ProjectConfigurationStore,
   validateHubBundleForOrganization,
@@ -360,6 +361,7 @@ function createAppPublicOperations(
   return createPublicOperations(
     createDatabasePublicOperationRepository(database, options.providerRegistry),
     {
+      compileBundle: (files) => compileHubBundle(files, options.providerRegistry.configuration),
       triggerForOrganization: (organizationId) => {
         const store = new OrganizationTriggerStore(
           database,

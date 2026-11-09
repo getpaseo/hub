@@ -502,7 +502,7 @@ describe("GitHub Phase 1 trigger provider", () => {
   it.each([false, true])(
     "deduplicates durable GitHub dispatch (ready transition=%s)",
     async (ready) => {
-      const database = createMemoryDatabase();
+      const database = createMemoryDatabase(composedEvents);
       const configuration = githubConfiguration();
       configuration.triggers[0] = {
         ...configuration.triggers[0]!,
@@ -591,7 +591,7 @@ function createProvider(
 }
 
 async function activeConfiguration(rawConfiguration = githubConfiguration()) {
-  return createActiveProjectConfiguration(createMemoryDatabase(), rawConfiguration);
+  return createActiveProjectConfiguration(createMemoryDatabase(composedEvents), rawConfiguration);
 }
 
 function inputConfiguration() {

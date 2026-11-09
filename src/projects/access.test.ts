@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../auth/server.js";
 import { createMemoryDatabase } from "../db/memory.js";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import { resolveRouteTenant, TenantRouteNotFoundError } from "./access.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 describe("URL tenant resolution", () => {
   it("resolves organization and org-local project slugs independently of the landing hint", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(codecCatalog, {
       memberships: [
         {
           userId: "user-1",
@@ -52,7 +55,7 @@ describe("URL tenant resolution", () => {
   });
 
   it("conceals inaccessible and nonexistent URL scopes identically", async () => {
-    const database = createMemoryDatabase({ memberships: [] });
+    const database = createMemoryDatabase(codecCatalog, { memberships: [] });
     const attempts = [
       resolveRouteTenant(accountAuth(null), database, new Request("https://hub.test"), {
         organizationSlug: "private",

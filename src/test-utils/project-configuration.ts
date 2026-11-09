@@ -6,6 +6,7 @@ import {
 } from "../configuration/store.js";
 import type { Database, ProjectConfigurationRevisionRecord, ProjectRecord } from "../db/types.js";
 import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
+
 const compositionProviders = createCompositionProviders();
 
 export const TEST_DAEMON_ID = "10000000-0000-4000-8000-000000000001";
@@ -41,7 +42,7 @@ export async function createActiveProjectConfiguration(
     sourceKind: "manual",
     sourceEvidence: { kind: "test" },
     normalizedConfiguration: configuration,
-    contentHash: compiledConfigurationHash(configuration),
+    contentHash: compiledConfigurationHash(configuration, compositionProviders.configuration),
     createdByUserId: userId,
   });
   await database.activateProjectConfigurationRevision(project.id, revision.id);
@@ -53,7 +54,7 @@ export async function createActiveProjectConfiguration(
 }
 
 function compileTestDaemonReferences(rawConfiguration: unknown): CompiledProjectConfiguration {
-  const configuration = compileHubConfig(rawConfiguration);
+  const configuration = compileHubConfig(rawConfiguration, compositionProviders.configuration);
   return {
     ...configuration,
     environments: configuration.environments.map((environment) =>

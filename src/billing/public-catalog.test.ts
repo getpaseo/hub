@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database, SyncBillingPlanInput } from "../db/types.js";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import { composeBilling, type BillingRuntime } from "./index.js";
-import type { StripeCatalogSource } from "./stripe-catalog-source.js";
 import type { StripeBillingClient, StripeSubscriptionState } from "./stripe-billing-client.js";
+import type { StripeCatalogSource } from "./stripe-catalog-source.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 /**
  * The public catalog boundary: every active mirrored plan, Free included. Free is the plan a
@@ -104,7 +107,7 @@ const hostedPlan: SyncBillingPlanInput = {
 
 describe("BillingRuntime.publicCatalog", () => {
   it("publishes the Free plan alongside the plan a customer pays for", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     await database.syncBillingPlan(freePlan);
     await database.syncBillingPlan(hostedPlan);
 
@@ -167,7 +170,7 @@ describe("BillingRuntime.publicCatalog", () => {
   });
 
   it("publishes Free on its own when nothing is for sale yet", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     await database.syncBillingPlan(freePlan);
 
     assert.deepEqual(
@@ -177,14 +180,14 @@ describe("BillingRuntime.publicCatalog", () => {
   });
 
   it("withholds a plan the catalog sync deactivated", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     await database.syncBillingPlan({ ...hostedPlan, active: false });
 
     assert.deepEqual(await billingOver(database).publicCatalog(), []);
   });
 
   it("carries the plan's numbers but never the template they came from", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     await database.syncBillingPlan(freePlan);
 
     const [plan] = await billingOver(database).publicCatalog();
@@ -205,7 +208,7 @@ describe("BillingRuntime.publicCatalog", () => {
   });
 
   it("prices an interval only from its exact lookup key, so a mismatched price reads unavailable", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     await database.syncBillingPlan({
       ...hostedPlan,
       prices: [

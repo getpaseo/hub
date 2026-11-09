@@ -1,6 +1,9 @@
 import type { ProviderConfigurationDefinition } from "../configuration.js";
+import { filterFields, projectLegacyFilters } from "./filter-configuration.js";
 
 export const triggerConfiguration: ProviderConfigurationDefinition = {
+  filterFields,
+  projectLegacyFilters,
   provider: "slack",
   order: 0,
   replyType: "slack.reply",

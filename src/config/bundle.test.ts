@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import { compileHubBundle, HubBundleError } from "./bundle.js";
 import { compiledConfigurationHash } from "./compiler.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 const hub = `
 environments:
@@ -84,7 +87,7 @@ function hasBundleIssue(error: unknown, path: string, message: RegExp): boolean 
 
 describe("Hub configuration bundle", () => {
   it("accepts an optional project name as slug-validated deployment metadata", () => {
-    const bundle = compileHubBundle(filesWithHub(`name: agent-tools\n${hub}`));
+    const bundle = compileHubBundle(filesWithHub(`name: agent-tools\n${hub}`), codecCatalog);
 
     assert.equal(bundle.name, "agent-tools");
     assert.equal(Object.hasOwn(bundle.configuration, "name"), false);
@@ -94,7 +97,7 @@ describe("Hub configuration bundle", () => {
     "rejects invalid project name %s with a structured field issue",
     (name) => {
       assert.throws(
-        () => compileHubBundle(filesWithHub(`name: ${name}\n${hub}`)),
+        () => compileHubBundle(filesWithHub(`name: ${name}\n${hub}`), codecCatalog),
         (error) =>
           hasBundleIssue(
             error,
@@ -106,7 +109,7 @@ describe("Hub configuration bundle", () => {
   );
 
   it("compiles canonical files with provenance and complete finite named resources", () => {
-    const bundle = compileHubBundle(canonicalFiles());
+    const bundle = compileHubBundle(canonicalFiles(), codecCatalog);
     const trigger = bundle.configuration.triggers[0]!;
     const step = trigger.steps[0]!;
 
@@ -136,7 +139,11 @@ describe("Hub configuration bundle", () => {
 
   it("rejects monolithic triggers with a direct migration error", () => {
     assert.throws(
-      () => compileHubBundle([{ path: ".paseo/hub.yml", content: `${hub}\ntriggers: []\n` }]),
+      () =>
+        compileHubBundle(
+          [{ path: ".paseo/hub.yml", content: `${hub}\ntriggers: []\n` }],
+          codecCatalog,
+        ),
       (error) =>
         hasBundleIssue(
           error,
@@ -148,7 +155,7 @@ describe("Hub configuration bundle", () => {
 
   it("rejects a resource document without a direct workflow document", () => {
     assert.throws(
-      () => compileHubBundle([{ path: ".paseo/hub.yml", content: hub }]),
+      () => compileHubBundle([{ path: ".paseo/hub.yml", content: hub }], codecCatalog),
       (error) =>
         hasBundleIssue(
           error,
@@ -178,20 +185,20 @@ describe("Hub configuration bundle", () => {
     ];
 
     for (const { source, expected } of cases) {
-      assert.throws(() => compileHubBundle(filesWithWorkflow(source)), expected);
+      assert.throws(() => compileHubBundle(filesWithWorkflow(source), codecCatalog), expected);
     }
   });
 
   it("orders discovered workflows and hashes authored bundles deterministically", () => {
     const second = workflow.replace("route-request", "another-request");
-    const left = compileHubBundle([
-      ...canonicalFiles(),
-      { path: ".paseo/workflows/a.yml", content: second },
-    ]);
-    const right = compileHubBundle([
-      { path: ".paseo/workflows/a.yml", content: second },
-      ...canonicalFiles().toReversed(),
-    ]);
+    const left = compileHubBundle(
+      [...canonicalFiles(), { path: ".paseo/workflows/a.yml", content: second }],
+      codecCatalog,
+    );
+    const right = compileHubBundle(
+      [{ path: ".paseo/workflows/a.yml", content: second }, ...canonicalFiles().toReversed()],
+      codecCatalog,
+    );
 
     assert.deepEqual(
       left.configuration.triggers.map(({ name }) => name),
@@ -199,18 +206,18 @@ describe("Hub configuration bundle", () => {
     );
     assert.equal(left.authoredHash, right.authoredHash);
     assert.equal(
-      compiledConfigurationHash(left.configuration),
-      compiledConfigurationHash(right.configuration),
+      compiledConfigurationHash(left.configuration, codecCatalog),
+      compiledConfigurationHash(right.configuration, codecCatalog),
     );
   });
 
   it("rejects duplicate workflow names with both source files in the diagnostic", () => {
     assert.throws(
       () =>
-        compileHubBundle([
-          ...canonicalFiles(),
-          { path: ".paseo/workflows/duplicate.yml", content: workflow },
-        ]),
+        compileHubBundle(
+          [...canonicalFiles(), { path: ".paseo/workflows/duplicate.yml", content: workflow }],
+          codecCatalog,
+        ),
       (error) =>
         hasBundleIssue(
           error,
@@ -223,14 +230,14 @@ describe("Hub configuration bundle", () => {
   it("locates malformed workflow and named environment fields in their authored files", () => {
     const malformedWorkflow = workflow.replace("name: route-request\n", "");
     assert.throws(
-      () => compileHubBundle(filesWithWorkflow(malformedWorkflow)),
+      () => compileHubBundle(filesWithWorkflow(malformedWorkflow), codecCatalog),
       (error) =>
         hasBundleIssue(error, ".paseo/workflows/route.yml.name", /expected.*string|required/iu),
     );
 
     const malformedEnvironment = hub.replace("    cwd: /workspace/paseo\n", "");
     assert.throws(
-      () => compileHubBundle(filesWithHub(malformedEnvironment)),
+      () => compileHubBundle(filesWithHub(malformedEnvironment), codecCatalog),
       (error) =>
         hasBundleIssue(
           error,
@@ -246,7 +253,7 @@ describe("Hub configuration bundle", () => {
       "    agent: ${{ paseo.inputs.agent + }}",
     );
     assert.throws(
-      () => compileHubBundle(filesWithWorkflow(malformedExpression)),
+      () => compileHubBundle(filesWithWorkflow(malformedExpression), codecCatalog),
       (error) =>
         hasBundleIssue(
           error,
@@ -262,7 +269,7 @@ describe("Hub configuration bundle", () => {
       '    cwd: /workspace/paseo\n    worktree:\n      mode: branch-off\n      newBranch: "trigger-${{ paseo.event.github.delivery_id }}"',
     );
     assert.throws(
-      () => compileHubBundle(filesWithHub(unsupported)),
+      () => compileHubBundle(filesWithHub(unsupported), codecCatalog),
       (error) =>
         hasBundleIssue(
           error,
@@ -275,13 +282,16 @@ describe("Hub configuration bundle", () => {
   it("rejects unreferenced partial files by their authored path", () => {
     assert.throws(
       () =>
-        compileHubBundle([
-          ...canonicalFiles(),
-          {
-            path: ".paseo/workflows/partials/orphan.md",
-            content: "Never silently injected.",
-          },
-        ]),
+        compileHubBundle(
+          [
+            ...canonicalFiles(),
+            {
+              path: ".paseo/workflows/partials/orphan.md",
+              content: "Never silently injected.",
+            },
+          ],
+          codecCatalog,
+        ),
       (error) => hasBundleIssue(error, ".paseo/workflows/partials/orphan.md", /not referenced/iu),
     );
   });
@@ -294,7 +304,8 @@ describe("Hub configuration bundle", () => {
     ["../hub.yml", "unsafe bundle path"],
   ])("rejects non-canonical bundle path %s", (path, message) => {
     assert.throws(
-      () => compileHubBundle([...canonicalFiles(), { path, content: "name: ignored" }]),
+      () =>
+        compileHubBundle([...canonicalFiles(), { path, content: "name: ignored" }], codecCatalog),
       new RegExp(message, "iu"),
     );
   });

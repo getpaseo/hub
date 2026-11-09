@@ -26,6 +26,8 @@ describe("registered trigger events", () => {
   it("assembles another implementation's event metadata and reply without a shared event arm", () => {
     const events = new ProviderConfigurationCatalog([
       {
+        filterFields: {},
+        projectLegacyFilters: () => ({}),
         provider: "example",
         order: 0,
         events: { "example.message": { label: "Example message" } },
@@ -40,7 +42,16 @@ describe("registered trigger events", () => {
 
   it("rejects a provider attempting to replace a Hub-owned source", () => {
     assert.throws(
-      () => new ProviderConfigurationCatalog([{ provider: "manual", order: 0, events: {} }]),
+      () =>
+        new ProviderConfigurationCatalog([
+          {
+            provider: "manual",
+            order: 0,
+            events: {},
+            filterFields: {},
+            projectLegacyFilters: () => ({}),
+          },
+        ]),
       /reserved Hub source/,
     );
   });

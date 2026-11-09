@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it, vi } from "vitest";
-import { createMemoryDatabase } from "../../db/memory.js";
 import { createAttachmentCapabilityRegistry } from "../../attachments/capabilities.js";
+import { createMemoryDatabase } from "../../db/memory.js";
+import { createProviderRegistry as createCodecProviders } from "../../providers/server.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
+import { isAcceptedTriggerProviderMatch } from "../index.js";
 import {
   createSlackBotClient,
   type SlackBotClient,
@@ -10,14 +12,15 @@ import {
   type SlackThreadReadResult,
 } from "./client.js";
 import { createSlackTriggerProvider } from "./provider.js";
-import { isAcceptedTriggerProviderMatch } from "../index.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 describe("Slack Phase 1 trigger provider", () => {
   it("explains a monthly execution denial in the originating thread", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-28T23:00:00Z"));
     try {
-      const database = createMemoryDatabase();
+      const database = createMemoryDatabase(codecCatalog);
       const { project, revision, store } = await createActiveProjectConfiguration(
         database,
         configuration(),
@@ -53,7 +56,7 @@ describe("Slack Phase 1 trigger provider", () => {
     }
   });
   it("accepts the explicit wildcard without a pointless username lookup", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const wildcard = configuration();
     wildcard.triggers[0]!.filters.from_users = ["*"];
     const { project, revision, store } = await createActiveProjectConfiguration(
@@ -77,7 +80,7 @@ describe("Slack Phase 1 trigger provider", () => {
   });
 
   it("resolves the authored Slack username once before matching", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       usernameConfiguration(),
@@ -103,7 +106,7 @@ describe("Slack Phase 1 trigger provider", () => {
   });
 
   it("normalizes typed inputs identically at the provider boundary", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       inputConfiguration(),
@@ -130,7 +133,7 @@ describe("Slack Phase 1 trigger provider", () => {
   });
 
   it("parses typed inputs after a matched command marker", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       inputMarkerConfiguration(),
@@ -154,7 +157,7 @@ describe("Slack Phase 1 trigger provider", () => {
   });
 
   it("preserves the complete message when the mention is last", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       configuration(),
@@ -174,7 +177,7 @@ describe("Slack Phase 1 trigger provider", () => {
   });
 
   it("uses exact input filters to select one configured trigger", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       inputFilterFanoutConfiguration(),
@@ -198,7 +201,7 @@ describe("Slack Phase 1 trigger provider", () => {
   });
 
   it("matches the literal step and preserves the message reply target", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       configuration(),
@@ -219,7 +222,7 @@ describe("Slack Phase 1 trigger provider", () => {
   });
 
   it("keeps provider reactions idempotent across the durable lifecycle hooks", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       configuration(),
@@ -248,7 +251,7 @@ describe("Slack Phase 1 trigger provider", () => {
   });
 
   it("keeps a root Slack mention as the reply thread root", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       configuration(),
@@ -280,7 +283,7 @@ describe("Slack Phase 1 trigger provider", () => {
   });
 
   it("targets Slack failure output at the originating message thread", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       configuration(),
@@ -310,7 +313,7 @@ describe("Slack Phase 1 trigger provider", () => {
   });
 
   it("propagates terminal Slack reaction and notice failures", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       configuration(),
@@ -356,7 +359,7 @@ describe("Slack Phase 1 trigger provider", () => {
   });
 
   it("defers routed thread hydration until context materialization", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       configuration(),
@@ -421,7 +424,7 @@ describe("Slack Phase 1 trigger provider", () => {
   });
 
   it("exposes thread messages and execution-scoped attachments only through context", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       configuration(),
@@ -525,7 +528,7 @@ describe("Slack Phase 1 trigger provider", () => {
   });
 
   it("distinguishes an unavailable Slack thread from an empty hydrated thread", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       configuration(),
@@ -575,7 +578,7 @@ describe("Slack Phase 1 trigger provider", () => {
   });
 
   it("marks partially traversed Slack history incomplete", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       configuration(),
@@ -615,7 +618,7 @@ describe("Slack Phase 1 trigger provider", () => {
     const maximumPageCount = 10;
     const messagesPerPage = 100;
     let requests = 0;
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       configuration(),
@@ -672,7 +675,7 @@ describe("Slack Phase 1 trigger provider", () => {
   });
 
   it("does not require attachment capability during Slack ingestion", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       configuration(),
@@ -707,7 +710,7 @@ describe("Slack Phase 1 trigger provider", () => {
   });
 
   it("does not hydrate an unrouted Slack thread", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       configuration(),

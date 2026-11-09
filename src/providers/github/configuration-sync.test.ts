@@ -12,13 +12,19 @@ import {
   enrollTestDaemon,
   TEST_DAEMON_SLUG,
 } from "../../test-utils/project-configuration.js";
-import { createProviderRegistry } from "../server.js";
+import {
+  createProviderRegistry as createCodecProviders,
+  createProviderRegistry,
+} from "../server.js";
 import {
   synchronizeGitHubDefaultBranch,
   synchronizeGitHubProjectConfiguration,
   type GitHubConfigurationProvider,
 } from "./configuration-source.js";
 import { githubPersistence } from "./persistence.js";
+
+const codecCatalog = createCodecProviders().configuration;
+
 const syncProviders = createProviderRegistry();
 
 const INITIAL = {
@@ -56,7 +62,7 @@ function bundle(partial = "Safety instructions") {
 
 describe("exact-commit GitHub configuration bundle sync", () => {
   it("discovers, compiles, and stores the complete bundle at one commit", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(codecCatalog, {
       providerData: {
         github: {
           connections: [
@@ -92,7 +98,7 @@ describe("exact-commit GitHub configuration bundle sync", () => {
     const result = await sync(database, client, project.id, "sha");
     assert.equal(result.outcome, "activated");
     if (result.outcome !== "activated") return;
-    const compiled = parseCompiledHubConfig(result.revision.normalizedConfiguration);
+    const compiled = parseCompiledHubConfig(result.revision.normalizedConfiguration, codecCatalog);
     assert.equal(compiled.triggers[0]?.sourceFile, ".paseo/workflows/request.yml");
     assert.deepEqual(compiled.triggers[0]?.steps[0]?.prompt[0], {
       kind: "partial",
@@ -111,7 +117,7 @@ describe("exact-commit GitHub configuration bundle sync", () => {
   });
 
   it("preserves the active revision when a later bundle is invalid", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(codecCatalog, {
       providerData: {
         github: {
           connections: [
@@ -165,7 +171,7 @@ describe("exact-commit GitHub configuration bundle sync", () => {
   });
 
   it("creates a distinct deterministic revision when only partial content changes", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(codecCatalog, {
       providerData: {
         github: {
           connections: [
@@ -207,7 +213,7 @@ describe("exact-commit GitHub configuration bundle sync", () => {
   });
 
   it("rejects a symlink entry without reading through it", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(codecCatalog, {
       providerData: {
         github: {
           connections: [
@@ -251,7 +257,7 @@ describe("exact-commit GitHub configuration bundle sync", () => {
   });
 
   it("records listing failures and superseded push commits without moving the pointer", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(codecCatalog, {
       providerData: {
         github: {
           connections: [

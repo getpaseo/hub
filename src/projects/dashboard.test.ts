@@ -4,11 +4,12 @@ import type { AuthServer } from "../auth/server.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
 import { ProjectDashboard } from "./dashboard.js";
+
 const compositionProviders = createCompositionProviders();
 
 describe("project dashboard activity read models", () => {
   it("uses canonical Linear health in project and organization snapshots", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(compositionProviders.configuration, {
       providerData: {
         linear: {
           connections: [
@@ -86,7 +87,7 @@ describe("project dashboard activity read models", () => {
   });
 
   it("omits payload-bearing evidence from lists and retains it in detail", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(compositionProviders.configuration, {
       memberships: [
         {
           userId: "user-1",

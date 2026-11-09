@@ -2,6 +2,7 @@ import type {
   CompiledTriggerConfig as CompiledTrigger,
   TriggerFilter,
 } from "../../config/index.js";
+import { nativeFilters } from "../../providers/linear/filter-configuration.js";
 import type {
   NormalizedLinearCommentEvent,
   NormalizedLinearEvent,
@@ -80,21 +81,27 @@ export function matchesIssueScope(
   connectionId?: string | null,
 ): boolean {
   if (filter === undefined) return false;
-  if (filter.connectionId !== undefined && filter.connectionId !== connectionId) return false;
-  if (filter.project !== undefined && filter.project !== issue.projectId) return false;
-  if (filter.states !== undefined && !matchesOptionalId(filter.states, issue.stateId)) return false;
-  if (filter.assignees !== undefined && !matchesOptionalId(filter.assignees, issue.assigneeId)) {
+  const scopedFilter = nativeFilters(filter);
+  if (scopedFilter.connectionId !== undefined && scopedFilter.connectionId !== connectionId)
     return false;
-  }
+  if (scopedFilter.project !== undefined && scopedFilter.project !== issue.projectId) return false;
+  if (scopedFilter.states !== undefined && !matchesOptionalId(scopedFilter.states, issue.stateId))
+    return false;
   if (
-    filter.labels !== undefined &&
-    !filter.labels.every((label) => issue.labelIds.includes(label))
+    scopedFilter.assignees !== undefined &&
+    !matchesOptionalId(scopedFilter.assignees, issue.assigneeId)
   ) {
     return false;
   }
   if (
-    filter.exclude_labels !== undefined &&
-    filter.exclude_labels.some((label) => issue.labelIds.includes(label))
+    scopedFilter.labels !== undefined &&
+    !scopedFilter.labels.every((label) => issue.labelIds.includes(label))
+  ) {
+    return false;
+  }
+  if (
+    scopedFilter.exclude_labels !== undefined &&
+    scopedFilter.exclude_labels.some((label) => issue.labelIds.includes(label))
   ) {
     return false;
   }

@@ -1,9 +1,12 @@
-import { createMemoryDatabase } from "../db/memory.js";
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { CompiledGitHubAuthority } from "../config/github-authority.js";
+import { createMemoryDatabase } from "../db/memory.js";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import type { CreateExecutionAuthorityOptions, ExecutionAuthorityClock } from "./index.js";
 import { createExecutionAuthority as createProductionExecutionAuthority } from "./index.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 function createExecutionAuthority(
   options: Omit<CreateExecutionAuthorityOptions, "isExecutionActive" | "database"> &
@@ -11,7 +14,7 @@ function createExecutionAuthority(
 ) {
   return createProductionExecutionAuthority({
     ...options,
-    database: options.database ?? createMemoryDatabase(),
+    database: options.database ?? createMemoryDatabase(codecCatalog),
     isExecutionActive: options.isExecutionActive ?? (async () => true),
   });
 }
@@ -632,7 +635,7 @@ describe("Hub execution authority", () => {
   it.each(["shutdown", "crash"])(
     "recovers the original credential and deadline after %s",
     async (kind) => {
-      const database = createMemoryDatabase();
+      const database = createMemoryDatabase(codecCatalog);
       const clock = new TestClock();
       const mint = githubAuthorityFake(() => clock.now());
       const options = {
@@ -663,7 +666,7 @@ describe("Hub execution authority", () => {
   );
 
   it("recovers connection tokens and resolved values that do not own a revocable token", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const mint = githubAuthorityFake();
     const options = {
       database,
@@ -715,7 +718,7 @@ describe("Hub execution authority", () => {
   });
 
   it("finishes terminal cleanup after a crash and an upstream revocation failure", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const clock = new TestClock();
     const mint = githubAuthorityFake(() => clock.now());
     let active = true;
@@ -750,7 +753,7 @@ describe("Hub execution authority", () => {
   });
 
   it("does not let an old process revoke a replacement process's active credentials on shutdown", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const clock = new TestClock();
     const mint = githubAuthorityFake(() => clock.now());
     const options = {
@@ -773,7 +776,7 @@ describe("Hub execution authority", () => {
   });
 
   it("serializes revocation across two recovering processes", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const clock = new TestClock();
     const mint = githubAuthorityFake(() => clock.now());
     const options = {
@@ -797,7 +800,7 @@ describe("Hub execution authority", () => {
   });
 
   it("commits one environment when two processes materialize the same execution", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const mint = githubAuthorityFake();
     const options = {
       database,
@@ -818,7 +821,7 @@ describe("Hub execution authority", () => {
   });
 
   it("returns promptly from shutdown with a hung mint and revokes its late result", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const mint = githubAuthorityFake();
     let begun!: () => void;
     const started = new Promise<void>((resolve) => {

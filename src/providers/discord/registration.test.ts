@@ -5,12 +5,15 @@ import type { AuthServer } from "../../auth/server.js";
 import { createMemoryDatabase } from "../../db/memory.js";
 import type { StartConnectionAttemptInput } from "../../db/types.js";
 import { MemoryDiscordBotClient } from "../../triggers/discord/memory-bot.js";
+import { createProviderRegistry as createCodecProviders } from "../server.js";
 import type { DiscordConnectionClient } from "./client.js";
 import { createDiscordRegistration } from "./index.js";
 
+const codecCatalog = createCodecProviders().configuration;
+
 describe("Discord registration", () => {
   it("constructs the complete Discord slice and delegates connection start", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(codecCatalog, {
       memberships: [
         {
           userId: "user",
@@ -63,7 +66,7 @@ describe("Discord registration", () => {
 
   it("reports readiness without constructing partial provider behavior", async () => {
     const registration = createDiscordRegistration({
-      database: createMemoryDatabase(),
+      database: createMemoryDatabase(codecCatalog),
       auth: new RegistrationAuth(),
       applicationBaseUrl: "https://hub.test",
       publicBaseUrl: "https://hub.test",
@@ -79,7 +82,7 @@ describe("Discord registration", () => {
 
   it("keeps provider runtime active without browser authentication", () => {
     const registration = createDiscordRegistration({
-      database: createMemoryDatabase(),
+      database: createMemoryDatabase(codecCatalog),
       auth: null,
       applicationBaseUrl: "https://hub.test",
       publicBaseUrl: "https://hub.test",

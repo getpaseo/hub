@@ -126,8 +126,11 @@ function transitionWithTerminalRun(
     : { ...transition, terminalRun: run };
 }
 
-export function createMemoryDatabase(options: MemoryDatabaseOptions = {}): Database {
-  return new MemoryDatabase(options);
+export function createMemoryDatabase(
+  configurationCatalog: import("../providers/configuration.js").ProviderConfigurationCatalog,
+  options: MemoryDatabaseOptions = {},
+): Database {
+  return new MemoryDatabase(configurationCatalog, options);
 }
 
 class MemoryDatabase implements Database {
@@ -185,7 +188,10 @@ class MemoryDatabase implements Database {
   private readonly organizationTriggerRoutes = new Map<string, OrganizationTriggerRoute[]>();
   private readonly organizationIds: Set<string>;
 
-  constructor(private readonly options: MemoryDatabaseOptions = {}) {
+  constructor(
+    private readonly configurationCatalog: import("../providers/configuration.js").ProviderConfigurationCatalog,
+    private readonly options: MemoryDatabaseOptions = {},
+  ) {
     this.organizationIds = new Set(options.organizationIds);
     this.providerContext = {
       findProjectById: (id) => this.projects.get(id),
@@ -2282,7 +2288,7 @@ class MemoryDatabase implements Database {
       if (candidate.format !== "single_run" && candidate.format !== "legacy_multistep") {
         throw new Error("invalid organization trigger format");
       }
-      return parseCompiledHubConfig(candidate.normalizedConfiguration);
+      return parseCompiledHubConfig(candidate.normalizedConfiguration, this.configurationCatalog);
     });
     const legacyRoutes = this.projectTriggerRoutes.get(input.projectId) ?? [];
     const candidateRoutes = input.triggers.map((candidate, index) => {
@@ -2481,7 +2487,10 @@ class MemoryDatabase implements Database {
       contentHash: input.contentHash,
       createdByUserId: input.createdByUserId,
     });
-    const configuration = parseCompiledHubConfig(input.normalizedConfiguration);
+    const configuration = parseCompiledHubConfig(
+      input.normalizedConfiguration,
+      this.configurationCatalog,
+    );
     await this.activateProjectConfigurationRevision(
       runtimeProjectId,
       runtimeRevision.id,

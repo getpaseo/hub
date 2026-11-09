@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../../db/memory.js";
+import { createProviderRegistry as createCodecProviders } from "../../providers/server.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
 import { createManualRunProvider } from "./provider.js";
 
+const codecCatalog = createCodecProviders().configuration;
+
 describe("manual invocation provider", () => {
   it("uses the same typed invocation evidence as message providers", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(database, {
       environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
       triggers: [
@@ -59,7 +62,7 @@ describe("manual invocation provider", () => {
   });
 
   it("returns a rejected branch before resolving an unusable launch environment", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(database, {
       environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
       triggers: [

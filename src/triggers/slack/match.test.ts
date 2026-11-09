@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { compileHubConfig } from "../../config/index.js";
+import { createProviderRegistry as createCodecProviders } from "../../providers/server.js";
 import type { NormalizedSlackMentionEvent } from "./events.js";
 import { matchSlackTriggers, readSlackPromptBody } from "./match.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 describe("Slack trigger matching", () => {
   it("allows exact, case-sensitive Slack usernames as well as user IDs", () => {
@@ -20,32 +23,35 @@ describe("Slack trigger matching", () => {
   });
 
   it("requires the compiled trigger filters and bot mention", () => {
-    const config = compileHubConfig({
-      environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
-      triggers: [
-        {
-          name: "slack-run",
-          on: "slack.mention",
-          max_runtime: "2h",
-          filters: {
-            workspace: "T1",
-            channels: ["C1"],
-            from_users: ["U1"],
-            pattern: "run",
-          },
-          steps: [
-            {
-              id: "run",
-              environment: "runner",
-              max_runtime: "1h",
-              idle_timeout: "5m",
-              agent: { provider: "opencode", mode: "default" },
-              prompt: [{ text: "Run the request" }],
+    const config = compileHubConfig(
+      {
+        environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
+        triggers: [
+          {
+            name: "slack-run",
+            on: "slack.mention",
+            max_runtime: "2h",
+            filters: {
+              workspace: "T1",
+              channels: ["C1"],
+              from_users: ["U1"],
+              pattern: "run",
             },
-          ],
-        },
-      ],
-    });
+            steps: [
+              {
+                id: "run",
+                environment: "runner",
+                max_runtime: "1h",
+                idle_timeout: "5m",
+                agent: { provider: "opencode", mode: "default" },
+                prompt: [{ text: "Run the request" }],
+              },
+            ],
+          },
+        ],
+      },
+      codecCatalog,
+    );
     const event = mention();
 
     assert.equal(matchSlackTriggers(config, event, "UBOT").length, 1);
@@ -65,27 +71,30 @@ describe("Slack trigger matching", () => {
 });
 
 function configForUsers(fromUsers: string[]) {
-  return compileHubConfig({
-    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
-    triggers: [
-      {
-        name: "slack-run",
-        on: "slack.mention",
-        max_runtime: "2h",
-        filters: { workspace: "T1", channels: ["C1"], from_users: fromUsers },
-        steps: [
-          {
-            id: "run",
-            environment: "runner",
-            max_runtime: "1h",
-            idle_timeout: "5m",
-            agent: { provider: "opencode", mode: "default" },
-            prompt: [{ text: "Run the request" }],
-          },
-        ],
-      },
-    ],
-  });
+  return compileHubConfig(
+    {
+      environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
+      triggers: [
+        {
+          name: "slack-run",
+          on: "slack.mention",
+          max_runtime: "2h",
+          filters: { workspace: "T1", channels: ["C1"], from_users: fromUsers },
+          steps: [
+            {
+              id: "run",
+              environment: "runner",
+              max_runtime: "1h",
+              idle_timeout: "5m",
+              agent: { provider: "opencode", mode: "default" },
+              prompt: [{ text: "Run the request" }],
+            },
+          ],
+        },
+      ],
+    },
+    codecCatalog,
+  );
 }
 
 function mention(

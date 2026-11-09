@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { describe, it } from "vitest";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import { createMemoryDatabase } from "./memory.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 describe("machine model database contract", () => {
   it("inserts, selects, and transitions machines and agent executions", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const triggerContext = { provider: "manual", deliveryId: "delivery-1" };
 
     const machine = await database.insertMachine({
@@ -58,7 +61,7 @@ describe("machine model database contract", () => {
   });
 
   it("does not overwrite terminal agent executions", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const machine = await database.insertMachine({
       orgId: "org-1",
       source: { kind: "daemon", daemonId: "mob-hetzner" },

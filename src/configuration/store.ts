@@ -99,6 +99,10 @@ export function revisionPromptPartials(
 }
 
 export class ProjectConfigurationStore {
+  compileBundle(files: readonly HubBundleFile[]) {
+    return compileHubBundle(files, this.providers.configuration);
+  }
+
   constructor(
     private readonly database: Database,
     private readonly projectId: string,
@@ -130,7 +134,7 @@ export class ProjectConfigurationStore {
     userId: string | null;
     sourceEvidence?: unknown;
   }): Promise<ProjectConfigurationRevisionRecord> {
-    const bundle = compileHubBundle(input.files);
+    const bundle = this.compileBundle(input.files);
     const prepared = await prepareCompiledRevision(
       this.database,
       this.providers,
@@ -162,7 +166,7 @@ export class ProjectConfigurationStore {
     sourceEvidence: unknown;
     validationErrors?: unknown;
   }): Promise<ProjectConfigurationRevisionRecord> {
-    const bundle = compileHubBundle(input.files);
+    const bundle = this.compileBundle(input.files);
     const prepared =
       input.validationErrors === undefined
         ? await prepareCompiledRevision(
@@ -202,7 +206,7 @@ export class ProjectConfigurationStore {
     if (bundleFiles.length === 0) {
       throw new Error("configuration revision has no authored bundle");
     }
-    const bundle = compileHubBundle(bundleFiles);
+    const bundle = this.compileBundle(bundleFiles);
     const validationErrors = await validateNamedAgents(
       configuration,
       bundle.agentValidationTargets,
@@ -271,7 +275,7 @@ export class ProjectConfigurationStore {
     if (active === undefined) throw new Error("active configuration not found");
     const files = revisionBundleFiles(active);
     if (files.length === 0) throw new Error("active configuration has no authored bundle");
-    const bundle = compileHubBundle(files);
+    const bundle = this.compileBundle(files);
     const rawYaml =
       bundle.files.find(({ path }) => path === HUB_RESOURCE_PATH)?.content ??
       dump(active.normalizedConfiguration, { noRefs: true, lineWidth: -1 });
@@ -287,7 +291,7 @@ export class ProjectConfigurationStore {
       userId,
       rawYaml,
       normalizedConfiguration: active.normalizedConfiguration,
-      contentHash: compiledConfigurationHash(configuration),
+      contentHash: compiledConfigurationHash(configuration, this.providers.configuration),
       bundle: { authoredHash: bundle.authoredHash, files: bundle.files },
       routes,
     });
@@ -307,7 +311,7 @@ export async function validateHubBundleForOrganization(
 ): Promise<{ valid: true } | { valid: false; validationErrors: unknown }> {
   let bundle: CompiledHubBundle;
   try {
-    bundle = compileHubBundle(files);
+    bundle = compileHubBundle(files, providers.configuration);
   } catch (error) {
     return { valid: false, validationErrors: formatConfigurationError(error) };
   }
@@ -328,7 +332,7 @@ export function parseProjectConfiguration(
   revision: ProjectConfigurationRevisionRecord,
   events: ProviderConfigurationCatalog,
 ): CompiledProjectConfiguration {
-  const configuration = parseCompiledHubConfig(revision.normalizedConfiguration);
+  const configuration = parseCompiledHubConfig(revision.normalizedConfiguration, events);
   // Migrate the newly introduced default at the authored-document boundary. Existing
   // execution launch intents remain untouched and finish with their original contract.
   const document = triggerDocument(revision, events);
@@ -400,7 +404,7 @@ async function prepareCompiledRevision(
     return {
       kind: "compiled",
       normalizedConfiguration: configuration,
-      contentHash: compiledConfigurationHash(configuration),
+      contentHash: compiledConfigurationHash(configuration, providers.configuration),
       validationErrors: { formErrors: ["unresolved organization resources: project"] },
     };
   }
@@ -432,7 +436,7 @@ async function prepareCompiledRevisionForOrganization(
     return {
       kind: "compiled",
       normalizedConfiguration: compiled.configuration,
-      contentHash: compiledConfigurationHash(compiled.configuration),
+      contentHash: compiledConfigurationHash(compiled.configuration, providers.configuration),
       validationErrors: compiled.validationErrors ?? { formErrors: [], issues: compiled.issues },
     };
   }
@@ -444,7 +448,7 @@ async function prepareCompiledRevisionForOrganization(
   return {
     kind: "compiled",
     normalizedConfiguration: compiled.configuration,
-    contentHash: compiledConfigurationHash(compiled.configuration),
+    contentHash: compiledConfigurationHash(compiled.configuration, providers.configuration),
     ...(validationErrors === undefined ? {} : { validationErrors }),
   };
 }
@@ -578,7 +582,9 @@ async function resolveCompiledConfiguration(
   };
   return {
     success: true,
-    configuration: toProjectConfiguration(parseCompiledHubConfig(resolvedConfiguration)),
+    configuration: toProjectConfiguration(
+      parseCompiledHubConfig(resolvedConfiguration, providers.configuration),
+    ),
   };
 }
 

@@ -18,7 +18,7 @@ agents:
 
 describe("startup project trigger migration", () => {
   it("migrates mixed projects once and preserves the legacy execution lane across restart", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(composedEvents, {
       organizationIds: ["org"],
       providerData: {
         slack: {
@@ -77,7 +77,7 @@ describe("startup project trigger migration", () => {
   });
 
   it("deterministically disambiguates duplicate trigger names when projects collapse", async () => {
-    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    const database = createMemoryDatabase(composedEvents, { organizationIds: ["org"] });
     await activeProject(database, "hub", [workflow("request", "manual.run", oneStep())]);
     await activeProject(database, "paseo", [workflow("request", "manual.run", oneStep())]);
 
@@ -89,7 +89,7 @@ describe("startup project trigger migration", () => {
   });
 
   it("does not mark a project migrated when source evidence is missing", async () => {
-    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    const database = createMemoryDatabase(composedEvents, { organizationIds: ["org"] });
     const project = await database.createProject({
       organizationId: "org",
       name: "Broken",
@@ -114,7 +114,7 @@ describe("startup project trigger migration", () => {
   });
 
   it("keeps the old project active when a persisted route cannot be assigned", async () => {
-    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    const database = createMemoryDatabase(composedEvents, { organizationIds: ["org"] });
     await activeProject(
       database,
       "mismatched-route",
@@ -138,7 +138,7 @@ describe("startup project trigger migration", () => {
   });
 
   it("does not partially mutate the in-memory store when any candidate is invalid", async () => {
-    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    const database = createMemoryDatabase(composedEvents, { organizationIds: ["org"] });
     const project = await activeProject(database, "atomic", [
       workflow("valid", "manual.run", oneStep()),
     ]);
@@ -184,7 +184,7 @@ async function activeProject(
     createdByUserId: null,
   });
   const files = [{ path: ".paseo/hub.yml", content: hub }, ...workflows];
-  const bundle = compileHubBundle(files);
+  const bundle = compileHubBundle(files, composedEvents);
   const revision = await database.insertProjectConfigurationRevision({
     projectId: project.id,
     sourceKind: "manual",

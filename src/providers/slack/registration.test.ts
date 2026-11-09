@@ -10,6 +10,7 @@ import type {
   StartConnectionAttemptInput,
 } from "../../db/types.js";
 import type { SlackBotClient } from "../../triggers/slack/client.js";
+import { createProviderRegistry as createCodecProviders } from "../server.js";
 import {
   SlackBotVerificationError,
   type SlackConnectionClient,
@@ -17,6 +18,8 @@ import {
 } from "./client.js";
 import { createSlackRegistration } from "./index.js";
 import { slackPersistence } from "./persistence.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 describe("Slack registration", () => {
   it("constructs the complete webhook slice and starts OAuth with a protected state", async () => {
@@ -73,7 +76,7 @@ describe("Slack registration", () => {
 
   it("does not construct partial behavior when app configuration is absent", async () => {
     const registration = createSlackRegistration({
-      database: createMemoryDatabase(),
+      database: createMemoryDatabase(codecCatalog),
       auth: new RegistrationAuth(),
       applicationBaseUrl: "https://hub.test",
       publicBaseUrl: "https://hub.test",
@@ -275,7 +278,7 @@ describe("Slack registration", () => {
   it("surfaces legacy Slack installations that need the expanded grant", async () => {
     assert.deepEqual(
       await createSlackRegistration({
-        database: createMemoryDatabase({
+        database: createMemoryDatabase(codecCatalog, {
           providerData: {
             slack: {
               connections: [
@@ -304,7 +307,7 @@ describe("Slack registration", () => {
   });
 
   it("does not lend a rebound workspace token to an older organization execution", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     slackPersistence(database).findSlackConnectionForOrganization = () =>
       Promise.resolve({
         id: "slack-connection",
@@ -378,7 +381,7 @@ function slackConfiguration() {
 }
 
 function callbackDatabase() {
-  const database = createMemoryDatabase({
+  const database = createMemoryDatabase(codecCatalog, {
     memberships: [
       {
         userId: "user",

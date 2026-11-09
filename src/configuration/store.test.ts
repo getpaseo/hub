@@ -11,6 +11,7 @@ import { createProviderRegistry as createCompositionProviders } from "../provide
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
 import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
 import { ProjectConfigurationStore, revisionBundleFiles } from "./store.js";
+
 const compositionProviders = createCompositionProviders();
 
 const primary: DiscordConnectionRecord = {
@@ -46,7 +47,7 @@ const linear: LinearConnectionRecord = {
 
 describe("ProjectConfigurationStore resource compilation", () => {
   it("preserves provider options in immutable revision evidence", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(compositionProviders.configuration);
     await enrollTestDaemon(database);
     const project = await database.createProject({
       organizationId: "org_1",
@@ -91,8 +92,10 @@ describe("ProjectConfigurationStore resource compilation", () => {
 
     assert.deepEqual(revisionBundleFiles(revision), authoredFiles);
     const activeAgent = active.configuration.triggers[0]?.steps[0]?.agent;
-    const storedAgent = parseCompiledHubConfig(revision.normalizedConfiguration).triggers[0]
-      ?.steps[0]?.agent;
+    const storedAgent = parseCompiledHubConfig(
+      revision.normalizedConfiguration,
+      compositionProviders.configuration,
+    ).triggers[0]?.steps[0]?.agent;
     assert.ok(activeAgent !== undefined && !("selector" in activeAgent));
     assert.ok(storedAgent !== undefined && !("selector" in storedAgent));
     if (
@@ -108,7 +111,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
 
   it("accepts guild and scopes an authored resource to an optional connection slug", async () => {
     const connections = [primary, secondary];
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(compositionProviders.configuration, {
       providerData: { discord: { connections: connections } },
     });
     await enrollTestDaemon(database);
@@ -134,12 +137,18 @@ describe("ProjectConfigurationStore resource compilation", () => {
     });
     assert.equal(
       revision.contentHash,
-      compiledConfigurationHash(parseCompiledHubConfig(revision.normalizedConfiguration)),
+      compiledConfigurationHash(
+        parseCompiledHubConfig(
+          revision.normalizedConfiguration,
+          compositionProviders.configuration,
+        ),
+        compositionProviders.configuration,
+      ),
     );
     const active = await store.activate(revision.id);
 
     assert.equal(revision.validationErrors, null);
-    assert.equal(active.configuration.triggers[0]?.filters?.guild, "100");
+    assert.equal(active.configuration.triggers[0]?.filters?.["guild"], "100");
     assert.equal(active.configuration.triggers[0]?.filters?.connectionId, primary.id);
     assert.deepEqual(active.configuration.triggers[0]?.filters?.resourceId, "100");
     assert.equal(Object.isFrozen(active.configuration.triggers[0]?.filters), true);
@@ -147,12 +156,20 @@ describe("ProjectConfigurationStore resource compilation", () => {
     const switched = await store.switchToManual("user-1");
     assert.equal(
       switched.revision.contentHash,
-      compiledConfigurationHash(parseCompiledHubConfig(switched.revision.normalizedConfiguration)),
+      compiledConfigurationHash(
+        parseCompiledHubConfig(
+          switched.revision.normalizedConfiguration,
+          compositionProviders.configuration,
+        ),
+        compositionProviders.configuration,
+      ),
     );
   });
 
   it("routes a project-scoped autonomous Linear scout through one Linear connection", async () => {
-    const database = createMemoryDatabase({ providerData: { linear: { connections: [linear] } } });
+    const database = createMemoryDatabase(compositionProviders.configuration, {
+      providerData: { linear: { connections: [linear] } },
+    });
     await enrollTestDaemon(database);
 
     const project = await database.createProject({
@@ -241,7 +258,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
   });
 
   it("keeps authored prompt partials when switching a GitHub-managed configuration to manual", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(compositionProviders.configuration);
     await enrollTestDaemon(database);
     const project = await database.createProject({
       organizationId: "org_1",
@@ -275,7 +292,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
   });
 
   it("resolves a Discord connection slug without an additional connection filter", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(compositionProviders.configuration, {
       providerData: { discord: { connections: [primary, secondary] } },
     });
     await enrollTestDaemon(database);
@@ -298,7 +315,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
   });
 
   it("rejects an unknown explicit connection slug", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(compositionProviders.configuration, {
       providerData: { discord: { connections: [primary] } },
     });
     await enrollTestDaemon(database);
@@ -330,7 +347,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
   });
 
   it("reports an unknown Discord slug with the connected guild candidates", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(compositionProviders.configuration, {
       providerData: { discord: { connections: [primary] } },
     });
     await enrollTestDaemon(database);
@@ -362,7 +379,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
   });
 
   it("records a missing daemon as an invalid revision instead of dereferencing it", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(compositionProviders.configuration);
     const project = await database.createProject({
       organizationId: "org_1",
       name: "Missing daemon project",
@@ -406,12 +423,18 @@ describe("ProjectConfigurationStore resource compilation", () => {
     });
     assert.equal(
       revision.contentHash,
-      compiledConfigurationHash(parseCompiledHubConfig(revision.normalizedConfiguration)),
+      compiledConfigurationHash(
+        parseCompiledHubConfig(
+          revision.normalizedConfiguration,
+          compositionProviders.configuration,
+        ),
+        compositionProviders.configuration,
+      ),
     );
   });
 
   it("accepts one durable trigger per project when multiple routes match", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(compositionProviders.configuration, {
       providerData: { discord: { connections: [primary] } },
     });
     await enrollTestDaemon(database);
@@ -448,7 +471,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
   });
 
   it("restores the target revision's trigger routes during rollback", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(compositionProviders.configuration, {
       providerData: { discord: { connections: [primary] } },
     });
     await enrollTestDaemon(database);
