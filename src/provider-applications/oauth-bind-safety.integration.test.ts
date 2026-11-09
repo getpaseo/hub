@@ -1,4 +1,3 @@
-type Provider = ProviderApplicationConfiguration["provider"];
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -12,8 +11,12 @@ import {
   type DatabaseRuntimeBundle,
 } from "../db/runtime/index.js";
 import type { Database } from "../db/types.js";
+import { discordPersistence } from "../providers/discord/persistence.js";
+import { githubPersistence } from "../providers/github/persistence.js";
+import { linearPersistence } from "../providers/linear/persistence.js";
 import { createProviderRegistry } from "../providers/server.js";
 import { SLACK_REQUIRED_BOT_SCOPES } from "../providers/slack/client.js";
+import { slackPersistence } from "../providers/slack/persistence.js";
 import {
   activateProviderApplicationsAtStartup,
   createProviderApplicationInventory,
@@ -23,6 +26,7 @@ import {
   type ProviderRuntimeCandidate,
   type ProviderRuntimeOwner,
 } from "./index.js";
+type Provider = ProviderApplicationConfiguration["provider"];
 const providerRegistry = createProviderRegistry();
 
 const roots: string[] = [];
@@ -161,7 +165,7 @@ async function rejectsEnvironmentFallback(bundle: DatabaseRuntimeBundle, provide
     expectedVersion: undefined,
     updatedByUserId: "operator",
   });
-  const inventory = createProviderApplicationInventory(bundle.runtime);
+  const inventory = createProviderApplicationInventory(bundle.runtime, providerRegistry);
   const runtime = new RecordingRuntime();
   assert.deepEqual(
     await activateProviderApplicationsAtStartup({
@@ -282,7 +286,7 @@ async function startAttempt(
   });
   if (provider !== "github") return initialState;
   const callbackState = `${name}-callback`;
-  await database.advanceGitHubConnectionAttempt({
+  await githubPersistence(database).advanceGitHubConnectionAttempt({
     stateVerifier: initialState,
     phase: "github_setup",
     access: CALLBACK_ACCESS,
@@ -301,7 +305,7 @@ function bind(
 ): Promise<void> {
   const shared = { stateVerifier, access: CALLBACK_ACCESS, providerApplicationId };
   if (provider === "github") {
-    return database.bindGitHubConnection({
+    return githubPersistence(database).bindGitHubConnection({
       ...shared,
       phase: "github_user_authorization",
       repositories: [],
@@ -313,7 +317,7 @@ function bind(
     });
   }
   if (provider === "slack") {
-    return database.bindSlackConnection({
+    return slackPersistence(database).bindSlackConnection({
       ...shared,
       phase: "slack_authorization",
       teamId: "team",
@@ -324,7 +328,7 @@ function bind(
     });
   }
   if (provider === "linear") {
-    return database.bindLinearConnection({
+    return linearPersistence(database).bindLinearConnection({
       ...shared,
       phase: "linear_authorization",
       linearOrganizationId: "linear-organization",
@@ -335,7 +339,7 @@ function bind(
       scopes: ["read", "comments:create"],
     });
   }
-  return database.bindDiscordConnection({
+  return discordPersistence(database).bindDiscordConnection({
     ...shared,
     phase: "discord_authorization",
     guildId: "guild",

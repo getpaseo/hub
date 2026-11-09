@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
+import { createMemoryDatabase } from "../../db/memory.js";
 import type {
-  Database,
   LinearConnectionRecord,
   LinearConnectionTokenUpdate,
   UpdateLinearConnectionTokensInput,
 } from "../../db/types.js";
-import { createMemoryDatabase } from "../../db/memory.js";
 import {
   createLinearApiClient,
   createLinearConnectionClient,
   hasRequiredLinearScopes,
 } from "./client.js";
+import { type LinearPersistence } from "./persistence.js";
 
 describe("Linear connection client", () => {
   it("uses an OAuth callback URL and records the installed workspace identity", async () => {
@@ -419,7 +419,7 @@ describe("Linear connection client", () => {
         connection.accessTokenExpiresAt = update.accessTokenExpiresAt;
       if (update.scopes !== undefined) connection.scopes = update.scopes;
     };
-    const withLinearConnectionRefresh: Database["withLinearConnectionRefresh"] = async (
+    const withLinearConnectionRefresh: LinearPersistence["withLinearConnectionRefresh"] = async (
       linearOrganizationId,
       operation,
     ) => {
@@ -501,7 +501,7 @@ function json(value: unknown): Response {
 function withinLinearRefresh(
   connection: LinearConnectionRecord,
   updateTokens: (input: UpdateLinearConnectionTokensInput) => Promise<void>,
-): Database["withLinearConnectionRefresh"] {
+): LinearPersistence["withLinearConnectionRefresh"] {
   return async (_linearOrganizationId, operation) =>
     operation(connection, (input) => updateTokens({ connectionId: connection.id, ...input }));
 }

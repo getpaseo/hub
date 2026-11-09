@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it, vi } from "vitest";
-import { createMemoryDatabase } from "../../db/memory.js";
 import { createAttachmentCapabilityRegistry } from "../../attachments/capabilities.js";
+import { createMemoryDatabase } from "../../db/memory.js";
+import { discordPersistence } from "../../providers/discord/persistence.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
+import { isAcceptedTriggerProviderMatch } from "../index.js";
+import type { NormalizedDiscordMessageEvent } from "./events.js";
 import { MemoryDiscordBotClient } from "./memory-bot.js";
 import { createDiscordTriggerProvider } from "./provider.js";
-import type { NormalizedDiscordMessageEvent } from "./events.js";
-import { isAcceptedTriggerProviderMatch } from "../index.js";
 
 describe("Discord Phase 1 trigger provider", () => {
   it("explains a monthly execution denial in the originating thread", async () => {
@@ -180,7 +181,8 @@ describe("Discord Phase 1 trigger provider", () => {
     };
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: [connection], linear: [] });
-    database.findDiscordConnectionForOrganization = () => Promise.resolve(connection);
+    discordPersistence(database).findDiscordConnectionForOrganization = () =>
+      Promise.resolve(connection);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       discordConnectionConfiguration(),

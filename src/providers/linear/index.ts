@@ -1,13 +1,13 @@
 import type { AuthServer } from "../../auth/server.js";
 import {
-  CONNECTION_ATTEMPT_LIFETIME_MINUTES,
-  CONNECTIONS_RETURN_ROUTE,
   callbackConnectionAccess,
   cancelledConnectionResult,
+  CONNECTION_ATTEMPT_LIFETIME_MINUTES,
   connectionAccess,
   connectionActionFailure,
   connectionCallbackFailure,
   connectionResult,
+  CONNECTIONS_RETURN_ROUTE,
   manageConnectionAccess,
   newConnectionState,
   requiredConnectionId,
@@ -33,6 +33,7 @@ import {
   type LinearConnectionClient,
   type LinearInstallation,
 } from "./client.js";
+import { linearPersistence, type LinearPersistence } from "./persistence.js";
 
 export interface LinearRegistrationConfiguration {
   clientId: string;
@@ -97,8 +98,9 @@ export function createLinearRegistration(
       : (options.apiClient ??
         createLinearApiClient({
           connectionForLinearOrganization: (linearOrganizationId) =>
-            database.findLinearConnection(linearOrganizationId),
-          withLinearConnectionRefresh: database.withLinearConnectionRefresh.bind(database),
+            linearPersistence(database).findLinearConnection(linearOrganizationId),
+          withLinearConnectionRefresh: (organizationId, operation) =>
+            linearPersistence(database).withLinearConnectionRefresh(organizationId, operation),
           connectionClient,
           ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
         }));
@@ -107,11 +109,11 @@ export function createLinearRegistration(
       ? () => Promise.reject(new DatabaseUnavailableError())
       : (
           input: Omit<
-            Parameters<Database["acceptLinearEvent"]>[0],
+            Parameters<LinearPersistence["acceptLinearEvent"]>[0],
             "providerApplicationId" | "providerConfigurationVersion"
           >,
         ) =>
-          database.acceptLinearEvent({
+          linearPersistence(database).acceptLinearEvent({
             ...input,
             providerApplicationId: configuration.clientId,
             providerConfigurationVersion: options.configurationVersion ?? 0,
@@ -123,7 +125,8 @@ export function createLinearRegistration(
       ? {}
       : {
           canHydrateIssue: async (linearOrganizationId) => {
-            const connection = await database.findLinearConnection(linearOrganizationId);
+            const connection =
+              await linearPersistence(database).findLinearConnection(linearOrganizationId);
             return connection !== undefined && !linearConnectionRequiresReauthorization(connection);
           },
         }),
@@ -262,8 +265,7 @@ function createLinearConnection(
     if (rejected !== undefined) return rejected;
     try {
       const access = await manageConnectionAccess(options.auth, options.database, request);
-      const disconnected = await options.database.disconnectConnection(
-        "linear",
+      const disconnected = await linearPersistence(options.database).disconnectConnection(
         requiredConnectionId(request),
         connectionAccess(access),
       );
@@ -356,7 +358,7 @@ async function completeAuthorization(
         binding,
       });
     } else {
-      await options.database.bindLinearConnection(binding);
+      await linearPersistence(options.database).bindLinearConnection(binding);
     }
     return connectionResult(callbackOrigin, attempt.returnRoute, "linear_connected", "linear");
   } catch (error) {

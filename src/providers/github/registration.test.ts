@@ -1,22 +1,23 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { describe, it } from "vitest";
-import type { AuthServer } from "../../auth/server.js";
 import {
   ProductRequestError,
   type OrganizationAccessValue,
 } from "../../auth/organization-access.js";
+import type { AuthServer } from "../../auth/server.js";
+import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import { createMemoryDatabase } from "../../db/memory.js";
+import type { ProjectRecord, StartConnectionAttemptInput } from "../../db/types.js";
+import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
 import {
   createActiveProjectConfiguration,
   enrollTestDaemon,
   TEST_DAEMON_SLUG,
 } from "../../test-utils/project-configuration.js";
-import type { ProjectRecord, StartConnectionAttemptInput } from "../../db/types.js";
 import type { GitHubConnectionClient } from "./client.js";
 import { createGitHubRegistration } from "./index.js";
-import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
-import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
+import { githubPersistence } from "./persistence.js";
 
 describe("GitHub registration", () => {
   it("synchronizes the default branch at the exact push SHA and preserves the valid revision", async () => {
@@ -39,7 +40,7 @@ describe("GitHub registration", () => {
       automaticDeploymentEnabled: true,
       userId: "user",
     });
-    database.findGitHubConnection = () =>
+    githubPersistence(database).findGitHubConnection = () =>
       Promise.resolve({
         id: "connection-1",
         organizationId: project.organizationId,
@@ -63,8 +64,8 @@ describe("GitHub registration", () => {
       automaticDeploymentEnabled: true,
     } as const;
     database.findGitHubConfigurationTarget = () => Promise.resolve(target);
-    database.listGitHubConfigurationTargets = () => Promise.resolve([target]);
-    database.acceptGitHubEvent = (input) =>
+    githubPersistence(database).listGitHubConfigurationTargets = () => Promise.resolve([target]);
+    githubPersistence(database).acceptGitHubEvent = (input) =>
       Promise.resolve({
         status: "accepted",
         events: [

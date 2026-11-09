@@ -1,8 +1,8 @@
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import assert from "node:assert/strict";
 import { afterAll, beforeAll, describe, it } from "vitest";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { createPostgresQueryRuntime } from "./test-utils/runtime.js";
-import { createDatabase } from "./test-utils/runtime.js";
+import { linearPersistence } from "../providers/linear/persistence.js";
+import { createDatabase, createPostgresQueryRuntime } from "./test-utils/runtime.js";
 
 describe("trigger acceptance persistence", () => {
   let postgres: StartedPostgreSqlContainer;
@@ -150,7 +150,7 @@ describe("trigger acceptance persistence", () => {
       },
     ]);
 
-    const dropped = await database.acceptLinearEvent({
+    const dropped = await linearPersistence(database).acceptLinearEvent({
       linearOrganizationId: "linear-scope-workspace",
       projectId: "linear-project",
       deliveryId: "linear-under-scoped",
@@ -171,7 +171,7 @@ describe("trigger acceptance persistence", () => {
       `update linear_connections set scopes = '["read", "comments:create"]'::jsonb
        where id = '${connectionId}'`,
     );
-    const accepted = await database.acceptLinearEvent({
+    const accepted = await linearPersistence(database).acceptLinearEvent({
       linearOrganizationId: "linear-scope-workspace",
       projectId: "linear-project",
       deliveryId: "linear-reauthorized",
@@ -187,7 +187,7 @@ describe("trigger acceptance persistence", () => {
        set refresh_token = null, access_token_expires_at = '1970-01-01T00:00:00.000Z'
        where id = '${connectionId}'`,
     );
-    const expired = await database.acceptLinearEvent({
+    const expired = await linearPersistence(database).acceptLinearEvent({
       linearOrganizationId: "linear-scope-workspace",
       projectId: "linear-project",
       deliveryId: "linear-expired-without-refresh",

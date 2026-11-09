@@ -42,6 +42,9 @@ export interface ProviderVerificationOptions {
 }
 
 export interface ProviderApplication {
+  persistence(
+    database: import("../db/runtime/index.js").DatabaseRuntime,
+  ): import("../provider-applications/connection-persistence.js").ProviderConnectionInventory;
   parseConfiguration(value: unknown): ProviderApplicationConfiguration;
   parseIdentity(value: unknown): ProviderApplicationIdentity;
   readEnvironment(

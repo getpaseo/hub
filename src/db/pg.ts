@@ -1,126 +1,111 @@
-import { ExecutionAuthorityRepository } from "../execution-authority/index.js";
-import { ScheduleRepository } from "../triggers/schedule/index.js";
-import { acceptWorkflowRun } from "./workflow-intake.js";
 import { randomUUID } from "node:crypto";
-import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { parseCompiledHubConfig, type JsonValue } from "../config/compiler.js";
-import { parseInvocationInputs, parseInvocationRejection } from "../triggers/invocation.js";
-import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
+import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import {
   clearOverrideKey,
   entitlementOverridesSchema,
   mergeOverrides,
 } from "../entitlements/catalog.js";
-import { toDatabaseError } from "./errors.js";
+import { ExecutionAuthorityRepository } from "../execution-authority/index.js";
+import { discordPersistence } from "../providers/discord/persistence.js";
+import { githubPersistence } from "../providers/github/persistence.js";
+import { linearPersistence } from "../providers/linear/persistence.js";
+import { slackPersistence } from "../providers/slack/persistence.js";
+import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
+import { parseInvocationInputs, parseInvocationRejection } from "../triggers/invocation.js";
+import { ScheduleRepository } from "../triggers/schedule/index.js";
 import { withApiKeySerialization } from "./api-key-serialization.js";
 import { ConnectionRepository } from "./connections.js";
-import { ProviderEventAcceptanceRepository } from "./trigger-acceptance.js";
+import { toDatabaseError } from "./errors.js";
 import {
+  launchedAgent,
   toAgentExecutionRecord,
   toAttachmentRecord,
   toMachineRecord,
   toProjectConfigurationRevisionRecord,
   toProjectRecord,
-  toProviderEventReceiptSummary,
   toProviderEventReceiptRecord,
-  launchedAgent,
+  toProviderEventReceiptSummary,
 } from "./mappers.js";
-import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
+import type { ProviderPersistenceHost } from "./provider-persistence.js";
 import type { DatabaseRuntime, QueryHandle, QueryRow } from "./runtime/index.js";
 import type { Locks } from "./runtime/locks/index.js";
+import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
+import { ProviderEventAcceptanceRepository } from "./trigger-acceptance.js";
 import type {
+  AcceptedTriggerRunRecord,
+  AgentExecutionHubAcknowledgementInput,
   AgentExecutionOutputAttempt,
   AgentExecutionRecord,
   AttachmentProvider,
   AttachmentRecord,
+  BillingPlanPriceRecord,
+  BillingPlanRecord,
+  ClearOrganizationEntitlementsOverrideInput,
+  CliAuthorizationDecisionInput,
+  CliAuthorizationPollResult,
+  CliAuthorizationRecord,
   ConfigurationSyncAttemptRecord,
+  ConnectionProvider,
+  ConsumeOrganizationUsageInput,
+  CreateAcceptedTriggerRunInput,
   CreateProjectInput,
+  CreateRejectedTriggerRunInput,
+  DaemonRecord,
   Database,
-  InsertProjectConfigurationRevisionInput,
+  EnrollDaemonInput,
+  EnrollmentTokenRecord,
+  EntitlementChangeRecord,
+  EntitlementChangeSource,
   InsertAgentExecutionInput,
   InsertAttachmentInput,
   InsertMachineInput,
+  InsertProjectConfigurationRevisionInput,
   MachineRecord,
-  TerminateMachineFields,
-  TransitionAgentExecutionFields,
-  TransitionAgentExecutionResult,
-  ProviderEventReceiptRecord,
-  ProviderEventReceiptSummary,
+  MigrateProjectTriggersInput,
+  OperatorOrganizationRecord,
+  OrganizationBillingCustomerRecord,
+  OrganizationConnectionUsage,
+  OrganizationEntitlementsRecord,
   OrganizationRunRecord,
-  UnroutedProviderEventCount,
-  EnrollDaemonInput,
-  EnrollmentTokenRecord,
-  DaemonRecord,
-  CliAuthorizationRecord,
-  CliAuthorizationDecisionInput,
-  CliAuthorizationPollResult,
-  StartCliAuthorizationInput,
-  SwitchProjectConfigurationToManualInput,
-  SetProjectGitHubConfigurationSourceInput,
-  RecordConfigurationSyncAttemptInput,
-  AdvanceGitHubConnectionAttemptInput,
-  BindDiscordConnectionInput,
-  BindGitHubConnectionInput,
-  BindLinearConnectionInput,
-  BindSlackConnectionInput,
-  CompleteLinearProviderApplicationInput,
-  CompleteSlackProviderApplicationInput,
-  ConnectionStartAuthority,
-  ConnectionProvider,
-  ReadConnectionAttemptInput,
-  StartConnectionAttemptInput,
-  AcceptDiscordEventInput,
-  AcceptGitHubEventInput,
-  AcceptLinearEventInput,
-  AcceptSlackEventInput,
-  UpdateLinearConnectionTokensInput,
-  LinearConnectionRefreshOperation,
-  GitHubInstallationSyncOwner,
-  GitHubInstallationSyncClaim,
-  GitHubLifecycleReceiptClaimInput,
-  GitHubInstallationSyncResult,
+  OrganizationTriggerRecord,
+  OrganizationTriggerRevisionRecord,
+  OrganizationUsageRecord,
+  OverrideOrganizationEntitlementsInput,
+  PendingProjectTriggerMigration,
   PersistManualEventInput,
+  ProjectActivityRunListRecord,
+  ProjectActivityRunRecord,
   ProjectConfigurationReadModel,
   ProjectConfigurationRevisionRecord,
   ProjectRecord,
-  OrganizationConnectionUsage,
-  GitHubRepositoryRecord,
-  GitHubConfigurationTarget,
   ProjectTriggerRoute,
-  MigrateProjectTriggersInput,
-  OrganizationTriggerRecord,
-  OrganizationTriggerRevisionRecord,
-  PendingProjectTriggerMigration,
-  SaveOrganizationTriggerInput,
-  CreateAcceptedTriggerRunInput,
-  CreateRejectedTriggerRunInput,
-  AgentExecutionHubAcknowledgementInput,
-  AcceptedTriggerRunRecord,
+  ProviderEventReceiptRecord,
+  ProviderEventReceiptSummary,
+  ReadConnectionAttemptInput,
+  ReconcileOrganizationBillingInput,
+  RecordConfigurationSyncAttemptInput,
   RejectedTriggerRunRecord,
+  SaveOrganizationTriggerInput,
+  SetProjectGitHubConfigurationSourceInput,
+  StampOrganizationEntitlementsInput,
+  StartCliAuthorizationInput,
+  StartConnectionAttemptInput,
+  SwitchProjectConfigurationToManualInput,
+  SyncBillingPlanInput,
+  TerminateMachineFields,
+  TransitionAgentExecutionFields,
+  TransitionAgentExecutionResult,
   TriggerRunRecord,
-  WorkflowStepExecutionInput,
-  WorkflowStepRunRecord,
-  WorkflowWakeupRecord,
+  UnroutedProviderEventCount,
   WorkflowAgentCompletionInput,
   WorkflowDeadlineKind,
   WorkflowDeadlineRecovery,
-  ProjectActivityRunListRecord,
-  ProjectActivityRunRecord,
-  OrganizationEntitlementsRecord,
-  OperatorOrganizationRecord,
-  StampOrganizationEntitlementsInput,
-  OverrideOrganizationEntitlementsInput,
-  ClearOrganizationEntitlementsOverrideInput,
-  EntitlementChangeRecord,
-  EntitlementChangeSource,
-  OrganizationUsageRecord,
-  ConsumeOrganizationUsageInput,
-  BillingPlanRecord,
-  BillingPlanPriceRecord,
-  SyncBillingPlanInput,
-  OrganizationBillingCustomerRecord,
-  ReconcileOrganizationBillingInput,
+  WorkflowStepExecutionInput,
+  WorkflowStepRunRecord,
+  WorkflowWakeupRecord,
 } from "./types.js";
+import { acceptWorkflowRun } from "./workflow-intake.js";
 
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
 
@@ -138,6 +123,7 @@ export function createDatabase(runtime: DatabaseRuntime, locks: Locks): Database
 }
 
 class PgDatabase implements Database {
+  readonly providerPersistence: ProviderPersistenceHost;
   readonly schedules;
   readonly executionAuthority;
   private readonly connections;
@@ -150,61 +136,15 @@ class PgDatabase implements Database {
     this.schedules = new ScheduleRepository(this.pool);
     this.executionAuthority = new ExecutionAuthorityRepository(this.pool);
     this.connections = new ConnectionRepository(this.pool, locks);
-    this.triggerAcceptance = new ProviderEventAcceptanceRepository(
-      this.pool,
-      locks,
-      this.connections,
-    );
-  }
-
-  acceptGitHubEvent(input: AcceptGitHubEventInput) {
-    return this.triggerAcceptance.acceptGitHub(input);
-  }
-
-  acceptDiscordEvent(input: AcceptDiscordEventInput) {
-    return this.triggerAcceptance.acceptDiscord(input);
-  }
-
-  acceptSlackEvent(input: AcceptSlackEventInput) {
-    return this.triggerAcceptance.acceptSlack(input);
-  }
-
-  acceptLinearEvent(input: AcceptLinearEventInput) {
-    return this.triggerAcceptance.acceptLinear(input);
+    this.triggerAcceptance = new ProviderEventAcceptanceRepository(this.pool, locks);
+    this.providerPersistence = {
+      create: (factory) =>
+        factory.postgres({ runtime: this.pool, locks, events: this.triggerAcceptance }),
+    };
   }
 
   persistManualEvent(input: PersistManualEventInput) {
     return this.triggerAcceptance.persistManual(input);
-  }
-
-  synchronizeGitHubInstallation<T>(
-    installationId: number,
-    operation: () => Promise<T>,
-  ): Promise<T> {
-    return this.locks.withLock(
-      JSON.stringify(["github-installation-sync", installationId]),
-      operation,
-    );
-  }
-
-  pendingGitHubInstallationSyncs(owner: GitHubInstallationSyncOwner) {
-    return this.triggerAcceptance.pendingGitHubInstallationSyncs(owner);
-  }
-
-  claimGitHubLifecycleReceipt(input: GitHubLifecycleReceiptClaimInput) {
-    return this.triggerAcceptance.claimGitHubLifecycleReceipt(input);
-  }
-
-  applyGitHubInstallationSync(
-    owner: GitHubInstallationSyncOwner,
-    claim: Extract<GitHubInstallationSyncClaim, { status: "claimed" }>,
-    result: GitHubInstallationSyncResult,
-  ) {
-    return this.triggerAcceptance.applyGitHubInstallationSync(owner, claim, result);
-  }
-
-  retryGitHubInstallationSync(owner: GitHubInstallationSyncOwner, installationSyncId: string) {
-    return this.triggerAcceptance.retryGitHubInstallationSync(owner, installationSyncId);
   }
 
   async markProviderEventDropped(
@@ -3882,231 +3822,25 @@ class PgDatabase implements Database {
   }
 
   async organizationConnectionUsage(organizationId: string): Promise<OrganizationConnectionUsage> {
-    const github = await query<{
-      id: string;
-      organization_id: string;
-      slug: string;
-      installation_id: number | string;
-      account_id: string;
-      account_login: string;
-      account_type: string;
-      status: "active" | "suspended";
-      provider_application_id: string | null;
-    }>(
-      this.pool,
-      `select connection.id, connection.organization_id, connection.slug,
-              connection.installation_id,
-              connection.account_id, connection.account_login, connection.account_type,
-              connection.status, connection.provider_application_id
-       from github_connections connection
-       where connection.organization_id = $1
-       order by connection.account_login, connection.id`,
-      [organizationId],
-    );
+    const github = await githubPersistence(this).listConnections(organizationId);
     const [discord, slack, linear] = await Promise.all([
-      query<{
-        id: string;
-        organization_id: string;
-        slug: string;
-        guild_id: string;
-        guild_name: string;
-        provider_application_id: string | null;
-      }>(
-        this.pool,
-        `select id, organization_id, slug, guild_id, guild_name, provider_application_id
-         from discord_connections where organization_id = $1
-         order by guild_name, id`,
-        [organizationId],
-      ),
-      query<{
-        id: string;
-        organization_id: string;
-        slug: string;
-        team_id: string;
-        team_name: string;
-        bot_user_id: string;
-        bot_access_token: string;
-        scopes: unknown;
-        provider_application_id: string | null;
-      }>(
-        this.pool,
-        `select id, organization_id, slug, team_id, team_name, bot_user_id, bot_access_token, scopes,
-                provider_application_id
-         from slack_connections where organization_id = $1
-         order by team_name, id`,
-        [organizationId],
-      ),
-      query<{
-        id: string;
-        organization_id: string;
-        slug: string;
-        linear_organization_id: string;
-        linear_organization_name: string;
-        app_user_id: string;
-        access_token: string;
-        refresh_token: string | null;
-        access_token_expires_at: Date | null;
-        scopes: unknown;
-        provider_application_id: string | null;
-      }>(
-        this.pool,
-        `select id, organization_id, slug, linear_organization_id, linear_organization_name,
-                app_user_id, access_token, refresh_token, access_token_expires_at, scopes,
-                provider_application_id
-         from linear_connections where organization_id = $1
-         order by linear_organization_name, id`,
-        [organizationId],
-      ),
+      discordPersistence(this).listConnections(organizationId),
+      slackPersistence(this).listConnections(organizationId),
+      linearPersistence(this).listConnections(organizationId),
     ]);
-    return {
-      github: github.rows.map((row) => ({
-        id: row.id,
-        organizationId: row.organization_id,
-        slug: row.slug,
-        installationId: Number(row.installation_id),
-        accountId: row.account_id,
-        accountLogin: row.account_login,
-        accountType: row.account_type,
-        status: row.status,
-        providerApplicationId: row.provider_application_id,
-      })),
-      discord: discord.rows.map((row) => ({
-        id: row.id,
-        organizationId: row.organization_id,
-        slug: row.slug,
-        guildId: row.guild_id,
-        guildName: row.guild_name,
-        providerApplicationId: row.provider_application_id,
-      })),
-      slack: slack.rows.map((row) => ({
-        id: row.id,
-        organizationId: row.organization_id,
-        slug: row.slug,
-        teamId: row.team_id,
-        teamName: row.team_name,
-        botUserId: row.bot_user_id,
-        botAccessToken: row.bot_access_token,
-        scopes: stringArray(row.scopes),
-        providerApplicationId: row.provider_application_id,
-      })),
-      linear: linear.rows.map((row) => ({
-        id: row.id,
-        organizationId: row.organization_id,
-        slug: row.slug,
-        linearOrganizationId: row.linear_organization_id,
-        linearOrganizationName: row.linear_organization_name,
-        appUserId: row.app_user_id,
-        accessToken: row.access_token,
-        refreshToken: row.refresh_token,
-        accessTokenExpiresAt: row.access_token_expires_at,
-        scopes: stringArray(row.scopes),
-        providerApplicationId: row.provider_application_id,
-      })),
-    };
+    return { github, discord, slack, linear };
   }
 
-  async listGitHubRepositories(organizationId: string): Promise<GitHubRepositoryRecord[]> {
-    const rows = await query<GitHubRepositoryRow>(
-      this.pool,
-      `select repository.id, repository.organization_id, repository.connection_id,
-              connection.installation_id, repository.repository_id,
-              repository.full_name, repository.default_branch
-       from github_repositories repository
-       join github_connections connection on connection.id = repository.connection_id
-       where repository.organization_id = $1
-       order by repository.full_name, repository.id`,
-      [organizationId],
-    );
-    return rows.rows.map(toGitHubRepositoryRecord);
+  listGitHubRepositories(organizationId: string) {
+    return githubPersistence(this).listGitHubRepositories(organizationId);
   }
 
-  async findGitHubRepositoryForOrganization(organizationId: string, fullName: string) {
-    const rows = await query<GitHubRepositoryRow>(
-      this.pool,
-      `select repository.id, repository.organization_id, repository.connection_id,
-              connection.installation_id, repository.repository_id,
-              repository.full_name, repository.default_branch
-       from github_repositories repository
-       join github_connections connection on connection.id = repository.connection_id
-       where repository.organization_id = $1 and repository.full_name = $2
-       order by repository.id limit 2`,
-      [organizationId, fullName],
-    );
-    if (rows.rows.length > 1) throw new Error("github repository resource is ambiguous");
-    return rows.rows[0] === undefined ? undefined : toGitHubRepositoryRecord(rows.rows[0]);
+  findGitHubRepositoryForOrganization(organizationId: string, fullName: string) {
+    return githubPersistence(this).findGitHubRepositoryForOrganization(organizationId, fullName);
   }
 
-  async findGitHubConfigurationTarget(
-    projectId: string,
-    repositoryId?: number,
-  ): Promise<GitHubConfigurationTarget | undefined> {
-    const rows = await query<GitHubConfigurationTargetRow>(
-      this.pool,
-      `select project.id as project_id,
-              repository.id, repository.organization_id, repository.connection_id,
-              connection.installation_id,
-              repository.repository_id, repository.full_name, repository.default_branch,
-              source.automatic_deployment_enabled
-       from project_configuration_sources source
-       join projects project on project.id = source.project_id and project.status = 'active'
-       join github_repositories repository
-         on repository.organization_id = project.organization_id
-        and repository.connection_id = source.github_connection_id
-        and repository.repository_id = source.github_repository_id
-       join github_connections connection on connection.id = repository.connection_id
-       where source.project_id = $1 and source.kind = 'github'
-         and ($2::bigint is null or repository.repository_id = $2)
-       limit 1`,
-      [projectId, repositoryId ?? null],
-    );
-    const row = rows.rows[0];
-    return row === undefined
-      ? undefined
-      : {
-          ...toGitHubRepositoryRecord(row),
-          projectId: row.project_id,
-          installationId: Number(row.installation_id),
-          automaticDeploymentEnabled: row.automatic_deployment_enabled,
-        };
-  }
-
-  async listGitHubConfigurationTargets(
-    organizationId: string,
-    connectionId: string,
-    repositoryId: number,
-  ): Promise<GitHubConfigurationTarget[]> {
-    const rows = await query<GitHubConfigurationTargetRow>(
-      this.pool,
-      `select project.id as project_id,
-              repository.id, repository.organization_id, repository.connection_id,
-              connection.installation_id,
-              repository.repository_id, repository.full_name, repository.default_branch,
-              source.automatic_deployment_enabled
-       from project_configuration_sources source
-       join projects project
-         on project.id = source.project_id
-        and project.organization_id = $1
-        and project.status = 'active'
-       join github_repositories repository
-         on repository.organization_id = project.organization_id
-        and repository.connection_id = source.github_connection_id
-        and repository.repository_id = source.github_repository_id
-       join github_connections connection
-         on connection.id = repository.connection_id
-        and connection.organization_id = project.organization_id
-       where source.kind = 'github'
-         and source.github_connection_id = $2
-         and source.github_repository_id = $3
-       order by project.id`,
-      [organizationId, connectionId, repositoryId],
-    );
-    return rows.rows.map((row) =>
-      Object.assign(toGitHubRepositoryRecord(row), {
-        projectId: row.project_id,
-        installationId: Number(row.installation_id),
-        automaticDeploymentEnabled: row.automatic_deployment_enabled,
-      }),
-    );
+  findGitHubConfigurationTarget(projectId: string, repositoryId?: number) {
+    return githubPersistence(this).findGitHubConfigurationTarget(projectId, repositoryId);
   }
 
   async listUnroutedProviderEventsForOrganization(
@@ -4219,85 +3953,6 @@ class PgDatabase implements Database {
 
   consumeConnectionAttempt(input: ReadConnectionAttemptInput): Promise<void> {
     return this.connections.consumeAttempt(input);
-  }
-
-  advanceGitHubConnectionAttempt(input: AdvanceGitHubConnectionAttemptInput): Promise<void> {
-    return this.connections.advanceGitHubAttempt(input);
-  }
-
-  bindGitHubConnection(input: BindGitHubConnectionInput): Promise<void> {
-    return this.connections.bindGitHub(input);
-  }
-
-  bindDiscordConnection(input: BindDiscordConnectionInput): Promise<void> {
-    return this.connections.bindDiscord(input);
-  }
-
-  bindSlackConnection(input: BindSlackConnectionInput): Promise<void> {
-    return this.connections.bindSlack(input);
-  }
-
-  completeSlackProviderApplication(input: CompleteSlackProviderApplicationInput): Promise<void> {
-    return this.connections.completeSlackProviderApplication(input);
-  }
-
-  bindLinearConnection(input: BindLinearConnectionInput): Promise<void> {
-    return this.connections.bindLinear(input);
-  }
-
-  completeLinearProviderApplication(input: CompleteLinearProviderApplicationInput): Promise<void> {
-    return this.connections.completeLinearProviderApplication(input);
-  }
-
-  updateLinearConnectionTokens(input: UpdateLinearConnectionTokensInput): Promise<void> {
-    return this.connections.updateLinearTokens(input);
-  }
-
-  withLinearConnectionRefresh<T>(
-    linearOrganizationId: string,
-    operation: LinearConnectionRefreshOperation<T>,
-  ): Promise<T> {
-    return this.connections.withLinearRefresh(linearOrganizationId, operation);
-  }
-
-  disconnectConnection(
-    provider: ConnectionProvider,
-    connectionId: string,
-    access: ConnectionStartAuthority,
-  ) {
-    return this.connections.disconnect(provider, connectionId, access);
-  }
-
-  findGitHubConnection(installationId: number) {
-    return this.connections.findGitHub(installationId);
-  }
-
-  findDiscordConnection(guildId: string) {
-    return this.connections.findDiscord(guildId);
-  }
-
-  findSlackConnection(teamId: string) {
-    return this.connections.findSlack(teamId);
-  }
-
-  findLinearConnection(linearOrganizationId: string) {
-    return this.connections.findLinear(linearOrganizationId);
-  }
-
-  findSlackConnectionForOrganization(organizationId: string, teamId: string) {
-    return this.connections.findSlackForOrganization(organizationId, teamId);
-  }
-
-  findLinearConnectionForOrganization(organizationId: string, linearOrganizationId: string) {
-    return this.connections.findLinearForOrganization(organizationId, linearOrganizationId);
-  }
-
-  findDiscordConnectionForOrganization(organizationId: string, guildId: string) {
-    return this.connections.findDiscordForOrganization(organizationId, guildId);
-  }
-
-  removeDiscordConnection(guildId: string): Promise<void> {
-    return this.connections.removeDiscord(guildId);
   }
 
   async close(): Promise<void> {
@@ -4419,10 +4074,6 @@ async function query<T extends QueryRow = QueryRow>(
   values: unknown[] = [],
 ) {
   return pool.query<T>(text, values);
-}
-
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : [];
 }
 
 function isDaemonSlugConflict(error: unknown): boolean {
@@ -5213,16 +4864,6 @@ function availableMigratedTriggerName(
   return `${base}-${String(suffix)}`;
 }
 
-interface GitHubRepositoryRow extends QueryRow {
-  id: string;
-  organization_id: string;
-  connection_id: string;
-  installation_id: number | string;
-  repository_id: number | string;
-  full_name: string;
-  default_branch: string;
-}
-
 function deadlineConditionAllows(
   execution: AgentExecutionRow,
   condition: WorkflowAgentCompletionInput["deadlineCondition"],
@@ -5484,22 +5125,6 @@ async function wakeWorkflowRun(
 
 function isTerminalWorkflowStepStatus(status: WorkflowStepRunRow["status"]): boolean {
   return status === "succeeded" || status === "failed" || status === "timed_out";
-}
-
-interface GitHubConfigurationTargetRow extends GitHubRepositoryRow {
-  project_id: string;
-  automatic_deployment_enabled: boolean;
-}
-
-function toGitHubRepositoryRecord(row: GitHubRepositoryRow): GitHubRepositoryRecord {
-  return {
-    id: row.id,
-    organizationId: row.organization_id,
-    connectionId: row.connection_id,
-    repositoryId: Number(row.repository_id),
-    fullName: row.full_name,
-    defaultBranch: row.default_branch,
-  };
 }
 
 interface TenantRouteAccessRow extends QueryRow {

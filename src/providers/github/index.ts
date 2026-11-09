@@ -1,46 +1,47 @@
-import { createGitHubLifecycle } from "./lifecycle.js";
 import { createHash } from "node:crypto";
-import type { AuthServer } from "../../auth/server.js";
+import { PushPayloadSchema } from "../../auth/github-events.js";
 import { createGitHubAuth, repositoryNamesForAccount, type GitHubAuth } from "../../auth/github.js";
-import { DatabaseUnavailableError } from "../../db/errors.js";
-import type { Database, GitHubConnectionRecord } from "../../db/types.js";
-import { logger } from "../../logger.js";
-import type { ProviderConnectionRegistration, ProviderRegistration } from "../registration.js";
+import type { AuthServer } from "../../auth/server.js";
+import type { ConnectionResolutionContext } from "../../config/connections.js";
+import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
+import { synchronizeGitHubDefaultBranch } from "../../configuration/github-sync.js";
+import type { ProjectConfigurationStore } from "../../configuration/store.js";
 import {
-  CONNECTION_ATTEMPT_LIFETIME_MINUTES,
-  CONNECTIONS_RETURN_ROUTE,
   callbackConnectionAccess,
   cancelledConnectionResult,
+  CONNECTION_ATTEMPT_LIFETIME_MINUTES,
   connectionAccess,
   connectionActionFailure,
   connectionCallbackFailure,
   connectionResult,
+  CONNECTIONS_RETURN_ROUTE,
   manageConnectionAccess,
   newConnectionState,
   positiveInteger,
   requiredConnectionId,
   stateHash,
 } from "../../connections/shared.js";
+import { DatabaseUnavailableError } from "../../db/errors.js";
+import type { Database, GitHubConnectionRecord } from "../../db/types.js";
+import { replyOutputTool } from "../../execution-capabilities/outputs.js";
+import { logger } from "../../logger.js";
+import { organizationBillingUrl } from "../../triggers/failure-notice.js";
 import {
   createGitHubReactionClient,
   createGitHubTriggerProvider,
   type GitHubReactionClient,
 } from "../../triggers/github/provider.js";
-import { organizationBillingUrl } from "../../triggers/failure-notice.js";
+import { createGitHubReplyExecutor, githubReplyAvailable } from "../../triggers/github/reply.js";
 import { createWebhookSource } from "../../triggers/github/webhook.js";
+import type { ProviderConnectionRegistration, ProviderRegistration } from "../registration.js";
 import {
   createGitHubConnectionClient,
   type GitHubConnectionClient,
   type GitHubInstallationIdentity,
 } from "./client.js";
-import { PushPayloadSchema } from "../../auth/github-events.js";
-import { synchronizeGitHubDefaultBranch } from "../../configuration/github-sync.js";
-import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import { createGitHubConfigurationProvider } from "./configuration.js";
-import type { ConnectionResolutionContext } from "../../config/connections.js";
-import type { ProjectConfigurationStore } from "../../configuration/store.js";
-import { replyOutputTool } from "../../execution-capabilities/outputs.js";
-import { createGitHubReplyExecutor, githubReplyAvailable } from "../../triggers/github/reply.js";
+import { createGitHubLifecycle } from "./lifecycle.js";
+import { githubPersistence } from "./persistence.js";
 
 export interface GitHubRegistrationConfiguration {
   appId: string;
@@ -123,7 +124,7 @@ export function createGitHubRegistration(
         );
   const webhook = createWebhookSource(configuration.webhookSecret, {
     accept: (input) =>
-      database.acceptGitHubEvent({
+      githubPersistence(database).acceptGitHubEvent({
         ...input,
         providerApplicationId: configuration.appId,
         providerConfigurationVersion: options.configurationVersion ?? 0,
@@ -132,9 +133,11 @@ export function createGitHubRegistration(
     async synchronizePush(input) {
       const payload = PushPayloadSchema.safeParse(input.payload);
       if (!payload.success) return;
-      const incomingConnection = await database.findGitHubConnection(input.installationId);
+      const incomingConnection = await githubPersistence(database).findGitHubConnection(
+        input.installationId,
+      );
       if (incomingConnection === undefined) return;
-      const targets = await database.listGitHubConfigurationTargets(
+      const targets = await githubPersistence(database).listGitHubConfigurationTargets(
         incomingConnection.organizationId,
         incomingConnection.id,
         input.repositoryId,
@@ -384,8 +387,7 @@ function createGitHubConnection(
     if (rejected !== undefined) return rejected;
     try {
       const access = await manageConnectionAccess(options.auth, options.database, request);
-      await options.database.disconnectConnection(
-        "github",
+      await githubPersistence(options.database).disconnectConnection(
         requiredConnectionId(request),
         connectionAccess(access),
       );
@@ -461,7 +463,7 @@ async function completeSetup(
     }
     const nextState = newConnectionState();
     const verifier = newConnectionState();
-    await options.database.advanceGitHubConnectionAttempt({
+    await githubPersistence(options.database).advanceGitHubConnectionAttempt({
       stateVerifier: stateHash(state),
       phase: "github_setup",
       access,
@@ -532,33 +534,36 @@ async function completeAuthorization(
     if (installationId === undefined || attempt.pkceVerifier === null)
       throw new Error("invalid attempt");
     const verifier = attempt.pkceVerifier;
-    await options.database.synchronizeGitHubInstallation(installationId, async () => {
-      const identity = await services.client.verifyUserInstallation({
-        code,
-        verifier,
-        installationId,
-      });
-      if (identity === undefined) {
-        await options.database.consumeConnectionAttempt({
-          stateVerifier: stateHash(state),
-          phase: "github_user_authorization",
-          access,
+    await githubPersistence(options.database).synchronizeGitHubInstallation(
+      installationId,
+      async () => {
+        const identity = await services.client.verifyUserInstallation({
+          code,
+          verifier,
+          installationId,
         });
-        throw new GitHubCallbackError("installation verification rejected");
-      }
-      const repositories =
-        identity.status === "suspended"
-          ? []
-          : await services.repositories.listInstallationRepositories({ installationId });
-      await bindGitHub(
-        options.database,
-        state,
-        access,
-        identity,
-        options.configuration.appId,
-        repositories,
-      );
-    });
+        if (identity === undefined) {
+          await options.database.consumeConnectionAttempt({
+            stateVerifier: stateHash(state),
+            phase: "github_user_authorization",
+            access,
+          });
+          throw new GitHubCallbackError("installation verification rejected");
+        }
+        const repositories =
+          identity.status === "suspended"
+            ? []
+            : await services.repositories.listInstallationRepositories({ installationId });
+        await bindGitHub(
+          options.database,
+          state,
+          access,
+          identity,
+          options.configuration.appId,
+          repositories,
+        );
+      },
+    );
     return connectionResult(callbackOrigin, attempt.returnRoute, "github_connected", "github");
   } catch (error) {
     return connectionCallbackFailure({
@@ -584,7 +589,7 @@ async function bindGitHub(
   providerApplicationId: string,
   repositories: import("../../db/types.js").GitHubRepositorySnapshot,
 ): Promise<void> {
-  await database.bindGitHubConnection({
+  await githubPersistence(database).bindGitHubConnection({
     providerApplicationId,
     repositories,
     stateVerifier: stateHash(state),

@@ -11,6 +11,7 @@ import {
   type DatabaseRuntimeBundle,
 } from "../db/runtime/index.js";
 import { createProviderRegistry } from "../providers/server.js";
+import { slackPersistence } from "../providers/slack/persistence.js";
 import { createProviderApplicationInventory, createProviderApplicationStore } from "./index.js";
 const providerRegistry = createProviderRegistry();
 
@@ -194,16 +195,23 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
   await startAttempt("state-ok", null);
   await complete("state-ok", "T1", undefined);
   assert.equal((await store.read("slack"))?.version, 1);
-  assert.equal((await database.findSlackConnection("T1"))?.providerApplicationId, "A1");
   assert.equal(
-    (await createProviderApplicationInventory(bundle.runtime).connectedIdentities("slack"))[0]
-      ?.status,
+    (await slackPersistence(database).findSlackConnection("T1"))?.providerApplicationId,
+    "A1",
+  );
+  assert.equal(
+    (
+      await createProviderApplicationInventory(
+        bundle.runtime,
+        providerRegistry,
+      ).connectedIdentities("slack")
+    )[0]?.status,
     "actionNeeded",
   );
 
   await startAttempt("state-conflict", 1);
   await assert.rejects(() => complete("state-conflict", "T2", 99));
-  assert.equal(await database.findSlackConnection("T2"), undefined);
+  assert.equal(await slackPersistence(database).findSlackConnection("T2"), undefined);
   assert.equal((await store.read("slack"))?.version, 1);
   assert.equal(
     (
@@ -238,7 +246,7 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
       String(Reflect.get(Reflect.get(error, "cause") ?? {}, "message")) ===
         "simulated crash boundary",
   );
-  assert.equal(await database.findSlackConnection("T3"), undefined);
+  assert.equal(await slackPersistence(database).findSlackConnection("T3"), undefined);
   assert.equal((await store.read("slack"))?.version, 1);
   assert.equal(
     (
@@ -283,7 +291,10 @@ async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
     socket.configuration.provider === "slack" ? socket.configuration.transport : undefined,
     "socket",
   );
-  assert.equal((await database.findSlackConnection("T2"))?.providerApplicationId, "A1");
+  assert.equal(
+    (await slackPersistence(database).findSlackConnection("T2"))?.providerApplicationId,
+    "A1",
+  );
 }
 
 async function exerciseLinearScopeHealth(bundle: DatabaseRuntimeBundle) {
@@ -296,8 +307,12 @@ async function exerciseLinearScopeHealth(bundle: DatabaseRuntimeBundle) {
   );
 
   assert.equal(
-    (await createProviderApplicationInventory(bundle.runtime).connectedIdentities("linear"))[0]
-      ?.status,
+    (
+      await createProviderApplicationInventory(
+        bundle.runtime,
+        providerRegistry,
+      ).connectedIdentities("linear")
+    )[0]?.status,
     "actionNeeded",
   );
 
@@ -309,8 +324,12 @@ async function exerciseLinearScopeHealth(bundle: DatabaseRuntimeBundle) {
      where linear_organization_id = 'linear-org'`,
   );
   assert.equal(
-    (await createProviderApplicationInventory(bundle.runtime).connectedIdentities("linear"))[0]
-      ?.status,
+    (
+      await createProviderApplicationInventory(
+        bundle.runtime,
+        providerRegistry,
+      ).connectedIdentities("linear")
+    )[0]?.status,
     "actionNeeded",
   );
 
@@ -319,8 +338,12 @@ async function exerciseLinearScopeHealth(bundle: DatabaseRuntimeBundle) {
      where linear_organization_id = 'linear-org'`,
   );
   assert.equal(
-    (await createProviderApplicationInventory(bundle.runtime).connectedIdentities("linear"))[0]
-      ?.status,
+    (
+      await createProviderApplicationInventory(
+        bundle.runtime,
+        providerRegistry,
+      ).connectedIdentities("linear")
+    )[0]?.status,
     "connected",
   );
 }

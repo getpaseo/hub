@@ -26,6 +26,7 @@ import {
   type ProviderApplications,
 } from "../../provider-applications/index.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
+import { discordPersistence } from "../../providers/discord/persistence.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
 import { createLinearRegistration } from "../../providers/linear/index.js";
 import type { ProviderRegistration } from "../../providers/registration.js";
@@ -659,7 +660,7 @@ async function acceptInstallProviderDispatchFixture(
       automaticDeploymentEnabled: true,
       userId: owner.user_id,
     });
-    const discord = await database.findDiscordConnection(message.guildId);
+    const discord = await discordPersistence(database).findDiscordConnection(message.guildId);
     if (discord === undefined || discord.organizationId !== message.organizationId) {
       throw new Error("Discord connection unavailable");
     }
@@ -1189,7 +1190,7 @@ async function composeProviderApplications(input: {
     input.database,
   );
   const verifier = new BrowserProviderApplicationVerifier(input.scenario);
-  const inventory = createProviderApplicationInventory(input.databaseRuntime);
+  const inventory = createProviderApplicationInventory(input.databaseRuntime, providerRegistry);
   const providerRuntime = new DynamicProviderRuntime({
     database: input.database,
     auth: input.auth,

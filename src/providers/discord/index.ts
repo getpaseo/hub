@@ -1,33 +1,34 @@
 import type { AuthServer } from "../../auth/server.js";
-import type { Database, DiscordConnectionRecord } from "../../db/types.js";
-import { reportFailure } from "../../failures/index.js";
-import type { ProviderConnectionRegistration, ProviderRegistration } from "../registration.js";
 import {
-  CONNECTION_ATTEMPT_LIFETIME_MINUTES,
-  CONNECTIONS_RETURN_ROUTE,
   callbackConnectionAccess,
   cancelledConnectionResult,
+  CONNECTION_ATTEMPT_LIFETIME_MINUTES,
   connectionAccess,
   connectionActionFailure,
   connectionCallbackFailure,
   connectionResult,
+  CONNECTIONS_RETURN_ROUTE,
   manageConnectionAccess,
   newConnectionState,
   requiredConnectionId,
   stateHash,
 } from "../../connections/shared.js";
+import type { Database, DiscordConnectionRecord } from "../../db/types.js";
+import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
+import { reportFailure } from "../../failures/index.js";
+import { createDiscordAttachmentResolver } from "../../triggers/discord/attachments.js";
 import { createDiscordBotClient, type DiscordBotClient } from "../../triggers/discord/bot.js";
 import { createDiscordGatewaySource } from "../../triggers/discord/gateway.js";
 import { createDiscordTriggerProvider } from "../../triggers/discord/provider.js";
-import { organizationBillingUrl } from "../../triggers/failure-notice.js";
-import { createDiscordAttachmentResolver } from "../../triggers/discord/attachments.js";
 import { createDiscordReplyExecutor } from "../../triggers/discord/reply.js";
-import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
+import { organizationBillingUrl } from "../../triggers/failure-notice.js";
+import type { ProviderConnectionRegistration, ProviderRegistration } from "../registration.js";
 import {
   createDiscordConnectionClient,
   type DiscordConnectionClient,
   type DiscordGuildIdentity,
 } from "./client.js";
+import { discordPersistence } from "./persistence.js";
 
 export interface DiscordRegistrationConfiguration {
   botToken: string;
@@ -99,7 +100,7 @@ export function createDiscordRegistration(
         );
   const gateway = createDiscordGatewaySource({
     bot,
-    accept: (input) => database.acceptDiscordEvent(input),
+    accept: (input) => discordPersistence(database).acceptDiscordEvent(input),
     applyGuildDelete: (guildId, unavailable) =>
       applyGuildRemoval(database, client, guildId, unavailable),
   });
@@ -223,8 +224,7 @@ function createDiscordConnection(
     if (rejected !== undefined) return rejected;
     try {
       const access = await manageConnectionAccess(options.auth, options.database, request);
-      const disconnected = await options.database.disconnectConnection(
-        "discord",
+      const disconnected = await discordPersistence(options.database).disconnectConnection(
         requiredConnectionId(request),
         connectionAccess(access),
       );
@@ -339,7 +339,7 @@ async function bindDiscord(
   guild: DiscordGuildIdentity,
   providerApplicationId: string,
 ): Promise<void> {
-  await database.bindDiscordConnection({
+  await discordPersistence(database).bindDiscordConnection({
     providerApplicationId,
     stateVerifier: stateHash(state),
     phase: "discord_authorization",
@@ -356,7 +356,7 @@ async function applyGuildRemoval(
 ): Promise<void> {
   if (unavailable) return;
   const membership = await client.guildMembership(guildId);
-  if (membership === "absent") await database.removeDiscordConnection(guildId);
+  if (membership === "absent") await discordPersistence(database).removeDiscordConnection(guildId);
 }
 
 function discordStatus(configured: boolean, bindings: readonly DiscordConnectionRecord[]) {

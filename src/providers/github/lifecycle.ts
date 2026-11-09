@@ -1,11 +1,12 @@
+import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import type {
   Database,
-  GitHubLifecycleReceiptClaimInput,
   GitHubInstallationSyncOwner,
+  GitHubLifecycleReceiptClaimInput,
 } from "../../db/types.js";
-import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
-import type { GitHubConnectionClient } from "./client.js";
 import { reportFailure } from "../../failures/index.js";
+import type { GitHubConnectionClient } from "./client.js";
+import { githubPersistence } from "./persistence.js";
 
 /** A receipt and its pending job are accepted together before acknowledging GitHub. */
 export function createGitHubLifecycle(
@@ -19,39 +20,45 @@ export function createGitHubLifecycle(
 
   async function drain(): Promise<void> {
     for (;;) {
-      const pending = await database.pendingGitHubInstallationSyncs(owner);
+      const pending = await githubPersistence(database).pendingGitHubInstallationSyncs(owner);
       if (pending.length === 0) return;
       for (const claim of pending) {
-        await database.synchronizeGitHubInstallation(claim.installationId, async () => {
-          try {
-            const evidence = await client.getInstallation(claim.installationId);
-            if (evidence.status === "absent") {
-              await database.applyGitHubInstallationSync(owner, claim, {
-                status: "absent",
-                removeBinding: claim.removeBinding,
+        await githubPersistence(database).synchronizeGitHubInstallation(
+          claim.installationId,
+          async () => {
+            try {
+              const evidence = await client.getInstallation(claim.installationId);
+              if (evidence.status === "absent") {
+                await githubPersistence(database).applyGitHubInstallationSync(owner, claim, {
+                  status: "absent",
+                  removeBinding: claim.removeBinding,
+                });
+                return;
+              }
+              const available =
+                evidence.identity.status === "suspended"
+                  ? []
+                  : await repositories.listInstallationRepositories({
+                      installationId: claim.installationId,
+                    });
+              await githubPersistence(database).applyGitHubInstallationSync(owner, claim, {
+                status: "present",
+                identity: evidence.identity,
+                repositories: available,
               });
-              return;
+            } catch (error) {
+              await githubPersistence(database).retryGitHubInstallationSync(
+                owner,
+                claim.installationSyncId,
+              );
+              reportFailure(error, {
+                operation: "github.lifecycle.synchronize",
+                component: "connections",
+                provider: "github",
+              });
             }
-            const available =
-              evidence.identity.status === "suspended"
-                ? []
-                : await repositories.listInstallationRepositories({
-                    installationId: claim.installationId,
-                  });
-            await database.applyGitHubInstallationSync(owner, claim, {
-              status: "present",
-              identity: evidence.identity,
-              repositories: available,
-            });
-          } catch (error) {
-            await database.retryGitHubInstallationSync(owner, claim.installationSyncId);
-            reportFailure(error, {
-              operation: "github.lifecycle.synchronize",
-              component: "connections",
-              provider: "github",
-            });
-          }
-        });
+          },
+        );
       }
     }
   }
@@ -75,7 +82,7 @@ export function createGitHubLifecycle(
     async accept(
       input: Omit<GitHubLifecycleReceiptClaimInput, "providerApplicationId">,
     ): Promise<void> {
-      await database.claimGitHubLifecycleReceipt({
+      await githubPersistence(database).claimGitHubLifecycleReceipt({
         ...input,
         providerApplicationId: owner.providerApplicationId,
       });

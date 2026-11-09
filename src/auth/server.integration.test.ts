@@ -1,30 +1,31 @@
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, it } from "vitest";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
-import type { DatabaseRuntime } from "../db/runtime/index.js";
 import { z } from "zod";
+import type { DatabaseRuntime } from "../db/runtime/index.js";
 import {
   createDatabase,
+  createPostgresQueryRuntime,
   testDatabaseLocks,
   testDatabaseRuntime,
 } from "../db/test-utils/runtime.js";
 import type { Database } from "../db/types.js";
+import type { InvitationEmail, InvitationMailer } from "../invitations/index.js";
 import { OrganizationResources } from "../organizations/resources.js";
+import { createGitHubRegistration } from "../providers/github/index.js";
+import { githubPersistence } from "../providers/github/persistence.js";
+import type { ProviderConnectionRegistration } from "../providers/registration.js";
+import { GitHubProviderPort, githubInstallation } from "../test-utils/github-connection.js";
+import { API_KEY_SCOPES } from "./api-key-contract.js";
+import { OrganizationCliCredentials, cliCredentialParts } from "./cli-credentials.js";
+import { composeEntitlements, type ComposedEntitlements } from "./entitlements.js";
 import {
   accountStateSchema,
   type AccountState,
   type ActiveAccountState,
 } from "./organization-contract.js";
 import { createAuthServer, type AuthServer } from "./server.js";
-import { composeEntitlements, type ComposedEntitlements } from "./entitlements.js";
-import { OrganizationCliCredentials, cliCredentialParts } from "./cli-credentials.js";
-import { createGitHubRegistration } from "../providers/github/index.js";
-import type { ProviderConnectionRegistration } from "../providers/registration.js";
-import { GitHubProviderPort, githubInstallation } from "../test-utils/github-connection.js";
-import { API_KEY_SCOPES } from "./api-key-contract.js";
-import type { InvitationEmail, InvitationMailer } from "../invitations/index.js";
 
 type ActiveState = ActiveAccountState;
 
@@ -595,7 +596,8 @@ class PaseoAccounts {
   }
 
   async githubInstallationOrganization(installationId: number): Promise<string | undefined> {
-    return (await this.database.findGitHubConnection(installationId))?.organizationId;
+    return (await githubPersistence(this.database).findGitHubConnection(installationId))
+      ?.organizationId;
   }
 
   async cliCredential(email: string, organizationId: string): Promise<string> {

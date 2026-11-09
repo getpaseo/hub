@@ -8,6 +8,7 @@ import { createMemoryDatabase } from "../../db/memory.js";
 import type { StartConnectionAttemptInput } from "../../db/types.js";
 import type { LinearApiClient, LinearConnectionClient } from "./client.js";
 import { createLinearRegistration } from "./index.js";
+import { linearPersistence } from "./persistence.js";
 
 describe("Linear registration", () => {
   it("constructs the complete Linear slice and starts OAuth with a protected state", async () => {
@@ -174,7 +175,7 @@ describe("Linear registration", () => {
 
   it("drops an under-scoped compact event before attempting issue hydration", async () => {
     const database = createMemoryDatabase();
-    database.findLinearConnection = async (linearOrganizationId) =>
+    linearPersistence(database).findLinearConnection = async (linearOrganizationId) =>
       linearOrganizationId === "linear-org"
         ? {
             id: "linear-connection",
@@ -192,7 +193,7 @@ describe("Linear registration", () => {
         : undefined;
     let accepts = 0;
     let acceptedProjectId: string | undefined;
-    database.acceptLinearEvent = async (input) => {
+    linearPersistence(database).acceptLinearEvent = async (input) => {
       accepts += 1;
       acceptedProjectId = input.projectId;
       return {

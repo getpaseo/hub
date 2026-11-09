@@ -1,22 +1,27 @@
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import assert from "node:assert/strict";
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterEach, beforeEach, describe, it } from "vitest";
-import type { DatabaseRuntime, QueryHandle } from "../db/runtime/index.js";
-import { createPostgresQueryRuntime } from "../db/test-utils/runtime.js";
-import { createDatabase, createPostgresPool } from "../db/test-utils/runtime.js";
-import type { Database } from "../db/types.js";
-import type { AuthServer } from "../auth/server.js";
 import type { OrganizationAccessValue } from "../auth/organization-access.js";
 import { ProductRequestError } from "../auth/organization-access.js";
+import type { AuthServer } from "../auth/server.js";
+import type { DatabaseRuntime, QueryHandle } from "../db/runtime/index.js";
+import {
+  createDatabase,
+  createPostgresPool,
+  createPostgresQueryRuntime,
+} from "../db/test-utils/runtime.js";
+import type { Database } from "../db/types.js";
+import { BrowserGitHubConfiguration } from "../e2e/harness/browser-providers.js";
 import type { DiscordConnectionClient, DiscordGuildIdentity } from "../providers/discord/client.js";
+import { createDiscordRegistration } from "../providers/discord/index.js";
+import { discordPersistence } from "../providers/discord/persistence.js";
 import type {
   GitHubConnectionClient,
   GitHubInstallationIdentity,
 } from "../providers/github/client.js";
-import { BrowserGitHubConfiguration } from "../e2e/harness/browser-providers.js";
 import { createGitHubRegistration } from "../providers/github/index.js";
-import { createDiscordRegistration } from "../providers/discord/index.js";
+import { githubPersistence } from "../providers/github/persistence.js";
 import type { ProviderRegistration } from "../providers/registration.js";
 import { MemoryDiscordBotClient } from "../triggers/discord/memory-bot.js";
 
@@ -67,6 +72,46 @@ describe("provider connection facades PostgreSQL authority", () => {
     await postgres?.stop();
   }, 120_000);
 
+  it("preserves connection name ordering with IDs breaking ties in the organization read model", async () => {
+    for (const [id, name, slug] of [
+      ["00000000-0000-4000-8000-000000000003", "Zulu", "z"],
+      ["00000000-0000-4000-8000-000000000002", "Alpha", "b"],
+      ["00000000-0000-4000-8000-000000000001", "Alpha", "a"],
+    ] as const) {
+      await pool.query(
+        `insert into github_connections
+        (id, organization_id, slug, installation_id, account_id, account_login, account_type, status)
+        values ($1, 'acme', $2, $3, $2, $4, 'Organization', 'active')`,
+        [id, slug, Number(id.slice(-1)), name],
+      );
+      await pool.query(
+        `insert into discord_connections
+        (id, organization_id, slug, guild_id, guild_name)
+        values ($1, 'acme', $2, $2, $3)`,
+        [id, slug, name],
+      );
+      await pool.query(
+        `insert into slack_connections
+        (id, organization_id, slug, team_id, team_name, bot_user_id, bot_access_token)
+        values ($1, 'acme', $2, $2, $3, 'bot', 'token')`,
+        [id, slug, name],
+      );
+      await pool.query(
+        `insert into linear_connections
+        (id, organization_id, slug, linear_organization_id, linear_organization_name, app_user_id, access_token)
+        values ($1, 'acme', $2, $2, $3, 'app', 'token')`,
+        [id, slug, name],
+      );
+    }
+    const usage = await database.organizationConnectionUsage("acme");
+    for (const records of [usage.github, usage.discord, usage.slack, usage.linear]) {
+      assert.deepEqual(
+        records.map(({ slug }) => slug),
+        ["a", "b", "z"],
+      );
+    }
+  });
+
   it("binds verified providers once and disconnects only the active organization", async () => {
     const githubStart = await start(connections, "github");
     assert.equal(githubStart.state.includes("acme"), false);
@@ -98,7 +143,7 @@ describe("provider connection facades PostgreSQL authority", () => {
       slug: "sync-attempt-project",
       createdByUserId: "user-acme",
     });
-    const githubConnection = await database.findGitHubConnection(42);
+    const githubConnection = await githubPersistence(database).findGitHubConnection(42);
     assert(githubConnection !== undefined);
     await database.recordConfigurationSyncAttempt({
       projectId: project.id,
@@ -320,7 +365,7 @@ describe("provider connection facades PostgreSQL authority", () => {
     const callback = githubCallback(connections, state, "code");
     try {
       await gate.entered;
-      assert.equal(await database.findGitHubConnection(42), undefined);
+      assert.equal(await githubPersistence(database).findGitHubConnection(42), undefined);
     } finally {
       gate.release();
     }
@@ -338,7 +383,7 @@ describe("provider connection facades PostgreSQL authority", () => {
       throw new Error("repository fetch failed");
     };
     assert.notEqual(result(await githubCallback(connections, state, "code")), "github_connected");
-    assert.equal(await database.findGitHubConnection(42), undefined);
+    assert.equal(await githubPersistence(database).findGitHubConnection(42), undefined);
     githubRepositories.wait = async () => undefined;
     assert.equal(
       result(await githubCallback(connections, state, "retry-code")),
@@ -1038,8 +1083,8 @@ async function disconnect(
 ): Promise<Response> {
   const connection =
     provider === "github"
-      ? await connections.database.findGitHubConnection(Number(externalId))
-      : await connections.database.findDiscordConnection(externalId);
+      ? await githubPersistence(connections.database).findGitHubConnection(Number(externalId))
+      : await discordPersistence(connections.database).findDiscordConnection(externalId);
   assert(connection !== undefined);
   return connectionAction(
     connections,
@@ -1057,10 +1102,12 @@ async function resolution(
   const fixture = connections;
   const github =
     provider === "github"
-      ? await fixture.database.findGitHubConnection(Number(externalId))
+      ? await githubPersistence(fixture.database).findGitHubConnection(Number(externalId))
       : undefined;
   const discord =
-    provider === "discord" ? await fixture.database.findDiscordConnection(externalId) : undefined;
+    provider === "discord"
+      ? await discordPersistence(fixture.database).findDiscordConnection(externalId)
+      : undefined;
   const connection = fixture.registrations.find(
     (registration) => registration.connection.name === provider,
   )?.connection;

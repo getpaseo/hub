@@ -1,6 +1,7 @@
 import { replyOutputTool } from "../../execution-capabilities/outputs.js";
 import type { ProviderModule } from "../registry.js";
 import { configurationSchema, identitySchema } from "./application-configuration.js";
+import { connectionInventory } from "./application-persistence.js";
 import { beginSlackConfiguration, completeSlackInstallation } from "./application.js";
 import { readEnvironment } from "./environment.js";
 import { createSlackRegistration } from "./index.js";
@@ -16,6 +17,7 @@ export const slackProvider: ProviderModule = {
     attachment: "slack",
   },
   application: {
+    persistence: connectionInventory,
     parseConfiguration(value) {
       const parsed = configurationSchema.parse(value);
       return parsed;
