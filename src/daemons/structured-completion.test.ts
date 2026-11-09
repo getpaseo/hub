@@ -5,17 +5,20 @@ import {
   deriveAgentExecutionCompletionToken,
   hashAgentExecutionCompletionToken,
 } from "../agent-executions/completion-token.js";
-import { createMemoryDatabase } from "../db/memory.js";
 import type { JsonValue } from "../config/compiler.js";
+import { createMemoryDatabase } from "../db/memory.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import {
   AgentExecutionOutputValidationFailure,
   createDaemonDispatchLifecycle,
 } from "./lifecycle.js";
 
+const codecCatalog = createCodecProviders().configuration;
+
 describe("structured daemon completion", () => {
   it("rejects invalid output for retry, then atomically completes and deduplicates", async () => {
-    const database = createMemoryDatabase({ organizationIds: ["org-1"] });
+    const database = createMemoryDatabase(codecCatalog, { organizationIds: ["org-1"] });
     const executionId = randomUUID();
     const token = deriveAgentExecutionCompletionToken("completion-secret", executionId);
     const schema: JsonValue = {

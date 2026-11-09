@@ -1,7 +1,10 @@
 import { createMemoryDatabase } from "../db/memory.js";
 import type { OrganizationEntitlementsRecord } from "../db/types.js";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import { hashTemplate, UNLIMITED_TEMPLATE } from "./catalog.js";
 import { EntitlementsService } from "./service.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 /**
  * An `EntitlementsService` for tests that don't exercise entitlements themselves —
@@ -12,7 +15,7 @@ import { EntitlementsService } from "./service.js";
  * caller needing to know about entitlements.
  */
 export function createUnlimitedEntitlementsService(): EntitlementsService {
-  const database = createMemoryDatabase();
+  const database = createMemoryDatabase(codecCatalog);
   const autoStamping = new Proxy(database, {
     get(target, property, receiver): unknown {
       if (property !== "getOrganizationEntitlements")

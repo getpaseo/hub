@@ -58,7 +58,10 @@ describe("embedded startup trigger migration", () => {
         },
       ],
     };
-    const bundle = compileHubBundle(configurationBundleFixture(dump(configuration)));
+    const bundle = compileHubBundle(
+      configurationBundleFixture(dump(configuration)),
+      composedEvents,
+    );
     const revision = await database.insertProjectConfigurationRevision({
       projectId: project.id,
       sourceKind: "manual",

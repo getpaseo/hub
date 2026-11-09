@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, it } from "vitest";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import { compileHubBundle, type HubBundleFile } from "./bundle.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 const exampleRoot = "examples/single-repo-team-bot";
 const exampleFiles = [
@@ -26,7 +29,7 @@ describe("public Hub examples", () => {
       })),
     );
 
-    const bundle = compileHubBundle(files);
+    const bundle = compileHubBundle(files, codecCatalog);
 
     assert.deepEqual(
       bundle.configuration.triggers.map(({ name }) => name),

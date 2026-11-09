@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { compileHubConfig } from "../../config/index.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
+import { compileHubConfig } from "../../config/index.js";
+import { createProviderRegistry as createCodecProviders } from "../../providers/server.js";
 import { matchTriggers, readGitHubInvocationMessage } from "./match.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 describe("GitHub trigger matching", () => {
   it.each([
@@ -397,27 +400,30 @@ describe("GitHub trigger matching", () => {
   });
 
   it("applies the same security filters to pull-request review comments", () => {
-    const config = compileHubConfig({
-      environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
-      triggers: [
-        {
-          name: "review-comment",
-          on: "github.pull_request_review_comment",
-          max_runtime: "2h",
-          filters: { repo: "boudra/faro", contains: "@paseo", from_users: ["boudra"] },
-          steps: [
-            {
-              id: "reply",
-              environment: "runner",
-              max_runtime: "1h",
-              idle_timeout: "5m",
-              agent: { provider: "opencode", mode: "default" },
-              prompt: [{ text: "Handle it" }],
-            },
-          ],
-        },
-      ],
-    });
+    const config = compileHubConfig(
+      {
+        environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
+        triggers: [
+          {
+            name: "review-comment",
+            on: "github.pull_request_review_comment",
+            max_runtime: "2h",
+            filters: { repo: "boudra/faro", contains: "@paseo", from_users: ["boudra"] },
+            steps: [
+              {
+                id: "reply",
+                environment: "runner",
+                max_runtime: "1h",
+                idle_timeout: "5m",
+                agent: { provider: "opencode", mode: "default" },
+                prompt: [{ text: "Handle it" }],
+              },
+            ],
+          },
+        ],
+      },
+      codecCatalog,
+    );
     const event: NormalizedGitHubEvent = {
       ...createEvent(),
       type: "pull_request_review_comment",
@@ -432,27 +438,30 @@ describe("GitHub trigger matching", () => {
 });
 
 function configFor(filters: Record<string, unknown>) {
-  return compileHubConfig({
-    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
-    triggers: [
-      {
-        name: "github-comment",
-        on: "github.issue_comment",
-        max_runtime: "2h",
-        filters,
-        steps: [
-          {
-            id: "reply",
-            environment: "runner",
-            max_runtime: "1h",
-            idle_timeout: "5m",
-            agent: { provider: "opencode", mode: "default" },
-            prompt: [{ text: "Handle it" }],
-          },
-        ],
-      },
-    ],
-  });
+  return compileHubConfig(
+    {
+      environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
+      triggers: [
+        {
+          name: "github-comment",
+          on: "github.issue_comment",
+          max_runtime: "2h",
+          filters,
+          steps: [
+            {
+              id: "reply",
+              environment: "runner",
+              max_runtime: "1h",
+              idle_timeout: "5m",
+              agent: { provider: "opencode", mode: "default" },
+              prompt: [{ text: "Handle it" }],
+            },
+          ],
+        },
+      ],
+    },
+    codecCatalog,
+  );
 }
 
 function issue(overrides: Record<string, unknown> = {}) {

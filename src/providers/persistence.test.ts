@@ -3,8 +3,14 @@ import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { SlackConnectionRecord } from "../db/types.js";
 import { organizationConnections } from "./resources.js";
-import { createProviderRegistry } from "./server.js";
+import {
+  createProviderRegistry as createCodecProviders,
+  createProviderRegistry,
+} from "./server.js";
 import { slackPersistence } from "./slack/persistence.js";
+
+const codecCatalog = createCodecProviders().configuration;
+
 const providers = createProviderRegistry();
 
 describe("provider persistence ownership", () => {
@@ -20,10 +26,10 @@ describe("provider persistence ownership", () => {
       scopes: ["chat:write"],
       providerApplicationId: "A1",
     });
-    const first = createMemoryDatabase({
+    const first = createMemoryDatabase(codecCatalog, {
       providerData: { slack: { connections: [connection("first", "first-token")] } },
     });
-    const second = createMemoryDatabase({
+    const second = createMemoryDatabase(codecCatalog, {
       providerData: { slack: { connections: [connection("second", "second-token")] } },
     });
 

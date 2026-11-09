@@ -12,7 +12,7 @@ import type {
 } from "../../config/compiler.js";
 import { parseCompiledHubConfig } from "../../config/compiler.js";
 import { compileTriggerDocument, serializeTriggerDocument } from "./index.js";
-import type { TriggerDocument } from "./schema.js";
+import { TriggerFilterSchema, type TriggerDocument } from "./schema.js";
 
 export type MigratedLegacyTrigger =
   | {
@@ -46,11 +46,11 @@ export function migrateLegacyBundle(
   },
   events: import("../../providers/configuration.js").ProviderConfigurationCatalog,
 ): readonly MigratedLegacyTrigger[] {
-  const bundle = compileHubBundle(input.files);
+  const bundle = compileHubBundle(input.files, events);
   const configuration =
     input.normalizedConfiguration === undefined
       ? bundle.configuration
-      : parseCompiledHubConfig(input.normalizedConfiguration);
+      : parseCompiledHubConfig(input.normalizedConfiguration, events);
   const authoredByPath = new Map(bundle.files.map((file) => [file.path, file.content]));
   return configuration.triggers.map((trigger) => {
     const sourceFile = trigger.sourceFile ?? null;
@@ -58,7 +58,7 @@ export function migrateLegacyBundle(
       sourceFile === null
         ? dump(trigger, { noRefs: true, lineWidth: -1 })
         : (authoredByPath.get(sourceFile) ?? dump(trigger, { noRefs: true, lineWidth: -1 }));
-    const converted = convertSingleRun(trigger, configuration);
+    const converted = convertSingleRun(trigger, configuration, events);
     return converted.success
       ? {
           format: "single_run" as const,
@@ -95,6 +95,7 @@ type SingleRunConversion =
 function convertSingleRun(
   trigger: CompiledTrigger,
   configuration: CompiledHubConfig,
+  events: import("../../providers/configuration.js").ProviderConfigurationCatalog,
 ): SingleRunConversion {
   const blockers: string[] = [];
   if (trigger.steps.length !== 1) blockers.push("trigger has multiple steps");
@@ -114,15 +115,17 @@ function convertSingleRun(
     return { success: false, blockers };
   }
 
-  return { success: true, trigger: singleRunDocument(trigger, step, environment) };
+  return { success: true, trigger: singleRunDocument(trigger, step, environment, events) };
 }
 
 function singleRunDocument(
   trigger: CompiledTrigger,
   step: CompiledStep,
   environment: Extract<CompiledEnvironment, { kind: "daemon" }>,
+  events: import("../../providers/configuration.js").ProviderConfigurationCatalog,
 ): TriggerDocument {
-  const filters = trigger.filters === undefined ? undefined : authoredFilters(trigger.filters);
+  const filters =
+    trigger.filters === undefined ? undefined : authoredFilters(trigger.filters, events);
   const connection = trigger.filters?.connection;
   const outputs = Object.fromEntries(
     step.allowOutputs.map((output) => [
@@ -224,6 +227,7 @@ function authoredInputs(
 
 function authoredFilters(
   filters: NonNullable<CompiledTrigger["filters"]>,
+  events: import("../../providers/configuration.js").ProviderConfigurationCatalog,
 ): TriggerDocument["on"][string]["filters"] | undefined {
   const {
     connection: _connection,
@@ -232,22 +236,7 @@ function authoredFilters(
     ...rest
   } = filters;
   if (Object.keys(rest).length === 0) return undefined;
-  return {
-    pattern: rest.pattern,
-    contains: rest.contains,
-    label: rest.label,
-    labels: rest.labels === undefined ? undefined : [...rest.labels],
-    repo: rest.repo,
-    guild: rest.guild,
-    workspace: rest.workspace,
-    project: rest.project,
-    states: rest.states === undefined ? undefined : [...rest.states],
-    exclude_labels: rest.exclude_labels === undefined ? undefined : [...rest.exclude_labels],
-    assignees: rest.assignees === undefined ? undefined : [...rest.assignees],
-    channels: rest.channels === undefined ? undefined : [...rest.channels],
-    from_users: rest.from_users === undefined ? undefined : [...rest.from_users],
-    inputs: rest.inputs === undefined ? undefined : { ...rest.inputs },
-  };
+  return { ...TriggerFilterSchema.strip().parse(rest), ...events.projectLegacyFilters(rest) };
 }
 
 function hasNullableInputs(inputs: Readonly<Record<string, CompiledInput>>): boolean {

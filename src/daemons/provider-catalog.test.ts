@@ -1,15 +1,18 @@
-import { DaemonAgents } from "./agents/index.js";
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../auth/server.js";
 import { createMemoryDatabase } from "../db/memory.js";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import { enrollTestDaemon, TEST_DAEMON_ID } from "../test-utils/project-configuration.js";
+import { DaemonAgents } from "./agents/index.js";
 import type { DaemonConnection } from "./protocol.js";
 import { DaemonProviderCatalog } from "./provider-catalog.js";
 
+const codecCatalog = createCodecProviders().configuration;
+
 describe("daemon provider catalog", () => {
   it("authorizes the organization and refreshes before returning its daemon snapshot", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(codecCatalog, {
       memberships: [
         {
           userId: "user-1",

@@ -6,11 +6,14 @@ import { acceptingAgentValidator } from "../test-utils/agent-validator.js";
 import { enrollTestDaemon } from "../test-utils/project-configuration.js";
 import { OrganizationTriggerStore } from "../triggers/store.js";
 import { createDatabasePublicOperationRepository } from "./database-adapter.js";
+
 const compositionProviders = createCompositionProviders();
 
 describe("public manual-run project resolution", () => {
   it("prefers an organization trigger runtime and retains the legacy project fallback", async () => {
-    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    const database = createMemoryDatabase(compositionProviders.configuration, {
+      organizationIds: ["org"],
+    });
     await enrollTestDaemon(database, "org");
     const legacy = await database.createProject({
       organizationId: "org",
@@ -40,7 +43,9 @@ describe("public manual-run project resolution", () => {
   });
 
   it("does not fall through to a legacy project when the organization trigger is disabled", async () => {
-    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    const database = createMemoryDatabase(compositionProviders.configuration, {
+      organizationIds: ["org"],
+    });
     await enrollTestDaemon(database, "org");
     await database.createProject({
       organizationId: "org",

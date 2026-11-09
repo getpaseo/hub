@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import { DeploymentProjects } from "./index.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 describe("deployment projects", () => {
   it("lets an explicit project override the bundle name without creating either", async () => {
-    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    const database = createMemoryDatabase(codecCatalog, { organizationIds: ["org"] });
     const explicit = await database.createProject({
       organizationId: "org",
       name: "Explicit",
@@ -29,7 +32,7 @@ describe("deployment projects", () => {
   });
 
   it("reports a dry-run creation without writing it", async () => {
-    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    const database = createMemoryDatabase(codecCatalog, { organizationIds: ["org"] });
     const projects = new DeploymentProjects(database);
 
     assert.deepEqual(
@@ -40,7 +43,7 @@ describe("deployment projects", () => {
   });
 
   it("upserts the default project when no target is supplied", async () => {
-    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    const database = createMemoryDatabase(codecCatalog, { organizationIds: ["org"] });
     const projects = new DeploymentProjects(database);
 
     const result = await projects.resolve({ organizationId: "org", dryRun: false });
@@ -52,7 +55,7 @@ describe("deployment projects", () => {
   });
 
   it("restores an archived implicit target instead of colliding with its slug", async () => {
-    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    const database = createMemoryDatabase(codecCatalog, { organizationIds: ["org"] });
     const archived = await database.createProject({
       organizationId: "org",
       name: "Default",
@@ -72,7 +75,7 @@ describe("deployment projects", () => {
   });
 
   it("scopes identical names to their organizations", async () => {
-    const database = createMemoryDatabase({ organizationIds: ["org-a", "org-b"] });
+    const database = createMemoryDatabase(codecCatalog, { organizationIds: ["org-a", "org-b"] });
     const projects = new DeploymentProjects(database);
 
     const [left, right] = await Promise.all([
@@ -87,7 +90,7 @@ describe("deployment projects", () => {
   });
 
   it("serializes concurrent first deployments to one project", async () => {
-    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    const database = createMemoryDatabase(codecCatalog, { organizationIds: ["org"] });
     const projects = new DeploymentProjects(database);
 
     const results = await Promise.all(

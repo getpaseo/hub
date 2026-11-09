@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import {
   compileHubConfig,
   compiledConfigurationHash,
@@ -9,6 +10,8 @@ import {
   type CompiledStep,
   type CompiledTrigger,
 } from "./compiler.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 const environment = { name: "runner", kind: "daemon" as const, daemon: "runner", cwd: "/repo" };
 
@@ -63,21 +66,21 @@ describe("workflow compiler", () => {
       repo: "owner/repo",
       from_users: ["maintainer"],
     });
-    const compiled = compileHubConfig(authored);
+    const compiled = compileHubConfig(authored, codecCatalog);
     assert.equal(compiled.triggers[0]?.on, "github.pull_request_ready_for_review");
     assert.deepEqual(compiled.triggers[0]?.filters, {
       repo: "owner/repo",
       from_users: ["maintainer"],
     });
-    assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+    assert.deepEqual(parseCompiledHubConfig(compiled, codecCatalog), compiled);
   });
 
   it("preserves an authored startup timeout in stored compiled configurations", () => {
     const authored = configuration();
     Reflect.set(authored.triggers[0]!.steps[0]!, "startup_timeout", "3m");
-    const compiled = compileHubConfig(authored);
+    const compiled = compileHubConfig(authored, codecCatalog);
     assert.equal(compiled.triggers[0]?.steps[0]?.startupTimeoutMs, 180_000);
-    assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+    assert.deepEqual(parseCompiledHubConfig(compiled, codecCatalog), compiled);
   });
 
   it.each([
@@ -90,18 +93,21 @@ describe("workflow compiler", () => {
   ])("rejects unsupported newBranch expression %s with field provenance", (expression) => {
     assert.throws(
       () =>
-        compileHubConfig({
-          ...configuration(),
-          environments: [
-            {
-              ...environment,
-              worktree: {
-                mode: "branch-off",
-                newBranch: "trigger-${{ " + expression + " }}",
+        compileHubConfig(
+          {
+            ...configuration(),
+            environments: [
+              {
+                ...environment,
+                worktree: {
+                  mode: "branch-off",
+                  newBranch: "trigger-${{ " + expression + " }}",
+                },
               },
-            },
-          ],
-        }),
+            ],
+          },
+          codecCatalog,
+        ),
       (error) => {
         assert.ok(error instanceof Error);
         assert.deepEqual(Reflect.get(error, "path"), [
@@ -121,27 +127,30 @@ describe("workflow compiler", () => {
 
   it("accepts only the execution-scoped worktree merge value", () => {
     assert.doesNotThrow(() =>
-      compileHubConfig({
-        ...configuration(),
-        environments: [
-          {
-            ...environment,
-            worktree: {
-              mode: "branch-off",
-              newBranch: "trigger-${{ paseo.execution.id }}",
+      compileHubConfig(
+        {
+          ...configuration(),
+          environments: [
+            {
+              ...environment,
+              worktree: {
+                mode: "branch-off",
+                newBranch: "trigger-${{ paseo.execution.id }}",
+              },
             },
-          },
-        ],
-      }),
+          ],
+        },
+        codecCatalog,
+      ),
     );
   });
 
   it("accepts the execution id in a step title and stores the template", () => {
     const authored = configuration();
     Reflect.set(authored.triggers[0]!.steps[0]!, "title", "Intake · ${{ paseo.execution.id }}");
-    const compiled = compileHubConfig(authored);
+    const compiled = compileHubConfig(authored, codecCatalog);
     assert.equal(compiled.triggers[0]?.steps[0]?.title, "Intake · ${{ paseo.execution.id }}");
-    assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+    assert.deepEqual(parseCompiledHubConfig(compiled, codecCatalog), compiled);
   });
 
   it.each(["paseo.prompt", "paseo.context", "paseo.inputs.repo", "values.branch"])(
@@ -150,7 +159,7 @@ describe("workflow compiler", () => {
       const authored = configuration();
       Reflect.set(authored.triggers[0]!.steps[0]!, "title", "Intake ${{ " + expression + " }}");
       assert.throws(
-        () => compileHubConfig(authored),
+        () => compileHubConfig(authored, codecCatalog),
         (error) => {
           assert.ok(error instanceof Error);
           assert.deepEqual(Reflect.get(error, "path"), [
@@ -183,7 +192,7 @@ describe("workflow compiler", () => {
       options: sourceOptions,
     });
 
-    const compiled = compileHubConfig(raw);
+    const compiled = compileHubConfig(raw, codecCatalog);
     const agent = compiled.triggers[0]?.steps[0]?.agent;
     assert.ok(agent !== undefined && !("selector" in agent));
     if (agent === undefined || "selector" in agent) return;
@@ -191,14 +200,14 @@ describe("workflow compiler", () => {
 
     assert.deepEqual(options, sourceOptions);
     assert.equal(agent.mode, undefined);
-    assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+    assert.deepEqual(parseCompiledHubConfig(compiled, codecCatalog), compiled);
     assert.notEqual(options, sourceOptions);
   });
 
   it.each([null, [], "native", true, 1])("rejects non-object provider options %#", (options) => {
     const raw = configuration();
     setAgent(raw, { provider: "codex", options });
-    assert.throws(() => compileHubConfig(raw), /options/iu);
+    assert.throws(() => compileHubConfig(raw, codecCatalog), /options/iu);
   });
 
   it("rejects non-JSON provider option values and authored tool policy", () => {
@@ -207,7 +216,7 @@ describe("workflow compiler", () => {
       provider: "codex",
       options: { native: undefined },
     });
-    assert.throws(() => compileHubConfig(raw), /options/iu);
+    assert.throws(() => compileHubConfig(raw, codecCatalog), /options/iu);
 
     setAgent(raw, {
       provider: "codex",
@@ -215,36 +224,39 @@ describe("workflow compiler", () => {
         preapproved: [{ kind: "mcp", server: "hub", tool: "arbitrary" }],
       },
     });
-    assert.throws(() => compileHubConfig(raw), /unrecognized key.*toolPolicy/iu);
+    assert.throws(() => compileHubConfig(raw, codecCatalog), /unrecognized key.*toolPolicy/iu);
   });
 
   it("compiles the complete multi-step contract and freezes it", () => {
-    const compiled = compileHubConfig({
-      ...configuration(),
-      triggers: [
-        {
-          ...configuration().triggers[0],
-          inputs: { repo: { type: "string", choices: ["paseo", "hub"] } },
-          values: { selected: "${{ paseo.inputs.repo ?? steps.classify.outputs.repo }}" },
-          steps: [
-            {
-              ...configuration().triggers[0]!.steps[0],
-              id: "classify",
-              if: "${{ paseo.inputs.repo == null }}",
-              output: {
-                schema: { type: "object", properties: { repo: { enum: ["paseo", "hub"] } } },
+    const compiled = compileHubConfig(
+      {
+        ...configuration(),
+        triggers: [
+          {
+            ...configuration().triggers[0],
+            inputs: { repo: { type: "string", choices: ["paseo", "hub"] } },
+            values: { selected: "${{ paseo.inputs.repo ?? steps.classify.outputs.repo }}" },
+            steps: [
+              {
+                ...configuration().triggers[0]!.steps[0],
+                id: "classify",
+                if: "${{ paseo.inputs.repo == null }}",
+                output: {
+                  schema: { type: "object", properties: { repo: { enum: ["paseo", "hub"] } } },
+                },
               },
-            },
-            {
-              ...configuration().triggers[0]!.steps[0],
-              id: "work",
-              if: "${{ values.selected == 'hub' }}",
-              prompt: [{ text: "${{ paseo.prompt }} / ${{ values.selected }}" }],
-            },
-          ],
-        },
-      ],
-    });
+              {
+                ...configuration().triggers[0]!.steps[0],
+                id: "work",
+                if: "${{ values.selected == 'hub' }}",
+                prompt: [{ text: "${{ paseo.prompt }} / ${{ values.selected }}" }],
+              },
+            ],
+          },
+        ],
+      },
+      codecCatalog,
+    );
     const trigger = compiled.triggers[0]!;
     assert.equal(trigger.steps.length, 2);
     assert.ok(trigger.values["selected"]);
@@ -260,37 +272,43 @@ describe("workflow compiler", () => {
   it("compiles required output declarations and rejects an unusable maximum", () => {
     const trigger = configuration().triggers[0]!;
     const step = trigger.steps[0]!;
-    const compiled = compileHubConfig({
-      ...configuration(),
-      triggers: [
-        {
-          ...trigger,
-          steps: [
-            {
-              ...step,
-              allow_outputs: [{ type: "discord.reply", max: 1, required: true }],
-            },
-          ],
-        },
-      ],
-    });
+    const compiled = compileHubConfig(
+      {
+        ...configuration(),
+        triggers: [
+          {
+            ...trigger,
+            steps: [
+              {
+                ...step,
+                allow_outputs: [{ type: "discord.reply", max: 1, required: true }],
+              },
+            ],
+          },
+        ],
+      },
+      codecCatalog,
+    );
     assert.deepEqual(compiled.triggers[0]?.steps[0]?.allowOutputs, [
       { type: "discord.reply", max: 1, required: true },
     ]);
 
     assert.throws(
       () =>
-        compileHubConfig({
-          ...configuration(),
-          triggers: [
-            {
-              ...trigger,
-              steps: [
-                { ...step, allow_outputs: [{ type: "discord.reply", max: 0, required: true }] },
-              ],
-            },
-          ],
-        }),
+        compileHubConfig(
+          {
+            ...configuration(),
+            triggers: [
+              {
+                ...trigger,
+                steps: [
+                  { ...step, allow_outputs: [{ type: "discord.reply", max: 0, required: true }] },
+                ],
+              },
+            ],
+          },
+          codecCatalog,
+        ),
       /required outputs must have max at least 1/iu,
     );
   });
@@ -306,7 +324,7 @@ describe("workflow compiler", () => {
       repositories: ["getpaseo/paseo"],
     });
 
-    const compiled = compileHubConfig(raw);
+    const compiled = compileHubConfig(raw, codecCatalog);
     assert.deepEqual(compiled.triggers[0]?.steps[0]?.env, {
       SOME_TOKEN: "prefix-${{ paseo.connections.some-connection.token }}",
     });
@@ -316,23 +334,26 @@ describe("workflow compiler", () => {
       permissions: { contents: "read" },
       durationMs: 60 * 60 * 1000,
     });
-    assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+    assert.deepEqual(parseCompiledHubConfig(compiled, codecCatalog), compiled);
   });
 
   it("uses only the GitHub event repository when a GitHub step omits repositories", () => {
     const raw = configuration();
     const step = raw.triggers[0]!.steps[0]!;
-    const compiled = compileHubConfig({
-      ...raw,
-      triggers: [
-        {
-          ...raw.triggers[0],
-          on: "github.push",
-          filters: { from_users: ["github-user"] },
-          steps: [{ ...step, github: { connection: "getpaseo-github" } }],
-        },
-      ],
-    });
+    const compiled = compileHubConfig(
+      {
+        ...raw,
+        triggers: [
+          {
+            ...raw.triggers[0],
+            on: "github.push",
+            filters: { from_users: ["github-user"] },
+            steps: [{ ...step, github: { connection: "getpaseo-github" } }],
+          },
+        ],
+      },
+      codecCatalog,
+    );
 
     assert.deepEqual(compiled.triggers[0]?.steps[0]?.github, {
       connection: "getpaseo-github",
@@ -345,33 +366,46 @@ describe("workflow compiler", () => {
     const raw = configuration();
     const trigger = raw.triggers[0]!;
     assert.doesNotThrow(() =>
-      compileHubConfig({
-        ...raw,
-        triggers: [
-          {
-            ...trigger,
-            on: "linear.issue_entered_scope",
-            filters: { project: "linear-project-id", states: ["ready"] },
-          },
-        ],
-      }),
+      compileHubConfig(
+        {
+          ...raw,
+          triggers: [
+            {
+              ...trigger,
+              on: "linear.issue_entered_scope",
+              filters: { project: "linear-project-id", states: ["ready"] },
+            },
+          ],
+        },
+        codecCatalog,
+      ),
     );
     assert.throws(
       () =>
-        compileHubConfig({
-          ...raw,
-          triggers: [{ ...trigger, on: "linear.issue_entered_scope", filters: {} }],
-        }),
+        compileHubConfig(
+          {
+            ...raw,
+            triggers: [{ ...trigger, on: "linear.issue_entered_scope", filters: {} }],
+          },
+          codecCatalog,
+        ),
       /requires filters\.project/iu,
     );
     assert.throws(
       () =>
-        compileHubConfig({
-          ...raw,
-          triggers: [
-            { ...trigger, on: "linear.comment_created", filters: { project: "linear-project-id" } },
-          ],
-        }),
+        compileHubConfig(
+          {
+            ...raw,
+            triggers: [
+              {
+                ...trigger,
+                on: "linear.comment_created",
+                filters: { project: "linear-project-id" },
+              },
+            ],
+          },
+          codecCatalog,
+        ),
       /filters\.from_users/iu,
     );
   });
@@ -380,15 +414,18 @@ describe("workflow compiler", () => {
     const step = raw.triggers[0]!.steps[0]!;
     assert.throws(
       () =>
-        compileHubConfig({
-          ...raw,
-          triggers: [
-            {
-              ...raw.triggers[0],
-              steps: [{ ...step, github: { connection: "getpaseo-github" } }],
-            },
-          ],
-        }),
+        compileHubConfig(
+          {
+            ...raw,
+            triggers: [
+              {
+                ...raw.triggers[0],
+                steps: [{ ...step, github: { connection: "getpaseo-github" } }],
+              },
+            ],
+          },
+          codecCatalog,
+        ),
       /trigger run step work github\.repositories is required for non-GitHub triggers/iu,
     );
   });
@@ -426,10 +463,13 @@ describe("workflow compiler", () => {
     for (const candidate of cases) {
       assert.throws(
         () =>
-          compileHubConfig({
-            ...base,
-            triggers: [{ ...base.triggers[0], steps: [{ ...step, github: candidate.github }] }],
-          }),
+          compileHubConfig(
+            {
+              ...base,
+              triggers: [{ ...base.triggers[0], steps: [{ ...step, github: candidate.github }] }],
+            },
+            codecCatalog,
+          ),
         candidate.expected,
       );
     }
@@ -451,7 +491,7 @@ describe("workflow compiler", () => {
       permissions: { [name]: level },
     });
 
-    const compiled = compileHubConfig(raw);
+    const compiled = compileHubConfig(raw, codecCatalog);
     assert.deepEqual(compiled.triggers[0]?.steps[0]?.github?.permissions, { [name]: level });
   });
 
@@ -466,7 +506,7 @@ describe("workflow compiler", () => {
         permissions: { [name]: "write" },
       });
 
-      assert.throws(() => compileHubConfig(raw), /unknown GitHub permission/iu);
+      assert.throws(() => compileHubConfig(raw, codecCatalog), /unknown GitHub permission/iu);
     },
   );
 
@@ -483,7 +523,7 @@ describe("workflow compiler", () => {
     });
 
     assert.throws(
-      () => compileHubConfig(raw),
+      () => compileHubConfig(raw, codecCatalog),
       /trigger run step work env\.(GH_TOKEN|GIT_CONFIG_COUNT).*reserved/iu,
     );
   });
@@ -499,7 +539,10 @@ describe("workflow compiler", () => {
         repositories: ["getpaseo/paseo"],
       });
 
-      assert.throws(() => compileHubConfig(raw), /reserved by the step-level github authority/iu);
+      assert.throws(
+        () => compileHubConfig(raw, codecCatalog),
+        /reserved by the step-level github authority/iu,
+      );
     },
   );
 
@@ -507,47 +550,59 @@ describe("workflow compiler", () => {
     const trigger = configuration().triggers[0]!;
     assert.throws(
       () =>
-        compileHubConfig({
-          ...configuration(),
-          triggers: [{ ...trigger, steps: [trigger.steps[0]!, trigger.steps[0]!] }],
-        }),
+        compileHubConfig(
+          {
+            ...configuration(),
+            triggers: [{ ...trigger, steps: [trigger.steps[0]!, trigger.steps[0]!] }],
+          },
+          codecCatalog,
+        ),
       /duplicate step id/iu,
     );
     assert.throws(
       () =>
-        compileHubConfig({
-          ...configuration(),
-          triggers: [{ ...trigger, values: { selected: "${{ steps.missing.outputs.repo }}" } }],
-        }),
+        compileHubConfig(
+          {
+            ...configuration(),
+            triggers: [{ ...trigger, values: { selected: "${{ steps.missing.outputs.repo }}" } }],
+          },
+          codecCatalog,
+        ),
       /unknown step/iu,
     );
     assert.throws(
       () =>
-        compileHubConfig({
-          ...configuration(),
-          triggers: [
-            {
-              ...trigger,
-              steps: [
-                { ...trigger.steps[0]!, if: "${{ steps.later.outputs.repo == 'hub' }}" },
-                { ...trigger.steps[0]!, id: "later", output: { schema: { type: "object" } } },
-              ],
-            },
-          ],
-        }),
+        compileHubConfig(
+          {
+            ...configuration(),
+            triggers: [
+              {
+                ...trigger,
+                steps: [
+                  { ...trigger.steps[0]!, if: "${{ steps.later.outputs.repo == 'hub' }}" },
+                  { ...trigger.steps[0]!, id: "later", output: { schema: { type: "object" } } },
+                ],
+              },
+            ],
+          },
+          codecCatalog,
+        ),
       /forward step/iu,
     );
     assert.throws(
       () =>
-        compileHubConfig({
-          ...configuration(),
-          triggers: [
-            {
-              ...trigger,
-              values: { first: "${{ values.second }}", second: "${{ values.first }}" },
-            },
-          ],
-        }),
+        compileHubConfig(
+          {
+            ...configuration(),
+            triggers: [
+              {
+                ...trigger,
+                values: { first: "${{ values.second }}", second: "${{ values.first }}" },
+              },
+            ],
+          },
+          codecCatalog,
+        ),
       /cycle/iu,
     );
   });
@@ -556,35 +611,41 @@ describe("workflow compiler", () => {
     const trigger = configuration().triggers[0]!;
     assert.throws(
       () =>
-        compileHubConfig({
-          ...configuration(),
-          triggers: [
-            {
-              ...trigger,
-              steps: [
-                { ...trigger.steps[0]!, id: "first" },
-                {
-                  ...trigger.steps[0]!,
-                  id: "second",
-                  if: "${{ steps.first.outputs.repo == 'hub' }}",
-                },
-              ],
-            },
-          ],
-        }),
+        compileHubConfig(
+          {
+            ...configuration(),
+            triggers: [
+              {
+                ...trigger,
+                steps: [
+                  { ...trigger.steps[0]!, id: "first" },
+                  {
+                    ...trigger.steps[0]!,
+                    id: "second",
+                    if: "${{ steps.first.outputs.repo == 'hub' }}",
+                  },
+                ],
+              },
+            ],
+          },
+          codecCatalog,
+        ),
       /without an output schema/iu,
     );
     assert.throws(
       () =>
-        compileHubConfig({
-          ...configuration(),
-          triggers: [
-            {
-              ...trigger,
-              steps: [{ ...trigger.steps[0]!, output: { schema: { type: "not-a-schema" } } }],
-            },
-          ],
-        }),
+        compileHubConfig(
+          {
+            ...configuration(),
+            triggers: [
+              {
+                ...trigger,
+                steps: [{ ...trigger.steps[0]!, output: { schema: { type: "not-a-schema" } } }],
+              },
+            ],
+          },
+          codecCatalog,
+        ),
       /invalid JSON Schema/iu,
     );
   });
@@ -593,31 +654,37 @@ describe("workflow compiler", () => {
     const trigger = configuration().triggers[0]!;
     assert.throws(
       () =>
-        compileHubConfig({
-          ...configuration(),
-          triggers: [
-            {
-              ...trigger,
-              steps: [{ ...trigger.steps[0]!, agent: { provider: "${{ paseo.prompt }}" } }],
-            },
-          ],
-        }),
+        compileHubConfig(
+          {
+            ...configuration(),
+            triggers: [
+              {
+                ...trigger,
+                steps: [{ ...trigger.steps[0]!, agent: { provider: "${{ paseo.prompt }}" } }],
+              },
+            ],
+          },
+          codecCatalog,
+        ),
       /dynamic inline agent configurations are not allowed/iu,
     );
     assert.throws(
       () =>
-        compileHubConfig({
-          ...configuration(),
-          triggers: [
-            {
-              ...trigger,
-              inputs: { provider: { type: "string" } },
-              steps: [
-                { ...trigger.steps[0]!, agent: { provider: "${{ paseo.inputs.provider }}" } },
-              ],
-            },
-          ],
-        }),
+        compileHubConfig(
+          {
+            ...configuration(),
+            triggers: [
+              {
+                ...trigger,
+                inputs: { provider: { type: "string" } },
+                steps: [
+                  { ...trigger.steps[0]!, agent: { provider: "${{ paseo.inputs.provider }}" } },
+                ],
+              },
+            ],
+          },
+          codecCatalog,
+        ),
       /dynamic inline agent configurations are not allowed/iu,
     );
   });
@@ -625,45 +692,54 @@ describe("workflow compiler", () => {
   it("allows ambient context only in authored step prompts", () => {
     const trigger = configuration().triggers[0]!;
     assert.doesNotThrow(() =>
-      compileHubConfig({
-        ...configuration(),
-        triggers: [
-          {
-            ...trigger,
-            steps: [{ ...trigger.steps[0]!, prompt: [{ text: "${{ paseo.context }}" }] }],
-          },
-        ],
-      }),
-    );
-    assert.throws(
-      () =>
-        compileHubConfig({
+      compileHubConfig(
+        {
           ...configuration(),
           triggers: [
             {
               ...trigger,
-              steps: [{ ...trigger.steps[0]!, if: "${{ paseo.context }}" }],
+              steps: [{ ...trigger.steps[0]!, prompt: [{ text: "${{ paseo.context }}" }] }],
             },
           ],
-        }),
+        },
+        codecCatalog,
+      ),
+    );
+    assert.throws(
+      () =>
+        compileHubConfig(
+          {
+            ...configuration(),
+            triggers: [
+              {
+                ...trigger,
+                steps: [{ ...trigger.steps[0]!, if: "${{ paseo.context }}" }],
+              },
+            ],
+          },
+          codecCatalog,
+        ),
       /paseo\.context outside a step prompt/iu,
     );
     assert.throws(
       () =>
-        compileHubConfig({
-          ...configuration(),
-          triggers: [
-            {
-              ...trigger,
-              steps: [
-                {
-                  ...trigger.steps[0]!,
-                  agent: { provider: "${{ paseo.context }}" },
-                },
-              ],
-            },
-          ],
-        }),
+        compileHubConfig(
+          {
+            ...configuration(),
+            triggers: [
+              {
+                ...trigger,
+                steps: [
+                  {
+                    ...trigger.steps[0]!,
+                    agent: { provider: "${{ paseo.context }}" },
+                  },
+                ],
+              },
+            ],
+          },
+          codecCatalog,
+        ),
       /dynamic inline agent configurations are not allowed/iu,
     );
   });
@@ -672,15 +748,18 @@ describe("workflow compiler", () => {
     const trigger = configuration().triggers[0]!;
     assert.throws(
       () =>
-        compileHubConfig({
-          ...configuration(),
-          triggers: [
-            {
-              ...trigger,
-              steps: [{ ...trigger.steps[0]!, inject_tool_inventory: false }],
-            },
-          ],
-        }),
+        compileHubConfig(
+          {
+            ...configuration(),
+            triggers: [
+              {
+                ...trigger,
+                steps: [{ ...trigger.steps[0]!, inject_tool_inventory: false }],
+              },
+            ],
+          },
+          codecCatalog,
+        ),
       /inject_tool_inventory|unrecognized key/iu,
     );
   });
@@ -712,6 +791,7 @@ describe("workflow compiler", () => {
             },
           ],
         },
+        codecCatalog,
         { namedAgents: { codex: { provider: "codex" } } },
       ),
     );
@@ -745,6 +825,7 @@ describe("workflow compiler", () => {
               },
             ],
           },
+          codecCatalog,
           { namedAgents: { codex: { provider: "codex" }, opus: { provider: "claude" } } },
         ),
       /provable finite choices/iu,
@@ -752,69 +833,85 @@ describe("workflow compiler", () => {
   });
 
   it("re-establishes the multi-step contract for stored JSON and hashes all compiled fields", () => {
-    const compiled = compileHubConfig(configuration());
-    assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+    const compiled = compileHubConfig(configuration(), codecCatalog);
+    assert.deepEqual(parseCompiledHubConfig(compiled, codecCatalog), compiled);
     const legacyConfiguration = legacyCompiledConfiguration(compiled);
-    assert.deepEqual(parseCompiledHubConfig(legacyConfiguration), compiled);
+    assert.deepEqual(parseCompiledHubConfig(legacyConfiguration, codecCatalog), compiled);
     assert.throws(
       () =>
-        parseCompiledHubConfig({
-          ...compiled,
-          triggers: [{ ...compiled.triggers[0]!, steps: [] }],
-        }),
+        parseCompiledHubConfig(
+          {
+            ...compiled,
+            triggers: [{ ...compiled.triggers[0]!, steps: [] }],
+          },
+          codecCatalog,
+        ),
       /invalid compiled workflow contract/iu,
     );
-    assert.notEqual(rawConfigurationHash(configuration()), compiledConfigurationHash(compiled));
     assert.notEqual(
-      compiledConfigurationHash(compiled),
+      rawConfigurationHash(configuration()),
+      compiledConfigurationHash(compiled, codecCatalog),
+    );
+    assert.notEqual(
+      compiledConfigurationHash(compiled, codecCatalog),
       compiledConfigurationHash(
-        compileHubConfig({
-          ...configuration(),
-          triggers: [
-            {
-              ...configuration().triggers[0],
-              steps: [
-                {
-                  ...configuration().triggers[0]!.steps[0],
-                  output: { schema: { type: "object" } },
-                },
-              ],
-            },
-          ],
-        }),
+        compileHubConfig(
+          {
+            ...configuration(),
+            triggers: [
+              {
+                ...configuration().triggers[0],
+                steps: [
+                  {
+                    ...configuration().triggers[0]!.steps[0],
+                    output: { schema: { type: "object" } },
+                  },
+                ],
+              },
+            ],
+          },
+          codecCatalog,
+        ),
+        codecCatalog,
       ),
     );
   });
 
   it("rejects removed trigger syntax and keeps manual partial behavior explicit", () => {
     assert.throws(
-      () => compileHubConfig({ ...configuration(), timeout: "1m" }),
+      () => compileHubConfig({ ...configuration(), timeout: "1m" }, codecCatalog),
       /timeout.*max_runtime/iu,
     );
     assert.throws(
       () =>
-        compileHubConfig({
-          ...configuration(),
-          triggers: [{ ...configuration().triggers[0], environment: "runner" }],
-        }),
+        compileHubConfig(
+          {
+            ...configuration(),
+            triggers: [{ ...configuration().triggers[0], environment: "runner" }],
+          },
+          codecCatalog,
+        ),
       /trigger-level environment/iu,
     );
     assert.throws(
       () =>
-        compileHubConfig({
-          ...configuration(),
-          triggers: [
-            {
-              ...configuration().triggers[0],
-              steps: [
-                {
-                  ...configuration().triggers[0]!.steps[0],
-                  prompt: [{ include: "partials/developer.md" }],
-                },
-              ],
-            },
-          ],
-        }),
+        compileHubConfig(
+          {
+            ...configuration(),
+            triggers: [
+              {
+                ...configuration().triggers[0],
+                steps: [
+                  {
+                    ...configuration().triggers[0]!.steps[0],
+                    prompt: [{ include: "partials/developer.md" }],
+                  },
+                ],
+              },
+            ],
+          },
+          codecCatalog,
+        ),
       /compiled without a prompt partial bundle/iu,
     );
   });
@@ -823,50 +920,59 @@ describe("workflow compiler", () => {
     const trigger = configuration().triggers[0]!;
     assert.throws(
       () =>
-        compileHubConfig({
-          ...configuration(),
-          environments: [{ name: "docker", kind: "docker", image: "paseo/test" }],
-          triggers: [
-            {
-              ...trigger,
-              steps: [{ ...trigger.steps[0]!, environment: "docker" }],
-            },
-          ],
-        }),
+        compileHubConfig(
+          {
+            ...configuration(),
+            environments: [{ name: "docker", kind: "docker", image: "paseo/test" }],
+            triggers: [
+              {
+                ...trigger,
+                steps: [{ ...trigger.steps[0]!, environment: "docker" }],
+              },
+            ],
+          },
+          codecCatalog,
+        ),
       /daemon environment/iu,
     );
     assert.throws(
       () =>
-        compileHubConfig({
-          ...configuration(),
-          environments: [{ name: "fly", kind: "fly", image: "paseo/test" }],
-          triggers: [
-            {
-              ...trigger,
-              steps: [{ ...trigger.steps[0]!, environment: "fly" }],
-            },
-          ],
-        }),
+        compileHubConfig(
+          {
+            ...configuration(),
+            environments: [{ name: "fly", kind: "fly", image: "paseo/test" }],
+            triggers: [
+              {
+                ...trigger,
+                steps: [{ ...trigger.steps[0]!, environment: "fly" }],
+              },
+            ],
+          },
+          codecCatalog,
+        ),
       /daemon environment/iu,
     );
     assert.throws(
       () =>
-        compileHubConfig({
-          ...configuration(),
-          environments: [environment, { name: "docker", kind: "docker", image: "paseo/test" }],
-          triggers: [
-            {
-              ...trigger,
-              inputs: { runner: { type: "string", choices: ["runner", "docker"] } },
-              steps: [
-                {
-                  ...trigger.steps[0]!,
-                  environment: "${{ paseo.inputs.runner }}",
-                },
-              ],
-            },
-          ],
-        }),
+        compileHubConfig(
+          {
+            ...configuration(),
+            environments: [environment, { name: "docker", kind: "docker", image: "paseo/test" }],
+            triggers: [
+              {
+                ...trigger,
+                inputs: { runner: { type: "string", choices: ["runner", "docker"] } },
+                steps: [
+                  {
+                    ...trigger.steps[0]!,
+                    environment: "${{ paseo.inputs.runner }}",
+                  },
+                ],
+              },
+            ],
+          },
+          codecCatalog,
+        ),
       /environment choice docker must be a daemon environment/iu,
     );
   });

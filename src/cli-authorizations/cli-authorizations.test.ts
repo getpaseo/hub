@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { z } from "zod";
 import type { BrowserOrganizationAccess } from "../auth/browser-organization-access.js";
-import { createMemoryDatabase } from "../db/memory.js";
 import { cliCredentialParts } from "../auth/cli-credentials.js";
+import { createMemoryDatabase } from "../db/memory.js";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import { CliAuthorizations, normalizeUserCode } from "./index.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 const startSchema = z.object({
   deviceCode: z.string(),
@@ -26,7 +29,7 @@ describe("CLI authorizations", () => {
   });
 
   it("approves one organization credential and discloses it exactly once", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const authorizations = new CliAuthorizations(database, browserAccess(), "https://hub.test");
     const started = startSchema.parse(
       await json(await authorizations.start(post("/api/v1/cli-authorizations", {}))),
@@ -80,7 +83,7 @@ describe("CLI authorizations", () => {
   });
 
   it("rejects organization substitution and preserves denial as terminal", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const authorizations = new CliAuthorizations(database, browserAccess());
     const started = startSchema.parse(
       await json(await authorizations.start(post("/api/v1/cli-authorizations", {}))),
@@ -108,7 +111,7 @@ describe("CLI authorizations", () => {
   });
 
   it("rejects a browser decision when the existing CSRF boundary rejects the request", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const access = browserAccess(() => Response.json({ error: "invalid_origin" }, { status: 403 }));
     const authorizations = new CliAuthorizations(database, access);
     const started = startSchema.parse(

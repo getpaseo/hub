@@ -9,6 +9,7 @@ import {
   disconnectedAgentValidator,
 } from "../test-utils/agent-validator.js";
 import { OrganizationTriggerStore } from "./store.js";
+
 const compositionProviders = createCompositionProviders();
 
 describe("organization trigger store", () => {
@@ -35,7 +36,9 @@ describe("organization trigger store", () => {
   });
 
   it("fails validation before creating storage when the daemon is unknown", async () => {
-    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    const database = createMemoryDatabase(compositionProviders.configuration, {
+      organizationIds: ["org"],
+    });
     const store = new OrganizationTriggerStore(
       database,
       "org",
@@ -52,7 +55,9 @@ describe("organization trigger store", () => {
     ["a relative working directory", "cwd: workspace", /absolute path/iu],
     ["an omitted execution mode", "provider: codex, mode: full-access", /mode.*required/iu],
   ])("rejects %s at the authoring boundary", async (_name, authored, expected) => {
-    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    const database = createMemoryDatabase(compositionProviders.configuration, {
+      organizationIds: ["org"],
+    });
     const store = new OrganizationTriggerStore(
       database,
       "org",
@@ -221,7 +226,9 @@ describe("organization trigger store", () => {
 });
 
 async function enrolledDatabase(): Promise<Database> {
-  const database = createMemoryDatabase({ organizationIds: ["org"] });
+  const database = createMemoryDatabase(compositionProviders.configuration, {
+    organizationIds: ["org"],
+  });
   await database.issueEnrollmentToken({
     id: "token",
     verifier: "token-verifier",

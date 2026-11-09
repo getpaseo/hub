@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "vitest";
-import { AgentSessions } from "./index.js";
+import type { AgentConnection, AgentSnapshot } from "../daemons/agents/index.js";
+import type { DaemonCreateAgentOptions } from "../daemons/protocol.js";
 import { createMemoryDatabase } from "../db/memory.js";
+import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { OutputExecutorRegistry, replyOutputTool } from "../execution-capabilities/outputs.js";
 import { createExecutionCapabilityServer } from "../execution-capabilities/server.js";
-import type { AgentConnection, AgentSnapshot } from "../daemons/agents/index.js";
-import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
-import type { DaemonCreateAgentOptions } from "../daemons/protocol.js";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
+import { AgentSessions } from "./index.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 class TestAgents implements AgentConnection {
   readonly agents = new Map<string, AgentSnapshot>();
@@ -52,7 +55,7 @@ class TestAgents implements AgentConnection {
 }
 
 async function fixture(now = Date.now) {
-  const database = createMemoryDatabase();
+  const database = createMemoryDatabase(codecCatalog);
   const connection = new TestAgents();
   const outputs = new OutputExecutorRegistry();
   const replies: { executionId: string; context: unknown }[] = [];

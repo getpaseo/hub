@@ -6,13 +6,16 @@ import type { OrganizationAccessValue } from "../../auth/organization-access.js"
 import type { AuthServer } from "../../auth/server.js";
 import { createMemoryDatabase } from "../../db/memory.js";
 import type { StartConnectionAttemptInput } from "../../db/types.js";
+import { createProviderRegistry as createCodecProviders } from "../server.js";
 import type { LinearApiClient, LinearConnectionClient } from "./client.js";
 import { createLinearRegistration } from "./index.js";
 import { linearPersistence } from "./persistence.js";
 
+const codecCatalog = createCodecProviders().configuration;
+
 describe("Linear registration", () => {
   it("constructs the complete Linear slice and starts OAuth with a protected state", async () => {
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(codecCatalog, {
       memberships: [
         {
           userId: "user",
@@ -68,7 +71,7 @@ describe("Linear registration", () => {
 
   it("does not construct partial behavior when Linear is not configured", async () => {
     const registration = createLinearRegistration({
-      database: createMemoryDatabase(),
+      database: createMemoryDatabase(codecCatalog),
       auth: new RegistrationAuth(),
       applicationBaseUrl: "https://hub.test",
       publicBaseUrl: "https://hub.test",
@@ -82,7 +85,7 @@ describe("Linear registration", () => {
   });
 
   it("rejects an insecure direct connection start before auth or attempt persistence", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     let attempts = 0;
     database.startConnectionAttempt = () => {
       attempts += 1;
@@ -112,7 +115,7 @@ describe("Linear registration", () => {
   it("requires reconnection for missing authority or an expired non-refreshable token", async () => {
     assert.deepEqual(
       await createLinearRegistration({
-        database: createMemoryDatabase({
+        database: createMemoryDatabase(codecCatalog, {
           providerData: {
             linear: {
               connections: [
@@ -156,7 +159,9 @@ describe("Linear registration", () => {
     };
     assert.deepEqual(
       await createLinearRegistration({
-        database: createMemoryDatabase({ providerData: { linear: { connections: [expired] } } }),
+        database: createMemoryDatabase(codecCatalog, {
+          providerData: { linear: { connections: [expired] } },
+        }),
         auth: null,
         applicationBaseUrl: "https://hub.test",
         publicBaseUrl: "https://hub.test",
@@ -166,7 +171,7 @@ describe("Linear registration", () => {
     );
     assert.deepEqual(
       await createLinearRegistration({
-        database: createMemoryDatabase({
+        database: createMemoryDatabase(codecCatalog, {
           providerData: {
             linear: { connections: [{ ...expired, refreshToken: "refresh-token" }] },
           },
@@ -181,7 +186,7 @@ describe("Linear registration", () => {
   });
 
   it("drops an under-scoped compact event before attempting issue hydration", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     linearPersistence(database).findLinearConnection = async (linearOrganizationId) =>
       linearOrganizationId === "linear-org"
         ? {

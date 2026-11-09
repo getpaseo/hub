@@ -30,6 +30,8 @@ describe("provider registration", () => {
         id: "example-provider",
       },
       configuration: {
+        filterFields: {},
+        projectLegacyFilters: () => ({}),
         provider: "example-provider",
         order: 4,
         events: { "example-provider.event": { label: "Example event" } },

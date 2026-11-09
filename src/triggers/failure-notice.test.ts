@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { it } from "vitest";
-import { agentFailureNotice, organizationBillingUrl } from "./failure-notice.js";
 import { createMemoryDatabase } from "../db/memory.js";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
+import { agentFailureNotice, organizationBillingUrl } from "./failure-notice.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 it("links to the organization's billing route", async () => {
-  const database = createMemoryDatabase({
+  const database = createMemoryDatabase(codecCatalog, {
     memberships: [
       {
         userId: "user-1",

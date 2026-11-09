@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { describe, it, vi } from "vitest";
 import { createAttachmentCapabilityRegistry } from "../../attachments/capabilities.js";
 import { createMemoryDatabase } from "../../db/memory.js";
+import { createProviderRegistry as createCodecProviders } from "../../providers/server.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
 import { isAcceptedTriggerProviderMatch } from "../index.js";
 import type { NormalizedDiscordMessageEvent } from "./events.js";
 import { MemoryDiscordBotClient } from "./memory-bot.js";
 import { createDiscordTriggerProvider } from "./provider.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 describe("Discord Phase 1 trigger provider", () => {
   it("explains a monthly execution denial in the originating thread", async () => {
@@ -177,7 +180,7 @@ describe("Discord Phase 1 trigger provider", () => {
       guildName: "Secondary",
       providerApplicationId: "discord-app",
     };
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(codecCatalog, {
       providerData: { discord: { connections: [connection] } },
     });
 
@@ -202,7 +205,7 @@ describe("Discord Phase 1 trigger provider", () => {
   });
 
   it("preserves Discord attachments, references, and thread context as durable evidence", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const { project, revision, store } = await createActiveProjectConfiguration(
       database,
       discordConfiguration(),
@@ -569,7 +572,7 @@ describe("Discord Phase 1 trigger provider", () => {
 });
 
 async function activeConfiguration(rawConfiguration: unknown = discordConfiguration()) {
-  return createActiveProjectConfiguration(createMemoryDatabase(), rawConfiguration);
+  return createActiveProjectConfiguration(createMemoryDatabase(codecCatalog), rawConfiguration);
 }
 
 class FailingDiscordBotClient extends MemoryDiscordBotClient {

@@ -239,7 +239,7 @@ describe("agent execution PostgreSQL repository", () => {
       sourceKind: "manual",
       sourceEvidence: { kind: "phase-5-test" },
       normalizedConfiguration: configuration,
-      contentHash: compiledConfigurationHash(configuration),
+      contentHash: compiledConfigurationHash(configuration, composedEvents),
     });
     const dispatches: string[] = [];
     const createEngine = () =>
@@ -341,7 +341,7 @@ describe("agent execution PostgreSQL repository", () => {
       sourceKind: "manual",
       sourceEvidence: { kind: "phase-5-test" },
       normalizedConfiguration: configuration,
-      contentHash: compiledConfigurationHash(configuration),
+      contentHash: compiledConfigurationHash(configuration, composedEvents),
     });
     const dispatches: string[] = [];
     const createEngine = () =>
@@ -424,7 +424,7 @@ describe("agent execution PostgreSQL repository", () => {
       sourceKind: "manual",
       sourceEvidence: { kind: "phase-5-test" },
       normalizedConfiguration: configuration,
-      contentHash: compiledConfigurationHash(configuration),
+      contentHash: compiledConfigurationHash(configuration, composedEvents),
     });
     try {
       const dispatches: string[] = [];
@@ -1400,27 +1400,30 @@ function restartMatch(configurationRevisionId: string): TriggerProviderMatch {
 
 function workflowConfiguration(triggerName: string, stepId: string): CompiledHubConfig {
   return activateWorkflowConfiguration(
-    compileHubConfig({
-      environments: [{ name: "work", kind: "daemon", daemon: "daemon", cwd: "/repo" }],
-      triggers: [
-        {
-          name: triggerName,
-          on: "test.event",
-          max_runtime: "1h",
-          filters: { from_users: ["test"] },
-          steps: [
-            {
-              id: stepId,
-              environment: "work",
-              max_runtime: "30s",
-              idle_timeout: "5s",
-              agent: { provider: "test" },
-              prompt: [{ text: "run" }],
-            },
-          ],
-        },
-      ],
-    }),
+    compileHubConfig(
+      {
+        environments: [{ name: "work", kind: "daemon", daemon: "daemon", cwd: "/repo" }],
+        triggers: [
+          {
+            name: triggerName,
+            on: "test.event",
+            max_runtime: "1h",
+            filters: { from_users: ["test"] },
+            steps: [
+              {
+                id: stepId,
+                environment: "work",
+                max_runtime: "30s",
+                idle_timeout: "5s",
+                agent: { provider: "test" },
+                prompt: [{ text: "run" }],
+              },
+            ],
+          },
+        ],
+      },
+      composedEvents,
+    ),
   );
 }
 
@@ -1434,25 +1437,28 @@ function deadlineWorkflowConfiguration(
 ): CompiledHubConfig {
   const stepCount = options.stepCount ?? 1;
   return activateWorkflowConfiguration(
-    compileHubConfig({
-      environments: [{ name: "work", kind: "daemon", daemon: "daemon", cwd: "/repo" }],
-      triggers: [
-        {
-          name: `phase-five-${stepCount}-step`,
-          on: "test.event",
-          max_runtime: options.maxRuntime ?? "2m",
-          filters: { from_users: ["test"] },
-          steps: Array.from({ length: stepCount }, (_, index) => ({
-            id: `phase-five-step-${index + 1}`,
-            environment: "work",
-            max_runtime: options.stepRuntime ?? "1m",
-            idle_timeout: options.idleTimeout ?? "5s",
-            agent: { provider: "test" },
-            prompt: [{ text: "run" }],
-          })),
-        },
-      ],
-    }),
+    compileHubConfig(
+      {
+        environments: [{ name: "work", kind: "daemon", daemon: "daemon", cwd: "/repo" }],
+        triggers: [
+          {
+            name: `phase-five-${stepCount}-step`,
+            on: "test.event",
+            max_runtime: options.maxRuntime ?? "2m",
+            filters: { from_users: ["test"] },
+            steps: Array.from({ length: stepCount }, (_, index) => ({
+              id: `phase-five-step-${index + 1}`,
+              environment: "work",
+              max_runtime: options.stepRuntime ?? "1m",
+              idle_timeout: options.idleTimeout ?? "5s",
+              agent: { provider: "test" },
+              prompt: [{ text: "run" }],
+            })),
+          },
+        ],
+      },
+      composedEvents,
+    ),
   );
 }
 
@@ -1480,37 +1486,40 @@ function allWorkflowConfigurations(): CompiledHubConfig {
 
 function restartWorkflowConfiguration(): CompiledHubConfig {
   return activateWorkflowConfiguration(
-    compileHubConfig({
-      environments: [{ name: "work", kind: "daemon", daemon: "daemon", cwd: "/repo" }],
-      triggers: [
-        {
-          name: "restart-route",
-          on: "test.event",
-          max_runtime: "1h",
-          filters: { from_users: ["test"] },
-          inputs: { repo: { type: "string", choices: ["hub"] } },
-          steps: [
-            {
-              id: "first",
-              environment: "work",
-              max_runtime: "30s",
-              idle_timeout: "5s",
-              agent: { provider: "test" },
-              prompt: [{ text: "First" }],
-            },
-            {
-              id: "downstream",
-              if: "${{ paseo.inputs.repo == 'hub' }}",
-              environment: "work",
-              max_runtime: "30s",
-              idle_timeout: "5s",
-              agent: { provider: "test" },
-              prompt: [{ text: "Downstream" }],
-            },
-          ],
-        },
-      ],
-    }),
+    compileHubConfig(
+      {
+        environments: [{ name: "work", kind: "daemon", daemon: "daemon", cwd: "/repo" }],
+        triggers: [
+          {
+            name: "restart-route",
+            on: "test.event",
+            max_runtime: "1h",
+            filters: { from_users: ["test"] },
+            inputs: { repo: { type: "string", choices: ["hub"] } },
+            steps: [
+              {
+                id: "first",
+                environment: "work",
+                max_runtime: "30s",
+                idle_timeout: "5s",
+                agent: { provider: "test" },
+                prompt: [{ text: "First" }],
+              },
+              {
+                id: "downstream",
+                if: "${{ paseo.inputs.repo == 'hub' }}",
+                environment: "work",
+                max_runtime: "30s",
+                idle_timeout: "5s",
+                agent: { provider: "test" },
+                prompt: [{ text: "Downstream" }],
+              },
+            ],
+          },
+        ],
+      },
+      composedEvents,
+    ),
   );
 }
 
@@ -1589,7 +1598,7 @@ async function executionFixture(
     sourceKind: "manual",
     sourceEvidence: { kind: "test" },
     normalizedConfiguration: revisionConfiguration,
-    contentHash: compiledConfigurationHash(revisionConfiguration),
+    contentHash: compiledConfigurationHash(revisionConfiguration, composedEvents),
   });
   await database.activateProjectConfigurationRevision(
     "00000000-0000-4000-8000-000000000001",

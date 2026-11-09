@@ -39,17 +39,6 @@ export const TriggerFilterSchema = z
   .object({
     pattern: z.string().optional(),
     contains: z.string().optional(),
-    /** GitHub text which makes an event ineligible, such as a command another trigger owns. */
-    exclude_contains: z.string().optional(),
-    label: z.string().min(1).optional(),
-    labels: z.array(z.string().min(1)).min(1).optional(),
-    repo: z.string().min(1).optional(),
-    guild: z.string().min(1).optional(),
-    workspace: z.string().min(1).optional(),
-    project: z.string().min(1).optional(),
-    states: z.array(z.string().min(1)).min(1).optional(),
-    exclude_labels: z.array(z.string().min(1)).min(1).optional(),
-    assignees: z.array(z.string().min(1)).min(1).optional(),
     channels: z.array(z.string().min(1)).optional(),
     from_users: z.array(z.string().min(1)).optional(),
     inputs: z.record(z.string(), InputValueSchema).optional(),
@@ -60,7 +49,7 @@ export const TriggerEventSchema = z
   .object({
     recurrence: RecurrenceSchema.optional(),
     connection: z.string().regex(CONNECTION_SLUG).optional(),
-    filters: TriggerFilterSchema.optional(),
+    filters: TriggerFilterSchema.catchall(z.unknown()).optional(),
   })
   .strict();
 
@@ -135,7 +124,12 @@ const TriggerDocumentBaseSchema = z
   .strict();
 
 export function triggerDocumentSchema(events: ProviderConfigurationCatalog) {
-  return TriggerDocumentBaseSchema.superRefine((trigger, context) => {
+  return TriggerDocumentBaseSchema.extend({
+    on: z.record(
+      z.string().regex(EVENT_NAME),
+      TriggerEventSchema.extend({ filters: events.filterSchema(TriggerFilterSchema).optional() }),
+    ),
+  }).superRefine((trigger, context) => {
     for (const [event, definition] of Object.entries(trigger.on)) {
       if (event === "schedule.tick") {
         if (

@@ -1,6 +1,3 @@
-import { configureSocket } from "../providers/slack/socket-application.js";
-import { providerApplicationView } from "./guides.js";
-import { testApplicationConfiguration, testApplicationIdentity } from "../providers/testing.js";
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AccountAccessValue } from "../auth/organization-access.js";
@@ -10,18 +7,27 @@ import { completeLinearInstallation } from "../providers/linear/application.js";
 import type { LinearPersistence } from "../providers/linear/persistence.js";
 import type { ProviderInstallation } from "../providers/registry.js";
 import { ProviderRegistry } from "../providers/registry.js";
-import { createProviderRegistry } from "../providers/server.js";
+import {
+  createProviderRegistry as createCodecProviders,
+  createProviderRegistry,
+} from "../providers/server.js";
 import {
   SlackApplication,
   configureSlackSocket,
 } from "../providers/slack/application-capability.js";
 import { completeSlackInstallation } from "../providers/slack/application.js";
 import type { SlackPersistence } from "../providers/slack/persistence.js";
+import { configureSocket } from "../providers/slack/socket-application.js";
 import type {
   TestProviderApplicationConfiguration as ProviderApplicationConfiguration,
   TestProviderApplicationIdentity as ProviderApplicationIdentity,
 } from "../providers/testing.js";
-import { parseTestApplicationConfiguration } from "../providers/testing.js";
+import {
+  parseTestApplicationConfiguration,
+  testApplicationConfiguration,
+  testApplicationIdentity,
+} from "../providers/testing.js";
+import { providerApplicationView } from "./guides.js";
 import {
   ProviderApplicationError,
   activateProviderApplicationsAtStartup,
@@ -31,6 +37,9 @@ import {
   type ProviderRuntimeCandidate,
   type ProviderRuntimeOwner,
 } from "./index.js";
+
+const codecCatalog = createCodecProviders().configuration;
+
 type Provider = ProviderApplicationConfiguration["provider"];
 const providerRegistry = createProviderRegistry();
 
@@ -657,7 +666,7 @@ function createFixture(
     name: "Paseo",
     ownerLogin: "acme",
   };
-  const database = createMemoryDatabase();
+  const database = createMemoryDatabase(codecCatalog);
   const registry = new ProviderRegistry(
     providerRegistry.list().map((module) =>
       module.manifest.id !== "slack"

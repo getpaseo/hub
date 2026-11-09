@@ -1,10 +1,5 @@
 import { compareBundlePaths } from "../../config/bundle-contract.js";
-import {
-  compileHubBundle,
-  HUB_RESOURCE_PATH,
-  HubBundleError,
-  type HubBundleFile,
-} from "../../config/bundle.js";
+import { HUB_RESOURCE_PATH, HubBundleError, type HubBundleFile } from "../../config/bundle.js";
 import { rawConfigurationHash } from "../../config/compiler.js";
 import type { PromptPartialReadResult } from "../../config/prompt-partials.js";
 import {
@@ -117,7 +112,7 @@ export async function synchronizeGitHubProjectConfiguration(input: {
     return { outcome: "fetch_failed" };
   }
   try {
-    compileHubBundle(files);
+    input.configurationForProject(input.projectId).compileBundle(files);
   } catch (error) {
     if (!(error instanceof HubBundleError)) throw error;
     const revision = await recordInvalidBundle(input, files, error.issues);

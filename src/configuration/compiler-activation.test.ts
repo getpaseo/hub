@@ -14,7 +14,7 @@ const compositionProviders = createCompositionProviders();
 
 describe("compiled workflow activation", () => {
   it("activates a valid step-based configuration and stores the compiled contract", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(composedEvents);
     await enrollTestDaemon(database);
     const project = await database.createProject({
       organizationId: "org_1",
@@ -88,7 +88,7 @@ describe("compiled workflow activation", () => {
   });
 
   it("preserves the active revision when workflow steps resolve to non-daemon environments", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(composedEvents);
     await enrollTestDaemon(database);
     const project = await database.createProject({
       organizationId: "org_1",

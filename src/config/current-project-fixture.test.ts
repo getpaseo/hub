@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import { currentProjectConfigurationFiles } from "../test-utils/current-project-configuration.js";
 import { compileHubBundle } from "./bundle.js";
 
+const codecCatalog = createCodecProviders().configuration;
+
 describe("current project configuration proof", () => {
   it("compiles provider workflows without duplicated routing branches", async () => {
-    const bundle = compileHubBundle(await currentProjectConfigurationFiles());
+    const bundle = compileHubBundle(await currentProjectConfigurationFiles(), codecCatalog);
     assert.deepEqual(
       bundle.configuration.triggers.map(({ name, sourceFile }) => ({ name, sourceFile })),
       [

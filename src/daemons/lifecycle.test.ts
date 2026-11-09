@@ -79,7 +79,7 @@ describe("durable Hub action acknowledgement state", () => {
   it.each(["spawning", "running"] as const)(
     "recovers %s delivery and observation when reconnects overlap after creation",
     async (status) => {
-      const database = createMemoryDatabase();
+      const database = createMemoryDatabase(composedEvents);
       const daemon = daemonRecord();
       const intent: LaunchMachineIntent = {
         kind: "launch_machine",
@@ -195,7 +195,7 @@ describe("durable Hub action acknowledgement state", () => {
 
   it("logs a daemon execution recovery failure exactly once", async () => {
     const canary = "daemon-lifecycle-secret-4c09";
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(composedEvents);
     const daemon = daemonRecord();
     const executionId = "00000000-0000-4000-8000-0000000000f1";
     await database.insertAgentExecution({
@@ -243,7 +243,7 @@ describe("durable Hub action acknowledgement state", () => {
   });
 
   it("defers workflow-owned terminal provider failure notification to the outbox", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(composedEvents);
     let failureHooks = 0;
     const provider: TriggerProvider = {
       name: "test",
@@ -399,7 +399,9 @@ describe("durable Hub action acknowledgement state", () => {
 });
 
 async function acknowledgementFixture() {
-  const database = createMemoryDatabase({ now: () => new Date("2026-01-01T00:00:00.000Z") });
+  const database = createMemoryDatabase(composedEvents, {
+    now: () => new Date("2026-01-01T00:00:00.000Z"),
+  });
   await database.insertAgentExecution({
     id: EXECUTION_ID,
     organizationId: "org-ack-test",

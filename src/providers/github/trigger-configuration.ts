@@ -1,4 +1,5 @@
 import type { ProviderConfigurationDefinition } from "../configuration.js";
+import { filterFields, projectLegacyFilters } from "./filter-configuration.js";
 
 const ADDED_LABEL = {
   key: "label",
@@ -9,6 +10,8 @@ const ADDED_LABEL = {
   required: true,
 } as const;
 export const triggerConfiguration: ProviderConfigurationDefinition = {
+  filterFields,
+  projectLegacyFilters,
   provider: "github",
   order: 2,
   replyType: "github.reply",

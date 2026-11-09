@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import type { ProviderConfigurationCatalog } from "../providers/configuration.js";
 import { ContinuationSchema } from "../triggers/continuation.js";
 import {
   expressionPaths,
@@ -86,21 +87,6 @@ const AuthoredTriggerFilterSchema = z
   .object({
     pattern: z.string().optional(),
     contains: z.string().optional(),
-    /** GitHub text which makes an event ineligible, such as a command another trigger owns. */
-    exclude_contains: z.string().optional(),
-    label: z.string().min(1).optional(),
-    labels: z.array(z.string().min(1)).min(1).optional(),
-    repo: z.string().min(1).optional(),
-    guild: z.string().min(1).optional(),
-    workspace: z.string().min(1).optional(),
-    /** A Linear project UUID. It is deliberately a string so imported Linear IDs work verbatim. */
-    project: z.string().min(1).optional(),
-    /** Linear workflow-state IDs which are eligible for this trigger. */
-    states: z.array(z.string().min(1)).min(1).optional(),
-    /** Linear label IDs which make an issue ineligible. */
-    exclude_labels: z.array(z.string().min(1)).min(1).optional(),
-    /** Linear user IDs which may be assigned to the issue. */
-    assignees: z.array(z.string().min(1)).min(1).optional(),
     channels: z.array(z.string().min(1)).optional(),
     from_users: z.array(z.string().min(1)).optional(),
     inputs: z.record(z.string(), InputValueSchema).optional(),
@@ -111,7 +97,7 @@ const AuthoredTriggerFilterSchema = z
   })
   .strict();
 
-const CompiledTriggerFilterSchema = AuthoredTriggerFilterSchema.extend({
+const CoreCompiledTriggerFilterSchema = AuthoredTriggerFilterSchema.extend({
   connectionId: z.string().uuid().optional(),
   resourceId: z.string().min(1).optional(),
 }).superRefine((filter, context) => {
@@ -203,16 +189,19 @@ const AuthoredSchema = z
   })
   .strict();
 
-export const HubConfigSchema = AuthoredSchema;
-
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { readonly [key: string]: JsonValue };
 
 export type AuthoredEnvironment = z.infer<typeof EnvironmentSchema>;
 export type AuthoredStep = z.infer<typeof StepSchema>;
-export type AuthoredTrigger = z.infer<typeof AuthoredTriggerSchema>;
-export type AuthoredTriggerFilter = z.infer<typeof AuthoredTriggerFilterSchema>;
-export type AuthoredHubConfig = z.infer<typeof AuthoredSchema>;
+export type AuthoredTrigger = Omit<z.infer<typeof AuthoredTriggerSchema>, "filters"> & {
+  filters?: AuthoredTriggerFilter | undefined;
+};
+export type AuthoredTriggerFilter = z.infer<typeof AuthoredTriggerFilterSchema> &
+  Readonly<Record<string, unknown>>;
+export type AuthoredHubConfig = Omit<z.infer<typeof AuthoredSchema>, "triggers"> & {
+  triggers: AuthoredTrigger[];
+};
 
 export type AuthoredInput = z.infer<typeof AuthoredInputSchema>;
 
@@ -265,20 +254,13 @@ export interface CompiledStep {
 export type CompiledSteps = readonly CompiledStep[];
 
 export type CompiledTriggerFilter = Readonly<
-  Omit<
-    AuthoredTriggerFilter,
-    "channels" | "from_users" | "states" | "labels" | "exclude_labels" | "assignees"
-  > & {
+  Omit<z.infer<typeof AuthoredTriggerFilterSchema>, "channels" | "from_users" | "inputs"> & {
     channels?: readonly string[] | undefined;
     from_users?: readonly string[] | undefined;
-    states?: readonly string[] | undefined;
-    labels?: readonly string[] | undefined;
-    exclude_labels?: readonly string[] | undefined;
-    assignees?: readonly string[] | undefined;
     inputs?: Readonly<Record<string, JsonPrimitive>> | undefined;
     connectionId?: string | undefined;
     resourceId?: string | undefined;
-  }
+  } & Readonly<Record<string, unknown>>
 >;
 
 export type CompiledEnvironment =
@@ -422,32 +404,48 @@ const CompiledStepSchema: z.ZodType<CompiledStep> = z
   })
   .strict();
 
-const CompiledTriggerSchema: z.ZodType<CompiledTrigger> = z
-  .object({
-    name: z.string().regex(IDENTIFIER),
-    sourceFile: z.string().min(1).optional(),
-    on: z.string().regex(EVENT_NAME),
-    maxRuntimeMs: z.number().int().positive().max(MAX_DURATION_MS),
-    steps: z.array(CompiledStepSchema),
-    inputs: z.record(z.string(), CompiledInputSchema),
-    values: z.record(z.string(), z.custom<Expression>(isExpression)),
-    filters: CompiledTriggerFilterSchema.optional(),
-  })
-  .strict();
+function compiledTriggerSchema(catalog: ProviderConfigurationCatalog): z.ZodType<CompiledTrigger> {
+  return z
+    .object({
+      name: z.string().regex(IDENTIFIER),
+      sourceFile: z.string().min(1).optional(),
+      on: z.string().regex(EVENT_NAME),
+      maxRuntimeMs: z.number().int().positive().max(MAX_DURATION_MS),
+      steps: z.array(CompiledStepSchema),
+      inputs: z.record(z.string(), CompiledInputSchema),
+      values: z.record(z.string(), z.custom<Expression>(isExpression)),
+      filters: catalog.filterSchema(CoreCompiledTriggerFilterSchema).optional(),
+    })
+    .strict();
+}
 
-const CompiledHubConfigSchema: z.ZodType<CompiledHubConfig> = z
-  .object({
-    environments: z.array(CompiledEnvironmentSchema).min(1),
-    triggers: z.array(CompiledTriggerSchema),
-  })
-  .strict();
+function compiledHubConfigSchema(
+  catalog: ProviderConfigurationCatalog,
+): z.ZodType<CompiledHubConfig> {
+  return z
+    .object({
+      environments: z.array(CompiledEnvironmentSchema).min(1),
+      triggers: z.array(compiledTriggerSchema(catalog)),
+    })
+    .strict();
+}
+function authoredSchema(catalog: ProviderConfigurationCatalog) {
+  return AuthoredSchema.extend({
+    triggers: z.array(
+      AuthoredTriggerSchema.extend({
+        filters: catalog.filterSchema(AuthoredTriggerFilterSchema).optional(),
+      }),
+    ),
+  });
+}
 
 export function compileHubConfig(
   raw: unknown,
+  catalog: ProviderConfigurationCatalog,
   options: CompileHubConfigOptions = {},
 ): CompiledHubConfig {
   rejectRemovedFields(raw);
-  const authored = AuthoredSchema.parse(raw);
+  const authored = authoredSchema(catalog).parse(raw);
   validateAuthoredIds(authored);
   const environmentNames = new Set(authored.environments.map((environment) => environment.name));
   const environments = new Map(
@@ -465,31 +463,37 @@ export function compileHubConfig(
     ),
   );
   const compiled = { environments: authored.environments, triggers } satisfies CompiledHubConfig;
-  validateCompiledContract(compiled);
+  validateCompiledContract(compiled, catalog);
   return deepFreeze(compiled);
 }
 
-export function parseCompiledHubConfig(value: unknown): CompiledHubConfig {
+export function parseCompiledHubConfig(
+  value: unknown,
+  catalog: ProviderConfigurationCatalog,
+): CompiledHubConfig {
   let cloned: unknown;
   try {
     cloned = structuredClone(value);
   } catch {
     throw new Error("active configuration contains an invalid compiled workflow contract");
   }
-  const parsed = CompiledHubConfigSchema.safeParse(cloned);
+  const parsed = compiledHubConfigSchema(catalog).safeParse(cloned);
   if (!parsed.success) {
     throw new Error("active configuration contains an invalid compiled workflow contract");
   }
   try {
-    validateCompiledContract(parsed.data);
+    validateCompiledContract(parsed.data, catalog);
   } catch {
     throw new Error("active configuration contains an invalid compiled workflow contract");
   }
   return deepFreeze(parsed.data);
 }
 
-export function compiledConfigurationHash(configuration: CompiledHubConfig): string {
-  return hashConfiguration(parseCompiledHubConfig(configuration));
+export function compiledConfigurationHash(
+  configuration: CompiledHubConfig,
+  catalog: ProviderConfigurationCatalog,
+): string {
+  return hashConfiguration(parseCompiledHubConfig(configuration, catalog));
 }
 
 export function rawConfigurationHash(configuration: unknown): string {
@@ -1163,7 +1167,10 @@ function matchesInputType(value: JsonPrimitive | undefined, type: AuthoredInput[
   return typeof value === "boolean";
 }
 
-function validateCompiledContract(config: CompiledHubConfig): void {
+function validateCompiledContract(
+  config: CompiledHubConfig,
+  catalog: ProviderConfigurationCatalog,
+): void {
   validateEnvironmentTemplates(config.environments);
   const environmentIds = new Set<string>();
   const environments = new Map<string, CompiledEnvironment>();
@@ -1209,7 +1216,7 @@ function validateCompiledContract(config: CompiledHubConfig): void {
         throw new Error(`value ${name} contains an invalid expression`);
     }
     validateExpressionContract(trigger.name, trigger, environments);
-    validateTriggerLaunchSecurity(trigger);
+    validateTriggerLaunchSecurity(trigger, catalog);
   }
 }
 
@@ -1381,18 +1388,12 @@ function validateAuthoredIds(config: AuthoredHubConfig): void {
   }
 }
 
-function validateTriggerLaunchSecurity(trigger: CompiledTrigger): void {
+function validateTriggerLaunchSecurity(
+  trigger: CompiledTrigger,
+  catalog: ProviderConfigurationCatalog,
+): void {
   if (trigger.on === "manual.run" || trigger.on === "schedule.tick") return;
-  // A project scout is an intentionally autonomous, project-scoped policy. Every other
-  // externally-originated Linear action remains actor-allowlisted below.
-  if (trigger.on === "linear.issue_entered_scope") {
-    if (trigger.filters?.project === undefined) {
-      throw new Error(
-        `trigger ${trigger.name} requires filters.project for linear.issue_entered_scope`,
-      );
-    }
-    return;
-  }
+  if (catalog.allowsLaunchWithoutActor(trigger)) return;
   if ((trigger.filters?.from_users?.length ?? 0) === 0) {
     throw new Error(
       `trigger ${trigger.name} requires a non-empty filters.from_users allowlist for externally sourced events`,

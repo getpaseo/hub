@@ -9,6 +9,7 @@ import { EntitlementsService } from "./entitlements/service.js";
 import { replyOutputTool } from "./execution-capabilities/outputs.js";
 import type { ProviderRegistration, TriggerProviderResources } from "./providers/registration.js";
 import { createProviderRegistry as createCompositionProviders } from "./providers/server.js";
+
 const compositionProviders = createCompositionProviders();
 
 describe("application runtime provider composition", () => {
@@ -111,7 +112,7 @@ describe("application runtime provider composition", () => {
     second.sources = [trackedSource("second", events)];
     second.requests = [{ name: "events", handle: () => Promise.resolve(new Response()) }];
 
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(compositionProviders.configuration);
     await assert.rejects(
       () =>
         createApplicationRuntime({
@@ -158,7 +159,7 @@ describe("application runtime provider composition", () => {
   it("shares provider integrations with every trigger provider for the same organization", async () => {
     const calls: Array<{ projectId: string; slug: string; value: string }> = [];
     let providerResources: TriggerProviderResources | undefined;
-    const database = createMemoryDatabase({
+    const database = createMemoryDatabase(compositionProviders.configuration, {
       providerData: {
         discord: {
           connections: [
@@ -353,7 +354,7 @@ function trackedSource(name: string, events: string[]) {
 }
 
 async function runtimeDatabase(role: "owner" | "member") {
-  const database = createMemoryDatabase({
+  const database = createMemoryDatabase(compositionProviders.configuration, {
     memberships: [
       {
         userId: "user",

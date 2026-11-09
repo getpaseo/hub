@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { compileHubConfig } from "../../config/index.js";
+import { createProviderRegistry as createCodecProviders } from "../../providers/server.js";
 import type { NormalizedDiscordMessageEvent } from "./events.js";
 import { matchDiscordTriggers } from "./match.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 const BOT_ID = "123456789012345678";
 
@@ -110,27 +113,30 @@ describe("Discord trigger matching", () => {
 });
 
 function configFor(filters: Record<string, unknown>) {
-  return compileHubConfig({
-    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
-    triggers: [
-      {
-        name: "discord-mention",
-        on: "discord.mention",
-        max_runtime: "2h",
-        filters,
-        steps: [
-          {
-            id: "reply",
-            environment: "runner",
-            max_runtime: "1h",
-            idle_timeout: "5m",
-            agent: { provider: "opencode", mode: "default" },
-            prompt: [{ text: "Respond" }],
-          },
-        ],
-      },
-    ],
-  });
+  return compileHubConfig(
+    {
+      environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
+      triggers: [
+        {
+          name: "discord-mention",
+          on: "discord.mention",
+          max_runtime: "2h",
+          filters,
+          steps: [
+            {
+              id: "reply",
+              environment: "runner",
+              max_runtime: "1h",
+              idle_timeout: "5m",
+              agent: { provider: "opencode", mode: "default" },
+              prompt: [{ text: "Respond" }],
+            },
+          ],
+        },
+      ],
+    },
+    codecCatalog,
+  );
 }
 
 function createEvent(

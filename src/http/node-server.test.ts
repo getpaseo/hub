@@ -1,17 +1,20 @@
-import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import assert from "node:assert/strict";
+import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { Writable } from "node:stream";
 import { describe, it } from "vitest";
 import { z } from "zod";
-import { createMemoryDatabase } from "../db/memory.js";
 import { CliAuthorizations } from "../cli-authorizations/index.js";
+import { createMemoryDatabase } from "../db/memory.js";
 import { createLogger } from "../logger.js";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import { createPublicApi } from "../public-api/index.js";
 import type { PublicOperations } from "../public-operations/index.js";
 import { createSlackWebhookSource } from "../triggers/slack/webhook.js";
 import { createFetchServer } from "./node-server.js";
-import { registerResponseFinishCleanup } from "./response-lifecycle.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "./request-origin.js";
+import { registerResponseFinishCleanup } from "./response-lifecycle.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 describe("trusted request origin metadata", () => {
   it("overwrites a caller-supplied internal header with direct HTTP metadata", async () => {
@@ -368,7 +371,7 @@ class CliAuthorizationServer {
   ) {}
 
   static async start(trustedClientIpHeader?: string): Promise<CliAuthorizationServer> {
-    const database = createMemoryDatabase({ organizationIds: ["acme"] });
+    const database = createMemoryDatabase(codecCatalog, { organizationIds: ["acme"] });
     const authorizations = new CliAuthorizations(database, undefined, "https://hub.paseo.test");
     const server = createFetchServer(
       (request) => authorizations.start(request),

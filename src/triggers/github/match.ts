@@ -1,8 +1,9 @@
+import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
 import type {
   CompiledTriggerConfig as CompiledTrigger,
   TriggerFilter,
 } from "../../config/index.js";
-import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
+import { nativeFilters } from "../../providers/github/filter-configuration.js";
 import { classifyGitHubEvent } from "./classification.js";
 
 type MatchedTriggerDefinition = Pick<CompiledTrigger, "name" | "on" | "filters">;
@@ -101,7 +102,7 @@ function matchesFilter(
     return false;
   }
 
-  const labels = filter.labels;
+  const labels = nativeFilters(filter).labels;
   if (
     labels !== undefined &&
     !labels.every((labelName) => classified.labels.some((current) => sameLabel(labelName, current)))

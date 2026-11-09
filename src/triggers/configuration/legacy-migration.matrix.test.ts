@@ -109,7 +109,7 @@ function exhaustiveFiles(): HubBundleFile[] {
 
 describe("legacy migration compatibility matrix", () => {
   it("preserves every one-run field while removing shared resources and partials", () => {
-    const before = compileHubBundle(exhaustiveFiles()).configuration;
+    const before = compileHubBundle(exhaustiveFiles(), composedEvents).configuration;
     const migrated = migrateLegacyBundle({ files: exhaustiveFiles() }, composedEvents);
     assert.equal(migrated.length, 1);
     const trigger = migrated[0];
@@ -165,7 +165,7 @@ describe("legacy migration compatibility matrix", () => {
 
   it("rejects an invalid active normalized revision instead of marking it migrated", () => {
     const files = exhaustiveFiles();
-    const normalized = structuredClone(compileHubBundle(files).configuration);
+    const normalized = structuredClone(compileHubBundle(files, composedEvents).configuration);
     normalized.triggers[0]!.inputs["agent"]!.choices = ["codex", "claude", null];
     assert.throws(
       () => migrateLegacyBundle({ files, normalizedConfiguration: normalized }, composedEvents),

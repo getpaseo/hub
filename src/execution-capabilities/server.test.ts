@@ -1,3 +1,7 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { Ajv } from "ajv";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import {
@@ -6,10 +10,6 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import { Ajv } from "ajv";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { describe, it, vi } from "vitest";
 import { z } from "zod";
 import { hashAgentExecutionCompletionToken } from "../agent-executions/completion-token.js";
@@ -18,8 +18,11 @@ import { createMemoryDatabase } from "../db/memory.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { createFetchServer } from "../http/node-server.js";
 import { registerResponseLifecycle, takeResponseLifecycle } from "../http/response-lifecycle.js";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import { OutputExecutorRegistry, replyOutputTool, type OutputCapability } from "./outputs.js";
 import { createExecutionCapabilityServer } from "./server.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 const RpcResponseSchema = z
   .object({
@@ -737,7 +740,7 @@ async function capabilityFixture(
   outputTool = replyOutputTool,
   additionalCapabilities: readonly OutputCapability[] = [],
 ) {
-  const database = createMemoryDatabase();
+  const database = createMemoryDatabase(codecCatalog);
   const executionId = randomUUID();
   const token = "token";
   const intent = launchIntent(maxReplies, outputSchema, autoArchive, requiredOutputTypes);

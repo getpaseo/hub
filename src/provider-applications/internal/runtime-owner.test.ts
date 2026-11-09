@@ -6,7 +6,10 @@ import type { DurableProviderEvent } from "../../db/types.js";
 import { OutputExecutorRegistry, replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { githubAuthority, type GitHubRegistration } from "../../providers/github/runtime.js";
 import type { ProviderRegistration } from "../../providers/registration.js";
-import { createProviderRegistry } from "../../providers/server.js";
+import {
+  createProviderRegistry as createCodecProviders,
+  createProviderRegistry,
+} from "../../providers/server.js";
 import type { SlackProviderApplicationConfiguration } from "../../providers/slack/application-configuration.js";
 import type {
   TestProviderApplicationConfiguration as ProviderApplicationConfiguration,
@@ -18,8 +21,10 @@ import {
 } from "../../providers/testing.js";
 import { createGitHubReplyExecutor, githubReplyAvailable } from "../../triggers/github/reply.js";
 import type { ExternalTrigger, TriggerHandler, TriggerProvider } from "../../triggers/index.js";
-
 import { DynamicProviderRuntime } from "./runtime-owner.js";
+
+const codecCatalog = createCodecProviders().configuration;
+
 type Provider = ProviderApplicationConfiguration["provider"];
 const providerRegistry = createProviderRegistry();
 
@@ -32,7 +37,7 @@ describe("dynamic provider runtime", () => {
     });
     const runtime = new DynamicProviderRuntime({
       registry,
-      database: createMemoryDatabase(),
+      database: createMemoryDatabase(codecCatalog),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
     });
@@ -53,7 +58,7 @@ describe("dynamic provider runtime", () => {
   it("exposes and delivers GitHub replies through the hosted provider registration", async () => {
     const comments: unknown[] = [];
     const runtime = new DynamicProviderRuntime({
-      database: createMemoryDatabase(),
+      database: createMemoryDatabase(codecCatalog),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
       registry: registrationRegistry(() => ({
@@ -127,7 +132,7 @@ describe("dynamic provider runtime", () => {
     "github.push",
   ] as const)("publishes raw source %s through the activated GitHub runtime", async (eventName) => {
     const runtime = new DynamicProviderRuntime({
-      database: createMemoryDatabase(),
+      database: createMemoryDatabase(codecCatalog),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
       registry: registrationRegistry(({ configuration }) =>
@@ -165,7 +170,7 @@ describe("dynamic provider runtime", () => {
     const release = readinessGate();
     const stopped: string[] = [];
     const runtime = new DynamicProviderRuntime({
-      database: createMemoryDatabase(),
+      database: createMemoryDatabase(codecCatalog),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
       registry: registrationRegistry(({ configuration }) =>
@@ -219,7 +224,7 @@ describe("dynamic provider runtime", () => {
     const stopped: string[] = [];
     const completed: string[] = [];
     const runtime = new DynamicProviderRuntime({
-      database: createMemoryDatabase(),
+      database: createMemoryDatabase(codecCatalog),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
       registry: registrationRegistry(({ configuration }) =>
@@ -283,7 +288,7 @@ describe("dynamic provider runtime", () => {
   it("routes replies and attachments through the active registration", async () => {
     const used: string[] = [];
     const stopped: string[] = [];
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const runtime = new DynamicProviderRuntime({
       database,
       auth: testAuth(),
@@ -356,7 +361,7 @@ describe("dynamic provider runtime", () => {
   it("lets a Discord-triggered execution use the active GitHub integration and authority", async () => {
     const used: string[] = [];
     const runtime = new DynamicProviderRuntime({
-      database: createMemoryDatabase(),
+      database: createMemoryDatabase(codecCatalog),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
       registry: registrationRegistry(({ configuration }) =>
@@ -426,7 +431,7 @@ describe("dynamic provider runtime", () => {
   it("reports an unavailable capability with a stable diagnostic code", async () => {
     const runtime = new DynamicProviderRuntime({
       registry: providerRegistry,
-      database: createMemoryDatabase(),
+      database: createMemoryDatabase(codecCatalog),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
     });
@@ -448,7 +453,7 @@ describe("dynamic provider runtime", () => {
     const used: string[] = [];
     const stopped: string[] = [];
     const runtime = new DynamicProviderRuntime({
-      database: createMemoryDatabase(),
+      database: createMemoryDatabase(codecCatalog),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
       registry: registrationRegistry(({ configuration }) =>
@@ -521,7 +526,7 @@ describe("dynamic provider runtime", () => {
 
   it("leaves the active registration untouched when a candidate cannot start", async () => {
     const runtime = new DynamicProviderRuntime({
-      database: createMemoryDatabase(),
+      database: createMemoryDatabase(codecCatalog),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
       registry: registrationRegistry(({ configuration }) =>
@@ -567,7 +572,7 @@ describe("dynamic provider runtime", () => {
   for (const provider of ["github", "slack", "discord"] as const) {
     it(`activates ${provider} for new connection actions without a restart`, async () => {
       const runtime = new DynamicProviderRuntime({
-        database: createMemoryDatabase(),
+        database: createMemoryDatabase(codecCatalog),
         auth: testAuth(),
         applicationBaseUrl: "https://hub.test",
         registry: registrationRegistry(({ provider: candidateProvider, configuration }) =>
@@ -597,7 +602,7 @@ describe("dynamic provider runtime", () => {
 
     it(`keeps the working ${provider} registration when replacement startup fails`, async () => {
       const runtime = new DynamicProviderRuntime({
-        database: createMemoryDatabase(),
+        database: createMemoryDatabase(codecCatalog),
         auth: testAuth(),
         applicationBaseUrl: "https://hub.test",
         registry: registrationRegistry(({ provider: candidateProvider, configuration }) =>
@@ -641,7 +646,7 @@ describe("dynamic provider runtime", () => {
   }
 
   it("reconstructs callbacks from the configuration version and origin that began OAuth", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     database.findConnectionAttemptConfiguration = () =>
       Promise.resolve({
         configurationVersion: 1,
@@ -684,7 +689,7 @@ describe("dynamic provider runtime", () => {
     const sourceHandlers = new Map<string, TriggerHandler>();
     const accepted: string[] = [];
     const runtime = new DynamicProviderRuntime({
-      database: createMemoryDatabase(),
+      database: createMemoryDatabase(codecCatalog),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
       registry: registrationRegistry(({ provider, configuration }) => ({

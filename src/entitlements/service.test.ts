@@ -3,17 +3,20 @@ import { describe, it } from "vitest";
 import { z } from "zod";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database } from "../db/types.js";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import {
-  EntitlementDenied,
   effectiveEntitlements,
+  EntitlementDenied,
   hashTemplate,
   normalizeStoredEntitlements,
   UNLIMITED_TEMPLATE,
 } from "./catalog.js";
 import { EntitlementsService, type EntitlementCounters } from "./service.js";
 
+const codecCatalog = createCodecProviders().configuration;
+
 function serviceWith(
-  database: Database = createMemoryDatabase(),
+  database: Database = createMemoryDatabase(codecCatalog),
   counters: EntitlementCounters = { seats: async () => 0 },
 ): EntitlementsService {
   return new EntitlementsService(database, counters);
@@ -60,7 +63,7 @@ describe("EntitlementsService", () => {
 
   it("re-stamping the identical template and plan is a no-op", async () => {
     let now = new Date("2026-01-01T00:00:00.000Z");
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const service = new EntitlementsService(database, { seats: async () => 0 }, () => now);
     const template = {
       seats: { max: 3 },
@@ -81,7 +84,7 @@ describe("EntitlementsService", () => {
   });
 
   it("records plan provenance in the audit snapshot so identical templates stay distinguishable", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const service = new EntitlementsService(database, { seats: async () => 0 });
     const template = {
       seats: { max: 3 },
@@ -188,7 +191,7 @@ describe("EntitlementsService", () => {
   });
 
   it("reports an overage when the live count sits above a capped limit", async () => {
-    const service = serviceWith(createMemoryDatabase(), { seats: async () => 5 });
+    const service = serviceWith(createMemoryDatabase(codecCatalog), { seats: async () => 5 });
     await service.stamp(
       "org-1",
       {
@@ -205,7 +208,7 @@ describe("EntitlementsService", () => {
   });
 
   it("reports no overage when within the cap or the cap is unlimited", async () => {
-    const withinCap = serviceWith(createMemoryDatabase(), { seats: async () => 1 });
+    const withinCap = serviceWith(createMemoryDatabase(codecCatalog), { seats: async () => 1 });
     await withinCap.stamp(
       "org-1",
       {
@@ -217,14 +220,16 @@ describe("EntitlementsService", () => {
     );
     assert.deepEqual(await withinCap.overages("org-1"), []);
 
-    const unlimited = serviceWith(createMemoryDatabase(), { seats: async () => 9999 });
+    const unlimited = serviceWith(createMemoryDatabase(codecCatalog), { seats: async () => 9999 });
     await unlimited.stamp("org-1", UNLIMITED_TEMPLATE, { source: "provisioning", planId: null });
     assert.deepEqual(await unlimited.overages("org-1"), []);
   });
 
   it("allows headroom under the cap and denies it at the cap", async () => {
     let seatsInUse = 1;
-    const service = serviceWith(createMemoryDatabase(), { seats: async () => seatsInUse });
+    const service = serviceWith(createMemoryDatabase(codecCatalog), {
+      seats: async () => seatsInUse,
+    });
     await service.stamp(
       "org-1",
       {
@@ -267,14 +272,16 @@ describe("EntitlementsService", () => {
   });
 
   it("never denies headroom for an unlimited cap", async () => {
-    const service = serviceWith(createMemoryDatabase(), { seats: async () => 9999 });
+    const service = serviceWith(createMemoryDatabase(codecCatalog), { seats: async () => 9999 });
     await service.stamp("org-1", UNLIMITED_TEMPLATE, { source: "provisioning", planId: null });
     await service.requireHeadroom("org-1", "seats");
   });
 
   it("enforces an overridden cap even when the plan grants more", async () => {
     let seatsInUse = 2;
-    const service = serviceWith(createMemoryDatabase(), { seats: async () => seatsInUse });
+    const service = serviceWith(createMemoryDatabase(codecCatalog), {
+      seats: async () => seatsInUse,
+    });
     await service.stamp("org-1", UNLIMITED_TEMPLATE, { source: "provisioning", planId: null });
     await service.override("org-1", { seats: { max: 2 } }, "admin-1", "Trial cap");
 
@@ -419,7 +426,7 @@ describe("EntitlementsService", () => {
 
   it("resets usage in a new period", async () => {
     let now = new Date("2026-01-15T00:00:00.000Z");
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const service = new EntitlementsService(database, { seats: async () => 0 }, () => now);
     await service.stamp(
       "org-1",

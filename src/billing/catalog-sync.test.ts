@@ -7,6 +7,7 @@ import type { Database } from "../db/types.js";
 import { hashTemplate } from "../entitlements/catalog.js";
 import { runWithFailureTracking } from "../failures/index.js";
 import { createLogger } from "../logger.js";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import { syncBillingCatalog as syncBillingCatalogWithPresentations } from "./catalog-sync.js";
 import type { BillingPlanPresentations } from "./plan-presentation.js";
 import type {
@@ -14,6 +15,8 @@ import type {
   StripeCatalogProduct,
   StripeCatalogSource,
 } from "./stripe-catalog-source.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 class FakeCatalogSource implements StripeCatalogSource {
   constructor(
@@ -95,7 +98,7 @@ describe("syncBillingCatalog", () => {
   it("owns invalid catalog failures with structured, secret-free background diagnostics", async () => {
     const canary = "formatless-catalog-secret-83bd2f99";
     const stream = new CaptureStream();
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const source = new FakeCatalogSource([
       soloProduct({
         name: canary,
@@ -117,7 +120,7 @@ describe("syncBillingCatalog", () => {
   });
 
   it("mirrors a valid product and its prices into the local catalog", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const source = new FakeCatalogSource([soloProduct()], soloPrices());
     await syncBillingCatalog(source, database);
 
@@ -155,7 +158,7 @@ describe("syncBillingCatalog", () => {
   });
 
   it("rejects a product with invalid metadata and keeps the last known good row", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const source = new FakeCatalogSource([soloProduct()], soloPrices());
     await syncBillingCatalog(source, database);
     const [before] = await database.listBillingPlans();
@@ -171,7 +174,7 @@ describe("syncBillingCatalog", () => {
   });
 
   it("skips a price without a lookup key without rejecting the whole product", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const source = new FakeCatalogSource(
       [soloProduct()],
       [
@@ -194,7 +197,7 @@ describe("syncBillingCatalog", () => {
   });
 
   it("resyncing with the same catalog leaves the mirrored row equivalent", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const source = new FakeCatalogSource([soloProduct()], soloPrices());
     await syncBillingCatalog(source, database);
     await syncBillingCatalog(source, database);
@@ -205,7 +208,7 @@ describe("syncBillingCatalog", () => {
   });
 
   it("deactivates a plan whose product left the catalog", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const source = new FakeCatalogSource([soloProduct()], soloPrices());
     await syncBillingCatalog(source, database);
     assert.equal((await database.listBillingPlans())[0]?.active, true);
@@ -220,7 +223,7 @@ describe("syncBillingCatalog", () => {
   });
 
   it("rejects both products when two claim the same plan slug", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const source = new FakeCatalogSource(
       [soloProduct(), soloProduct({ id: "prod_solo_dupe", name: "Solo Duplicate" })],
       soloPrices(),
@@ -232,7 +235,7 @@ describe("syncBillingCatalog", () => {
   });
 
   it("re-stamps every organization on a plan whose template changed, and leaves overrides alone", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const source = new FakeCatalogSource([soloProduct()], soloPrices());
     await syncBillingCatalog(source, database);
     const [plan] = await database.listBillingPlans();
@@ -288,7 +291,7 @@ describe("syncBillingCatalog", () => {
   });
 
   it("leaves an organization on another plan alone when a template changes", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const source = new FakeCatalogSource([soloProduct()], soloPrices());
     await syncBillingCatalog(source, database);
     const [plan] = await database.listBillingPlans();
@@ -320,7 +323,7 @@ describe("syncBillingCatalog", () => {
   });
 
   it("re-stamps once: a resync with an unchanged template writes no second audit row", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const source = new FakeCatalogSource([soloProduct()], soloPrices());
     await syncBillingCatalog(source, database);
     const [plan] = await database.listBillingPlans();
@@ -342,7 +345,7 @@ describe("syncBillingCatalog", () => {
   });
 
   it("keeps the last known good row when a later sync introduces a duplicate slug", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     const source = new FakeCatalogSource([soloProduct()], soloPrices());
     await syncBillingCatalog(source, database);
     const [before] = await database.listBillingPlans();

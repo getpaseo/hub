@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import type { LinearApiClient, LinearIssueCommentHistory } from "../../providers/linear/client.js";
 import { createMemoryDatabase } from "../../db/memory.js";
+import type { LinearApiClient, LinearIssueCommentHistory } from "../../providers/linear/client.js";
+import { createProviderRegistry as createCodecProviders } from "../../providers/server.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
 import { isAcceptedTriggerProviderMatch, type ExternalTrigger } from "../index.js";
 import type { NormalizedLinearCommentEvent } from "./events.js";
 import { createLinearTriggerProvider } from "./provider.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 describe("Linear trigger provider", () => {
   it.each([
@@ -298,7 +301,7 @@ class RecordingHistoryClient implements Pick<LinearApiClient, "readIssueComments
 }
 
 function activeConfiguration(configuration = linearCommentConfiguration()) {
-  return createActiveProjectConfiguration(createMemoryDatabase(), configuration, {
+  return createActiveProjectConfiguration(createMemoryDatabase(codecCatalog), configuration, {
     organizationId: "hub-org",
   });
 }

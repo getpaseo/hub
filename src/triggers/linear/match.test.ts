@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { compileHubConfig } from "../../config/index.js";
+import { createProviderRegistry as createCodecProviders } from "../../providers/server.js";
 import type { NormalizedLinearCommentEvent, NormalizedLinearIssueEvent } from "./events.js";
 import { matchLinearTriggers, readLinearCommentInvocationParserMessage } from "./match.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 describe("Linear trigger matching", () => {
   it("starts a project scout exactly when an issue enters its eligible scope", () => {
@@ -167,36 +170,39 @@ function configuration() {
     agent: { provider: "codex" },
     prompt: [{ text: "Work from ${{ paseo.context }}" }],
   };
-  return compileHubConfig({
-    environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
-    triggers: [
-      {
-        name: "scout",
-        on: "linear.issue_entered_scope",
-        max_runtime: "2h",
-        filters: {
-          project: "project-1",
-          states: ["ready"],
-          exclude_labels: ["no-paseo"],
+  return compileHubConfig(
+    {
+      environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
+      triggers: [
+        {
+          name: "scout",
+          on: "linear.issue_entered_scope",
+          max_runtime: "2h",
+          filters: {
+            project: "project-1",
+            states: ["ready"],
+            exclude_labels: ["no-paseo"],
+          },
+          steps: [base],
         },
-        steps: [base],
-      },
-      {
-        name: "assignment",
-        on: "linear.issue_assigned",
-        max_runtime: "2h",
-        filters: { project: "project-1", from_users: ["operator"] },
-        steps: [base],
-      },
-      {
-        name: "comment",
-        on: "linear.comment_created",
-        max_runtime: "2h",
-        filters: { project: "project-1", from_users: ["operator"], contains: "@paseo" },
-        steps: [base],
-      },
-    ],
-  });
+        {
+          name: "assignment",
+          on: "linear.issue_assigned",
+          max_runtime: "2h",
+          filters: { project: "project-1", from_users: ["operator"] },
+          steps: [base],
+        },
+        {
+          name: "comment",
+          on: "linear.comment_created",
+          max_runtime: "2h",
+          filters: { project: "project-1", from_users: ["operator"], contains: "@paseo" },
+          steps: [base],
+        },
+      ],
+    },
+    codecCatalog,
+  );
 }
 
 function issue(

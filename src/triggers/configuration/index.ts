@@ -100,6 +100,7 @@ export function compileTriggerDocument(
         environments: [environment],
         triggers,
       },
+      catalog,
       namedAgents === undefined ? {} : { namedAgents },
     );
   } catch (error) {

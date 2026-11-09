@@ -10,6 +10,7 @@ import {
   enrollTestDaemon,
   TEST_DAEMON_SLUG,
 } from "../test-utils/project-configuration.js";
+
 const compositionProviders = createCompositionProviders();
 
 const validConfig = {
@@ -35,7 +36,7 @@ const validConfig = {
 
 describe("project configuration lifecycle", () => {
   it("activates immutable revisions and rolls back within one project", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(compositionProviders.configuration);
     await enrollTestDaemon(database, "organization-a");
     const {
       project,
@@ -57,7 +58,7 @@ describe("project configuration lifecycle", () => {
   });
 
   it("rejects invalid and cross-project activation", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(compositionProviders.configuration);
     await enrollTestDaemon(database, "organization-a");
     const projectA = await createActiveProjectConfiguration(database, validConfig, {
       organizationId: "organization-a",

@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database, SyncBillingPlanInput } from "../db/types.js";
+import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import { composeBilling, type BillingRuntime } from "./index.js";
-import type { StripeCatalogSource } from "./stripe-catalog-source.js";
 import type { StripeBillingClient, StripeSubscriptionState } from "./stripe-billing-client.js";
+import type { StripeCatalogSource } from "./stripe-catalog-source.js";
+
+const codecCatalog = createCodecProviders().configuration;
 
 // provisioningEntitlement only reads the catalog mirror, so these ports are never called here.
 const unusedCatalogSource: StripeCatalogSource = {
@@ -56,7 +59,7 @@ function freePlan(overrides: Partial<SyncBillingPlanInput> = {}): SyncBillingPla
 
 describe("BillingRuntime.provisioningEntitlement", () => {
   it("stamps the mirrored Free plan when one is active", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     await database.syncBillingPlan(freePlan());
 
     const entitlement = await billingOver(database).provisioningEntitlement();
@@ -70,7 +73,7 @@ describe("BillingRuntime.provisioningEntitlement", () => {
   });
 
   it("falls back to a conservative floor (not unlimited) when no Free plan is mirrored", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     // A configured instance whose catalog carries only a paid plan — a misconfigured Stripe, or a
     // first boot before the Free plan synced. Provisioning must not fail open to unlimited.
     await database.syncBillingPlan(freePlan({ id: "prod_solo", slug: "solo", name: "Solo" }));
@@ -86,7 +89,7 @@ describe("BillingRuntime.provisioningEntitlement", () => {
   });
 
   it("ignores an inactive Free plan and uses the fallback", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase(codecCatalog);
     await database.syncBillingPlan(freePlan({ active: false }));
 
     const entitlement = await billingOver(database).provisioningEntitlement();
