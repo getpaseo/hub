@@ -1,5 +1,3 @@
-import { testApplicationIdentity } from "../testing.js";
-import { testApplicationConfiguration } from "../testing.js";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -10,9 +8,15 @@ import { it } from "vitest";
 import { createDatabase } from "../../db/pg.js";
 import { embeddedDatabaseRuntime } from "../../db/runtime/index.js";
 import { DynamicProviderRuntime } from "../../provider-applications/internal/runtime-owner.js";
-import { registrationRegistry } from "../testing.js";
+import { createProviderRegistry as createDatabaseProviders } from "../server.js";
+import {
+  registrationRegistry,
+  testApplicationConfiguration,
+  testApplicationIdentity,
+} from "../testing.js";
 import { createGitHubRegistration } from "./index.js";
 import { githubPersistence } from "./persistence.js";
+const databaseProviders = createDatabaseProviders();
 
 const GITHUB_OWNER = { providerApplicationId: "42", configurationVersion: 0 };
 
@@ -21,7 +25,7 @@ it("learns all 143 repositories from an installation webhook without enumerated 
     github.repositories = Array.from({ length: 143 }, (_, index) => repository(index + 1));
     assert.equal((await send("installation", "created", "created")).status, 200);
     await drain();
-    assert.equal((await database.listGitHubRepositories("org")).length, 143);
+    assert.equal((await githubPersistence(database).listGitHubRepositories("org")).length, 143);
     assert.deepEqual(github.pages, [1, 2]);
   });
 });
@@ -31,7 +35,7 @@ it("replaces added, removed, renamed and empty repository selections from curren
     github.repositories = [repository(1), repository(2)];
     await send("installation", "created", "created");
     await drain();
-    const original = (await database.listGitHubRepositories("org")).find(
+    const original = (await githubPersistence(database).listGitHubRepositories("org")).find(
       (item) => item.repositoryId === 2,
     )!;
     github.repositories = [
@@ -43,7 +47,7 @@ it("replaces added, removed, renamed and empty repository selections from curren
       repositories_removed: [{ id: 1, full_name: "acme/repo-1" }],
     });
     await drain();
-    const updated = await database.listGitHubRepositories("org");
+    const updated = await githubPersistence(database).listGitHubRepositories("org");
     assert.deepEqual(
       updated.map((item) => item.repositoryId).sort((a, b) => a - b),
       [2, 3],
@@ -60,7 +64,7 @@ it("replaces added, removed, renamed and empty repository selections from curren
       ],
     });
     await drain();
-    assert.deepEqual(await database.listGitHubRepositories("org"), []);
+    assert.deepEqual(await githubPersistence(database).listGitHubRepositories("org"), []);
   });
 });
 
@@ -75,7 +79,9 @@ it("keeps the previous complete snapshot on page failure and resumes the durable
     assert.equal((await send("installation_repositories", "added", "failed-page")).status, 200);
     await drain();
     assert.deepEqual(
-      (await database.listGitHubRepositories("org")).map((item) => item.repositoryId),
+      (await githubPersistence(database).listGitHubRepositories("org")).map(
+        (item) => item.repositoryId,
+      ),
       [500],
     );
     assert.equal(
@@ -98,7 +104,7 @@ it("keeps the previous complete snapshot on page failure and resumes the durable
     const restarted = register();
     await restarted.sources[0]!.start(async () => undefined);
     await restarted.sources[0]!.stop();
-    assert.equal((await database.listGitHubRepositories("org")).length, 143);
+    assert.equal((await githubPersistence(database).listGitHubRepositories("org")).length, 143);
     assert.equal(
       (await githubPersistence(database).findGitHubConnection(42))?.accountLogin,
       "renamed",
@@ -138,13 +144,13 @@ it("acknowledges a durably accepted webhook while the GitHub request is still bl
           .rows.length,
         1,
       );
-      assert.deepEqual(await database.listGitHubRepositories("org"), []);
+      assert.deepEqual(await githubPersistence(database).listGitHubRepositories("org"), []);
     } finally {
       clearTimeout(timeout);
       gate.resolve();
       await drain();
     }
-    assert.equal((await database.listGitHubRepositories("org")).length, 1);
+    assert.equal((await githubPersistence(database).listGitHubRepositories("org")).length, 1);
   });
 });
 
@@ -217,7 +223,7 @@ it("leaves in-flight work pending when its configuration loses activation", asyn
       gate.resolve();
       await drain();
     }
-    assert.deepEqual(await database.listGitHubRepositories("org"), []);
+    assert.deepEqual(await githubPersistence(database).listGitHubRepositories("org"), []);
     assert.equal(
       (await runtime.query(`select * from github_installation_syncs where retry_at is not null`))
         .rows.length,
@@ -378,7 +384,7 @@ async function createFixture() {
   const directory = await mkdtemp(join(tmpdir(), "github-lifecycle-"));
   const { runtime, locks } = await embeddedDatabaseRuntime(directory);
   await runtime.migrate();
-  const database = createDatabase(runtime, locks);
+  const database = createDatabase(runtime, locks, databaseProviders);
   await runtime.query(`insert into organization (id, name, slug) values ('org', 'Org', 'org')`);
   await runtime.query(
     `insert into github_connections (provider_application_id, organization_id, installation_id, slug, account_id, account_login, account_type, status) values ('42', 'org', 42, 'acme', '1', 'acme', 'Organization', 'active')`,

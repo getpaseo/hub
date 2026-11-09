@@ -7,7 +7,7 @@ import {
   mergeOverrides,
 } from "../entitlements/catalog.js";
 import { ExecutionAuthorityRepository } from "../execution-authority/index.js";
-import { githubPersistence } from "../providers/github/persistence.js";
+import type { ProviderRegistry } from "../providers/registry.js";
 import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 import { parseInvocationInputs, parseInvocationRejection } from "../triggers/invocation.js";
 import { ScheduleRepository } from "../triggers/schedule/index.js";
@@ -42,7 +42,6 @@ import type {
   CliAuthorizationDecisionInput,
   CliAuthorizationPollResult,
   CliAuthorizationRecord,
-  ConfigurationSyncAttemptRecord,
   ConnectionProvider,
   ConsumeOrganizationUsageInput,
   CreateAcceptedTriggerRunInput,
@@ -72,18 +71,16 @@ import type {
   PersistManualEventInput,
   ProjectActivityRunListRecord,
   ProjectActivityRunRecord,
-  ProjectConfigurationReadModel,
   ProjectConfigurationRevisionRecord,
+  ProjectConfigurationState,
   ProjectRecord,
   ProjectTriggerRoute,
   ProviderEventReceiptRecord,
   ProviderEventReceiptSummary,
   ReadConnectionAttemptInput,
   ReconcileOrganizationBillingInput,
-  RecordConfigurationSyncAttemptInput,
   RejectedTriggerRunRecord,
   SaveOrganizationTriggerInput,
-  SetProjectGitHubConfigurationSourceInput,
   StampOrganizationEntitlementsInput,
   StartCliAuthorizationInput,
   StartConnectionAttemptInput,
@@ -114,8 +111,12 @@ function transitionWithTerminalRun(
     : { ...transition, terminalRun: run };
 }
 
-export function createDatabase(runtime: DatabaseRuntime, locks: Locks): Database {
-  return new PgDatabase(runtime, locks);
+export function createDatabase(
+  runtime: DatabaseRuntime,
+  locks: Locks,
+  providers: ProviderRegistry,
+): Database {
+  return new PgDatabase(runtime, locks, providers);
 }
 
 class PgDatabase implements Database {
@@ -128,6 +129,7 @@ class PgDatabase implements Database {
   constructor(
     private readonly pool: DatabaseRuntime,
     private readonly locks: Locks,
+    private readonly providers: ProviderRegistry,
   ) {
     this.schedules = new ScheduleRepository(this.pool);
     this.executionAuthority = new ExecutionAuthorityRepository(this.pool);
@@ -139,6 +141,20 @@ class PgDatabase implements Database {
     };
   }
 
+  private async clearConfigurationSourceState(
+    transaction: import("./runtime/index.js").QueryHandle,
+    projectId: string,
+  ): Promise<void> {
+    const result = await transaction.query<{ kind: string }>(
+      "select kind from project_configuration_sources where project_id = $1 for update",
+      [projectId],
+    );
+    const row = result.rows[0];
+    if (row === undefined || row.kind === "manual") return;
+    const capability = this.providers.require(row.kind).configurationSource;
+    if (capability === undefined) throw new Error("configuration source capability unavailable");
+    await capability.releaseToManual(transaction, projectId);
+  }
   persistManualEvent(input: PersistManualEventInput) {
     return this.triggerAcceptance.persistManual(input);
   }
@@ -3309,11 +3325,10 @@ class PgDatabase implements Database {
           [projectId, organizationId, userId],
         );
         if (access.rows[0] === undefined) throw new Error("project access denied");
+        await this.clearConfigurationSourceState(client, projectId);
         await client.query(
           `update project_configuration_sources
-         set kind = 'manual', github_connection_id = null, github_repository_id = null,
-             github_repository_full_name = null, github_default_branch = null,
-             automatic_deployment_enabled = false, updated_at = clock_timestamp()
+         set kind = 'manual', automatic_deployment_enabled = false, updated_at = clock_timestamp()
          where project_id = $1`,
           [projectId],
         );
@@ -3601,11 +3616,10 @@ class PgDatabase implements Database {
           ],
         );
         const revision = inserted.rows[0]!;
+        await this.clearConfigurationSourceState(client, input.projectId);
         await client.query(
           `update project_configuration_sources
-         set kind = 'manual', github_connection_id = null, github_repository_id = null,
-             github_repository_full_name = null, github_default_branch = null,
-             automatic_deployment_enabled = false, selected_by_user_id = $2,
+         set kind = 'manual', automatic_deployment_enabled = false, selected_by_user_id = $2,
              updated_at = clock_timestamp()
          where project_id = $1`,
           [input.projectId, input.userId],
@@ -3642,193 +3656,28 @@ class PgDatabase implements Database {
     }
   }
 
-  async setProjectGitHubConfigurationSource(
-    input: SetProjectGitHubConfigurationSourceInput,
-  ): Promise<void> {
-    const result = await query(
+  async readProjectConfigurationState(projectId: string): Promise<ProjectConfigurationState> {
+    const result = await query<{ kind: string }>(
       this.pool,
-      `insert into project_configuration_sources
-         (organization_id, project_id, kind, github_connection_id, github_repository_id,
-          github_repository_full_name, github_default_branch,
-          automatic_deployment_enabled, selected_by_user_id)
-       select p.organization_id, p.id, 'github', $2, r.repository_id,
-              r.full_name, r.default_branch, $4, $5
-       from projects p
-       join member m on m.organization_id = p.organization_id
-       join github_repositories r
-         on r.organization_id = p.organization_id and r.connection_id = $2
-        and r.repository_id = $3
-       join github_connections c
-         on c.id = r.connection_id and c.organization_id = p.organization_id
-       where p.id = $1 and p.status = 'active'
-         and m.user_id = $5 and m.role in ('owner', 'admin')
-       on conflict (project_id) do update
-         set kind = 'github',
-             github_connection_id = excluded.github_connection_id,
-             github_repository_id = excluded.github_repository_id,
-             github_repository_full_name = excluded.github_repository_full_name,
-             github_default_branch = excluded.github_default_branch,
-             automatic_deployment_enabled = excluded.automatic_deployment_enabled,
-             selected_by_user_id = excluded.selected_by_user_id,
-             updated_at = clock_timestamp()
-       returning project_id`,
-      [
-        input.projectId,
-        input.githubConnectionId,
-        input.githubRepositoryId,
-        input.automaticDeploymentEnabled,
-        input.userId,
-      ],
-    );
-    if (result.rowCount !== 1) throw new Error("project access denied");
-  }
-
-  async recordConfigurationSyncAttempt(
-    input: RecordConfigurationSyncAttemptInput,
-  ): Promise<ConfigurationSyncAttemptRecord> {
-    const result = await query<{
-      id: string;
-      project_id: string;
-      github_connection_id: string | null;
-      github_repository_id: number | null;
-      webhook_delivery_id: string | null;
-      commit_sha: string | null;
-      outcome: string;
-      evidence: unknown;
-      created_at: Date;
-    }>(
-      this.pool,
-      `insert into configuration_sync_attempts
-         (organization_id, project_id, github_connection_id, github_repository_id,
-          webhook_delivery_id, commit_sha, outcome, evidence)
-       select p.organization_id, p.id, $2, $3, $4, $5, $6, $7::jsonb
-       from projects p
-       where p.id = $1 and p.organization_id = (select organization_id from github_connections where id = $2)
-       returning id, project_id, github_connection_id, github_repository_id, webhook_delivery_id,
-                 commit_sha, outcome, evidence, created_at`,
-      [
-        input.projectId,
-        input.githubConnectionId,
-        input.githubRepositoryId,
-        input.webhookDeliveryId,
-        input.commitSha,
-        input.outcome,
-        JSON.stringify(input.evidence),
-      ],
+      "select * from project_configuration_sources where project_id = $1",
+      [projectId],
     );
     const row = result.rows[0];
-    if (row === undefined) throw new Error("configuration source unavailable");
-    return {
-      id: row.id,
-      projectId: row.project_id,
-      githubConnectionId: row.github_connection_id,
-      githubRepositoryId: row.github_repository_id,
-      webhookDeliveryId: row.webhook_delivery_id,
-      commitSha: row.commit_sha,
-      outcome: row.outcome,
-      evidence: row.evidence,
-      createdAt: row.created_at,
-    };
-  }
-
-  async projectConfigurationReadModel(projectId: string): Promise<ProjectConfigurationReadModel> {
-    const source = await query<{
-      kind: "manual" | "github";
-      github_connection_id: string | null;
-      github_repository_id: number | null;
-      github_repository_full_name: string | null;
-      github_default_branch: string | null;
-      automatic_deployment_enabled: boolean;
-    }>(
-      this.pool,
-      `select kind, github_connection_id, github_repository_id, github_repository_full_name,
-              github_default_branch, automatic_deployment_enabled
-       from project_configuration_sources where project_id = $1`,
-      [projectId],
-    );
-    const sourceRow = source.rows[0];
-    if (sourceRow === undefined) throw new Error("configuration authority not found");
+    if (row === undefined) throw new Error("configuration authority not found");
     const activeRevision = (await this.findActiveProjectConfiguration(projectId)) ?? null;
-    const attempts = await query<{
-      id: string;
-      project_id: string;
-      github_connection_id: string | null;
-      github_repository_id: number | null;
-      webhook_delivery_id: string | null;
-      commit_sha: string | null;
-      outcome: string;
-      evidence: unknown;
-      created_at: Date;
-    }>(
-      this.pool,
-      `select * from configuration_sync_attempts
-       where project_id = $1 order by created_at desc, id desc limit 1`,
-      [projectId],
-    );
-    const attempt = attempts.rows[0];
-    const lastSyncAttempt =
-      attempt === undefined
-        ? null
-        : {
-            id: attempt.id,
-            projectId: attempt.project_id,
-            githubConnectionId: attempt.github_connection_id,
-            githubRepositoryId: attempt.github_repository_id,
-            webhookDeliveryId: attempt.webhook_delivery_id,
-            commitSha: attempt.commit_sha,
-            outcome: attempt.outcome,
-            evidence: attempt.evidence,
-            createdAt: attempt.created_at,
-          };
-    if (sourceRow.kind === "manual") {
+    let data: unknown = row;
+    if (row.kind === "manual") {
       const evidence = activeRevision?.sourceEvidence;
-      const formattingPreserved =
-        typeof evidence === "object" &&
-        evidence !== null &&
-        "formattingPreserved" in evidence &&
-        evidence.formattingPreserved === true;
-      return {
-        authority: "manual",
-        activeRevision,
-        lastSyncAttempt,
-        sourceState: { kind: "manual", formattingPreserved },
+      data = {
+        formattingPreserved:
+          typeof evidence === "object" &&
+          evidence !== null &&
+          "formattingPreserved" in evidence &&
+          evidence.formattingPreserved === true,
       };
     }
-    if (
-      sourceRow.github_connection_id === null ||
-      sourceRow.github_repository_id === null ||
-      sourceRow.github_repository_full_name === null ||
-      sourceRow.github_default_branch === null
-    ) {
-      throw new Error("github configuration authority has no repository");
-    }
-    return {
-      authority: "github",
-      activeRevision,
-      lastSyncAttempt,
-      sourceState: {
-        kind: "github",
-        githubConnectionId: sourceRow.github_connection_id,
-        githubRepositoryId: sourceRow.github_repository_id,
-        githubRepositoryFullName: sourceRow.github_repository_full_name,
-        githubDefaultBranch: sourceRow.github_default_branch,
-        automaticDeploymentEnabled: sourceRow.automatic_deployment_enabled,
-      },
-    };
+    return { source: { kind: row.kind, data }, activeRevision };
   }
-
-  listGitHubRepositories(organizationId: string) {
-    return githubPersistence(this).listGitHubRepositories(organizationId);
-  }
-
-  findGitHubRepositoryForOrganization(organizationId: string, fullName: string) {
-    return githubPersistence(this).findGitHubRepositoryForOrganization(organizationId, fullName);
-  }
-
-  findGitHubConfigurationTarget(projectId: string, repositoryId?: number) {
-    return githubPersistence(this).findGitHubConfigurationTarget(projectId, repositoryId);
-  }
-
   async listUnroutedProviderEventsForOrganization(
     organizationId: string,
   ): Promise<ProviderEventReceiptSummary[]> {
@@ -4703,7 +4552,7 @@ export interface ProjectConfigurationRevisionRow extends QueryRow {
   project_id: string;
   organization_id: string;
   version: number;
-  source_kind: "github" | "manual";
+  source_kind: string;
   source_evidence: unknown;
   raw_yaml: string | null;
   normalized_configuration: unknown;
@@ -4735,7 +4584,7 @@ interface OrganizationTriggerRevisionRow extends QueryRow {
   yaml: string;
   normalized_configuration: unknown;
   content_hash: string;
-  source_kind: "manual" | "github" | "project_migration";
+  source_kind: string;
   source_evidence: unknown;
   created_by_user_id: string | null;
   created_at: Date;
@@ -4756,7 +4605,7 @@ interface PendingProjectTriggerMigrationRow extends QueryRow {
   r_project_id: string;
   r_organization_id: string;
   r_version: number;
-  r_source_kind: "github" | "manual";
+  r_source_kind: string;
   r_source_evidence: unknown;
   r_raw_yaml: string | null;
   r_normalized_configuration: unknown;

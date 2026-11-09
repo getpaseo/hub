@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { GitHubAuth } from "../../auth/github.js";
-import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import type { PromptPartialReadResult } from "../../config/prompt-partials.js";
+import type { GitHubConfigurationProvider } from "./configuration-source.js";
 
 const repositorySchema = z
   .object({

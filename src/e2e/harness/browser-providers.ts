@@ -1,19 +1,21 @@
 import type { Message } from "discord.js";
 import type { GitHubAuth } from "../../auth/github.js";
-import type { DiscordGuildIdentity } from "../../providers/discord/client.js";
-import type { DiscordConnectionClient } from "../../providers/discord/client.js";
+import type { HubBundleFile } from "../../config/bundle.js";
+import type {
+  DiscordConnectionClient,
+  DiscordGuildIdentity,
+} from "../../providers/discord/client.js";
 import type {
   GitHubConnectionClient,
   GitHubInstallationIdentity,
 } from "../../providers/github/client.js";
+import type { GitHubConfigurationProvider } from "../../providers/github/configuration-source.js";
+import { MemoryDiscordBotClient } from "../../triggers/discord/memory-bot.js";
 import type {
   GitHubCreatedReaction,
   GitHubReactionClient,
 } from "../../triggers/github/provider.js";
 import type { SlackBotClient } from "../../triggers/slack/client.js";
-import { MemoryDiscordBotClient } from "../../triggers/discord/memory-bot.js";
-import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
-import type { HubBundleFile } from "../../config/bundle.js";
 
 const GITHUB_INSTALLATIONS: readonly GitHubInstallationIdentity[] = [
   {

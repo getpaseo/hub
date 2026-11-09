@@ -63,7 +63,7 @@ describe("provider application OAuth bind authority", () => {
 });
 
 async function rejectsStoredReplacement(bundle: DatabaseRuntimeBundle, provider: Provider) {
-  const database = createDatabase(bundle.runtime, bundle.locks);
+  const database = createDatabase(bundle.runtime, bundle.locks, providerRegistry);
   const store = createProviderApplicationStore(bundle.runtime, bundle.locks, providerRegistry);
   const first = application(provider, "A");
   const replacement = application(provider, "B");
@@ -105,7 +105,7 @@ async function rejectsStoredReplacement(bundle: DatabaseRuntimeBundle, provider:
 }
 
 async function serializesReplacementRace(bundle: DatabaseRuntimeBundle, provider: Provider) {
-  const database = createDatabase(bundle.runtime, bundle.locks);
+  const database = createDatabase(bundle.runtime, bundle.locks, providerRegistry);
   const store = createProviderApplicationStore(bundle.runtime, bundle.locks, providerRegistry);
   const first = application(provider, "RACE-A");
   const replacement = application(provider, "RACE-B");
@@ -143,7 +143,7 @@ async function serializesReplacementRace(bundle: DatabaseRuntimeBundle, provider
 }
 
 async function rejectsEnvironmentFallback(bundle: DatabaseRuntimeBundle, provider: Provider) {
-  const database = createDatabase(bundle.runtime, bundle.locks);
+  const database = createDatabase(bundle.runtime, bundle.locks, providerRegistry);
   const store = createProviderApplicationStore(bundle.runtime, bundle.locks, providerRegistry);
   const environment = application(provider, "ENV");
   const fallback = application(provider, "STORED");

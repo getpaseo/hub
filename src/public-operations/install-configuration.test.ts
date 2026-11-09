@@ -3,6 +3,7 @@ import { describe, it } from "vitest";
 import type { HubBundleFile } from "../config/bundle.js";
 import { parseCompiledHubConfig } from "../config/compiler.js";
 import { hashPromptPartialContent } from "../config/prompt-partials.js";
+import { projectConfigurationReadModel } from "../configuration/source-state.js";
 import {
   ProjectConfigurationStore,
   revisionBundleFiles,
@@ -216,7 +217,10 @@ describe("public configuration bundle installation", () => {
     assert.equal(result.status, "installed");
     if (result.status !== "installed") return;
     assert.equal(result.projectSlug, "named-project");
-    assert.ok((await harness.database.projectConfigurationReadModel(project.id)).activeRevision);
+    assert.ok(
+      (await projectConfigurationReadModel(harness.database, compositionProviders, project.id))
+        .activeRevision,
+    );
   });
 
   it("creates a named project and records its first revision in one deploy", async () => {
@@ -230,7 +234,10 @@ describe("public configuration bundle installation", () => {
       "created-on-deploy",
     );
     assert.ok(project);
-    assert.ok((await harness.database.projectConfigurationReadModel(project.id)).activeRevision);
+    assert.ok(
+      (await projectConfigurationReadModel(harness.database, compositionProviders, project.id))
+        .activeRevision,
+    );
   });
 
   it("lets the explicit project override a different bundle name", async () => {
@@ -240,7 +247,10 @@ describe("public configuration bundle installation", () => {
     const result = await harness.install(namedFiles("ignored-name"), "explicit");
 
     assert.equal(result.status, "installed");
-    assert.ok((await harness.database.projectConfigurationReadModel(explicit.id)).activeRevision);
+    assert.ok(
+      (await projectConfigurationReadModel(harness.database, compositionProviders, explicit.id))
+        .activeRevision,
+    );
     assert.equal(
       await harness.database.findProjectBySlugForOrganization(
         authorization.organizationId,
@@ -267,7 +277,13 @@ describe("public configuration bundle installation", () => {
     const defaultProject = await existing.createProject("default");
     assert.equal((await existing.install(files())).status, "installed");
     assert.ok(
-      (await existing.database.projectConfigurationReadModel(defaultProject.id)).activeRevision,
+      (
+        await projectConfigurationReadModel(
+          existing.database,
+          compositionProviders,
+          defaultProject.id,
+        )
+      ).activeRevision,
     );
 
     const missing = await deploymentHarness();
@@ -408,7 +424,7 @@ async function installHarness(validator?: DaemonAgentConfigurationValidator) {
         projectSlug: project.slug,
         files: bundle,
       }),
-    readModel: () => database.projectConfigurationReadModel(project.id),
+    readModel: () => projectConfigurationReadModel(database, compositionProviders, project.id),
     get insertions() {
       return insertions;
     },

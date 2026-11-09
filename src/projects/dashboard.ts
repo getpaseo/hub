@@ -1,5 +1,9 @@
 import { capabilitiesFor } from "../auth/organization-policy.js";
 import type { AuthServer } from "../auth/server.js";
+import {
+  configurationRepositories,
+  projectConfigurationReadModel,
+} from "../configuration/source-state.js";
 import { revisionBundleFiles } from "../configuration/store.js";
 import type {
   AgentExecutionRecord,
@@ -80,10 +84,10 @@ export class ProjectDashboard {
     const [projects, configuration, organizationDaemons, connections, repositories, activity] =
       await Promise.all([
         this.database.listProjectsForOrganization(tenant.organization.id),
-        this.database.projectConfigurationReadModel(project.id),
+        projectConfigurationReadModel(this.database, this.providers, project.id),
         this.database.listDaemonsForOrganization(tenant.organization.id),
         organizationConnections(this.database, this.providers, tenant.organization.id),
-        this.database.listGitHubRepositories(tenant.organization.id),
+        configurationRepositories(this.database, this.providers, tenant.organization.id),
         this.database.listProjectActivityRuns(project.id, 50),
       ]);
     return {
@@ -96,13 +100,7 @@ export class ProjectDashboard {
       configuration: configurationView(configuration),
       organizationDaemons: organizationDaemons.map(daemonView),
       connections: connectionUsageView(connections, this.providers),
-      repositories: repositories.map((repository) => ({
-        id: repository.id,
-        connectionId: repository.connectionId,
-        repositoryId: repository.repositoryId,
-        fullName: repository.fullName,
-        defaultBranch: repository.defaultBranch,
-      })),
+      repositories,
       activity: activity.map(activityRunListView),
     };
   }
@@ -247,7 +245,7 @@ function connectionUsageView(
 }
 
 function configurationView(
-  configuration: Awaited<ReturnType<Database["projectConfigurationReadModel"]>>,
+  configuration: Awaited<ReturnType<typeof projectConfigurationReadModel>>,
 ) {
   const active = configuration.activeRevision;
   const attempt = configuration.lastSyncAttempt;

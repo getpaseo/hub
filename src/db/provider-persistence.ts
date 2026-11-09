@@ -49,13 +49,18 @@ export interface MemoryProviderContext {
     };
   }): ProviderEventReceiptRecord;
   removeConnectionReferences(connectionId: string): void;
+  now(): Date;
   configurationSource(
     projectId: string,
-  ): import("./types.js").ProjectConfigurationReadModel["sourceState"] | undefined;
+  ): import("./types.js").ProjectConfigurationSourceRecord | undefined;
   configurationSources(): readonly {
     projectId: string;
-    source: import("./types.js").ProjectConfigurationReadModel["sourceState"];
+    source: import("./types.js").ProjectConfigurationSourceRecord;
   }[];
+  setConfigurationSource(
+    projectId: string,
+    source: import("./types.js").ProjectConfigurationSourceRecord,
+  ): void;
 }
 export interface ProviderPersistenceFactory<T> {
   id: string;

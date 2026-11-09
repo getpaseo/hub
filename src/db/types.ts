@@ -291,40 +291,20 @@ export interface GitHubConfigurationTarget extends GitHubRepositoryRecord {
   automaticDeploymentEnabled: boolean;
 }
 
-export interface ConfigurationSyncAttemptRecord {
-  id: string;
-  projectId: string;
-  githubConnectionId: string | null;
-  githubRepositoryId: number | null;
-  webhookDeliveryId: string | null;
-  commitSha: string | null;
-  outcome: string;
-  evidence: unknown;
-  createdAt: Date;
+export interface ProjectConfigurationSourceRecord {
+  kind: string;
+  data: unknown;
 }
-
-export interface ProjectConfigurationReadModel {
-  authority: "manual" | "github";
+export interface ProjectConfigurationState {
+  source: ProjectConfigurationSourceRecord;
   activeRevision: ProjectConfigurationRevisionRecord | null;
-  lastSyncAttempt: ConfigurationSyncAttemptRecord | null;
-  sourceState:
-    | { kind: "manual"; formattingPreserved: boolean }
-    | {
-        kind: "github";
-        githubConnectionId: string;
-        githubRepositoryId: number;
-        githubRepositoryFullName: string;
-        githubDefaultBranch: string;
-        automaticDeploymentEnabled: boolean;
-      };
 }
-
 export interface ProjectConfigurationRevisionRecord {
   id: string;
   projectId: string;
   organizationId: string;
   version: number;
-  sourceKind: "github" | "manual";
+  sourceKind: string;
   sourceEvidence: unknown;
   rawYaml: string | null;
   normalizedConfiguration: unknown;
@@ -357,7 +337,7 @@ export interface OrganizationTriggerRevisionRecord {
   yaml: string;
   normalizedConfiguration: unknown;
   contentHash: string;
-  sourceKind: "manual" | "github" | "project_migration";
+  sourceKind: string;
   sourceEvidence: unknown;
   createdByUserId: string | null;
   createdAt: Date;
@@ -1070,7 +1050,7 @@ export interface ReconcileOrganizationBillingInput {
 
 export interface InsertProjectConfigurationRevisionInput {
   projectId: string;
-  sourceKind: "github" | "manual";
+  sourceKind: string;
   sourceEvidence: unknown;
   rawYaml?: string | null;
   normalizedConfiguration: unknown;
@@ -1121,7 +1101,7 @@ export interface SaveOrganizationTriggerInput {
   yaml: string;
   normalizedConfiguration: unknown;
   contentHash: string;
-  sourceKind: "manual" | "github";
+  sourceKind: string;
   sourceEvidence: unknown;
   createdByUserId: string | null;
   routes: readonly OrganizationTriggerRoute[];
@@ -1135,26 +1115,6 @@ export interface SwitchProjectConfigurationToManualInput {
   contentHash: string;
   bundle: { authoredHash: string; files: readonly { path: string; content: string }[] };
   routes: readonly ProjectTriggerRoute[];
-}
-
-export interface SetProjectGitHubConfigurationSourceInput {
-  projectId: string;
-  githubConnectionId: string;
-  githubRepositoryId: number;
-  githubRepositoryFullName: string;
-  githubDefaultBranch: string;
-  automaticDeploymentEnabled: boolean;
-  userId: string;
-}
-
-export interface RecordConfigurationSyncAttemptInput {
-  projectId: string;
-  githubConnectionId: string;
-  githubRepositoryId: number;
-  webhookDeliveryId: string | null;
-  commitSha: string;
-  outcome: "activated" | "invalid" | "fetch_failed" | "superseded";
-  evidence: unknown;
 }
 
 export interface TransitionAgentExecutionFields {
@@ -1190,6 +1150,7 @@ export interface TerminateMachineFields {
 }
 
 export interface Database {
+  readProjectConfigurationState(projectId: string): Promise<ProjectConfigurationState>;
   readonly providerPersistence: import("./provider-persistence.js").ProviderPersistenceHost;
   readonly executionAuthority: import("../execution-authority/index.js").ExecutionAuthorityStore;
   readonly schedules: import("../triggers/schedule/index.js").ScheduleStore;
@@ -1554,22 +1515,7 @@ export interface Database {
   switchProjectConfigurationToManual(
     input: SwitchProjectConfigurationToManualInput,
   ): Promise<ProjectConfigurationRevisionRecord>;
-  setProjectGitHubConfigurationSource(
-    input: SetProjectGitHubConfigurationSourceInput,
-  ): Promise<void>;
-  recordConfigurationSyncAttempt(
-    input: RecordConfigurationSyncAttemptInput,
-  ): Promise<ConfigurationSyncAttemptRecord>;
-  projectConfigurationReadModel(projectId: string): Promise<ProjectConfigurationReadModel>;
-  listGitHubRepositories(organizationId: string): Promise<GitHubRepositoryRecord[]>;
-  findGitHubRepositoryForOrganization(
-    organizationId: string,
-    fullName: string,
-  ): Promise<GitHubRepositoryRecord | undefined>;
-  findGitHubConfigurationTarget(
-    projectId: string,
-    repositoryId?: number,
-  ): Promise<GitHubConfigurationTarget | undefined>;
+
   listUnroutedProviderEventsForOrganization(
     organizationId: string,
   ): Promise<ProviderEventReceiptSummary[]>;

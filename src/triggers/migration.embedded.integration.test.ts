@@ -1,14 +1,16 @@
+import { dump } from "js-yaml";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "vitest";
-import { dump } from "js-yaml";
 import { compileHubBundle } from "../config/bundle.js";
 import { createDatabase } from "../db/pg.js";
 import { embeddedDatabaseRuntime } from "../db/runtime/index.js";
+import { createProviderRegistry as createDatabaseProviders } from "../providers/server.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
 import { migrateLegacyProjectTriggers } from "./migration.js";
+const databaseProviders = createDatabaseProviders();
 
 describe("embedded startup trigger migration", () => {
   let root: string | undefined;
@@ -21,7 +23,7 @@ describe("embedded startup trigger migration", () => {
     root = await mkdtemp(join(tmpdir(), "paseo-trigger-migration-"));
     const first = await embeddedDatabaseRuntime(join(root, "database"));
     await first.runtime.migrate();
-    const database = createDatabase(first.runtime, first.locks);
+    const database = createDatabase(first.runtime, first.locks, databaseProviders);
     await first.runtime.query(
       `insert into organization (id, name, slug) values ('org', 'Org', 'org')`,
     );
@@ -68,7 +70,7 @@ describe("embedded startup trigger migration", () => {
 
     const reopened = await embeddedDatabaseRuntime(join(root, "database"));
     await reopened.runtime.migrate();
-    const reopenedDatabase = createDatabase(reopened.runtime, reopened.locks);
+    const reopenedDatabase = createDatabase(reopened.runtime, reopened.locks, databaseProviders);
     try {
       assert.equal((await reopenedDatabase.listOrganizationTriggers("org")).length, 1);
       assert.equal((await reopenedDatabase.listPendingProjectTriggerMigrations()).length, 0);

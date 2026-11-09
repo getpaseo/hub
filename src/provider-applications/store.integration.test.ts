@@ -1,6 +1,3 @@
-import { configurationSchema as githubConfigurationSchema } from "../providers/github/application-configuration.js";
-import { configurationSchema as slackConfigurationSchema } from "../providers/slack/application-configuration.js";
-import { testApplicationConfiguration } from "../providers/testing.js";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -13,9 +10,14 @@ import {
   postgresDatabaseRuntime,
   type DatabaseRuntimeBundle,
 } from "../db/runtime/index.js";
+import { configurationSchema as githubConfigurationSchema } from "../providers/github/application-configuration.js";
 import { createProviderRegistry } from "../providers/server.js";
-import { identitySchema as slackIdentitySchema } from "../providers/slack/application-configuration.js";
+import {
+  configurationSchema as slackConfigurationSchema,
+  identitySchema as slackIdentitySchema,
+} from "../providers/slack/application-configuration.js";
 import { slackPersistence } from "../providers/slack/persistence.js";
+import { testApplicationConfiguration } from "../providers/testing.js";
 import { createProviderApplicationInventory, createProviderApplicationStore } from "./index.js";
 const providerRegistry = createProviderRegistry();
 
@@ -131,7 +133,7 @@ async function exercisePersistence(bundle: DatabaseRuntimeBundle) {
 }
 
 async function exerciseSlackAtomicTransition(bundle: DatabaseRuntimeBundle) {
-  const database = createDatabase(bundle.runtime, bundle.locks);
+  const database = createDatabase(bundle.runtime, bundle.locks, providerRegistry);
   await bundle.runtime.query(
     `insert into organization (id, name, slug) values ('org', 'Org', 'org')`,
   );

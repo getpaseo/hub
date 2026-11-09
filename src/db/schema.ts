@@ -30,7 +30,6 @@ export type MachineStatus = (typeof MACHINE_STATUSES)[number];
 export type AgentExecutionStatus = (typeof AGENT_EXECUTION_STATUSES)[number];
 
 export const PROJECT_STATUSES = ["active", "archived"] as const;
-export const CONFIGURATION_SOURCE_KINDS = ["github", "manual"] as const;
 export const TRIGGER_FORMATS = ["single_run", "legacy_multistep"] as const;
 
 export type MachineSource =
@@ -162,7 +161,7 @@ export const projectConfigurationRevisions = pgTable(
     projectId: uuid("project_id").notNull(),
     organizationId: text("organization_id").notNull(),
     version: integer().notNull(),
-    sourceKind: text("source_kind").$type<(typeof CONFIGURATION_SOURCE_KINDS)[number]>().notNull(),
+    sourceKind: text("source_kind").$type<string>().notNull(),
     sourceEvidence: jsonb("source_evidence").notNull(),
     rawYaml: text("raw_yaml"),
     normalizedConfiguration: jsonb("normalized_configuration").notNull(),
@@ -303,7 +302,7 @@ export const organizationTriggerRevisions = pgTable(
     yaml: text().notNull(),
     normalizedConfiguration: jsonb("normalized_configuration").notNull(),
     contentHash: text("content_hash").notNull(),
-    sourceKind: text("source_kind").$type<"manual" | "github" | "project_migration">().notNull(),
+    sourceKind: text("source_kind").$type<string>().notNull(),
     sourceEvidence: jsonb("source_evidence").notNull(),
     createdByUserId: text("created_by_user_id").references(() => users.id, {
       onDelete: "set null",
@@ -1100,7 +1099,7 @@ export const projectConfigurationSources = pgTable(
   {
     organizationId: text("organization_id").notNull(),
     projectId: uuid("project_id").primaryKey(),
-    kind: text().$type<(typeof CONFIGURATION_SOURCE_KINDS)[number]>().notNull(),
+    kind: text().$type<string>().notNull(),
     githubConnectionId: uuid("github_connection_id"),
     githubRepositoryId: bigint("github_repository_id", { mode: "number" }),
     githubRepositoryFullName: text("github_repository_full_name"),

@@ -6,7 +6,7 @@ import {
   type OrganizationAccessValue,
 } from "../../auth/organization-access.js";
 import type { AuthServer } from "../../auth/server.js";
-import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
+import { projectConfigurationReadModel } from "../../configuration/source-state.js";
 import { createMemoryDatabase } from "../../db/memory.js";
 import type { ProjectRecord, StartConnectionAttemptInput } from "../../db/types.js";
 import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
@@ -15,13 +15,44 @@ import {
   enrollTestDaemon,
   TEST_DAEMON_SLUG,
 } from "../../test-utils/project-configuration.js";
+import { createProviderRegistry as createSourceProviders } from "../server.js";
 import type { GitHubConnectionClient } from "./client.js";
+import type { GitHubConfigurationProvider } from "./configuration-source.js";
 import { createGitHubRegistration } from "./index.js";
 import { githubPersistence } from "./persistence.js";
+const sourceProviders = createSourceProviders();
 
 describe("GitHub registration", () => {
   it("synchronizes the default branch at the exact push SHA and preserves the valid revision", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase({
+      providerData: {
+        github: {
+          connections: [
+            {
+              id: "connection-1",
+              organizationId: "org_1",
+              slug: "github",
+              installationId: 42,
+              accountId: "account-42",
+              accountLogin: "acme",
+              accountType: "Organization",
+              status: "active",
+              providerApplicationId: "42",
+            },
+          ],
+          repositories: [
+            {
+              id: "repository-catalog-1",
+              organizationId: "org_1",
+              connectionId: "connection-1",
+              repositoryId: 9001,
+              fullName: "acme/app",
+              defaultBranch: "main",
+            },
+          ],
+        },
+      },
+    });
     await enrollTestDaemon(database);
     const {
       project,
@@ -31,7 +62,7 @@ describe("GitHub registration", () => {
       environments: [{ name: "runner", kind: "daemon", daemon: TEST_DAEMON_SLUG, cwd: "/repo" }],
       triggers: [],
     });
-    await database.setProjectGitHubConfigurationSource({
+    await githubPersistence(database).setProjectGitHubConfigurationSource({
       projectId: project.id,
       githubConnectionId: "connection-1",
       githubRepositoryId: 9001,
@@ -40,50 +71,7 @@ describe("GitHub registration", () => {
       automaticDeploymentEnabled: true,
       userId: "user",
     });
-    githubPersistence(database).findGitHubConnection = () =>
-      Promise.resolve({
-        id: "connection-1",
-        organizationId: project.organizationId,
-        slug: "connection-1",
-        installationId: 42,
-        accountId: "account-42",
-        accountLogin: "acme",
-        accountType: "Organization",
-        status: "active" as const,
-        providerApplicationId: "42",
-      });
-    const target = {
-      id: "repository-catalog-1",
-      organizationId: project.organizationId,
-      projectId: project.id,
-      connectionId: "connection-1",
-      installationId: 42,
-      repositoryId: 9001,
-      fullName: "acme/app",
-      defaultBranch: "main",
-      automaticDeploymentEnabled: true,
-    } as const;
-    database.findGitHubConfigurationTarget = () => Promise.resolve(target);
-    githubPersistence(database).listGitHubConfigurationTargets = () => Promise.resolve([target]);
-    githubPersistence(database).acceptGitHubEvent = (input) =>
-      Promise.resolve({
-        status: "accepted",
-        events: [
-          {
-            providerEventReceiptId: `trigger-${input.deliveryId}`,
-            organizationId: project.organizationId,
-            projectId: project.id,
-            configurationRevisionId: "11111111-1111-4111-8111-111111111130",
-            deliveryId: input.deliveryId,
-            source: input.source,
-            payload: input.payload,
-            receivedAt: input.receivedAt,
-            connectionId: "connection-1",
-            resourceId: input.repositoryId === undefined ? null : String(input.repositoryId),
-          },
-        ],
-        receiptId: `receipt-${input.deliveryId}`,
-      });
+
     const configuration = new RegistrationConfigurationFake({
       "valid-sha": `environments:\n  - name: runner\n    kind: daemon\n    daemon: ${TEST_DAEMON_SLUG}\n    cwd: /repo\ntriggers:\n  - name: noop\n    on: manual.run\n    max_runtime: 1h\n    steps:\n      - id: work\n        environment: runner\n        max_runtime: 10m\n        idle_timeout: 1m\n        agent: { provider: test }\n        prompt: [{ text: noop }]`,
       "invalid-sha": "environments: []\ntriggers: invalid",
@@ -123,7 +111,8 @@ describe("GitHub registration", () => {
       { installationId: 42, repositoryId: 9001, commitSha: "invalid-sha", path: ".paseo/hub.yml" },
     ]);
     assert.equal(
-      (await database.projectConfigurationReadModel(project.id)).lastSyncAttempt?.outcome,
+      (await projectConfigurationReadModel(database, sourceProviders, project.id)).lastSyncAttempt
+        ?.outcome,
       "invalid",
     );
   });

@@ -76,7 +76,8 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
   const resources = new CompositionResources();
   try {
     const config = loadRuntimeConfig();
-    const { database, runtime, locks } = await createDatabaseHandle();
+    const providerRegistry = createProviderRegistry();
+    const { database, runtime, locks } = await createDatabaseHandle(providerRegistry);
     resources.own(() => database.close());
     const migration = await migrateLegacyProjectTriggers(database);
     if (migration.projects > 0) {
@@ -123,7 +124,6 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     );
     resources.own(() => auth.close());
     await auth.initialize?.();
-    const providerRegistry = createProviderRegistry();
     const providerEnvironment = await readProviderApplicationEnvironment(
       process.env,
       providerRegistry,
@@ -227,12 +227,15 @@ function createProductionAuthServer(
   });
 }
 
-async function createDatabaseHandle(): Promise<DatabaseRuntimeBundle & { database: Database }> {
+async function createDatabaseHandle(
+  providerRegistry: ReturnType<typeof createProviderRegistry>,
+): Promise<DatabaseRuntimeBundle & { database: Database }> {
   const databaseUrl = process.env["DATABASE_URL"];
   if (databaseUrl !== undefined && databaseUrl.length > 0) {
     return initializeDatabaseRuntime(
       () => postgresDatabaseRuntime(databaseUrl),
       "database runtime ready: postgres",
+      providerRegistry,
     );
   }
 
@@ -240,19 +243,21 @@ async function createDatabaseHandle(): Promise<DatabaseRuntimeBundle & { databas
   return initializeDatabaseRuntime(
     () => embeddedDatabaseRuntime(dataDirectory),
     `database runtime ready: embedded (${dataDirectory})`,
+    providerRegistry,
   );
 }
 
 async function initializeDatabaseRuntime(
   createRuntime: () => Promise<DatabaseRuntimeBundle>,
   readyMessage: string,
+  providerRegistry: ReturnType<typeof createProviderRegistry>,
 ): Promise<DatabaseRuntimeBundle & { database: Database }> {
   let bundle: DatabaseRuntimeBundle | undefined;
   try {
     bundle = await createRuntime();
     await bundle.runtime.migrate();
     logger.info(readyMessage);
-    return { ...bundle, database: createDatabase(bundle.runtime, bundle.locks) };
+    return { ...bundle, database: createDatabase(bundle.runtime, bundle.locks, providerRegistry) };
   } catch (error) {
     if (bundle !== undefined) {
       try {

@@ -16,6 +16,12 @@ import type {
   GitHubRepositorySnapshot,
   ProviderEventAcceptance,
 } from "../../../db/types.js";
+import { parseSourceState } from "../source-state.js";
+import type {
+  ConfigurationSyncAttemptRecord,
+  RecordConfigurationSyncAttemptInput,
+  SetProjectGitHubConfigurationSourceInput,
+} from "../source-types.js";
 const initialDataSchema = z
   .object({
     connections: z
@@ -61,6 +67,70 @@ export class GitHubMemoryPersistence {
       this.githubConnections.set(connection.installationId, connection);
     for (const repository of data.repositories)
       this.githubRepositories.set(repository.id, repository);
+  }
+  private readonly configurationSyncAttempts = new Map<string, ConfigurationSyncAttemptRecord[]>();
+  async setProjectGitHubConfigurationSource(
+    input: SetProjectGitHubConfigurationSourceInput,
+  ): Promise<void> {
+    const project = this.context.findProjectById(input.projectId);
+    if (project?.status !== "active") throw new Error("project access denied");
+    this.context.setConfigurationSource(input.projectId, {
+      kind: "github",
+      data: {
+        github_connection_id: input.githubConnectionId,
+        github_repository_id: input.githubRepositoryId,
+        github_repository_full_name: input.githubRepositoryFullName,
+        github_default_branch: input.githubDefaultBranch,
+        automatic_deployment_enabled: input.automaticDeploymentEnabled,
+      },
+    });
+  }
+  async recordConfigurationSyncAttempt(
+    input: RecordConfigurationSyncAttemptInput,
+  ): Promise<ConfigurationSyncAttemptRecord> {
+    const attempt: ConfigurationSyncAttemptRecord = {
+      id: randomUUID(),
+      projectId: input.projectId,
+      githubConnectionId: input.githubConnectionId,
+      githubRepositoryId: input.githubRepositoryId,
+      webhookDeliveryId: input.webhookDeliveryId,
+      commitSha: input.commitSha,
+      outcome: input.outcome,
+      evidence: structuredClone(input.evidence),
+      createdAt: this.context.now(),
+    };
+    const attempts = this.configurationSyncAttempts.get(input.projectId) ?? [];
+    attempts.push(attempt);
+    this.configurationSyncAttempts.set(input.projectId, attempts);
+    return attempt;
+  }
+  latestConfigurationSyncAttempt(
+    projectId: string,
+  ): Promise<ConfigurationSyncAttemptRecord | null> {
+    return Promise.resolve(this.configurationSyncAttempts.get(projectId)?.at(-1) ?? null);
+  }
+  private removeConnectionReferences(connectionId: string): void {
+    for (const { projectId, source } of this.context.configurationSources()) {
+      if (
+        source.kind !== "github" ||
+        parseSourceState(source.data).githubConnectionId !== connectionId
+      )
+        continue;
+      this.context.setConfigurationSource(projectId, {
+        kind: "manual",
+        data: { formattingPreserved: false },
+      });
+    }
+    for (const [projectId, attempts] of this.configurationSyncAttempts)
+      this.configurationSyncAttempts.set(
+        projectId,
+        attempts.map((attempt) =>
+          attempt.githubConnectionId === connectionId
+            ? Object.assign({}, attempt, { githubConnectionId: null })
+            : attempt,
+        ),
+      );
+    this.context.removeConnectionReferences(connectionId);
   }
   async acceptGitHubEvent(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance> {
     const binding = await this.findGitHubConnection(input.installationId);
@@ -175,7 +245,7 @@ export class GitHubMemoryPersistence {
     for (const [key, repository] of this.githubRepositories) {
       if (repository.connectionId === connection.id) this.githubRepositories.delete(key);
     }
-    this.context.removeConnectionReferences(connection.id);
+    this.removeConnectionReferences(connection.id);
   }
   private async replaceGitHubRepositorySnapshot(
     connection: GitHubConnectionRecord,
@@ -251,7 +321,8 @@ export class GitHubMemoryPersistence {
     projectId: string,
     repositoryId?: number,
   ): Promise<GitHubConfigurationTarget | undefined> {
-    const source = this.context.configurationSource(projectId);
+    const stored = this.context.configurationSource(projectId);
+    const source = stored?.kind === "github" ? parseSourceState(stored.data) : undefined;
     if (
       source === undefined ||
       source.kind !== "github" ||
@@ -282,7 +353,9 @@ export class GitHubMemoryPersistence {
     repositoryId: number,
   ): Promise<GitHubConfigurationTarget[]> {
     const result: GitHubConfigurationTarget[] = [];
-    for (const { projectId, source } of this.context.configurationSources()) {
+    for (const { projectId, source: stored } of this.context.configurationSources()) {
+      if (stored.kind !== "github") continue;
+      const source = parseSourceState(stored.data);
       const project = this.context.findProjectById(projectId);
       if (project?.organizationId !== organizationId || project.status !== "active") continue;
       if (

@@ -1,4 +1,3 @@
-import type { ProviderResources, ProviderResourceConnection } from "../providers/resources.js";
 import { dump, load } from "js-yaml";
 import { z } from "zod";
 import {
@@ -24,6 +23,7 @@ import type {
   ProjectTriggerRoute,
 } from "../db/types.js";
 import type { ProviderRegistry } from "../providers/registry.js";
+import type { ProviderResourceConnection, ProviderResources } from "../providers/resources.js";
 import { organizationConnections } from "../providers/resources.js";
 import { parseTriggerDocument } from "../triggers/configuration/index.js";
 import {
@@ -155,14 +155,10 @@ export class ProjectConfigurationStore {
     });
   }
 
-  async insertGitHubBundleRevision(input: {
+  async insertSourceBundleRevision(input: {
     files: readonly HubBundleFile[];
-    githubConnectionId: string;
-    githubRepositoryId: number;
-    githubRepositoryFullName: string;
-    githubDefaultBranch: string;
-    commitSha: string;
-    webhookDeliveryId: string | null;
+    sourceKind: string;
+    sourceEvidence: unknown;
     validationErrors?: unknown;
   }): Promise<ProjectConfigurationRevisionRecord> {
     const bundle = compileHubBundle(input.files);
@@ -183,20 +179,8 @@ export class ProjectConfigurationStore {
           };
     return this.database.insertProjectConfigurationRevision({
       projectId: this.projectId,
-      sourceKind: "github",
-      sourceEvidence: addBundleEvidence(
-        {
-          kind: "github",
-          githubConnectionId: input.githubConnectionId,
-          githubRepositoryId: input.githubRepositoryId,
-          githubRepositoryFullName: input.githubRepositoryFullName,
-          githubDefaultBranch: input.githubDefaultBranch,
-          commitSha: input.commitSha,
-          path: HUB_RESOURCE_PATH,
-          webhookDeliveryId: input.webhookDeliveryId,
-        },
-        bundle,
-      ),
+      sourceKind: input.sourceKind,
+      sourceEvidence: addBundleEvidence(input.sourceEvidence, bundle),
       rawYaml: bundle.files.find(({ path }) => path === HUB_RESOURCE_PATH)?.content ?? null,
       normalizedConfiguration: prepared.normalizedConfiguration,
       ...(prepared.validationErrors === undefined

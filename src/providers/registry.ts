@@ -74,6 +74,7 @@ export interface ProviderApplication {
 }
 
 export interface ProviderModule {
+  configurationSource?: import("./configuration-source.js").ProviderConfigurationSource;
   resources: import("./resources.js").ProviderResources;
   summarizeEvent(payload: unknown): import("./presentation.js").ProviderEventSummary;
   manifest: ProviderManifest;

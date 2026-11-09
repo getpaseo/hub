@@ -1,23 +1,24 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { parseCompiledHubConfig } from "../config/compiler.js";
+import { parseCompiledHubConfig } from "../../config/compiler.js";
 import {
   hashPromptPartialContent,
   type PromptPartialReadResult,
-} from "../config/prompt-partials.js";
-import { createMemoryDatabase } from "../db/memory.js";
-import { createProviderRegistry } from "../providers/server.js";
+} from "../../config/prompt-partials.js";
+import { ProjectConfigurationStore } from "../../configuration/store.js";
+import { createMemoryDatabase } from "../../db/memory.js";
 import {
   createActiveProjectConfiguration,
   enrollTestDaemon,
   TEST_DAEMON_SLUG,
-} from "../test-utils/project-configuration.js";
+} from "../../test-utils/project-configuration.js";
+import { createProviderRegistry } from "../server.js";
 import {
   synchronizeGitHubDefaultBranch,
   synchronizeGitHubProjectConfiguration,
   type GitHubConfigurationProvider,
-} from "./github-sync.js";
-import { ProjectConfigurationStore } from "./store.js";
+} from "./configuration-source.js";
+import { githubPersistence } from "./persistence.js";
 const syncProviders = createProviderRegistry();
 
 const INITIAL = {
@@ -55,7 +56,35 @@ function bundle(partial = "Safety instructions") {
 
 describe("exact-commit GitHub configuration bundle sync", () => {
   it("discovers, compiles, and stores the complete bundle at one commit", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase({
+      providerData: {
+        github: {
+          connections: [
+            {
+              id: "github-connection-1",
+              organizationId: "org_1",
+              slug: "github",
+              installationId: 42,
+              accountId: "account-42",
+              accountLogin: "acme",
+              accountType: "Organization",
+              status: "active",
+              providerApplicationId: "42",
+            },
+          ],
+          repositories: [
+            {
+              id: "repository-1",
+              organizationId: "org_1",
+              connectionId: "github-connection-1",
+              repositoryId: 9001,
+              fullName: "acme/repo",
+              defaultBranch: "main",
+            },
+          ],
+        },
+      },
+    });
     const { project } = await createActiveProjectConfiguration(database, INITIAL);
     await enrollTestDaemon(database);
     const client = new GitHubBundleFake({ sha: bundle() });
@@ -82,7 +111,35 @@ describe("exact-commit GitHub configuration bundle sync", () => {
   });
 
   it("preserves the active revision when a later bundle is invalid", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase({
+      providerData: {
+        github: {
+          connections: [
+            {
+              id: "github-connection-1",
+              organizationId: "org_1",
+              slug: "github",
+              installationId: 42,
+              accountId: "account-42",
+              accountLogin: "acme",
+              accountType: "Organization",
+              status: "active",
+              providerApplicationId: "42",
+            },
+          ],
+          repositories: [
+            {
+              id: "repository-1",
+              organizationId: "org_1",
+              connectionId: "github-connection-1",
+              repositoryId: 9001,
+              fullName: "acme/repo",
+              defaultBranch: "main",
+            },
+          ],
+        },
+      },
+    });
     const { project, revision: initial } = await createActiveProjectConfiguration(
       database,
       INITIAL,
@@ -108,7 +165,35 @@ describe("exact-commit GitHub configuration bundle sync", () => {
   });
 
   it("creates a distinct deterministic revision when only partial content changes", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase({
+      providerData: {
+        github: {
+          connections: [
+            {
+              id: "github-connection-1",
+              organizationId: "org_1",
+              slug: "github",
+              installationId: 42,
+              accountId: "account-42",
+              accountLogin: "acme",
+              accountType: "Organization",
+              status: "active",
+              providerApplicationId: "42",
+            },
+          ],
+          repositories: [
+            {
+              id: "repository-1",
+              organizationId: "org_1",
+              connectionId: "github-connection-1",
+              repositoryId: 9001,
+              fullName: "acme/repo",
+              defaultBranch: "main",
+            },
+          ],
+        },
+      },
+    });
     const { project } = await createActiveProjectConfiguration(database, INITIAL);
     await enrollTestDaemon(database);
     const client = new GitHubBundleFake({ one: bundle("First"), two: bundle("Second") });
@@ -122,7 +207,35 @@ describe("exact-commit GitHub configuration bundle sync", () => {
   });
 
   it("rejects a symlink entry without reading through it", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase({
+      providerData: {
+        github: {
+          connections: [
+            {
+              id: "github-connection-1",
+              organizationId: "org_1",
+              slug: "github",
+              installationId: 42,
+              accountId: "account-42",
+              accountLogin: "acme",
+              accountType: "Organization",
+              status: "active",
+              providerApplicationId: "42",
+            },
+          ],
+          repositories: [
+            {
+              id: "repository-1",
+              organizationId: "org_1",
+              connectionId: "github-connection-1",
+              repositoryId: 9001,
+              fullName: "acme/repo",
+              defaultBranch: "main",
+            },
+          ],
+        },
+      },
+    });
     const { project, revision } = await createActiveProjectConfiguration(database, INITIAL);
     await enrollTestDaemon(database);
     const client = new GitHubBundleFake(
@@ -138,9 +251,37 @@ describe("exact-commit GitHub configuration bundle sync", () => {
   });
 
   it("records listing failures and superseded push commits without moving the pointer", async () => {
-    const database = createMemoryDatabase();
+    const database = createMemoryDatabase({
+      providerData: {
+        github: {
+          connections: [
+            {
+              id: "github-connection-1",
+              organizationId: "org_1",
+              slug: "github",
+              installationId: 42,
+              accountId: "account-42",
+              accountLogin: "acme",
+              accountType: "Organization",
+              status: "active",
+              providerApplicationId: "42",
+            },
+          ],
+          repositories: [
+            {
+              id: "repository-1",
+              organizationId: "org_1",
+              connectionId: "github-connection-1",
+              repositoryId: 9001,
+              fullName: "acme/repo",
+              defaultBranch: "main",
+            },
+          ],
+        },
+      },
+    });
     const { project, revision } = await createActiveProjectConfiguration(database, INITIAL);
-    await database.setProjectGitHubConfigurationSource({
+    await githubPersistence(database).setProjectGitHubConfigurationSource({
       projectId: project.id,
       githubConnectionId: "github-connection-1",
       githubRepositoryId: 9001,
@@ -155,18 +296,7 @@ describe("exact-commit GitHub configuration bundle sync", () => {
     });
     const client = new GitHubBundleFake({ head: bundle() });
     client.head = "head";
-    database.findGitHubConfigurationTarget = () =>
-      Promise.resolve({
-        id: "repository-1",
-        organizationId: project.organizationId,
-        projectId: project.id,
-        connectionId: "github-connection-1",
-        installationId: 42,
-        repositoryId: 9001,
-        fullName: "acme/repo",
-        defaultBranch: "main",
-        automaticDeploymentEnabled: true,
-      });
+
     assert.deepEqual(
       await synchronizeGitHubDefaultBranch({
         configurationForProject: (targetProjectId) =>

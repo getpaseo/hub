@@ -1,4 +1,3 @@
-import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import type {
   Database,
   GitHubInstallationSyncOwner,
@@ -6,6 +5,7 @@ import type {
 } from "../../db/types.js";
 import { reportFailure } from "../../failures/index.js";
 import type { GitHubConnectionClient } from "./client.js";
+import type { GitHubConfigurationProvider } from "./configuration-source.js";
 import { githubPersistence } from "./persistence.js";
 
 /** A receipt and its pending job are accepted together before acknowledging GitHub. */
