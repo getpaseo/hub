@@ -4,7 +4,6 @@ import { z } from "zod";
 import { respondOk, type Result } from "../contract/respond.js";
 import { respondWithFailure } from "../failures/index.js";
 import { browserProvider } from "../providers/browser.js";
-import { slackSocketSchema } from "../providers/slack/application-configuration.js";
 import { getApplication } from "../server/runtime.js";
 import {
   type ProviderApplicationConfiguration,
@@ -126,17 +125,6 @@ export const beginProviderConnection = createServerFn({ method: "POST" })
       );
     }
   });
-
-export const configureSlackSocketApplication = createServerFn({ method: "POST" })
-  .validator(slackSocketSchema)
-  .handler(async (context) => {
-    const { configureSlackSocketHandler } = await import("../providers/slack/endpoints.js");
-    return configureSlackSocketHandler(context);
-  });
-export const retrySlackSocketDelivery = createServerFn({ method: "POST" }).handler(async () => {
-  const { retrySlackSocketHandler } = await import("../providers/slack/endpoints.js");
-  return retrySlackSocketHandler();
-});
 
 function sensitiveConfigurationValues(
   configuration: z.infer<typeof configurationSchema>,

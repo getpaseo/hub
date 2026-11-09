@@ -1,9 +1,8 @@
-import type { ProviderGuide, ProviderSetup } from "../presentation.js";
 import type { ProviderApplicationView } from "../../provider-applications/index.js";
+import type { ProviderGuide, ProviderSetup } from "../presentation.js";
 import { saveProviderApplication } from "../setup.js";
-import { slackSocketSchema } from "./application-configuration.js";
+import { identitySchema, slackSocketSchema } from "./application-configuration.js";
 import { readSlackDeliveryStatus } from "./delivery.js";
-import { identitySchema } from "./application-configuration.js";
 export const glyph = {
   viewBox: "0 0 16 16",
   paths: [
@@ -32,8 +31,7 @@ export function createSetup(
         ...input.values,
         ...(input.expectedVersion === undefined ? {} : { expectedVersion: input.expectedVersion }),
       });
-      const { configureSlackSocketApplication } =
-        await import("../../provider-applications/functions.js");
+      const { configureSlackSocketApplication } = await import("./functions.js");
       return configureSlackSocketApplication({ data });
     },
     summary(view, guide) {
@@ -59,8 +57,7 @@ export function createSetup(
         readSlackDeliveryStatus(view)?.state === "actionNeeded",
       successMessage: "Slack is reconnecting.",
       async execute() {
-        const { retrySlackSocketDelivery } =
-          await import("../../provider-applications/functions.js");
+        const { retrySlackSocketDelivery } = await import("./functions.js");
         return retrySlackSocketDelivery();
       },
     },
