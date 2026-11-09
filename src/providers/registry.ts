@@ -3,12 +3,10 @@ import type { Database } from "../db/types.js";
 import type {
   ProviderApplicationConfiguration,
   ProviderApplicationIdentity,
-  ProviderApplicationResult,
   ProviderApplicationSaveResult,
 } from "../provider-applications/index.js";
 import type { ProviderApplicationContext } from "../provider-applications/workflow.js";
 import type { TriggerProvider } from "../triggers/index.js";
-import type { SlackDeliveryStatus } from "../triggers/slack/source/index.js";
 import type { ProviderRegistration } from "./registration.js";
 
 export interface ProviderManifest {
@@ -18,7 +16,7 @@ export interface ProviderManifest {
   events: TriggerProvider["eventNames"];
   requests: readonly string[];
   outputs: readonly Pick<ProviderRegistration["outputs"][number], "type" | "tool">[];
-  integration?: { repositoryAuthority?: true };
+  integration?: true;
   attachment?: NonNullable<ProviderRegistration["attachment"]>["provider"];
 }
 
@@ -68,16 +66,11 @@ export interface ProviderApplication {
     context: ProviderApplicationContext,
     input: ProviderApplicationConfiguration,
   ): Promise<ProviderApplicationSaveResult>;
-  deliveryStatus?(
-    options: import("../provider-applications/index.js").ProviderApplicationsOptions,
-  ): SlackDeliveryStatus | undefined;
+  projectView?(
+    view: import("../provider-applications/index.js").ProviderApplicationView,
+    runtime: import("../provider-applications/index.js").ProviderRuntimeOwner,
+  ): import("../provider-applications/index.js").ProviderApplicationView;
   activationError?(error: unknown): Error | undefined;
-  socket?: {
-    configure(
-      context: Pick<ProviderApplicationContext, "options" | "request" | "account">,
-      input: { appToken: string; botToken: string; expectedVersion?: number },
-    ): Promise<ProviderApplicationResult>;
-  };
 }
 
 export interface ProviderModule {

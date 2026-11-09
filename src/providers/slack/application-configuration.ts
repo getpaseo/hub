@@ -69,3 +69,10 @@ export function requestSecrets(data: z.infer<typeof requestSchema>): readonly st
 }
 
 export type SlackProviderApplicationIdentity = z.infer<typeof identitySchema>;
+
+const socketExpectedVersionSchema = z.number().int().positive().optional();
+export const slackSocketSchema = z.object({
+  appToken: z.string().trim().startsWith("xapp-").min(6),
+  botToken: z.string().trim().startsWith("xoxb-").min(6),
+  expectedVersion: socketExpectedVersionSchema,
+});

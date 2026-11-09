@@ -1,37 +1,43 @@
 import { createHubApplication } from "./app.js";
+import { capabilitiesFor } from "./auth/organization-policy.js";
 import type { AuthServer } from "./auth/server.js";
 import type { BillingRuntime } from "./billing/index.js";
+import { CompositionResources } from "./composition-resources.js";
 import type { ConnectionResolver } from "./config/connections.js";
-import type { Database } from "./db/types.js";
-import { resolveRouteTenant } from "./projects/access.js";
-import { capabilitiesFor } from "./auth/organization-policy.js";
 import type { DaemonDispatchLifecycleOptions } from "./daemons/lifecycle.js";
+import { DaemonProviderCatalog } from "./daemons/provider-catalog.js";
+import type { Database } from "./db/types.js";
 import type { EntitlementsService } from "./entitlements/service.js";
-import { OperatorConsole } from "./operator/console.js";
-import { UsageDashboard } from "./usage/dashboard.js";
-import { OrganizationResources } from "./organizations/resources.js";
+import type { ExecutionAuthority } from "./execution-authority/index.js";
+import { createExecutionAuthority } from "./execution-authority/index.js";
 import { OutputExecutorRegistry } from "./execution-capabilities/outputs.js";
+import { HomeDashboard } from "./home/dashboard.js";
+import { OperatorConsole } from "./operator/console.js";
+import { OrganizationResources } from "./organizations/resources.js";
+import { resolveRouteTenant } from "./projects/access.js";
+import { ProjectDashboard } from "./projects/dashboard.js";
+import type { ProviderApplications } from "./provider-applications/index.js";
 import type {
+  ProviderConnectionRegistration,
   ProviderIntegrationRegistration,
   ProviderRegistration,
 } from "./providers/registration.js";
-import { createExecutionAuthority } from "./execution-authority/index.js";
-import type { ExecutionAuthority } from "./execution-authority/index.js";
 import {
   BillingForbiddenError,
   type ApplicationRuntime,
   type BillingCheckoutInput,
   type BillingOverviewView,
 } from "./server/runtime.js";
-import { ProjectDashboard } from "./projects/dashboard.js";
-import { CompositionResources } from "./composition-resources.js";
 import { TriggerDashboard } from "./triggers/dashboard.js";
-import type { ProviderApplications } from "./provider-applications/index.js";
-import { DaemonProviderCatalog } from "./daemons/provider-catalog.js";
-import { HomeDashboard } from "./home/dashboard.js";
-import type { ProviderConnectionRegistration } from "./providers/registration.js";
+import { UsageDashboard } from "./usage/dashboard.js";
 
+export interface ExecutionAuthorityContext {
+  database: Database;
+  connectionsForProject: (projectId: string) => ConnectionResolver;
+  isExecutionActive(executionId: string): Promise<boolean>;
+}
 export interface ApplicationCompositionOptions {
+  createExecutionAuthority?: (context: ExecutionAuthorityContext) => ExecutionAuthority;
   database: Database | null;
   auth: AuthServer | null;
   /** The composition root's single EntitlementsService; present whenever a database is. */
@@ -81,7 +87,7 @@ async function createOwnedApplicationRuntime(
   const executionAuthority = createRuntimeExecutionAuthority(
     options.database,
     connectionsForProject,
-    integrations,
+    options.createExecutionAuthority,
   );
   const outputRegistry = new OutputExecutorRegistry();
   for (const output of registrations.flatMap((registration) => registration.outputs)) {
@@ -417,21 +423,18 @@ function createConnectionsForProject(
 function createRuntimeExecutionAuthority(
   database: Database | null,
   connectionsForProject: (projectId: string) => ConnectionResolver,
-  integrations: ReadonlyMap<string, ProviderIntegrationRegistration>,
+  factory: ApplicationCompositionOptions["createExecutionAuthority"],
 ): ExecutionAuthority | undefined {
   if (database === null) return undefined;
-  const githubAuthority = [...integrations.values()].find(
-    (integration) => integration.githubAuthority !== undefined,
-  )?.githubAuthority;
-  return createExecutionAuthority({
+  const context: ExecutionAuthorityContext = {
     database,
     connectionsForProject,
-    ...(githubAuthority === undefined ? {} : { githubAuthority }),
     isExecutionActive: async (executionId) => {
       const execution = await database.findAgentExecutionById(executionId);
       return execution?.status === "spawning" || execution?.status === "running";
     },
-  });
+  };
+  return factory === undefined ? createExecutionAuthority(context) : factory(context);
 }
 
 /**

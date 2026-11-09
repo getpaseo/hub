@@ -1,14 +1,13 @@
-import type { ProjectConfigurationStore } from "../configuration/store.js";
-import type { ConnectionResolutionContext, ConnectionResolver } from "../config/connections.js";
-import type { OrganizationConnectionUsage } from "../db/types.js";
-import type { OutputExecutor, OutputToolDefinition } from "../execution-capabilities/outputs.js";
-import type { TriggerProvider, TriggerSource } from "../triggers/index.js";
 import type {
   AttachmentCapabilityRegistry,
   AttachmentProvider,
   AttachmentResolver,
 } from "../attachments/capabilities.js";
-import type { SlackDeliveryStatus } from "../triggers/slack/source/index.js";
+import type { ConnectionResolutionContext, ConnectionResolver } from "../config/connections.js";
+import type { ProjectConfigurationStore } from "../configuration/store.js";
+import type { OrganizationConnectionUsage } from "../db/types.js";
+import type { OutputExecutor, OutputToolDefinition } from "../execution-capabilities/outputs.js";
+import type { TriggerProvider, TriggerSource } from "../triggers/index.js";
 
 export interface TriggerProviderResources {
   configurationStoreForProject: (projectId: string) => ProjectConfigurationStore;
@@ -27,22 +26,6 @@ export interface ProviderIntegrationRegistration {
     value: string,
     context?: ConnectionResolutionContext,
   ): Promise<string>;
-  githubAuthority?: GitHubAuthorityRegistration;
-}
-
-export interface GitHubAuthorityRegistration {
-  mint(input: {
-    projectId: string;
-    connectionSlug: string;
-    repositories: readonly string[];
-    permissions: Readonly<Record<string, "read" | "write" | "admin">>;
-  }): Promise<{
-    token: string;
-    expiresAt: number;
-    botUserId: number;
-    botLogin: string;
-  }>;
-  revoke(token: string): Promise<void>;
 }
 
 export interface ProviderConnectionRegistration {
@@ -77,5 +60,4 @@ export interface ProviderRegistration {
   outputs: readonly ProviderOutputRegistration[];
   requests: readonly ProviderRequestRegistration[];
   attachment?: ProviderAttachmentRegistration;
-  slackDelivery?: { status(): SlackDeliveryStatus; retry(): Promise<void> };
 }

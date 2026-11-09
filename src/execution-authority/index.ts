@@ -1,23 +1,23 @@
 import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
-import type { CompiledGitHubAuthority } from "../config/github-authority.js";
 import {
   parseConnectionTemplate,
   resolveConnectionTemplate,
 } from "../config/connection-template.js";
 import type {
-  ConnectionResolver,
   ConnectionResolutionContext,
+  ConnectionResolver,
   ConnectionTokenLease,
 } from "../config/connections.js";
+import type { CompiledGitHubAuthority } from "../config/github-authority.js";
 import type { Database } from "../db/types.js";
-import type { GitHubAuthorityRegistration } from "../providers/registration.js";
 import { reportFailure } from "../failures/index.js";
+import type { GitHubAuthorityRegistration } from "../providers/github/runtime.js";
 import type { ExecutionCredentialLease } from "./internal/store.js";
 export { ExecutionAuthorityRepository } from "./internal/store.js";
 export type {
-  ExecutionAuthorityStore,
   ExecutionAuthorityRecord,
+  ExecutionAuthorityStore,
   ExecutionCredentialLease,
 } from "./internal/store.js";
 

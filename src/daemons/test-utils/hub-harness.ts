@@ -1,64 +1,62 @@
+import { createStartHandler, defaultStreamHandler } from "@tanstack/react-start/server";
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { dump } from "js-yaml";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import type { IncomingMessage } from "node:http";
-import type { Server } from "node:http";
+import type { IncomingMessage, Server } from "node:http";
 import { createServer } from "node:net";
 import type { Duplex } from "node:stream";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { createStartHandler, defaultStreamHandler } from "@tanstack/react-start/server";
-import { createPostgresQueryRuntime } from "../../db/test-utils/runtime.js";
-import { dump } from "js-yaml";
 import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
-import { createHubApplication, type HubRuntime } from "../../app.js";
-import { createFetchServer } from "../../http/node-server.js";
-import { startApplication, stopApplication } from "../../server/runtime.js";
-import {
-  HubExecutionAgentValidateRequestSchema,
-  type HubExecutionControlAction,
-  type HubExecutionAgentSnapshot,
-} from "../../hub/protocol.js";
 import {
   deriveAgentExecutionCompletionToken,
   hashAgentExecutionCompletionToken,
 } from "../../agent-executions/completion-token.js";
-import { createDatabase } from "../../db/test-utils/runtime.js";
+import { createHubApplication, type HubRuntime } from "../../app.js";
 import type { ApiKeyScope } from "../../auth/api-key-contract.js";
 import type { OperationAuthenticator } from "../../auth/operation-auth.js";
-import type {
-  AgentExecutionRecord,
-  Database,
-  DaemonRecord,
-  TriggerRunRecord,
-} from "../../db/types.js";
+import type { HubBundleFile } from "../../config/bundle.js";
+import type { WorktreeTarget } from "../../config/index.js";
+import { ProjectConfigurationStore } from "../../configuration/store.js";
 import { dispatchLaunchMachineIntent } from "../../daemons/index.js";
 import {
   durableExecutionId,
   type DaemonDispatchResult,
   type ExecutionDeadlineClock,
 } from "../../daemons/lifecycle.js";
+import { createDatabase, createPostgresQueryRuntime } from "../../db/test-utils/runtime.js";
+import type {
+  AgentExecutionRecord,
+  DaemonRecord,
+  Database,
+  TriggerRunRecord,
+} from "../../db/types.js";
 import type { LaunchMachineIntent } from "../../dispatcher/launch-machine-intent.js";
-import type { WorktreeTarget } from "../../config/index.js";
+import { createUnlimitedEntitlementsService } from "../../entitlements/test-utils.js";
+import {
+  createExecutionAuthority,
+  type ExecutionAuthority,
+} from "../../execution-authority/index.js";
 import {
   OutputExecutorRegistry,
   outputContextProvider,
   replyOutputTool,
 } from "../../execution-capabilities/outputs.js";
-import type { DaemonClock } from "../registry.js";
-import { ENROLLMENT_LIFETIME_MS } from "../registration.js";
-import { createUnlimitedEntitlementsService } from "../../entitlements/test-utils.js";
+import { createFetchServer } from "../../http/node-server.js";
+import {
+  HubExecutionAgentValidateRequestSchema,
+  type HubExecutionAgentSnapshot,
+  type HubExecutionControlAction,
+} from "../../hub/protocol.js";
+import type { GitHubAuthorityRegistration } from "../../providers/github/runtime.js";
+import { startApplication, stopApplication } from "../../server/runtime.js";
+import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
 import type { TriggerProvider } from "../../triggers/index.js";
-import { ProjectConfigurationStore } from "../../configuration/store.js";
 import { createSlackAttachmentResolver } from "../../triggers/slack/attachments.js";
 import type { SlackBotClient, SlackThreadReadResult } from "../../triggers/slack/client.js";
 import { createSlackTriggerProvider } from "../../triggers/slack/provider.js";
-import {
-  createExecutionAuthority,
-  type ExecutionAuthority,
-} from "../../execution-authority/index.js";
-import type { GitHubAuthorityRegistration } from "../../providers/registration.js";
-import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
-import type { HubBundleFile } from "../../config/bundle.js";
+import { ENROLLMENT_LIFETIME_MS } from "../registration.js";
+import type { DaemonClock } from "../registry.js";
 
 const HUB_ORGANIZATION_ID = "org_1";
 const HUB_PROJECT_ID = "00000000-0000-4000-8000-000000000001";

@@ -11,6 +11,7 @@ import {
   type DatabaseRuntimeBundle,
 } from "../db/runtime/index.js";
 import type { Database } from "../db/types.js";
+import type { ActiveProviderRuntime } from "../providers/active-runtime.js";
 import { discordPersistence } from "../providers/discord/persistence.js";
 import { githubPersistence } from "../providers/github/persistence.js";
 import { linearPersistence } from "../providers/linear/persistence.js";
@@ -479,6 +480,8 @@ async function databaseFixture(engine: "PGlite" | "PostgreSQL"): Promise<{
 }
 
 class RecordingRuntime implements ProviderRuntimeOwner {
+  read: ActiveProviderRuntime["read"] = (_definition, operation) => operation(undefined);
+  use: ActiveProviderRuntime["use"] = (_definition, operation) => operation(undefined);
   readonly published: Provider[] = [];
 
   prepare(provider: Provider): Promise<ProviderRuntimeCandidate> {

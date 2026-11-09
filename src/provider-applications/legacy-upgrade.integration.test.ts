@@ -11,6 +11,7 @@ import {
   postgresDatabaseRuntime,
   type DatabaseRuntimeBundle,
 } from "../db/runtime/index.js";
+import type { ActiveProviderRuntime } from "../providers/active-runtime.js";
 import { createProviderRegistry } from "../providers/server.js";
 import { SLACK_REQUIRED_BOT_SCOPES } from "../providers/slack/client.js";
 import {
@@ -352,6 +353,8 @@ function identity(configuration: ProviderApplicationConfiguration): ProviderAppl
 }
 
 class RecordingRuntime implements ProviderRuntimeOwner {
+  read: ActiveProviderRuntime["read"] = (_definition, operation) => operation(undefined);
+  use: ActiveProviderRuntime["use"] = (_definition, operation) => operation(undefined);
   readonly published: Provider[] = [];
 
   prepare(provider: Provider): Promise<ProviderRuntimeCandidate> {

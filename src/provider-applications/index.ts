@@ -1,10 +1,9 @@
 import type { AccountAccessValue } from "../auth/organization-access.js";
 import type { BindLinearConnectionInput, BindSlackConnectionInput } from "../db/types.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
+import type { ActiveProviderRuntime } from "../providers/active-runtime.js";
 import type { LinearInstallation } from "../providers/linear/client.js";
 import type { ProviderRegistry } from "../providers/registry.js";
-import type { SlackSocketInstallationVerifier } from "../providers/slack/installation.js";
-import type { SlackDeliveryStatus } from "../triggers/slack/source/index.js";
 import {
   closeCandidate,
   identityConflictsWithConnections,
@@ -96,7 +95,7 @@ export interface ProviderRuntimeCandidate {
   close(): Promise<void>;
 }
 
-export interface ProviderRuntimeOwner {
+export interface ProviderRuntimeOwner extends ActiveProviderRuntime {
   prepare(
     provider: Provider,
     configuration: ProviderApplicationConfiguration,
@@ -166,7 +165,6 @@ export interface ProviderApplicationView {
   lastEventAt: string | null;
   replaceable: boolean;
   configurationVersion: number | null;
-  deliveryStatus?: SlackDeliveryStatus;
 }
 
 export interface ProviderApplicationOverview {
@@ -294,11 +292,17 @@ export interface ProviderApplications {
     organizationId: string,
     surface?: ProviderApplicationSurface,
   ): Promise<{ url: string }>;
-  configureSlackSocket(
+  withOperator<Value>(
     request: Request,
-    input: { appToken: string; botToken: string; expectedVersion?: number },
-  ): Promise<ProviderApplicationResult>;
-  retrySlackSocket(request: Request): Promise<void>;
+    operation: (context: ProviderApplicationCommandContext) => Promise<Value>,
+  ): Promise<Value>;
+}
+
+export interface ProviderApplicationCommandContext {
+  options: ProviderApplicationsOptions;
+  request: Request;
+  account: AccountAccessValue;
+  serialize<Value>(provider: string, operation: () => Promise<Value>): Promise<Value>;
 }
 
 export interface ProviderApplicationsOptions {
@@ -319,8 +323,6 @@ export interface ProviderApplicationsOptions {
     returnRoute: string,
     begin: (request: Request) => Promise<{ url: string }>,
   ) => Promise<{ url: string }>;
-  slackSocketVerifier?: SlackSocketInstallationVerifier;
-  slackDelivery?: { status(): SlackDeliveryStatus; retry(): Promise<void> };
 }
 
 export function createProviderApplications(
@@ -351,7 +353,6 @@ export function createProviderApplications(
           const identity = options.runtime.identity?.(provider) ?? persisted?.identity ?? null;
           const status = providerStatus(environment !== undefined, identity, connections);
           const configurationVersion = environment === undefined ? (persisted?.version ?? null) : 0;
-          const deliveryStatus = application.deliveryStatus?.(options);
           const view: ProviderApplicationView = {
             provider,
             status,
@@ -368,9 +369,8 @@ export function createProviderApplications(
                   )?.toISOString() ?? null),
             replaceable: connections.length === 0,
             configurationVersion,
-            ...(deliveryStatus === undefined ? {} : { deliveryStatus }),
           };
-          return [provider, view] as const;
+          return [provider, application.projectView?.(view, options.runtime) ?? view] as const;
         }),
       );
       const providers = Object.fromEntries(entries);
@@ -453,31 +453,18 @@ export function createProviderApplications(
         }
       });
     },
-    async configureSlackSocket(request, input) {
+    async withOperator(request, operation) {
       rejectMutation(options, request);
       const account = await requireOperator(options, request);
-      if (options.environment["slack"] !== undefined)
-        throw new ProviderApplicationError("managedByEnvironment");
-      const socket = options.registry.require("slack").application.socket;
-      if (socket === undefined) throw new ProviderApplicationError("invalidInput");
-      return serialize(queues, "slack", () =>
-        socket.configure(
-          {
-            options,
-            request,
-            account,
-          },
-          input,
-        ),
-      );
-    },
-    async retrySlackSocket(request) {
-      rejectMutation(options, request);
-      await requireOperator(options, request);
-      if (options.slackDelivery === undefined) {
-        throw new ProviderApplicationError("invalidInput");
-      }
-      await options.slackDelivery.retry();
+      return operation({
+        options,
+        request,
+        account,
+        serialize: (provider, command) => {
+          options.registry.require(provider);
+          return serialize(queues, provider, command);
+        },
+      });
     },
   };
 }

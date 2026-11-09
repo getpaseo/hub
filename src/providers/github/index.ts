@@ -42,6 +42,7 @@ import {
 import { createGitHubConfigurationProvider } from "./configuration.js";
 import { createGitHubLifecycle } from "./lifecycle.js";
 import { githubPersistence } from "./persistence.js";
+import { githubRuntime, type GitHubRegistration } from "./runtime.js";
 
 export interface GitHubRegistrationConfiguration {
   appId: string;
@@ -78,7 +79,10 @@ interface GitHubConnectionOptions {
 
 export function createGitHubRegistration(
   options: CreateGitHubRegistrationOptions,
-): ProviderRegistration {
+): GitHubRegistration {
+  return githubRuntime.register(buildGitHubRegistration(options));
+}
+function buildGitHubRegistration(options: CreateGitHubRegistrationOptions): GitHubRegistration {
   const configuration = options.configuration ?? null;
   if (configuration === null || options.publicBaseUrl === undefined) {
     return emptyGitHubRegistration(options);
@@ -189,6 +193,42 @@ export function createGitHubRegistration(
       callbackOrigin: options.publicBaseUrl,
     },
     connection,
+    githubAuthority: {
+      async mint(input) {
+        const project = await database.findProjectById(input.projectId);
+        const selectedConnection =
+          project === undefined
+            ? undefined
+            : (await database.organizationConnectionUsage(project.organizationId)).github.find(
+                (candidate) =>
+                  candidate.organizationId === project.organizationId &&
+                  candidate.slug === input.connectionSlug,
+              );
+        if (selectedConnection === undefined || selectedConnection.status !== "active") {
+          throw new Error(`github connection is unavailable: ${input.connectionSlug}`);
+        }
+        repositoryNamesForAccount(input.repositories, selectedConnection.accountLogin);
+        const token = await appAuth.mintInstallationAccessToken({
+          installationId: selectedConnection.installationId,
+          accountLogin: selectedConnection.accountLogin,
+          repositories: input.repositories,
+          permissions: input.permissions,
+        });
+        try {
+          const bot = await appAuth.getAppBotIdentity(configuration.appSlug, token.token);
+          return {
+            token: token.token,
+            expiresAt: token.expiresAt,
+            botUserId: bot.id,
+            botLogin: bot.login,
+          };
+        } catch (error) {
+          await appAuth.revokeInstallationToken(token.token);
+          throw error;
+        }
+      },
+      revoke: (token) => appAuth.revokeInstallationToken(token),
+    },
     integration: {
       async resolve(projectId, connectionSlug, value, context?: ConnectionResolutionContext) {
         if (value !== "token") {
@@ -213,42 +253,6 @@ export function createGitHubRegistration(
           expiresAt: token.expiresAt,
         });
         return token.token;
-      },
-      githubAuthority: {
-        async mint(input) {
-          const project = await database.findProjectById(input.projectId);
-          const selectedConnection =
-            project === undefined
-              ? undefined
-              : (await database.organizationConnectionUsage(project.organizationId)).github.find(
-                  (candidate) =>
-                    candidate.organizationId === project.organizationId &&
-                    candidate.slug === input.connectionSlug,
-                );
-          if (selectedConnection === undefined || selectedConnection.status !== "active") {
-            throw new Error(`github connection is unavailable: ${input.connectionSlug}`);
-          }
-          repositoryNamesForAccount(input.repositories, selectedConnection.accountLogin);
-          const token = await appAuth.mintInstallationAccessToken({
-            installationId: selectedConnection.installationId,
-            accountLogin: selectedConnection.accountLogin,
-            repositories: input.repositories,
-            permissions: input.permissions,
-          });
-          try {
-            const bot = await appAuth.getAppBotIdentity(configuration.appSlug, token.token);
-            return {
-              token: token.token,
-              expiresAt: token.expiresAt,
-              botUserId: bot.id,
-              botLogin: bot.login,
-            };
-          } catch (error) {
-            await appAuth.revokeInstallationToken(token.token);
-            throw error;
-          }
-        },
-        revoke: (token) => appAuth.revokeInstallationToken(token),
       },
     },
     triggerProviders: [

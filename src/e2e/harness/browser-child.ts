@@ -28,10 +28,16 @@ import {
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { discordPersistence } from "../../providers/discord/persistence.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
+import {
+  githubExecutionAuthority,
+  staticGitHubExecutionAuthority,
+} from "../../providers/github/runtime.js";
 import { createLinearRegistration } from "../../providers/linear/index.js";
 import type { ProviderRegistration } from "../../providers/registration.js";
+import { ProviderRegistry } from "../../providers/registry.js";
 import { createProviderRegistry } from "../../providers/server.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
+import { createSlackProvider } from "../../providers/slack/module.js";
 import { registrationRegistry } from "../../providers/testing.js";
 import { loadBuiltStartServer } from "../../server/build.js";
 import { BrowserAccountEmails, type BrowserAccountEmailKind } from "./browser-account-emails.js";
@@ -1123,18 +1129,28 @@ async function providerRuntimeOptions(
   registrations: readonly ProviderRegistration[],
   fixtures: Omit<Parameters<typeof composeProviderApplications>[0], "auth">,
 ): Promise<
-  Pick<Parameters<typeof createApplicationRuntime>[0], "registrations"> & {
+  Pick<
+    Parameters<typeof createApplicationRuntime>[0],
+    "registrations" | "createExecutionAuthority"
+  > & {
     providerApplications?: ProviderApplications;
   }
 > {
   const apps = auth === null ? null : await composeProviderApplications({ ...fixtures, auth });
   if (apps !== null) {
-    return { registrations: apps.registrations, providerApplications: apps.capability };
+    return {
+      registrations: apps.registrations,
+      providerApplications: apps.capability,
+      createExecutionAuthority: apps.createExecutionAuthority,
+    };
   }
   if (auth !== null) {
     await activateStaticProviderApplications(fixtures);
   }
-  return { registrations };
+  return {
+    registrations,
+    createExecutionAuthority: (context) => staticGitHubExecutionAuthority(context, registrations),
+  };
 }
 
 async function activateStaticProviderApplications(
@@ -1179,6 +1195,9 @@ async function composeProviderApplications(input: {
   githubConfiguration: BrowserGitHubConfiguration;
 }): Promise<{
   capability: ProviderApplications;
+  createExecutionAuthority: NonNullable<
+    Parameters<typeof createApplicationRuntime>[0]["createExecutionAuthority"]
+  >;
   registrations: readonly ProviderRegistration[];
 } | null> {
   if (process.env["PASEO_BROWSER_PROVIDER_APPS"] !== "dynamic") return null;
@@ -1220,18 +1239,20 @@ async function composeProviderApplications(input: {
   if (failures[0] !== undefined) {
     throw failures[0].error;
   }
+  const applicationRegistry = new ProviderRegistry(
+    providerRegistry
+      .list()
+      .map((module) =>
+        module.manifest.id === "slack" ? createSlackProvider(input.slackSocket.verifier()) : module,
+      ),
+  );
   const capability = createProviderApplications({
-    registry: providerRegistry,
+    registry: applicationRegistry,
     auth: input.auth,
     store,
     environment,
     runtime: providerRuntime,
     verifier,
-    slackSocketVerifier: input.slackSocket.verifier(),
-    slackDelivery: {
-      status: () => providerRuntime.delivery("slack")?.status() ?? { state: "stopped" },
-      retry: () => providerRuntime.delivery("slack")?.retry() ?? Promise.resolve(),
-    },
     inventory,
     callbackOrigin: (request) => resolveCallbackOrigin(request, process.env["PASEO_HUB_APP_URL"]),
     beginCandidateConnection: async (request, organizationId, returnRoute, begin) => {
@@ -1243,7 +1264,11 @@ async function composeProviderApplications(input: {
       return begin(new Request(url, { method: "POST", headers: request.headers }));
     },
   });
-  return { capability, registrations: providerRuntime.registrations() };
+  return {
+    capability,
+    registrations: providerRuntime.registrations(),
+    createExecutionAuthority: (context) => githubExecutionAuthority(context, providerRuntime),
+  };
 }
 
 main().catch((error: unknown) => {
