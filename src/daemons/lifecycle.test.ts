@@ -1,23 +1,26 @@
-import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
-import { DaemonResponseLostError } from "./protocol.js";
-import type { AgentConnection } from "./agents/index.js";
+import { MAX_EXPLICIT_AGENT_TITLE_CHARS } from "@getpaseo/protocol/agent-title-limits";
 import assert from "node:assert/strict";
 import { describe, it, vi } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
-import type { DaemonEvent, DaemonConnection } from "./protocol.js";
+import type { DaemonRecord } from "../db/types.js";
+import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
+import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
+import { createLogger, serializeError } from "../logger.js";
+import { createProviderRegistry as createEventProviders } from "../providers/server.js";
+import { assertOneFailure, FailureLogStream } from "../test-utils/failure-logs.js";
+import type { TriggerProvider } from "../triggers/index.js";
+import { createDurableWorkflowHandler } from "../workflows/engine.js";
+import type { AgentConnection } from "./agents/index.js";
 import {
   createDaemonDispatchLifecycle,
   DaemonDispatchFailure,
   executionWorkspaceTitle,
   type DaemonDispatchLifecycle,
 } from "./lifecycle.js";
-import { createDurableWorkflowHandler } from "../workflows/engine.js";
-import type { TriggerProvider } from "../triggers/index.js";
-import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
-import type { DaemonRecord } from "../db/types.js";
-import { createLogger, serializeError } from "../logger.js";
-import { MAX_EXPLICIT_AGENT_TITLE_CHARS } from "@getpaseo/protocol/agent-title-limits";
-import { assertOneFailure, FailureLogStream } from "../test-utils/failure-logs.js";
+import type { DaemonConnection, DaemonEvent } from "./protocol.js";
+import { DaemonResponseLostError } from "./protocol.js";
+
+const composedEvents = createEventProviders().configuration;
 
 const DAEMON_ID = "daemon-ack-test";
 const AGENT_ID = "agent-ack-test";
@@ -300,6 +303,7 @@ describe("durable Hub action acknowledgement state", () => {
     );
 
     const engine = createDurableWorkflowHandler({
+      configurationCatalog: composedEvents,
       database,
       entitlements: createUnlimitedEntitlementsService(),
       providers: [],

@@ -11,8 +11,8 @@ import type {
   JsonPrimitive,
 } from "../../config/compiler.js";
 import { parseCompiledHubConfig } from "../../config/compiler.js";
-import type { TriggerDocument } from "./schema.js";
 import { compileTriggerDocument, serializeTriggerDocument } from "./index.js";
+import type { TriggerDocument } from "./schema.js";
 
 export type MigratedLegacyTrigger =
   | {
@@ -39,10 +39,13 @@ export interface SelfContainedLegacyTrigger {
   environments: readonly CompiledEnvironment[];
 }
 
-export function migrateLegacyBundle(input: {
-  files: readonly HubBundleFile[];
-  normalizedConfiguration?: unknown;
-}): readonly MigratedLegacyTrigger[] {
+export function migrateLegacyBundle(
+  input: {
+    files: readonly HubBundleFile[];
+    normalizedConfiguration?: unknown;
+  },
+  events: import("../../providers/configuration.js").ProviderConfigurationCatalog,
+): readonly MigratedLegacyTrigger[] {
   const bundle = compileHubBundle(input.files);
   const configuration =
     input.normalizedConfiguration === undefined
@@ -61,7 +64,7 @@ export function migrateLegacyBundle(input: {
           format: "single_run" as const,
           name: trigger.name,
           yaml: serializeTriggerDocument(converted.trigger),
-          compiled: compileTriggerDocument(serializeTriggerDocument(converted.trigger)),
+          compiled: compileTriggerDocument(serializeTriggerDocument(converted.trigger), events),
           legacySourceFile: sourceFile,
           legacyStepIds: trigger.steps.map(({ id }) => id),
         }

@@ -7,7 +7,10 @@ import { beginLinearConfiguration, completeLinearInstallation } from "./applicat
 import { readEnvironment } from "./environment.js";
 import { createLinearRegistration } from "./index.js";
 import { resources } from "./resources.js";
+import { triggerConfiguration } from "./trigger-configuration.js";
+
 export const linearProvider: ProviderModule = {
+  configuration: triggerConfiguration,
   resources,
   summarizeEvent,
   manifest: {

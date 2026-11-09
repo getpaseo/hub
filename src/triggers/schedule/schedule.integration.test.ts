@@ -12,7 +12,10 @@ import {
   type DatabaseRuntimeBundle,
 } from "../../db/runtime/index.js";
 import { createUnlimitedEntitlementsService } from "../../entitlements/test-utils.js";
-import { createProviderRegistry as createCompositionProviders } from "../../providers/server.js";
+import {
+  createProviderRegistry as createCompositionProviders,
+  createProviderRegistry as createEventProviders,
+} from "../../providers/server.js";
 import { DispatchedManualRunSchema } from "../../public-api/contracts.js";
 import { acceptingAgentValidator } from "../../test-utils/agent-validator.js";
 import { DurableWorkflowEngine } from "../../workflows/engine.js";
@@ -20,6 +23,8 @@ import { OrganizationTriggerStore } from "../store.js";
 import { createScheduleProvider } from "./index.js";
 import { ScheduleTestDaemon } from "./test-daemon.js";
 import { scheduleYaml } from "./test-fixture.js";
+
+const composedEvents = createEventProviders().configuration;
 const compositionProviders = createCompositionProviders();
 
 let postgres: StartedPostgreSqlContainer;
@@ -176,6 +181,7 @@ it("two independent Hub workers leave queued work for the process with the daemo
   let time = new Date();
   const worker = (database: typeof peerDatabase, name: string, ownsConnection: () => boolean) =>
     new DurableWorkflowEngine({
+      configurationCatalog: composedEvents,
       database,
       entitlements: createUnlimitedEntitlementsService(),
       providers: [createScheduleProvider()],

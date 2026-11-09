@@ -15,6 +15,7 @@ export interface ProjectTriggerMigrationResult {
  */
 export async function migrateLegacyProjectTriggers(
   database: Database,
+  events: import("../providers/configuration.js").ProviderConfigurationCatalog,
 ): Promise<ProjectTriggerMigrationResult> {
   const pending = await database.listPendingProjectTriggerMigrations();
   let projectCount = 0;
@@ -28,10 +29,13 @@ export async function migrateLegacyProjectTriggers(
           `cannot migrate project ${project.slug}: active revision ${revision.id} has no authored bundle`,
         );
       }
-      const migrated = migrateLegacyBundle({
-        files,
-        normalizedConfiguration: revision.normalizedConfiguration,
-      });
+      const migrated = migrateLegacyBundle(
+        {
+          files,
+          normalizedConfiguration: revision.normalizedConfiguration,
+        },
+        events,
+      );
       const triggers = migrated.map((trigger): MigrateProjectTriggerInput => {
         const normalizedConfiguration =
           trigger.format === "single_run"

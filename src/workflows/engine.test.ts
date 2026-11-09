@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { describe, it, vi } from "vitest";
+import { createGitHubAuth } from "../auth/github.js";
+import { compileHubBundle } from "../config/bundle.js";
 import {
-  compileHubConfig,
   compiledConfigurationHash,
+  compileHubConfig,
   type CompiledAgent,
   type CompiledHubConfig,
 } from "../config/compiler.js";
-import { compileHubBundle } from "../config/bundle.js";
 import {
   hashPromptPartialContent,
   type ResolvedPromptPartials,
@@ -19,23 +20,25 @@ import type {
   ProviderEventReceiptRecord,
   TriggerRunRecord,
 } from "../db/types.js";
-import type { AcceptedTriggerProviderMatch } from "../triggers/index.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
-import { parseInvocation } from "../triggers/invocation.js";
 import { UNLIMITED_TEMPLATE } from "../entitlements/catalog.js";
 import { EntitlementsService } from "../entitlements/service.js";
-import { createDurableWorkflowHandler } from "./engine.js";
+import { runWithFailureTracking } from "../failures/index.js";
+import { createLogger } from "../logger.js";
+import { createProviderRegistry as createEventProviders } from "../providers/server.js";
 import { currentProjectConfigurationFiles } from "../test-utils/current-project-configuration.js";
-import { createGitHubAuth } from "../auth/github.js";
+import { assertOneFailure, FailureLogStream } from "../test-utils/failure-logs.js";
 import {
   createGitHubReactionClient,
   createGitHubTriggerProvider,
   type GitHubTriggerContext,
 } from "../triggers/github/provider.js";
+import type { AcceptedTriggerProviderMatch } from "../triggers/index.js";
+import { parseInvocation } from "../triggers/invocation.js";
 import { notifyAgentExecutionCompleted } from "../triggers/lifecycle.js";
-import { runWithFailureTracking } from "../failures/index.js";
-import { createLogger } from "../logger.js";
-import { assertOneFailure, FailureLogStream } from "../test-utils/failure-logs.js";
+import { createDurableWorkflowHandler } from "./engine.js";
+
+const composedEvents = createEventProviders().configuration;
 
 describe("durable multi-step workflow engine", () => {
   it.each(["github", "discord"] as const)(
@@ -64,6 +67,7 @@ describe("durable multi-step workflow engine", () => {
       } satisfies import("../triggers/index.js").TriggerProvider;
       const intents: LaunchMachineIntent[] = [];
       const { handler, engine } = createDurableWorkflowHandler({
+        configurationCatalog: composedEvents,
         database: fixture.database,
         entitlements: fixture.entitlements,
         providers: [provider],
@@ -129,6 +133,7 @@ describe("durable multi-step workflow engine", () => {
       },
     } satisfies import("../triggers/index.js").TriggerProvider;
     const { handler, engine } = createDurableWorkflowHandler({
+      configurationCatalog: composedEvents,
       database: fixture.database,
       entitlements: fixture.entitlements,
       providers: [provider],
@@ -239,6 +244,7 @@ describe("durable multi-step workflow engine", () => {
     const onUnhandled = (reason: unknown) => unhandled.push(reason);
     process.on("unhandledRejection", onUnhandled);
     const { engine } = createDurableWorkflowHandler({
+      configurationCatalog: composedEvents,
       database: fixture.database,
       entitlements: fixture.entitlements,
       providers: [providerMatch(fixture.configuration, fixture.revisionId)],
@@ -389,6 +395,7 @@ describe("durable multi-step workflow engine", () => {
       };
       const start = () =>
         createDurableWorkflowHandler({
+          configurationCatalog: composedEvents,
           database: fixture.database,
           entitlements: fixture.entitlements,
           providers: [providerMatch(fixture.configuration, fixture.revisionId)],
@@ -471,6 +478,7 @@ describe("durable multi-step workflow engine", () => {
     const delivered: string[] = [];
     let failFirst = true;
     const { handler, engine } = createDurableWorkflowHandler({
+      configurationCatalog: composedEvents,
       database: fixture.database,
       entitlements: fixture.entitlements,
       providers: [providerMatch(fixture.configuration, fixture.revisionId)],
@@ -687,6 +695,7 @@ describe("durable multi-step workflow engine", () => {
       ],
     });
     const { handler } = createDurableWorkflowHandler({
+      configurationCatalog: composedEvents,
       database: fixture.database,
       entitlements: fixture.entitlements,
       providers: [
@@ -1570,6 +1579,7 @@ describe("durable multi-step workflow engine", () => {
     const fixture = await workflowFixture({ rawConfiguration: deadlineConfiguration() });
     let crashNextDispatch = true;
     const { handler, engine } = createDurableWorkflowHandler({
+      configurationCatalog: composedEvents,
       database: fixture.database,
       entitlements: fixture.entitlements,
       providers: [providerMatch(fixture.configuration, fixture.revisionId)],
@@ -1612,6 +1622,7 @@ describe("durable multi-step workflow engine", () => {
       },
     } satisfies import("../triggers/index.js").TriggerProvider;
     const { handler, engine } = createDurableWorkflowHandler({
+      configurationCatalog: composedEvents,
       database: fixture.database,
       entitlements: fixture.entitlements,
       providers: [provider],
@@ -1787,6 +1798,7 @@ function engineFor(
   onWorkflowRunTerminal?: (run: TriggerRunRecord) => Promise<void>,
 ) {
   return createDurableWorkflowHandler({
+    configurationCatalog: composedEvents,
     database: fixture.database,
     entitlements: fixture.entitlements,
     providers: [providerMatch(fixture.configuration, fixture.revisionId)],

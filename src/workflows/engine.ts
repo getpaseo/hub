@@ -1,39 +1,41 @@
-import { continuationKey } from "../triggers/continuation.js";
+import type { Logger } from "pino";
+import { parseCompiledHubConfig, type JsonPrimitive, type JsonValue } from "../config/compiler.js";
+import type { WorktreeTarget } from "../config/index.js";
+import { triggerDocumentName, type CompiledProjectConfiguration } from "../configuration/store.js";
+import { durableExecutionId } from "../daemons/lifecycle.js";
 import { DatabaseUnavailableError } from "../db/errors.js";
+import type { AgentExecutionStatus } from "../db/schema.js";
 import type {
+  AcceptedTriggerRunRecord,
   AgentExecutionRecord,
   Database,
   DurableProviderEvent,
   MeterReservation,
   MeterReservationDenied,
-  AcceptedTriggerRunRecord,
   TriggerRunRecord,
-  WorkflowWakeupRecord,
   WorkflowDeadlineRecovery,
+  WorkflowWakeupRecord,
 } from "../db/types.js";
-import type { AgentExecutionStatus } from "../db/schema.js";
-import { parseCompiledHubConfig, type JsonPrimitive, type JsonValue } from "../config/compiler.js";
-import { triggerDocumentName, type CompiledProjectConfiguration } from "../configuration/store.js";
-import { logger as defaultLogger } from "../logger.js";
-import { reportFailure } from "../failures/index.js";
-import { durableExecutionId } from "../daemons/lifecycle.js";
-import { EntitlementDenied } from "../entitlements/catalog.js";
-import { encodeEntitlementDenialFailureReason } from "../entitlements/denial.js";
-import type { EntitlementsService } from "../entitlements/service.js";
 import {
   buildLaunchMachineIntent,
   type LaunchMachineIntent,
 } from "../dispatcher/launch-machine-intent.js";
+import { EntitlementDenied } from "../entitlements/catalog.js";
+import { encodeEntitlementDenialFailureReason } from "../entitlements/denial.js";
+import type { EntitlementsService } from "../entitlements/service.js";
+import { reportFailure } from "../failures/index.js";
+import { logger as defaultLogger } from "../logger.js";
+import { logProviderEventRouting } from "../triggers/audit.js";
+import { continuationKey } from "../triggers/continuation.js";
+import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 import type {
+  AcceptedTriggerProviderMatch,
   TriggerDispatchOutcome,
   TriggerEventName,
   TriggerHandler,
   TriggerProvider,
   TriggerProviderMatch,
-  AcceptedTriggerProviderMatch,
 } from "../triggers/index.js";
-import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
-import { logProviderEventRouting } from "../triggers/audit.js";
 import { asTriggerContextValue, isAcceptedTriggerProviderMatch } from "../triggers/index.js";
 import {
   ExpressionEvaluationError,
@@ -43,8 +45,6 @@ import {
   renderExpressionTemplate,
   type ExpressionContext,
 } from "./expression.js";
-import type { WorktreeTarget } from "../config/index.js";
-import type { Logger } from "pino";
 
 const DEFAULT_WAKEUP_LEASE_MS = 30_000;
 const DEFAULT_WORKER_INTERVAL_MS = 250;
@@ -68,6 +68,7 @@ interface PreparedWorkflowWakeup {
 }
 
 export interface DurableWorkflowEngineOptions {
+  configurationCatalog: import("../providers/configuration.js").ProviderConfigurationCatalog;
   database: Database | null;
   /** Required end to end so the executions meter can never be silently skipped. */
   entitlements: EntitlementsService | null;
@@ -899,7 +900,9 @@ export class DurableWorkflowEngine {
       configuration: asProjectConfiguration(
         parseCompiledHubConfig(revision.normalizedConfiguration),
       ),
-      triggerName: triggerDocumentName(revision) ?? run.configuredTriggerName,
+      triggerName:
+        triggerDocumentName(revision, this.options.configurationCatalog) ??
+        run.configuredTriggerName,
     };
   }
 

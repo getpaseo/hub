@@ -6,7 +6,6 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { ArrowLeft, Braces, FileText, LockKeyhole, Plus } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
-
 import { Card } from "../components/app/card.js";
 import { Combobox, type ComboboxOption } from "../components/app/combobox.js";
 import { CheckboxField } from "../components/app/checkbox-field.js";
@@ -31,21 +30,29 @@ import { CodeEditor } from "../projects/configuration/code-editor.js";
 import { useRouteTenant } from "../projects/context.js";
 import type { Result } from "../contract/respond.js";
 import {
+  createTriggerEditor,
+  type TriggerFieldErrors,
+  type TriggerFormValue,
+} from "./configuration/editor.js";
+import { browserConfiguration } from "../providers/browser.js";
+import { saveTrigger, triggerSnapshot, type TriggerSnapshot } from "./functions.js";
+import { daemonProviderSnapshot } from "../daemons/functions.js";
+import type { HubProviderSnapshotEntry } from "../hub/protocol.js";
+import { EventFields } from "./event-fields.js";
+import { selectedProviderModel } from "./provider-catalog.js";
+import { supportsUnattendedRuns } from "./configuration/unattended.js";
+
+const {
   describeTriggerEvent,
   changeTriggerEvent,
   mergeTriggerForm,
   projectTriggerForm,
   triggerFormErrors,
-  type TriggerFieldErrors,
-  type TriggerFormValue,
-} from "./configuration/editor.js";
-import { saveTrigger, triggerSnapshot, type TriggerSnapshot } from "./functions.js";
-import { daemonProviderSnapshot } from "../daemons/functions.js";
-import type { HubProviderSnapshotEntry } from "../hub/protocol.js";
-import { EventFields } from "./event-fields.js";
-import { EDITOR_EVENTS, eventDefinition, parseEditorEvent } from "./configuration/events.js";
-import { selectedProviderModel } from "./provider-catalog.js";
-import { supportsUnattendedRuns } from "./configuration/unattended.js";
+} = createTriggerEditor(browserConfiguration);
+
+const EDITOR_EVENTS = browserConfiguration.list();
+const eventDefinition = (value: string) => browserConfiguration.definition(value);
+const parseEditorEvent = (value: string) => browserConfiguration.parse(value);
 
 type BrowserTrigger = TriggerSnapshot["triggers"][number];
 type EditorMode = "form" | "yaml";
@@ -1256,14 +1263,14 @@ function useDaemonProviderCatalog(
  * empty until they type the real one.
  */
 function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
-  const slack = snapshot.connections.find(({ provider }) => provider === "slack");
+  const initialEvent = browserConfiguration.defaultFor(snapshot.connections);
   const daemon =
     snapshot.daemons.find(({ presence }) => presence === "connected") ?? snapshot.daemons[0];
   return {
     name: "new-trigger",
     enabled: true,
-    event: slack === undefined ? "manual.run" : "slack.mention",
-    connection: slack?.slug ?? "",
+    event: initialEvent.event,
+    connection: initialEvent.connection,
     allowedUsers: "*",
     qualifiers: {},
     daemon: daemon?.slug ?? "",

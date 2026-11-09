@@ -5,6 +5,8 @@ import { connectionPresentation } from "./connection-presentation.js";
 import { failure } from "./failure.js";
 import { createSetup, glyph, identityLabel, runHint } from "./presentation.js";
 import { resourceSchemas } from "./public-resources.js";
+import { triggerConfiguration } from "./trigger-configuration.js";
+
 function manifestFor(transport: "socket" | "webhook") {
   return {
     label: "App manifest",
@@ -197,6 +199,7 @@ ${requestUrl}    bot_events:
 }
 
 export const slackBrowserProvider = {
+  configuration: triggerConfiguration,
   resourceSchemas,
   connection: connectionPresentation,
   failure,

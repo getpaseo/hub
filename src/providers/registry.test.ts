@@ -29,6 +29,11 @@ describe("provider registration", () => {
         ...createProviderRegistry().require("github").manifest,
         id: "example-provider",
       },
+      configuration: {
+        provider: "example-provider",
+        order: 4,
+        events: { "example-provider.event": { label: "Example event" } },
+      },
     };
     const registry = new ProviderRegistry([module]);
     assert.equal(registry.require("example-provider"), module);

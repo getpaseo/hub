@@ -6,6 +6,7 @@ import type {
   ProviderApplicationSurface,
   ProviderApplicationView,
 } from "../provider-applications/index.js";
+
 /**
  * Presentation unions spelled here rather than imported from the components, so this module stays
  * free of JSX and buildable by the server project. Divergence from `ApplicationField` or
@@ -121,6 +122,7 @@ export function isSecureOrigin(origin: string): boolean {
   return origin.startsWith("https://");
 }
 export interface BrowserProviderModule {
+  configuration: import("./configuration.js").ProviderConfigurationDefinition;
   resourceSchemas: {
     configuration: import("zod").ZodType<import("./resources.js").ProviderResourceView[]>;
     setup?: import("zod").ZodType<import("./resources.js").ProviderResourceView[]>;

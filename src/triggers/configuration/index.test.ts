@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
+import { describe, it } from "vitest";
 import { parseProjectConfiguration } from "../../configuration/store.js";
 import type { ProjectConfigurationRevisionRecord } from "../../db/types.js";
-import { describe, it } from "vitest";
+import { createProviderRegistry as createEventProviders } from "../../providers/server.js";
 import {
   compileTriggerDocument,
   parseTriggerDocument,
   serializeTriggerDocument,
   TriggerDocumentError,
 } from "./index.js";
+
+const composedEvents = createEventProviders().configuration;
 
 function reportsMissingEvent(error: unknown): boolean {
   return (
@@ -92,28 +95,31 @@ describe("self-contained trigger documents", () => {
             `run:
   background: ${background}`,
           );
-    const compiled = compileTriggerDocument(yaml);
+    const compiled = compileTriggerDocument(yaml, composedEvents);
     assert.equal(compiled.authored.run.background, background ?? false);
     assert.equal(compiled.events[0]?.steps[0]?.background, background ?? false);
     assert.equal(
-      parseTriggerDocument(serializeTriggerDocument(compiled.authored)).run.background,
+      parseTriggerDocument(serializeTriggerDocument(compiled.authored), composedEvents).run
+        .background,
       background ?? false,
     );
   });
 
   it("rejects a non-boolean background value", () => {
     assert.throws(
-      () => parseTriggerDocument(trigger.replace("run:", 'run:\n  background: "true"')),
+      () =>
+        parseTriggerDocument(trigger.replace("run:", 'run:\n  background: "true"'), composedEvents),
       /run.background/,
     );
   });
 
   it("compiles and preserves a configurable startup timeout", () => {
     const yaml = trigger.replace("  max_runtime: 90m", "  max_runtime: 90m\n  startup_timeout: 3m");
-    const compiled = compileTriggerDocument(yaml);
+    const compiled = compileTriggerDocument(yaml, composedEvents);
     assert.equal(compiled.events[0]?.steps[0]?.startupTimeoutMs, 180_000);
     assert.equal(
-      parseTriggerDocument(serializeTriggerDocument(compiled.authored)).run.startup_timeout,
+      parseTriggerDocument(serializeTriggerDocument(compiled.authored), composedEvents).run
+        .startup_timeout,
       "3m",
     );
   });
@@ -121,10 +127,10 @@ describe("self-contained trigger documents", () => {
   it("compiles an authored title template and preserves it through canonical YAML", () => {
     const title = "Intake · ${{ paseo.execution.id }}";
     const yaml = trigger.replace("  max_runtime: 90m", `  max_runtime: 90m\n  title: "${title}"`);
-    const compiled = compileTriggerDocument(yaml);
+    const compiled = compileTriggerDocument(yaml, composedEvents);
     assert.equal(compiled.events[0]?.steps[0]?.title, title);
     assert.equal(
-      parseTriggerDocument(serializeTriggerDocument(compiled.authored)).run.title,
+      parseTriggerDocument(serializeTriggerDocument(compiled.authored), composedEvents).run.title,
       title,
     );
   });
@@ -134,6 +140,7 @@ describe("self-contained trigger documents", () => {
       () =>
         parseTriggerDocument(
           trigger.replace("  max_runtime: 90m", '  max_runtime: 90m\n  title: ""'),
+          composedEvents,
         ),
       reportsEmptyTitle,
     );
@@ -147,13 +154,14 @@ describe("self-contained trigger documents", () => {
             "  max_runtime: 90m",
             `  max_runtime: 90m\n  startup_timeout: ${duration}`,
           ),
+          composedEvents,
         ),
       /startup_timeout/,
     );
   });
 
   it("compiles every input event to one launch against the inline target and agent choices", () => {
-    const compiled = compileTriggerDocument(trigger);
+    const compiled = compileTriggerDocument(trigger, composedEvents);
 
     assert.equal(compiled.authored.name, "engineering-requests");
     assert.equal(compiled.environment.kind, "daemon");
@@ -179,12 +187,16 @@ describe("self-contained trigger documents", () => {
   });
 
   it("round-trips the semantic document through canonical YAML", () => {
-    const parsed = parseTriggerDocument(trigger);
-    assert.deepEqual(parseTriggerDocument(serializeTriggerDocument(parsed)), parsed);
+    const parsed = parseTriggerDocument(trigger, composedEvents);
+    assert.deepEqual(
+      parseTriggerDocument(serializeTriggerDocument(parsed), composedEvents),
+      parsed,
+    );
   });
 
   it("allows authenticated manual dispatches when no actor filter is authored", () => {
-    const compiled = compileTriggerDocument(`
+    const compiled = compileTriggerDocument(
+      `
 name: deploy
 enabled: true
 on:
@@ -193,14 +205,17 @@ run:
   target: { daemon: devbox, cwd: /workspace }
   agent: { provider: codex }
   prompt: Handle it
-`);
+`,
+      composedEvents,
+    );
 
     assert.deepEqual(compiled.events[0]?.filters?.from_users, ["*"]);
     assert.deepEqual(compiled.events[0]?.steps[0]?.allowOutputs, []);
   });
 
   it("automatically grants an unlimited event-native reply for a new conversational trigger", () => {
-    const compiled = compileTriggerDocument(`
+    const compiled = compileTriggerDocument(
+      `
 name: answer
 on:
   slack.mention:
@@ -210,7 +225,9 @@ run:
   target: { daemon: devbox, cwd: /workspace }
   agent: { provider: codex, mode: full-access }
   prompt: Handle it
-`);
+`,
+      composedEvents,
+    );
 
     assert.deepEqual(compiled.events[0]?.steps[0]?.allowOutputs, [
       { type: "slack.reply", required: false },
@@ -220,14 +237,17 @@ run:
   it("rejects a trigger without events at the document boundary", () => {
     assert.throws(
       () =>
-        parseTriggerDocument(`
+        parseTriggerDocument(
+          `
 name: empty
 on: {}
 run:
   target: { daemon: local, cwd: /workspace }
   agent: { provider: codex }
   prompt: run
-`),
+`,
+          composedEvents,
+        ),
       reportsMissingEvent,
     );
   });
@@ -247,19 +267,20 @@ run:
   prompt: run
 `;
     assert.equal(
-      Object.keys(parseTriggerDocument(scheduled("{ type: string, default: everything }")).on)
-        .length,
+      Object.keys(
+        parseTriggerDocument(scheduled("{ type: string, default: everything }"), composedEvents).on,
+      ).length,
       2,
     );
     assert.throws(
-      () => parseTriggerDocument(scheduled("{ type: string, required: true }")),
+      () => parseTriggerDocument(scheduled("{ type: string, required: true }"), composedEvents),
       reportsScheduledRequiredInput,
     );
   });
 });
 
 it("applies the continuation default when reading old trigger revisions without rewriting their evidence", () => {
-  const compiled = compileTriggerDocument(trigger);
+  const compiled = compileTriggerDocument(trigger, composedEvents);
   const stored = structuredClone({
     environments: [{ ...compiled.environment, daemonId: "daemon" }],
     triggers: compiled.events,
@@ -281,17 +302,23 @@ it("applies the continuation default when reading old trigger revisions without 
     createdAt: new Date(),
     validatedAt: new Date(),
   };
-  const loaded = parseProjectConfiguration(revision);
+  const loaded = parseProjectConfiguration(revision, composedEvents);
   assert.deepEqual(loaded.triggers[0]?.steps[0]?.continuation, { mode: "conversation" });
   assert.equal(stored.triggers[0]?.steps[0]?.continuation, undefined);
-  const legacy = parseProjectConfiguration({ ...revision, sourceEvidence: { kind: "manual" } });
+  const legacy = parseProjectConfiguration(
+    { ...revision, sourceEvidence: { kind: "manual" } },
+    composedEvents,
+  );
   assert.equal(legacy.triggers[0]?.steps[0]?.continuation, undefined);
-  const migratedLegacy = parseProjectConfiguration({
-    ...revision,
-    rawYaml: JSON.stringify({
-      name: "preserved-workflow",
-      legacy_multistep: { trigger: stored.triggers[0], environments: stored.environments },
-    }),
-  });
+  const migratedLegacy = parseProjectConfiguration(
+    {
+      ...revision,
+      rawYaml: JSON.stringify({
+        name: "preserved-workflow",
+        legacy_multistep: { trigger: stored.triggers[0], environments: stored.environments },
+      }),
+    },
+    composedEvents,
+  );
   assert.deepEqual(migratedLegacy, legacy);
 });

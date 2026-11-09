@@ -11,7 +11,10 @@ import type { DaemonConnection } from "../daemons/protocol.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database } from "../db/types.js";
 import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
-import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
+import {
+  createProviderRegistry as createCompositionProviders,
+  createProviderRegistry as createEventProviders,
+} from "../providers/server.js";
 import {
   createActiveProjectConfiguration,
   TEST_DAEMON_ID,
@@ -25,6 +28,8 @@ import type { TriggerProvider } from "../triggers/index.js";
 import type { SlackBotClient } from "../triggers/slack/client.js";
 import { createSlackTriggerProvider } from "../triggers/slack/provider.js";
 import { createDurableWorkflowHandler } from "./engine.js";
+
+const composedEvents = createEventProviders().configuration;
 const compositionProviders = createCompositionProviders();
 
 describe("workflow-owned provider reactions", () => {
@@ -358,6 +363,7 @@ async function runTwoStepWorkflow<
   });
   const createEngine = () =>
     createDurableWorkflowHandler({
+      configurationCatalog: composedEvents,
       database,
       entitlements: createUnlimitedEntitlementsService(),
       providers: [input.provider],

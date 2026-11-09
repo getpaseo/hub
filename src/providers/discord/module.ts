@@ -7,8 +7,11 @@ import { connectionInventory } from "./application-persistence.js";
 import { readEnvironment } from "./environment.js";
 import { createDiscordRegistration } from "./index.js";
 import { resources } from "./resources.js";
+import { triggerConfiguration } from "./trigger-configuration.js";
 import { verifyDiscord } from "./verification.js";
+
 export const discordProvider: ProviderModule = {
+  configuration: triggerConfiguration,
   resources,
   summarizeEvent,
   manifest: {

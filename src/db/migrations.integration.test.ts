@@ -1,16 +1,10 @@
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { dump } from "js-yaml";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, it } from "vitest";
-import { insertGitHubBundleRevision } from "../providers/github/configuration-source.js";
-import { githubPersistence } from "../providers/github/persistence.js";
-import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
-import { slackPersistence } from "../providers/slack/persistence.js";
-const compositionProviders = createCompositionProviders();
-
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { dump } from "js-yaml";
 import { z } from "zod";
 import { createHubApplication } from "../app.js";
 import type { ApiKeyScope } from "../auth/api-key-contract.js";
@@ -20,12 +14,22 @@ import { ProjectConfigurationStore, revisionBundleFiles } from "../configuration
 import { EntitlementsService } from "../entitlements/service.js";
 import { InstanceSetup } from "../instance-setup/index.js";
 import { UNLIMITED_PROVISIONING } from "../organizations/provisioning.js";
+import { insertGitHubBundleRevision } from "../providers/github/configuration-source.js";
+import { githubPersistence } from "../providers/github/persistence.js";
+import {
+  createProviderRegistry as createCompositionProviders,
+  createProviderRegistry as createEventProviders,
+} from "../providers/server.js";
+import { slackPersistence } from "../providers/slack/persistence.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
 import { migrateLegacyProjectTriggers } from "../triggers/migration.js";
 import type { DatabaseRuntime, QueryHandle, QueryRow } from "./runtime/index.js";
 import { postgresDatabaseRuntime } from "./runtime/index.js";
 import { createDatabase, createPostgresQueryRuntime } from "./test-utils/runtime.js";
 import type { MigrateProjectTriggersInput } from "./types.js";
+
+const composedEvents = createEventProviders().configuration;
+const compositionProviders = createCompositionProviders();
 
 const GITHUB_OWNER = { providerApplicationId: "42", configurationVersion: 0 };
 
@@ -1333,8 +1337,8 @@ describe("database migration application", () => {
       await store.activate(configurationRevision.id);
 
       await Promise.all([
-        migrateLegacyProjectTriggers(database),
-        migrateLegacyProjectTriggers(database),
+        migrateLegacyProjectTriggers(database, composedEvents),
+        migrateLegacyProjectTriggers(database, composedEvents),
       ]);
       const triggers = await database.listOrganizationTriggers("organization-a");
       assert.deepEqual(

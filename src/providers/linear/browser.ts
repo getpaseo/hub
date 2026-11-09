@@ -4,6 +4,8 @@ import { connectionPresentation } from "./connection-presentation.js";
 import { failure } from "./failure.js";
 import { glyph, identityLabel, runHint, setup } from "./presentation.js";
 import { resourceSchemas } from "./public-resources.js";
+import { triggerConfiguration } from "./trigger-configuration.js";
+
 export const LINEAR_GUIDE: ProviderGuide = {
   provider: "linear",
   name: "Linear",
@@ -99,6 +101,7 @@ export const LINEAR_GUIDE: ProviderGuide = {
 };
 
 export const linearBrowserProvider = {
+  configuration: triggerConfiguration,
   resourceSchemas,
   connection: connectionPresentation,
   failure,

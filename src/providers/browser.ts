@@ -1,8 +1,10 @@
+import { ProviderConfigurationCatalog } from "./configuration.js";
 import { discordBrowserProvider } from "./discord/browser.js";
 import { githubBrowserProvider } from "./github/browser.js";
 import { linearBrowserProvider } from "./linear/browser.js";
 import type { BrowserProviderModule } from "./presentation.js";
 import { slackBrowserProvider } from "./slack/browser.js";
+
 export const browserProviders: readonly BrowserProviderModule[] = [
   githubBrowserProvider,
   slackBrowserProvider,
@@ -17,4 +19,8 @@ export function browserProvider(id: string): BrowserProviderModule {
 
 export const connectionBrowserProviders = [...browserProviders].sort(
   (a, b) => a.connection.order - b.connection.order,
+);
+
+export const browserConfiguration = new ProviderConfigurationCatalog(
+  browserProviders.map((provider) => provider.configuration),
 );

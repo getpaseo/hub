@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { dump, load } from "js-yaml";
+import { createHash } from "node:crypto";
 import {
   compileHubConfig,
   type AuthoredStep,
@@ -7,14 +7,15 @@ import {
   type CompiledEnvironment,
   type CompiledTrigger,
 } from "../../config/compiler.js";
-import { TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
+import type { ProviderConfigurationCatalog } from "../../providers/configuration.js";
+import { triggerDocumentSchema, type TriggerDocument } from "./schema.js";
 
-export { TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
 export {
   migrateLegacyBundle,
   type MigratedLegacyTrigger,
   type SelfContainedLegacyTrigger,
 } from "./legacy-migration.js";
+export { triggerDocumentSchema, type TriggerDocument } from "./schema.js";
 
 export interface TriggerDocumentIssue {
   path: readonly (string | number)[];
@@ -35,8 +36,11 @@ export interface CompiledTriggerDocument {
   authoredHash: string;
 }
 
-export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
-  const authored = parseTriggerDocument(yaml);
+export function compileTriggerDocument(
+  yaml: string,
+  catalog: ProviderConfigurationCatalog,
+): CompiledTriggerDocument {
+  const authored = parseTriggerDocument(yaml, catalog);
   const namedAgents = "choices" in authored.run.agent ? authored.run.agent.choices : undefined;
   const agent = "choices" in authored.run.agent ? authored.run.agent.select : authored.run.agent;
   const environment = {
@@ -111,17 +115,26 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
     authored,
     environment: compiledEnvironment,
     events: compiled.triggers.map((trigger) =>
-      withAutomaticReply({
-        ...trigger,
-        steps: trigger.steps.map((step) => ({ ...step, continuation: authored.run.continuation })),
-      }),
+      withAutomaticReply(
+        {
+          ...trigger,
+          steps: trigger.steps.map((step) => ({
+            ...step,
+            continuation: authored.run.continuation,
+          })),
+        },
+        catalog,
+      ),
     ),
     authoredHash: createHash("sha256").update(yaml).digest("hex"),
   };
 }
 
-function withAutomaticReply(trigger: CompiledTrigger): CompiledTrigger {
-  const replyType = automaticReplyType(trigger.on);
+function withAutomaticReply(
+  trigger: CompiledTrigger,
+  catalog: ProviderConfigurationCatalog,
+): CompiledTrigger {
+  const replyType = catalog.replyType(trigger.on);
   if (replyType === undefined) return trigger;
   return {
     ...trigger,
@@ -132,16 +145,6 @@ function withAutomaticReply(trigger: CompiledTrigger): CompiledTrigger {
         : [...step.allowOutputs, { type: replyType, required: false }],
     })),
   };
-}
-
-function automaticReplyType(event: string): string | undefined {
-  const provider = event.split(".", 1)[0];
-  return provider === "slack" ||
-    provider === "discord" ||
-    provider === "linear" ||
-    provider === "github"
-    ? `${provider}.reply`
-    : undefined;
 }
 
 function authoredFilters(
@@ -157,7 +160,10 @@ function authoredFilters(
   };
 }
 
-export function parseTriggerDocument(yaml: string): TriggerDocument {
+export function parseTriggerDocument(
+  yaml: string,
+  catalog: ProviderConfigurationCatalog,
+): TriggerDocument {
   let input: unknown;
   try {
     input = load(yaml);
@@ -166,7 +172,7 @@ export function parseTriggerDocument(yaml: string): TriggerDocument {
       { path: [], message: error instanceof Error ? error.message : "invalid YAML" },
     ]);
   }
-  const parsed = TriggerDocumentSchema.safeParse(input);
+  const parsed = triggerDocumentSchema(catalog).safeParse(input);
   if (!parsed.success) {
     throw new TriggerDocumentError(
       parsed.error.issues.map((issue) => ({

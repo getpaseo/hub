@@ -1,22 +1,16 @@
-import { eventDefinition, isEditorEvent } from "../triggers/configuration/events.js";
-import { ContinuationSchema } from "../triggers/continuation.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { ContinuationSchema } from "../triggers/continuation.js";
 import {
   expressionPaths,
-  parseExpression,
   expressionPathsInTemplate,
+  parseExpression,
   validateExecutionTemplate,
   type Expression,
   type ExpressionPath,
 } from "../workflows/expression.js";
 import { compileJsonSchema, finiteSchemaChoices } from "../workflows/json-schema.js";
-import {
-  hashPromptPartialContent,
-  validatePromptPartialPath,
-  validateResolvedPromptPartialPath,
-  type ResolvedPromptPartials,
-} from "./prompt-partials.js";
+import { validateConnectionTemplate } from "./connection-template.js";
 import {
   AuthoredGitHubAuthoritySchema,
   CompiledGitHubAuthoritySchema,
@@ -25,7 +19,12 @@ import {
   validateGitHubAuthority,
   type CompiledGitHubAuthority,
 } from "./github-authority.js";
-import { validateConnectionTemplate } from "./connection-template.js";
+import {
+  hashPromptPartialContent,
+  validatePromptPartialPath,
+  validateResolvedPromptPartialPath,
+  type ResolvedPromptPartials,
+} from "./prompt-partials.js";
 
 const IDENTIFIER = /^[a-z][a-z0-9_-]*$/u;
 const EVENT_NAME = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$/u;
@@ -1383,7 +1382,7 @@ function validateAuthoredIds(config: AuthoredHubConfig): void {
 }
 
 function validateTriggerLaunchSecurity(trigger: CompiledTrigger): void {
-  if (isEditorEvent(trigger.on) && eventDefinition(trigger.on).origin === "hub") return;
+  if (trigger.on === "manual.run" || trigger.on === "schedule.tick") return;
   // A project scout is an intentionally autonomous, project-scoped policy. Every other
   // externally-originated Linear action remains actor-allowlisted below.
   if (trigger.on === "linear.issue_entered_scope") {

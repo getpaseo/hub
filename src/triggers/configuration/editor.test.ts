@@ -1,22 +1,25 @@
-import { EDITOR_EVENTS } from "./events.js";
 import { describe, expect, test } from "vitest";
 import { parseDocument } from "yaml";
-import { TriggerDocumentSchema } from "./schema.js";
+import { browserConfiguration } from "../../providers/browser.js";
 import {
+  GITHUB_SEMANTIC_TRIGGER_EVENT_NAMES,
+  GITHUB_TRIGGER_SOURCE_NAMES,
+} from "../github/classification.js";
+import { createTriggerEditor, splitAgentId } from "./editor.js";
+import { triggerDocumentSchema } from "./schema.js";
+
+const EDITOR_EVENTS = browserConfiguration.list();
+
+const TriggerDocumentSchema = triggerDocumentSchema(browserConfiguration);
+const {
   changeTriggerEvent,
   createTriggerYaml,
   describeTriggerEvent,
   mergeTriggerForm,
   patchTriggerYaml,
   projectTriggerForm,
-  splitAgentId,
   triggerFormErrors,
-} from "./editor.js";
-
-import {
-  GITHUB_SEMANTIC_TRIGGER_EVENT_NAMES,
-  GITHUB_TRIGGER_SOURCE_NAMES,
-} from "../github/classification.js";
+} = createTriggerEditor(browserConfiguration);
 
 const ADVANCED = `# keep this heading
 name: answer
@@ -349,7 +352,7 @@ test("round trips the added label separately from existing item labels", () => {
   const projection = projectTriggerForm(yaml);
   expect(projection.status).toBe("editable");
   if (projection.status !== "editable") throw new Error("not editable");
-  expect(projection.value.qualifiers.label).toBe("ready");
+  expect(projection.value.qualifiers["label"]).toBe("ready");
   const patched = patchTriggerYaml(yaml, { ...projection.value, qualifiers: { label: "review" } });
   expect(
     TriggerDocumentSchema.parse(parseDocument(patched).toJS()).on["github.pull_request_label_added"]
@@ -380,7 +383,7 @@ test("creates a qualified event and removes the qualifier when changing event ki
   });
   const projection = projectTriggerForm(yaml);
   if (projection.status !== "editable") throw new Error(projection.reason);
-  expect(projection.value.qualifiers.label).toBe("ready");
+  expect(projection.value.qualifiers["label"]).toBe("ready");
   const changed = patchTriggerYaml(yaml, {
     ...projection.value,
     event: "github.pull_request_created",

@@ -4,7 +4,10 @@ import { join, relative } from "node:path";
 import { describe, it } from "vitest";
 import { compileHubBundle, type HubBundleFile } from "../../config/bundle.js";
 import type { CompiledHubConfig, CompiledTrigger } from "../../config/compiler.js";
+import { createProviderRegistry as createEventProviders } from "../../providers/server.js";
 import { migrateLegacyBundle } from "./index.js";
+
+const composedEvents = createEventProviders().configuration;
 
 const exhaustiveHub = `
 environments:
@@ -107,7 +110,7 @@ function exhaustiveFiles(): HubBundleFile[] {
 describe("legacy migration compatibility matrix", () => {
   it("preserves every one-run field while removing shared resources and partials", () => {
     const before = compileHubBundle(exhaustiveFiles()).configuration;
-    const migrated = migrateLegacyBundle({ files: exhaustiveFiles() });
+    const migrated = migrateLegacyBundle({ files: exhaustiveFiles() }, composedEvents);
     assert.equal(migrated.length, 1);
     const trigger = migrated[0];
     assert.equal(trigger?.format, "single_run");
@@ -126,7 +129,7 @@ describe("legacy migration compatibility matrix", () => {
 
   it("explodes the checked-in real project fixture without dropping a workflow", () => {
     const files = fixtureBundle("src/config/fixtures/current-project");
-    const migrated = migrateLegacyBundle({ files });
+    const migrated = migrateLegacyBundle({ files }, composedEvents);
     assert.deepEqual(
       migrated.map(({ name, format }) => ({ name, format })),
       [
@@ -153,7 +156,7 @@ describe("legacy migration compatibility matrix", () => {
     ["duplicate outputs", "run contains duplicate output grants"],
   ])("keeps %s in the legacy execution lane", (variant, blocker) => {
     const files = blockerFixture(variant);
-    const migrated = migrateLegacyBundle({ files });
+    const migrated = migrateLegacyBundle({ files }, composedEvents);
     assert.equal(migrated[0]?.format, "legacy_multistep");
     if (migrated[0]?.format !== "legacy_multistep") return;
     assert.ok(migrated[0].conversionBlockers.includes(blocker));
@@ -165,7 +168,7 @@ describe("legacy migration compatibility matrix", () => {
     const normalized = structuredClone(compileHubBundle(files).configuration);
     normalized.triggers[0]!.inputs["agent"]!.choices = ["codex", "claude", null];
     assert.throws(
-      () => migrateLegacyBundle({ files, normalizedConfiguration: normalized }),
+      () => migrateLegacyBundle({ files, normalizedConfiguration: normalized }, composedEvents),
       /invalid compiled workflow contract/u,
     );
   });

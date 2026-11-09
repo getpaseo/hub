@@ -22,6 +22,7 @@ import { OrganizationResources } from "../../organizations/resources.js";
 import { createProviderRegistry as createCompositionProviders } from "../../providers/server.js";
 import { loadBuiltStartServer } from "../../server/build.js";
 import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
+
 const compositionProviders = createCompositionProviders();
 
 const E2E_PROJECT_ID = "00000000-0000-4000-8000-000000000001";
@@ -198,7 +199,7 @@ async function main(): Promise<void> {
           const compiledConfiguration =
             activeConfiguration === undefined
               ? undefined
-              : parseProjectConfiguration(activeConfiguration);
+              : parseProjectConfiguration(activeConfiguration, compositionProviders.configuration);
           const dispatchDaemon = (
             await database.listDaemonsForOrganization(trigger.organizationId)
           )[0];
