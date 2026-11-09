@@ -1,3 +1,4 @@
+import { glyph, runHint, identityLabel } from "./presentation.js";
 import { isSecureOrigin, type ProviderGuide } from "../presentation.js";
 import { normalizeRequest, requestSchema, requestSecrets } from "./application-configuration.js";
 export const GITHUB_GUIDE: ProviderGuide = {
@@ -213,6 +214,9 @@ export const githubBrowserProvider = {
     normalize: (input: unknown) => normalizeRequest(requestSchema.parse(input)),
     secrets: (input: unknown) => requestSecrets(requestSchema.parse(input)),
   },
+  glyph,
+  runHint,
+  identityLabel,
   id: "github",
   guide: GITHUB_GUIDE,
 };

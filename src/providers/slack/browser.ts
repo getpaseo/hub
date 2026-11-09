@@ -1,3 +1,4 @@
+import { glyph, runHint, identityLabel } from "./presentation.js";
 import { type GuideStep, type ProviderGuide } from "../presentation.js";
 import { normalizeRequest, requestSchema, requestSecrets } from "./application-configuration.js";
 import { SLACK_REQUIRED_BOT_SCOPES } from "./client.js";
@@ -200,6 +201,9 @@ export const slackBrowserProvider = {
     normalize: (input: unknown) => normalizeRequest(requestSchema.parse(input)),
     secrets: (input: unknown) => requestSecrets(requestSchema.parse(input)),
   },
+  glyph,
+  runHint,
+  identityLabel,
   id: "slack",
   guide: SLACK_GUIDE,
 };

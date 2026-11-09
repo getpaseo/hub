@@ -1,3 +1,4 @@
+import { summarizeEvent } from "./activity.js";
 import { replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { GITHUB_TRIGGER_SOURCE_NAMES } from "../../triggers/github/classification.js";
 import type { ProviderModule } from "../registry.js";
@@ -7,6 +8,7 @@ import { readEnvironment } from "./environment.js";
 import { createGitHubRegistration } from "./index.js";
 import { verifyGitHub } from "./verification.js";
 export const githubProvider: ProviderModule = {
+  summarizeEvent,
   manifest: {
     id: "github",
     connectionOrder: 0,

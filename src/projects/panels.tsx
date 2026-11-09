@@ -1,3 +1,4 @@
+import { browserProvider } from "../providers/browser.js";
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-array-as-prop, eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop, typescript-eslint/no-unsafe-type-assertion -- route links and mutation controls are intentionally scoped to each rendered tenant snapshot */
 import { useSnapshotQuery } from "../queries/index.js";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -719,9 +720,7 @@ function connectionRows(data: OrganizationSnapshot) {
   ];
 }
 function providerLabel(provider: ConnectionProviderName) {
-  if (provider === "github") return "GitHub";
-  if (provider === "discord") return "Discord";
-  return provider === "slack" ? "Slack" : "Linear";
+  return browserProvider(provider).guide.name;
 }
 
 /** The one connection status a sentence-cased machine value gets wrong. */

@@ -1,3 +1,4 @@
+import { summarizeEvent } from "./activity.js";
 import { replyOutputTool } from "../../execution-capabilities/outputs.js";
 import type { ProviderModule } from "../registry.js";
 import { configurationSchema, identitySchema } from "./application-configuration.js";
@@ -6,6 +7,7 @@ import { beginLinearConfiguration, completeLinearInstallation } from "./applicat
 import { readEnvironment } from "./environment.js";
 import { createLinearRegistration } from "./index.js";
 export const linearProvider: ProviderModule = {
+  summarizeEvent,
   manifest: {
     id: "linear",
     connectionOrder: 3,

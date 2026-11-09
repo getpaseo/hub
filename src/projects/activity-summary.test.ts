@@ -1,8 +1,43 @@
+import { ProviderRegistry } from "../providers/registry.js";
+import { createProviderRegistry } from "../providers/server.js";
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { summarizeTrigger } from "./activity-summary.js";
+import { summarizeTrigger as summarizeRegisteredTrigger } from "./activity-summary.js";
+
+const registry = createProviderRegistry();
+const summarizeTrigger = (source: string, payload: unknown) =>
+  summarizeRegisteredTrigger(source, payload, registry);
 
 describe("summarizeTrigger", () => {
+  it("asks a registered implementation to summarize its payload without a built-in dispatch arm", () => {
+    const example = {
+      ...registry.require("github"),
+      manifest: { ...registry.require("github").manifest, id: "example" },
+      summarizeEvent(payload: unknown) {
+        assert.deepEqual(payload, { message: "received" });
+        return {
+          provider: "example",
+          headline: "Example received",
+          actor: null,
+          externalUrl: null,
+        };
+      },
+    };
+    assert.deepEqual(
+      summarizeRegisteredTrigger(
+        "example.received",
+        { message: "received" },
+        new ProviderRegistry([example]),
+      ),
+      {
+        provider: "example",
+        headline: "Example received",
+        actor: null,
+        externalUrl: null,
+      },
+    );
+  });
+
   it("identifies clock occurrences as scheduled runs in Activity", () => {
     assert.deepEqual(
       summarizeTrigger("schedule.tick", {

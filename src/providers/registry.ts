@@ -81,6 +81,7 @@ export interface ProviderApplication {
 }
 
 export interface ProviderModule {
+  summarizeEvent(payload: unknown): import("./presentation.js").ProviderEventSummary;
   manifest: ProviderManifest;
   application: ProviderApplication;
   createRuntime(input: ProviderRuntimeInput): ProviderRegistration;
