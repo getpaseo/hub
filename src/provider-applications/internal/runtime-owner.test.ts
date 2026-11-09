@@ -1,28 +1,57 @@
+type Provider = ProviderApplicationConfiguration["provider"];
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../../auth/server.js";
 import { createMemoryDatabase } from "../../db/memory.js";
 import type { DurableProviderEvent } from "../../db/types.js";
+import { OutputExecutorRegistry, replyOutputTool } from "../../execution-capabilities/outputs.js";
 import type { ProviderRegistration } from "../../providers/registration.js";
+import { createProviderRegistry } from "../../providers/server.js";
+import { registrationRegistry } from "../../providers/testing.js";
+import { createGitHubReplyExecutor, githubReplyAvailable } from "../../triggers/github/reply.js";
 import type { ExternalTrigger, TriggerHandler, TriggerProvider } from "../../triggers/index.js";
 import type {
-  Provider,
   ProviderApplicationConfiguration,
   ProviderApplicationIdentity,
   SlackProviderApplicationConfiguration,
 } from "../index.js";
 import { DynamicProviderRuntime } from "./runtime-owner.js";
-import { OutputExecutorRegistry, replyOutputTool } from "../../execution-capabilities/outputs.js";
-import { createGitHubReplyExecutor, githubReplyAvailable } from "../../triggers/github/reply.js";
+const providerRegistry = createProviderRegistry();
 
 describe("dynamic provider runtime", () => {
+  it("rejects an unknown provider before constructing or publishing a runtime", async () => {
+    let created = 0;
+    const registry = registrationRegistry(() => {
+      created += 1;
+      return connectionRegistration("github", "A1");
+    });
+    const runtime = new DynamicProviderRuntime({
+      registry,
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+    });
+    await assert.rejects(
+      runtime.prepare(
+        "unregistered",
+        providerConfiguration("github", "A1"),
+        "https://hub.test",
+        providerIdentity("github", "A1"),
+        1,
+      ),
+      /unknown provider: unregistered/u,
+    );
+    assert.equal(created, 0);
+    assert.equal(runtime.identity("github"), undefined);
+  });
+
   it("exposes and delivers GitHub replies through the hosted provider registration", async () => {
     const comments: unknown[] = [];
     const runtime = new DynamicProviderRuntime({
       database: createMemoryDatabase(),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
-      registrationFactory: () => ({
+      registry: registrationRegistry(() => ({
         ...connectionRegistration("github", "A1"),
         outputs: [
           {
@@ -38,7 +67,7 @@ describe("dynamic provider runtime", () => {
             }),
           },
         ],
-      }),
+      })),
     });
     const registry = new OutputExecutorRegistry();
     for (const registration of runtime.registrations()) {
@@ -96,8 +125,9 @@ describe("dynamic provider runtime", () => {
       database: createMemoryDatabase(),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
-      registrationFactory: ({ configuration }) =>
+      registry: registrationRegistry(({ configuration }) =>
         downstreamRegistration(providerConfigurationId(configuration), [], []),
+      ),
     });
     const stable = runtime
       .registrations()
@@ -133,8 +163,9 @@ describe("dynamic provider runtime", () => {
       database: createMemoryDatabase(),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
-      registrationFactory: ({ configuration }) =>
+      registry: registrationRegistry(({ configuration }) =>
         fakeRegistration(configurationId(configuration), started, stopped, completed),
+      ),
     });
     const stable = runtime
       .registrations()
@@ -198,8 +229,9 @@ describe("dynamic provider runtime", () => {
       database,
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
-      registrationFactory: ({ configuration }) =>
+      registry: registrationRegistry(({ configuration }) =>
         downstreamRegistration(configurationId(configuration), used, stopped),
+      ),
     });
     const stable = runtime
       .registrations()
@@ -268,8 +300,9 @@ describe("dynamic provider runtime", () => {
       database: createMemoryDatabase(),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
-      registrationFactory: ({ configuration }) =>
+      registry: registrationRegistry(({ configuration }) =>
         downstreamRegistration(providerConfigurationId(configuration), used, []),
+      ),
     });
     const github = runtime
       .registrations()
@@ -333,6 +366,7 @@ describe("dynamic provider runtime", () => {
 
   it("reports an unavailable capability with a stable diagnostic code", async () => {
     const runtime = new DynamicProviderRuntime({
+      registry: providerRegistry,
       database: createMemoryDatabase(),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
@@ -361,8 +395,9 @@ describe("dynamic provider runtime", () => {
       database: createMemoryDatabase(),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
-      registrationFactory: ({ configuration }) =>
+      registry: registrationRegistry(({ configuration }) =>
         downstreamRegistration(providerConfigurationId(configuration), used, stopped),
+      ),
     });
     const stable = runtime
       .registrations()
@@ -433,7 +468,7 @@ describe("dynamic provider runtime", () => {
       database: createMemoryDatabase(),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
-      registrationFactory: ({ configuration }) =>
+      registry: registrationRegistry(({ configuration }) =>
         fakeRegistration(
           configurationId(configuration),
           [],
@@ -441,6 +476,7 @@ describe("dynamic provider runtime", () => {
           [],
           configurationId(configuration) === "A2",
         ),
+      ),
     });
     const stable = runtime
       .registrations()
@@ -478,8 +514,9 @@ describe("dynamic provider runtime", () => {
         database: createMemoryDatabase(),
         auth: testAuth(),
         applicationBaseUrl: "https://hub.test",
-        registrationFactory: ({ provider: candidateProvider, configuration }) =>
+        registry: registrationRegistry(({ provider: candidateProvider, configuration }) =>
           connectionRegistration(candidateProvider, providerConfigurationId(configuration)),
+        ),
       });
       const stable = runtime
         .registrations()
@@ -507,12 +544,13 @@ describe("dynamic provider runtime", () => {
         database: createMemoryDatabase(),
         auth: testAuth(),
         applicationBaseUrl: "https://hub.test",
-        registrationFactory: ({ provider: candidateProvider, configuration }) =>
+        registry: registrationRegistry(({ provider: candidateProvider, configuration }) =>
           connectionRegistration(
             candidateProvider,
             providerConfigurationId(configuration),
             providerConfigurationId(configuration) === "two",
           ),
+        ),
       });
       const stable = runtime
         .registrations()
@@ -560,10 +598,12 @@ describe("dynamic provider runtime", () => {
       database,
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
-      registrationFactory: ({ provider, configuration, callbackOrigin, configurationVersion }) => ({
-        ...connectionRegistration(provider, providerConfigurationId(configuration)),
-        configurationSnapshot: { version: configurationVersion, callbackOrigin },
-      }),
+      registry: registrationRegistry(
+        ({ provider, configuration, callbackOrigin, configurationVersion }) => ({
+          ...connectionRegistration(provider, providerConfigurationId(configuration)),
+          configurationSnapshot: { version: configurationVersion, callbackOrigin },
+        }),
+      ),
     });
     const active = await runtime.prepare(
       "slack",
@@ -591,7 +631,7 @@ describe("dynamic provider runtime", () => {
       database: createMemoryDatabase(),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
-      registrationFactory: ({ provider, configuration }) => ({
+      registry: registrationRegistry(({ provider, configuration }) => ({
         ...connectionRegistration(provider, providerConfigurationId(configuration)),
         sources: [
           {
@@ -602,7 +642,7 @@ describe("dynamic provider runtime", () => {
             stop: () => Promise.resolve(),
           },
         ],
-      }),
+      })),
     });
     const stable = runtime
       .registrations()

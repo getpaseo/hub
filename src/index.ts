@@ -1,27 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { validateHeaderName, type IncomingMessage } from "node:http";
-import { fileURLToPath } from "node:url";
 import type { Duplex } from "node:stream";
+import { fileURLToPath } from "node:url";
 import type { Logger } from "pino";
-import type { RuntimeConfig } from "./config/index.js";
-import { createDatabase } from "./db/pg.js";
-import { ReceiptRetention } from "./receipt-retention/index.js";
-import type { Database } from "./db/types.js";
-import {
-  embeddedDatabaseRuntime,
-  postgresDatabaseRuntime,
-  type DatabaseRuntime,
-  type DatabaseRuntimeBundle,
-} from "./db/runtime/index.js";
-import type { Locks } from "./db/runtime/locks/index.js";
-import { logger } from "./logger.js";
-import { reportFailure } from "./failures/index.js";
-import { installProcessFailureHandlers } from "./failures/process.js";
-import { createFetchServer } from "./http/node-server.js";
-import { loadBuiltStartServer } from "./server/build.js";
-import { createAuthServer } from "./auth/server.js";
-import { startApplication, stopApplication, type ApplicationRuntime } from "./server/runtime.js";
 import { createApplicationRuntime } from "./application-runtime.js";
+import { createAccountMailer } from "./auth/account-emails.js";
+import { composeEntitlements, type ComposedEntitlements } from "./auth/entitlements.js";
+import { readInstanceAuthPolicy } from "./auth/instance-policy.js";
+import { createAuthServer } from "./auth/server.js";
 import {
   composeBilling,
   createStripeBillingClient,
@@ -29,25 +15,40 @@ import {
   readBillingConfig,
   type BillingRuntime,
 } from "./billing/index.js";
-import { composeEntitlements, type ComposedEntitlements } from "./auth/entitlements.js";
-import { readInstanceAuthPolicy } from "./auth/instance-policy.js";
-import { createRuntimeConfiguration } from "./runtime-configuration/index.js";
 import { CompositionResources } from "./composition-resources.js";
+import type { RuntimeConfig } from "./config/index.js";
+import { resolveHubDataDirectory } from "./data-directory.js";
+import { createDatabase } from "./db/pg.js";
+import {
+  embeddedDatabaseRuntime,
+  postgresDatabaseRuntime,
+  type DatabaseRuntime,
+  type DatabaseRuntimeBundle,
+} from "./db/runtime/index.js";
+import type { Locks } from "./db/runtime/locks/index.js";
+import type { Database } from "./db/types.js";
+import { composeEmailDelivery } from "./email/index.js";
+import { reportFailure } from "./failures/index.js";
+import { installProcessFailureHandlers } from "./failures/process.js";
+import { createFetchServer } from "./http/node-server.js";
+import { createInvitationMailer } from "./invitations/index.js";
+import { logger } from "./logger.js";
 import {
   DynamicProviderRuntime,
   activateProviderApplicationsAtStartup,
   createProviderApplicationInventory,
   createProviderApplicationStore,
-  createProviderApplications,
   createProviderApplicationVerifier,
+  createProviderApplications,
   readProviderApplicationEnvironment,
   resolveCallbackOrigin,
 } from "./provider-applications/index.js";
+import { createProviderRegistry } from "./providers/server.js";
 import { createSlackSocketInstallationVerifier } from "./providers/slack/installation.js";
-import { resolveHubDataDirectory } from "./data-directory.js";
-import { createInvitationMailer } from "./invitations/index.js";
-import { composeEmailDelivery } from "./email/index.js";
-import { createAccountMailer } from "./auth/account-emails.js";
+import { ReceiptRetention } from "./receipt-retention/index.js";
+import { createRuntimeConfiguration } from "./runtime-configuration/index.js";
+import { loadBuiltStartServer } from "./server/build.js";
+import { startApplication, stopApplication, type ApplicationRuntime } from "./server/runtime.js";
 import { migrateLegacyProjectTriggers } from "./triggers/migration.js";
 
 export function startProductionRuntime(): Promise<ApplicationRuntime> {
@@ -122,16 +123,27 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     );
     resources.own(() => auth.close());
     await auth.initialize?.();
-    const providerEnvironment = await readProviderApplicationEnvironment(process.env);
-    const providerStore = createProviderApplicationStore(runtime, locks, database);
-    const providerVerifier = createProviderApplicationVerifier();
+    const providerRegistry = createProviderRegistry();
+    const providerEnvironment = await readProviderApplicationEnvironment(
+      process.env,
+      providerRegistry,
+    );
+    const providerStore = createProviderApplicationStore(
+      runtime,
+      locks,
+      providerRegistry,
+      database,
+    );
+    const providerVerifier = createProviderApplicationVerifier(providerRegistry);
     const providerInventory = createProviderApplicationInventory(runtime);
     const providerRuntime = new DynamicProviderRuntime({
+      registry: providerRegistry,
       database,
       auth,
       applicationBaseUrl: identity.appUrl,
     });
     const providerApplications = createProviderApplications({
+      registry: providerRegistry,
       auth,
       store: providerStore,
       environment: providerEnvironment,
@@ -139,8 +151,8 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       verifier: providerVerifier,
       slackSocketVerifier: createSlackSocketInstallationVerifier(),
       slackDelivery: {
-        status: () => providerRuntime.slackDelivery()?.status() ?? { state: "stopped" },
-        retry: () => providerRuntime.slackDelivery()?.retry() ?? Promise.resolve(),
+        status: () => providerRuntime.delivery("slack")?.status() ?? { state: "stopped" },
+        retry: () => providerRuntime.delivery("slack")?.retry() ?? Promise.resolve(),
       },
       inventory: providerInventory,
       callbackOrigin: (request) => resolveCallbackOrigin(request, identity.explicitAppUrl),
@@ -165,6 +177,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       close: () => resources.close(),
     });
     const activationFailures = await activateProviderApplicationsAtStartup({
+      registry: providerRegistry,
       store: providerStore,
       environment: providerEnvironment,
       runtime: providerRuntime,

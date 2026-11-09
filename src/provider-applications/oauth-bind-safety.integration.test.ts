@@ -1,27 +1,29 @@
+type Provider = ProviderApplicationConfiguration["provider"];
+import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterEach, describe, it } from "vitest";
+import { createDatabase } from "../db/pg.js";
 import {
   embeddedDatabaseRuntime,
   postgresDatabaseRuntime,
   type DatabaseRuntimeBundle,
 } from "../db/runtime/index.js";
-import { createDatabase } from "../db/pg.js";
 import type { Database } from "../db/types.js";
+import { createProviderRegistry } from "../providers/server.js";
 import { SLACK_REQUIRED_BOT_SCOPES } from "../providers/slack/client.js";
 import {
   activateProviderApplicationsAtStartup,
   createProviderApplicationInventory,
   createProviderApplicationStore,
-  type Provider,
   type ProviderApplicationConfiguration,
   type ProviderApplicationIdentity,
   type ProviderRuntimeCandidate,
   type ProviderRuntimeOwner,
 } from "./index.js";
+const providerRegistry = createProviderRegistry();
 
 const roots: string[] = [];
 
@@ -54,7 +56,12 @@ describe("provider application OAuth bind authority", () => {
 
 async function rejectsStoredReplacement(bundle: DatabaseRuntimeBundle, provider: Provider) {
   const database = createDatabase(bundle.runtime, bundle.locks);
-  const store = createProviderApplicationStore(bundle.runtime, bundle.locks, database);
+  const store = createProviderApplicationStore(
+    bundle.runtime,
+    bundle.locks,
+    providerRegistry,
+    database,
+  );
   const first = application(provider, "A");
   const replacement = application(provider, "B");
   await store.save({
@@ -96,7 +103,12 @@ async function rejectsStoredReplacement(bundle: DatabaseRuntimeBundle, provider:
 
 async function serializesReplacementRace(bundle: DatabaseRuntimeBundle, provider: Provider) {
   const database = createDatabase(bundle.runtime, bundle.locks);
-  const store = createProviderApplicationStore(bundle.runtime, bundle.locks, database);
+  const store = createProviderApplicationStore(
+    bundle.runtime,
+    bundle.locks,
+    providerRegistry,
+    database,
+  );
   const first = application(provider, "RACE-A");
   const replacement = application(provider, "RACE-B");
   await store.save({
@@ -134,7 +146,12 @@ async function serializesReplacementRace(bundle: DatabaseRuntimeBundle, provider
 
 async function rejectsEnvironmentFallback(bundle: DatabaseRuntimeBundle, provider: Provider) {
   const database = createDatabase(bundle.runtime, bundle.locks);
-  const store = createProviderApplicationStore(bundle.runtime, bundle.locks, database);
+  const store = createProviderApplicationStore(
+    bundle.runtime,
+    bundle.locks,
+    providerRegistry,
+    database,
+  );
   const environment = application(provider, "ENV");
   const fallback = application(provider, "STORED");
   await store.save({
@@ -148,6 +165,7 @@ async function rejectsEnvironmentFallback(bundle: DatabaseRuntimeBundle, provide
   const runtime = new RecordingRuntime();
   assert.deepEqual(
     await activateProviderApplicationsAtStartup({
+      registry: providerRegistry,
       store,
       environment: { [provider]: environment.configuration },
       runtime,
@@ -166,6 +184,7 @@ async function rejectsEnvironmentFallback(bundle: DatabaseRuntimeBundle, provide
   );
   assert.deepEqual(
     await activateProviderApplicationsAtStartup({
+      registry: providerRegistry,
       store,
       environment: {},
       runtime,

@@ -1,83 +1,21 @@
-import { z } from "zod";
 import type { DatabaseRuntime, QueryRow } from "../../db/runtime/index.js";
 import type { Locks } from "../../db/runtime/locks/index.js";
 import type { Database } from "../../db/types.js";
+import type { ProviderRegistry } from "../../providers/registry.js";
 import type {
   Provider,
   ProviderApplicationConfiguration,
-  ProviderApplicationIdentity,
   ProviderApplicationStore,
   StoredProviderApplication,
 } from "../index.js";
 
-const githubConfigurationSchema = z.object({
-  provider: z.literal("github"),
-  appId: z.string().min(1),
-  appSlug: z.string().min(1),
-  clientId: z.string().min(1),
-  clientSecret: z.string().min(1),
-  privateKey: z.string().min(1),
-  // Optional: an App without one has repository access and no event triggers.
-  webhookSecret: z.string().min(1).optional(),
-});
-const slackConfigurationSchema = z.discriminatedUnion("transport", [
-  z.object({
-    provider: z.literal("slack"),
-    transport: z.literal("socket"),
-    appId: z.string().min(1),
-    appToken: z.string().min(1),
-  }),
-  z.object({
-    provider: z.literal("slack"),
-    transport: z.literal("webhook"),
-    appId: z.string().min(1),
-    clientId: z.string().min(1),
-    clientSecret: z.string().min(1),
-    signingSecret: z.string().min(1),
-  }),
-]);
-const discordConfigurationSchema = z.object({
-  provider: z.literal("discord"),
-  applicationId: z.string().min(1),
-  clientSecret: z.string().min(1),
-  botToken: z.string().min(1),
-});
-const linearConfigurationSchema = z.object({
-  provider: z.literal("linear"),
-  clientId: z.string().min(1),
-  clientSecret: z.string().min(1),
-  webhookSecret: z.string().min(1),
-});
-const configurationSchema = z.discriminatedUnion("provider", [
-  githubConfigurationSchema,
-  slackConfigurationSchema,
-  discordConfigurationSchema,
-  linearConfigurationSchema,
-]);
-
 /** @package */
 export function parseProviderApplicationConfiguration(
   value: unknown,
+  registry: ProviderRegistry,
 ): ProviderApplicationConfiguration {
-  const parsed = configurationSchema.parse(value);
-  // An absent optional value stays absent rather than becoming present-and-undefined, which is
-  // what the rest of the codebase means by optional.
-  if (parsed.provider !== "github") return parsed;
-  const { webhookSecret, ...rest } = parsed;
-  return webhookSecret === undefined ? rest : { ...rest, webhookSecret };
+  return registry.parseConfiguration(value);
 }
-const identitySchema = z.discriminatedUnion("provider", [
-  z.object({
-    provider: z.literal("github"),
-    id: z.string().min(1),
-    name: z.string().min(1),
-    ownerLogin: z.string().min(1),
-  }),
-  z.object({ provider: z.literal("slack"), id: z.string().min(1), name: z.string().min(1) }),
-  z.object({ provider: z.literal("discord"), id: z.string().min(1), name: z.string().min(1) }),
-  z.object({ provider: z.literal("linear"), id: z.string().min(1), name: z.string().min(1) }),
-]);
-
 interface ProviderConfigurationRow extends QueryRow {
   provider: string;
   configuration: unknown;
@@ -100,6 +38,7 @@ export class ProviderConfigurationConflictError extends Error {
 export function createProviderApplicationStore(
   database: DatabaseRuntime,
   locks: Locks,
+  registry: ProviderRegistry,
   connections?: Pick<
     Database,
     "completeSlackProviderApplication" | "completeLinearProviderApplication"
@@ -113,7 +52,7 @@ export function createProviderApplicationStore(
          from runtime_provider_configuration where provider = $1`,
         [provider],
       );
-      return result.rows[0] === undefined ? undefined : parseRow(result.rows[0]);
+      return result.rows[0] === undefined ? undefined : parseRow(result.rows[0], registry);
     },
     async readAll() {
       const result = await database.query<ProviderConfigurationRow>(
@@ -121,7 +60,7 @@ export function createProviderApplicationStore(
                 verified_at, updated_at, updated_by_user_id
          from runtime_provider_configuration order by provider`,
       );
-      return result.rows.map(parseRow);
+      return result.rows.map((row) => parseRow(row, registry));
     },
     save(input) {
       return locks.withLock(`provider-configuration:${input.provider}`, () =>
@@ -163,7 +102,7 @@ export function createProviderApplicationStore(
           );
           const saved = result.rows[0];
           if (saved === undefined) throw new Error("provider configuration save returned no row");
-          const parsed = parseRow(saved);
+          const parsed = parseRow(saved, registry);
           await writeProviderActivation(
             transaction,
             input.provider,
@@ -278,7 +217,7 @@ export function createProviderApplicationStore(
           );
           const row = saved.rows[0];
           if (row === undefined) throw new Error("Slack Socket Mode save returned no row");
-          const parsed = parseRow(row);
+          const parsed = parseRow(row, registry);
           await writeProviderActivation(transaction, "slack", input.identity.id, parsed.version);
           return parsed;
         }),
@@ -340,27 +279,24 @@ function connectionTable(provider: Provider): string {
   return "discord_connections";
 }
 
-function parseRow(row: ProviderConfigurationRow): StoredProviderApplication {
-  const provider = providerSchema(row.provider);
-  const configuration = parseProviderApplicationConfiguration(row.configuration);
-  const identity = identitySchema.parse(row.verified_external_identity);
+function parseRow(
+  row: ProviderConfigurationRow,
+  registry: ProviderRegistry,
+): StoredProviderApplication {
+  const provider = row.provider;
+  const module = registry.require(provider);
+  const configuration = parseProviderApplicationConfiguration(row.configuration, registry);
+  const identity = module.application.parseIdentity(row.verified_external_identity);
   if (configuration.provider !== provider || identity.provider !== provider) {
     throw new Error("stored provider configuration has inconsistent provider identity");
   }
   return {
     provider,
     configuration,
-    identity: identity as ProviderApplicationIdentity,
+    identity: identity,
     version: row.version,
     verifiedAt: new Date(row.verified_at),
     updatedAt: new Date(row.updated_at),
     updatedByUserId: row.updated_by_user_id,
   };
-}
-
-function providerSchema(value: string): Provider {
-  if (value === "github" || value === "slack" || value === "discord" || value === "linear") {
-    return value;
-  }
-  throw new Error("stored provider configuration has invalid provider");
 }

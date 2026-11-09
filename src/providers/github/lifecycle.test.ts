@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Octokit } from "octokit";
 import { it } from "vitest";
-import { embeddedDatabaseRuntime } from "../../db/runtime/index.js";
 import { createDatabase } from "../../db/pg.js";
-import { createGitHubRegistration } from "./index.js";
+import { embeddedDatabaseRuntime } from "../../db/runtime/index.js";
 import { DynamicProviderRuntime } from "../../provider-applications/internal/runtime-owner.js";
+import { registrationRegistry } from "../testing.js";
+import { createGitHubRegistration } from "./index.js";
 
 const GITHUB_OWNER = { providerApplicationId: "42", configurationVersion: 0 };
 
@@ -248,7 +249,7 @@ it("does not let an unpublished app candidate consume the active app's pending s
         close: async () => undefined,
       },
       applicationBaseUrl: "https://hub.test",
-      registrationFactory: ({ configuration, configurationVersion }) => {
+      registry: registrationRegistry(({ configuration, configurationVersion }) => {
         if (configuration.provider !== "github") throw new Error("unexpected provider");
         return createGitHubRegistration({
           database,
@@ -265,7 +266,7 @@ it("does not let an unpublished app candidate consume the active app's pending s
             },
           },
         });
-      },
+      }),
     });
     const stable = owner
       .registrations()

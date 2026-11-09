@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { describe, it } from "vitest";
+import { createProviderRegistry } from "../providers/server.js";
 import { ProviderVerificationError, createProviderApplicationVerifier } from "./index.js";
+const providerRegistry = createProviderRegistry();
 
 const DISCORD_IDENTITY = { id: "100", username: "Paseo", bot: true };
 const DISCORD_CONFIGURATION = {
@@ -46,7 +48,7 @@ describe("provider application verification", () => {
   it("authenticates a GitHub App against the fixed API endpoint and returns its identity", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const requests: string[] = [];
-    const verifier = createProviderApplicationVerifier({
+    const verifier = createProviderApplicationVerifier(providerRegistry, {
       now: () => Date.parse("2026-08-14T12:00:00Z"),
       fetch: (input, init) => {
         requests.push(requestUrl(input));
@@ -74,7 +76,7 @@ describe("provider application verification", () => {
 
   it("says an App ID that names a different App is a mismatch, not a bad key", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-    const verifier = createProviderApplicationVerifier({
+    const verifier = createProviderApplicationVerifier(providerRegistry, {
       fetch: () =>
         Promise.resolve(Response.json({ id: 99, name: "Other App", owner: { login: "acme" } })),
     });
@@ -95,7 +97,7 @@ describe("provider application verification", () => {
 
   it("proves the Discord bot identity and the Client Secret before claiming Verified", async () => {
     const provider = discordProvider();
-    const verifier = createProviderApplicationVerifier({ fetch: provider.fetch });
+    const verifier = createProviderApplicationVerifier(providerRegistry, { fetch: provider.fetch });
 
     assert.deepEqual(await verifier.verify("discord", DISCORD_CONFIGURATION), {
       provider: "discord",
@@ -117,7 +119,7 @@ describe("provider application verification", () => {
   });
 
   it("keeps a rejected bot token, a rejected Client Secret, and a wrong application apart", async () => {
-    const rejectedToken = createProviderApplicationVerifier({
+    const rejectedToken = createProviderApplicationVerifier(providerRegistry, {
       fetch: discordProvider({ identity: () => new Response(null, { status: 401 }) }).fetch,
     });
     await assert.rejects(
@@ -128,14 +130,16 @@ describe("provider application verification", () => {
         error.subject === "botToken",
     );
 
-    const wrongApplication = createProviderApplicationVerifier({ fetch: discordProvider().fetch });
+    const wrongApplication = createProviderApplicationVerifier(providerRegistry, {
+      fetch: discordProvider().fetch,
+    });
     await assert.rejects(
       wrongApplication.verify("discord", { ...DISCORD_CONFIGURATION, applicationId: "200" }),
       (error: unknown) =>
         error instanceof ProviderVerificationError && error.subject === "identityMismatch",
     );
 
-    const rejectedSecret = createProviderApplicationVerifier({
+    const rejectedSecret = createProviderApplicationVerifier(providerRegistry, {
       fetch: discordProvider({
         token: () => Response.json({ error: "invalid_client" }, { status: 401 }),
       }).fetch,
@@ -151,7 +155,7 @@ describe("provider application verification", () => {
 
   it("still verifies when Discord refuses to revoke the token it just minted", async () => {
     const provider = discordProvider();
-    const verifier = createProviderApplicationVerifier({
+    const verifier = createProviderApplicationVerifier(providerRegistry, {
       fetch: (input, init) =>
         requestUrl(input).endsWith("/oauth2/token/revoke")
           ? Promise.reject(new Error("revocation unavailable"))
@@ -162,7 +166,7 @@ describe("provider application verification", () => {
   });
 
   it("projects transport failures without returning upstream details", async () => {
-    const verifier = createProviderApplicationVerifier({
+    const verifier = createProviderApplicationVerifier(providerRegistry, {
       fetch: () => Promise.reject(new Error("token=super-secret")),
     });
     await assert.rejects(
@@ -188,7 +192,7 @@ describe("provider application verification", () => {
           return Promise.resolve({ payload: "PRIVATE-UPSTREAM-PAYLOAD" });
         },
       });
-      const verifier = createProviderApplicationVerifier({
+      const verifier = createProviderApplicationVerifier(providerRegistry, {
         fetch: () => Promise.resolve(response),
       });
       await assert.rejects(
@@ -208,7 +212,7 @@ describe("provider application verification", () => {
   }
 
   it("classifies a successful response with invalid JSON separately", async () => {
-    const verifier = createProviderApplicationVerifier({
+    const verifier = createProviderApplicationVerifier(providerRegistry, {
       fetch: () => Promise.resolve(new Response("not-json", { status: 200 })),
     });
     await assert.rejects(

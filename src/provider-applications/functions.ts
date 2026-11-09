@@ -3,6 +3,7 @@ import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
 import { respondOk, type Result } from "../contract/respond.js";
 import { respondWithFailure } from "../failures/index.js";
+import { browserProvider } from "../providers/browser.js";
 import { getApplication } from "../server/runtime.js";
 import {
   type ProviderApplicationConfiguration,
@@ -14,46 +15,19 @@ import { providerApplicationSaveFailure, providerHost, providerName } from "./sa
 const providerSchema = z.enum(["github", "slack", "discord", "linear"]);
 const surfaceSchema = z.enum(["appSetup", "apps"]).optional();
 const expectedVersionSchema = z.number().int().positive().optional();
-const configurationSchema = z.discriminatedUnion("provider", [
-  z.object({
-    provider: z.literal("github"),
-    appId: z.string().trim().min(1),
-    appSlug: z.string().trim().min(1),
-    clientId: z.string().trim().min(1),
-    clientSecret: z.string().min(1),
-    privateKey: z.string().min(1),
-    // Optional: event triggers need a public HTTPS address, repository access does not.
-    webhookSecret: z.string().min(1).optional(),
-    expectedVersion: expectedVersionSchema,
-    surface: surfaceSchema,
-  }),
-  z.object({
-    provider: z.literal("slack"),
-    transport: z.literal("webhook"),
-    appId: z.string().trim().min(1),
-    clientId: z.string().trim().min(1),
-    clientSecret: z.string().min(1),
-    signingSecret: z.string().min(1),
-    expectedVersion: expectedVersionSchema,
-    surface: surfaceSchema,
-  }),
-  z.object({
-    provider: z.literal("discord"),
-    applicationId: z.string().trim().min(1),
-    clientSecret: z.string().min(1),
-    botToken: z.string().min(1),
-    expectedVersion: expectedVersionSchema,
-    surface: surfaceSchema,
-  }),
-  z.object({
-    provider: z.literal("linear"),
-    clientId: z.string().trim().min(1),
-    clientSecret: z.string().min(1),
-    webhookSecret: z.string().min(1),
-    expectedVersion: expectedVersionSchema,
-    surface: surfaceSchema,
-  }),
-]);
+const configurationSchema = z
+  .object({ provider: z.string() })
+  .passthrough()
+  .transform((value, context) => {
+    try {
+      return browserProvider(value.provider).request.parse(value);
+    } catch (error) {
+      if (error instanceof z.ZodError)
+        for (const issue of error.issues) context.addIssue({ ...issue });
+      else context.addIssue({ code: "custom", path: ["provider"], message: "Unknown provider" });
+      return z.NEVER;
+    }
+  });
 const connectionSchema = z.object({
   provider: providerSchema,
   organizationId: z.string().min(1),
@@ -189,64 +163,10 @@ export const retrySlackSocketDelivery = createServerFn({ method: "POST" }).handl
 function sensitiveConfigurationValues(
   configuration: z.infer<typeof configurationSchema>,
 ): readonly string[] {
-  if (configuration.provider === "github") {
-    return [
-      configuration.clientSecret,
-      configuration.privateKey,
-      ...(configuration.webhookSecret === undefined ? [] : [configuration.webhookSecret]),
-    ];
-  }
-  if (configuration.provider === "slack") {
-    return [configuration.clientSecret, configuration.signingSecret];
-  }
-  if (configuration.provider === "linear") {
-    return [configuration.clientSecret, configuration.webhookSecret];
-  }
-  return [configuration.clientSecret, configuration.botToken];
+  return browserProvider(configuration.provider).request.secrets(configuration);
 }
-
 function normalizedConfiguration(
   data: z.infer<typeof configurationSchema>,
 ): ProviderApplicationConfiguration {
-  const version =
-    data.expectedVersion === undefined ? {} : { expectedVersion: data.expectedVersion };
-  if (data.provider === "github") {
-    return {
-      provider: data.provider,
-      appId: data.appId,
-      appSlug: data.appSlug,
-      clientId: data.clientId,
-      clientSecret: data.clientSecret,
-      privateKey: data.privateKey,
-      ...(data.webhookSecret === undefined ? {} : { webhookSecret: data.webhookSecret }),
-      ...version,
-    };
-  }
-  if (data.provider === "slack") {
-    return {
-      provider: data.provider,
-      transport: data.transport,
-      appId: data.appId,
-      clientId: data.clientId,
-      clientSecret: data.clientSecret,
-      signingSecret: data.signingSecret,
-      ...version,
-    };
-  }
-  if (data.provider === "linear") {
-    return {
-      provider: data.provider,
-      clientId: data.clientId,
-      clientSecret: data.clientSecret,
-      webhookSecret: data.webhookSecret,
-      ...version,
-    };
-  }
-  return {
-    provider: data.provider,
-    applicationId: data.applicationId,
-    clientSecret: data.clientSecret,
-    botToken: data.botToken,
-    ...version,
-  };
+  return browserProvider(data.provider).request.normalize(data);
 }
