@@ -4,7 +4,7 @@ export interface ExecutionCredentialLease {
   id: string;
   executionId: string;
   token: string;
-  provider: "github";
+  provider: string;
   expiresAt: number;
   deadlineAt: number;
   revoking: boolean;

@@ -28,6 +28,7 @@ import {
 import type { Locks } from "./db/runtime/locks/index.js";
 import type { Database } from "./db/types.js";
 import { composeEmailDelivery } from "./email/index.js";
+import { createExecutionAuthority } from "./execution-authority/index.js";
 import { reportFailure } from "./failures/index.js";
 import { installProcessFailureHandlers } from "./failures/process.js";
 import { createFetchServer } from "./http/node-server.js";
@@ -43,7 +44,6 @@ import {
   readProviderApplicationEnvironment,
   resolveCallbackOrigin,
 } from "./provider-applications/index.js";
-import { githubExecutionAuthority } from "./providers/github/runtime.js";
 import { createProviderRegistry } from "./providers/server.js";
 import { ReceiptRetention } from "./receipt-retention/index.js";
 import { createRuntimeConfiguration } from "./runtime-configuration/index.js";
@@ -163,7 +163,11 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       entitlements: entitlements.service,
       billing,
       registrations: providerRuntime.registrations(),
-      createExecutionAuthority: (context) => githubExecutionAuthority(context, providerRuntime),
+      createExecutionAuthority: (context) =>
+        createExecutionAuthority({
+          ...context,
+          providerAuthorities: providerRegistry.executionAuthorities(providerRuntime),
+        }),
       providerApplications,
       publicBaseUrl: identity.appUrl,
       completionTokenSecret: identity.authSecret,

@@ -547,6 +547,7 @@ export class DurableWorkflowEngine {
         stepRunId,
         deadlineAt,
         executionId,
+        this.options.configurationCatalog,
       );
     } catch (error) {
       if (!(error instanceof ExpressionEvaluationError)) throw error;
@@ -939,6 +940,7 @@ function buildStepIntent(
   stepRunId: string,
   deadlineAt: Date,
   executionId: string,
+  catalog: import("../providers/configuration.js").ProviderConfigurationCatalog,
 ): LaunchMachineIntent {
   const environmentName = authorityString(
     renderExpressionTemplate(step.environment, context),
@@ -956,43 +958,46 @@ function buildStepIntent(
   }
   const agent = materializeAgent(step.agent, context);
   return {
-    ...buildLaunchMachineIntent({
-      organizationId: run.organizationId,
-      projectId: run.projectId,
-      triggerRunId: run.id,
-      triggerName,
-      environmentName,
-      environment: {
-        kind: "daemon",
-        daemonId: environment.daemonId,
-        authoredSlug: environment.daemon,
-        cwd: environment.cwd,
-        ...(environment.worktree === undefined
+    ...buildLaunchMachineIntent(
+      {
+        organizationId: run.organizationId,
+        projectId: run.projectId,
+        triggerRunId: run.id,
+        triggerName,
+        environmentName,
+        environment: {
+          kind: "daemon",
+          daemonId: environment.daemonId,
+          authoredSlug: environment.daemon,
+          cwd: environment.cwd,
+          ...(environment.worktree === undefined
+            ? {}
+            : { worktree: materializeExecutionWorktree(environment.worktree, executionId) }),
+        },
+        ...(step.env === undefined ? {} : { env: step.env }),
+        ...catalog.projectStepFields(step),
+        ...(step.title === undefined
           ? {}
-          : { worktree: materializeExecutionWorktree(environment.worktree, executionId) }),
+          : { title: renderExecutionTemplate(step.title, executionId) }),
+        prompt: step.prompt
+          .map((block) =>
+            renderExpressionTemplate(block.kind === "text" ? block.value : block.content, context),
+          )
+          .join("\n"),
+        agent,
+        allowOutputs: step.allowOutputs,
+        timeoutMs: step.maxRuntimeMs,
+        idleTimeoutMs: step.idleTimeoutMs,
+        ...(step.startupTimeoutMs === undefined ? {} : { startupTimeoutMs: step.startupTimeoutMs }),
+        autoArchive: step.autoArchive,
+        background: step.background,
+        triggerContext: run.triggerContext,
+        outputContext: run.outputContext,
+        configurationRevisionId: run.configurationRevisionId,
+        hubConfig: configuration,
       },
-      ...(step.env === undefined ? {} : { env: step.env }),
-      ...(step.github === undefined ? {} : { github: step.github }),
-      ...(step.title === undefined
-        ? {}
-        : { title: renderExecutionTemplate(step.title, executionId) }),
-      prompt: step.prompt
-        .map((block) =>
-          renderExpressionTemplate(block.kind === "text" ? block.value : block.content, context),
-        )
-        .join("\n"),
-      agent,
-      allowOutputs: step.allowOutputs,
-      timeoutMs: step.maxRuntimeMs,
-      idleTimeoutMs: step.idleTimeoutMs,
-      ...(step.startupTimeoutMs === undefined ? {} : { startupTimeoutMs: step.startupTimeoutMs }),
-      autoArchive: step.autoArchive,
-      background: step.background,
-      triggerContext: run.triggerContext,
-      outputContext: run.outputContext,
-      configurationRevisionId: run.configurationRevisionId,
-      hubConfig: configuration,
-    }),
+      catalog,
+    ),
     ...(step.continuation === undefined
       ? {}
       : {
@@ -1006,7 +1011,7 @@ function buildStepIntent(
               // Preserve existing visible-session fingerprints when using the default.
               ...(step.background ? { background: true } : {}),
               env: step.env ?? {},
-              github: step.github ?? null,
+              ...catalog.compatibilityFields(step),
             },
           },
         }),

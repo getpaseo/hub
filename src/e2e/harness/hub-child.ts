@@ -11,7 +11,6 @@ import { createAuthServer } from "../../auth/server.js";
 import { parseProjectConfiguration, ProjectConfigurationStore } from "../../configuration/store.js";
 import { createPostgresTestRuntime } from "../../db/test-utils/runtime.js";
 import { hashTemplate, UNLIMITED_TEMPLATE } from "../../entitlements/catalog.js";
-import { createExecutionAuthority } from "../../execution-authority/index.js";
 import {
   outputContextProvider,
   OutputExecutorRegistry,
@@ -19,6 +18,7 @@ import {
 } from "../../execution-capabilities/outputs.js";
 import { createFetchServer } from "../../http/node-server.js";
 import { OrganizationResources } from "../../organizations/resources.js";
+import { createGitHubExecutionAuthority as createExecutionAuthority } from "../../providers/github/execution-authority.js";
 import { createProviderRegistry as createCompositionProviders } from "../../providers/server.js";
 import { loadBuiltStartServer } from "../../server/build.js";
 import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";

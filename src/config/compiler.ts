@@ -11,15 +11,6 @@ import {
   type ExpressionPath,
 } from "../workflows/expression.js";
 import { compileJsonSchema, finiteSchemaChoices } from "../workflows/json-schema.js";
-import { validateConnectionTemplate } from "./connection-template.js";
-import {
-  AuthoredGitHubAuthoritySchema,
-  CompiledGitHubAuthoritySchema,
-  compileGitHubAuthority,
-  isGitHubAuthorityEnvironmentKey,
-  validateGitHubAuthority,
-  type CompiledGitHubAuthority,
-} from "./github-authority.js";
 import {
   hashPromptPartialContent,
   validatePromptPartialPath,
@@ -161,7 +152,6 @@ const StepSchema = z
     title: z.string().min(1).optional(),
     prompt: z.array(PromptBlockSchema).min(1),
     env: z.record(z.string().min(1), z.string()).optional(),
-    github: AuthoredGitHubAuthoritySchema.optional(),
     if: z.string().min(1).optional(),
     output: z.object({ schema: JsonSchemaSchema }).strict().optional(),
     allow_outputs: z.array(AllowOutputSchema).optional(),
@@ -193,9 +183,10 @@ export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { readonly [key: string]: JsonValue };
 
 export type AuthoredEnvironment = z.infer<typeof EnvironmentSchema>;
-export type AuthoredStep = z.infer<typeof StepSchema>;
-export type AuthoredTrigger = Omit<z.infer<typeof AuthoredTriggerSchema>, "filters"> & {
+export type AuthoredStep = z.infer<typeof StepSchema> & Readonly<Record<string, unknown>>;
+export type AuthoredTrigger = Omit<z.infer<typeof AuthoredTriggerSchema>, "filters" | "steps"> & {
   filters?: AuthoredTriggerFilter | undefined;
+  steps: AuthoredStep[];
 };
 export type AuthoredTriggerFilter = z.infer<typeof AuthoredTriggerFilterSchema> &
   Readonly<Record<string, unknown>>;
@@ -243,7 +234,7 @@ export interface CompiledStep {
   title?: string | undefined;
   prompt: readonly CompiledPromptBlock[];
   env?: Readonly<Record<string, string>> | undefined;
-  github?: CompiledGitHubAuthority | undefined;
+  readonly [key: string]: unknown;
   condition?: Expression | undefined;
   output?: { schema: JsonValue } | undefined;
   allowOutputs: readonly { type: string; max?: number | undefined; required: boolean }[];
@@ -375,7 +366,7 @@ const CompiledJsonSchemaSchema = z.custom<JsonValue>(
   (value) => isJsonValue(value) && isRecord(value),
 );
 
-const CompiledStepSchema: z.ZodType<CompiledStep> = z
+const CoreCompiledStepSchema = z
   .object({
     continuation: ContinuationSchema.optional(),
     id: z.string().regex(IDENTIFIER),
@@ -387,7 +378,6 @@ const CompiledStepSchema: z.ZodType<CompiledStep> = z
     title: z.string().min(1).optional(),
     prompt: z.array(CompiledPromptBlockSchema).min(1),
     env: z.record(z.string(), z.string()).optional(),
-    github: CompiledGitHubAuthoritySchema.optional(),
     condition: z.custom<Expression>(isExpression).optional(),
     output: z.object({ schema: CompiledJsonSchemaSchema }).strict().optional(),
     allowOutputs: z.array(
@@ -411,7 +401,7 @@ function compiledTriggerSchema(catalog: ProviderConfigurationCatalog): z.ZodType
       sourceFile: z.string().min(1).optional(),
       on: z.string().regex(EVENT_NAME),
       maxRuntimeMs: z.number().int().positive().max(MAX_DURATION_MS),
-      steps: z.array(CompiledStepSchema),
+      steps: z.array(catalog.stepSchema(CoreCompiledStepSchema, "compiled")),
       inputs: z.record(z.string(), CompiledInputSchema),
       values: z.record(z.string(), z.custom<Expression>(isExpression)),
       filters: catalog.filterSchema(CoreCompiledTriggerFilterSchema).optional(),
@@ -434,6 +424,7 @@ function authoredSchema(catalog: ProviderConfigurationCatalog) {
     triggers: z.array(
       AuthoredTriggerSchema.extend({
         filters: catalog.filterSchema(AuthoredTriggerFilterSchema).optional(),
+        steps: z.array(catalog.stepSchema(StepSchema, "authored")).min(1),
       }),
     ),
   });
@@ -460,6 +451,7 @@ export function compileHubConfig(
       options.resolvedPromptPartials,
       options.namedAgents ?? {},
       options.sourceFiles?.[trigger.name],
+      catalog,
     ),
   );
   const compiled = { environments: authored.environments, triggers } satisfies CompiledHubConfig;
@@ -526,6 +518,7 @@ function compileTrigger(
   resolvedPromptPartials: ResolvedPromptPartials | undefined,
   namedAgents: Readonly<Record<string, CompiledAgent>>,
   sourceFile: string | undefined,
+  catalog: ProviderConfigurationCatalog,
 ): CompiledTrigger {
   const triggerPath = ["triggers", trigger.name] as const;
   compileAt([...triggerPath, "on"], () => {
@@ -537,7 +530,15 @@ function compileTrigger(
     validateEnvironmentInputChoices(trigger, inputs, environmentNames, environments),
   );
   const steps = trigger.steps.map((step) =>
-    compileStep(trigger, step, environmentNames, environments, resolvedPromptPartials, namedAgents),
+    compileStep(
+      trigger,
+      step,
+      environmentNames,
+      environments,
+      resolvedPromptPartials,
+      namedAgents,
+      catalog,
+    ),
   );
   const values = compileValues(trigger);
   const compiled = {
@@ -563,6 +564,7 @@ function compileStep(
   environments: ReadonlyMap<string, AuthoredEnvironment>,
   resolvedPromptPartials: ResolvedPromptPartials | undefined,
   namedAgents: Readonly<Record<string, CompiledAgent>>,
+  catalog: ProviderConfigurationCatalog,
 ): CompiledStep {
   const stepPath = ["triggers", trigger.name, "steps", step.id] as const;
   compileAt([...stepPath, "environment"], () => {
@@ -594,11 +596,18 @@ function compileStep(
   if (outputDeclaration !== undefined)
     validateOutputSchema(outputDeclaration.schema, `step ${step.id} output.schema`);
   const env = step.env === undefined ? undefined : { ...step.env };
-  const github =
-    step.github === undefined
-      ? undefined
-      : compileGitHubAuthority(step.github, `trigger ${trigger.name} step ${step.id} github`);
-  validateStepEnvironmentContract(trigger.name, trigger.on, step.id, env, github);
+  const nativeFields = catalog.compileStepFields(step, {
+    triggerName: trigger.name,
+    event: trigger.on,
+    stepId: step.id,
+    env,
+  });
+  catalog.validateStepFields(nativeFields, {
+    triggerName: trigger.name,
+    event: trigger.on,
+    stepId: step.id,
+    env,
+  });
   const agent = compileAt([...stepPath, "agent"], () =>
     compileAgentSelection(trigger.name, step.id, step.agent, namedAgents),
   );
@@ -621,7 +630,7 @@ function compileStep(
     ...(step.title === undefined ? {} : { title: step.title }),
     prompt: compilePromptBlocks(trigger.name, step.id, step.prompt, resolvedPromptPartials),
     ...(env === undefined ? {} : { env }),
-    ...(github === undefined ? {} : { github }),
+    ...nativeFields,
     ...(condition === undefined ? {} : { condition }),
     ...(outputDeclaration === undefined ? {} : { output: outputDeclaration }),
     allowOutputs: (step.allow_outputs ?? []).map((allowOutput) => ({
@@ -1198,7 +1207,12 @@ function validateCompiledContract(
         throw new Error(`step ${step.id} references unknown environment ${step.environment}`);
       }
       validateCompiledStepEnvironment(step, trigger.inputs, environments);
-      validateStepEnvironmentContract(trigger.name, trigger.on, step.id, step.env, step.github);
+      catalog.validateStepFields(step, {
+        triggerName: trigger.name,
+        event: trigger.on,
+        stepId: step.id,
+        env: step.env,
+      });
       if (step.idleTimeoutMs > step.maxRuntimeMs) {
         throw new Error(`step ${step.id} idle_timeout must not exceed max_runtime`);
       }
@@ -1268,33 +1282,6 @@ function validateCompiledStepEnvironment(
     const choiceEnvironment = environments.get(choice);
     if (choiceEnvironment !== undefined && choiceEnvironment.kind !== "daemon") {
       throw new Error(`step ${step.id} environment choice ${choice} must be a daemon environment`);
-    }
-  }
-}
-
-function validateStepEnvironmentContract(
-  triggerName: string,
-  triggerEvent: string,
-  stepId: string,
-  env: Readonly<Record<string, string>> | undefined,
-  github: CompiledGitHubAuthority | undefined,
-): void {
-  if (env !== undefined) {
-    for (const [key, value] of Object.entries(env)) {
-      validateConnectionTemplate(value, `trigger ${triggerName} step ${stepId} env.${key}`);
-      if (github !== undefined && isGitHubAuthorityEnvironmentKey(key)) {
-        throw new Error(
-          `trigger ${triggerName} step ${stepId} env.${key}: reserved by the step-level github authority; remove it from env`,
-        );
-      }
-    }
-  }
-  if (github !== undefined) {
-    validateGitHubAuthority(github, `trigger ${triggerName} step ${stepId} github`);
-    if (github.repositories === undefined && !triggerEvent.startsWith("github.")) {
-      throw new Error(
-        `trigger ${triggerName} step ${stepId} github.repositories is required for non-GitHub triggers; list the repositories explicitly`,
-      );
     }
   }
 }

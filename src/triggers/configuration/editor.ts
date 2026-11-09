@@ -4,7 +4,6 @@ import {
   qualifierValue,
   type EditorEvent,
   type ProviderConfigurationCatalog,
-  type QualifierKey,
   type QualifierValues,
 } from "../../providers/configuration.js";
 import { ContinuationSchema } from "../continuation.js";
@@ -15,8 +14,9 @@ import {
   type Recurrence,
 } from "../schedule/recurrence.js";
 import { IDENTIFIER, triggerDocumentSchema, type TriggerDocument } from "./schema.js";
+import { setYamlField } from "./yaml-field.js";
 
-export interface TriggerFormValue {
+export interface CoreTriggerFormValue {
   name: string;
   enabled: boolean;
   event: EditorEvent;
@@ -34,12 +34,11 @@ export interface TriggerFormValue {
   continuationKey: string;
   maxRuntime: string;
   idleTimeout: string;
-  githubConnection: string;
-  githubRepositories: string;
-  githubPermissions: string;
-  githubDuration: string;
   prompt: string;
 }
+
+export type TriggerFormValue = CoreTriggerFormValue &
+  Readonly<Record<string, string | boolean | QualifierValues | Recurrence | undefined>>;
 
 export type TriggerFormProjection =
   | { status: "editable"; value: TriggerFormValue }
@@ -50,13 +49,10 @@ export type TriggerYamlResult =
   | { status: "incomplete"; reason: string };
 
 /** What is wrong with each field, keyed by the field that has to change. */
-export type TriggerFieldErrors = Partial<
-  Record<keyof TriggerFormValue | `qualifiers.${QualifierKey}`, string>
->;
+export type TriggerFieldErrors = Partial<Record<keyof CoreTriggerFormValue, string>> &
+  Partial<Record<string, string>>;
 export function createTriggerEditor(events: ProviderConfigurationCatalog) {
   const TriggerDocumentSchema = triggerDocumentSchema(events);
-
-  const GitHubPermissionsSchema = z.record(z.string(), z.enum(["read", "write", "admin"]));
 
   function projectTriggerForm(yaml: string): TriggerFormProjection {
     const parsed = parseEditorDocument(yaml);
@@ -104,13 +100,7 @@ export function createTriggerEditor(events: ProviderConfigurationCatalog) {
       continuationKey: trigger.run.continuation.mode === "key" ? trigger.run.continuation.key : "",
       maxRuntime: trigger.run.max_runtime,
       idleTimeout: trigger.run.idle_timeout,
-      githubConnection: trigger.run.github?.connection ?? "",
-      githubRepositories: trigger.run.github?.repositories?.join(", ") ?? "",
-      githubPermissions:
-        trigger.run.github?.permissions === undefined
-          ? ""
-          : JSON.stringify(trigger.run.github.permissions, null, 2),
-      githubDuration: trigger.run.github?.duration ?? "",
+      ...events.projectFormFields(trigger.run),
       prompt: trigger.run.prompt,
     };
   }
@@ -124,8 +114,8 @@ export function createTriggerEditor(events: ProviderConfigurationCatalog) {
 
     const document = parseDocument(yaml, { compat: ["timestamp"] });
     assertDocument(document);
-    setIfChanged(document, ["name"], value.name);
-    setIfChanged(document, ["enabled"], value.enabled);
+    setYamlField(document, ["name"], value.name);
+    setYamlField(document, ["enabled"], value.enabled);
 
     const previousEvent = projection.value.event;
     if (previousEvent !== value.event) {
@@ -134,23 +124,24 @@ export function createTriggerEditor(events: ProviderConfigurationCatalog) {
       document.setIn(["on", value.event], definition ?? {});
     }
     if (events.definition(value.event).origin === "hub") {
-      deleteIfPresent(document, ["on", value.event, "connection"]);
-      deleteIfPresent(document, ["on", value.event, "filters", "from_users"]);
+      setYamlField(document, ["on", value.event, "connection"], undefined);
+      setYamlField(document, ["on", value.event, "filters", "from_users"], undefined);
     } else {
-      setIfChanged(document, ["on", value.event, "connection"], value.connection);
-      setIfChanged(
+      setYamlField(document, ["on", value.event, "connection"], value.connection);
+      setYamlField(
         document,
         ["on", value.event, "filters", "from_users"],
         users(value.allowedUsers),
       );
     }
 
-    setOptional(
+    setYamlField(
       document,
       ["on", value.event, "recurrence"],
       value.event === "schedule.tick" ? (value.recurrence ?? DEFAULT_RECURRENCE) : undefined,
     );
-    if (value.event === "schedule.tick") deleteIfPresent(document, ["on", value.event, "filters"]);
+    if (value.event === "schedule.tick")
+      setYamlField(document, ["on", value.event, "filters"], undefined);
     const qualifiers = authoredQualifiers(value);
     const ownedKeys = new Set(
       [
@@ -159,26 +150,30 @@ export function createTriggerEditor(events: ProviderConfigurationCatalog) {
       ].map((qualifier) => qualifier.key),
     );
     for (const key of ownedKeys) {
-      setOptional(document, ["on", value.event, "filters", key], qualifiers[key]);
+      setYamlField(document, ["on", value.event, "filters", key], qualifiers[key]);
     }
 
-    setIfChanged(document, ["run", "target", "daemon"], value.daemon);
-    setIfChanged(document, ["run", "target", "cwd"], value.cwd);
+    setYamlField(document, ["run", "target", "daemon"], value.daemon);
+    setYamlField(document, ["run", "target", "cwd"], value.cwd);
     const agent = splitAgentId(value.agent);
-    setIfChanged(document, ["run", "agent", "provider"], agent.provider);
-    setOptional(document, ["run", "agent", "model"], agent.model);
-    setIfChanged(document, ["run", "agent", "mode"], value.mode.trim());
-    setOptional(
+    setYamlField(document, ["run", "agent", "provider"], agent.provider);
+    setYamlField(document, ["run", "agent", "model"], agent.model);
+    setYamlField(document, ["run", "agent", "mode"], value.mode.trim());
+    setYamlField(
       document,
       ["run", "agent", "thinkingOptionId"],
       blankToUndefined(value.thinkingOptionId),
     );
-    setOptional(document, ["run", "agent", "options"], parseProviderOptions(value.providerOptions));
-    setIfChanged(document, ["run", "continuation"], formContinuation(value));
-    setIfChanged(document, ["run", "max_runtime"], value.maxRuntime.trim());
-    setIfChanged(document, ["run", "idle_timeout"], value.idleTimeout.trim());
-    setOptional(document, ["run", "github"], githubAuthority(value));
-    setIfChanged(document, ["run", "prompt"], value.prompt);
+    setYamlField(
+      document,
+      ["run", "agent", "options"],
+      parseProviderOptions(value.providerOptions),
+    );
+    setYamlField(document, ["run", "continuation"], formContinuation(value));
+    setYamlField(document, ["run", "max_runtime"], value.maxRuntime.trim());
+    setYamlField(document, ["run", "idle_timeout"], value.idleTimeout.trim());
+    events.patchForm(document, value);
+    setYamlField(document, ["run", "prompt"], value.prompt);
     return document.toString({ lineWidth: 0 });
   }
 
@@ -215,7 +210,6 @@ export function createTriggerEditor(events: ProviderConfigurationCatalog) {
     validateFormValue(value);
     const agent = splitAgentId(value.agent);
     const providerOptions = parseProviderOptions(value.providerOptions);
-    const github = githubAuthority(value);
     const definition = formEventDefinition(value);
     return stringify(
       {
@@ -236,7 +230,7 @@ export function createTriggerEditor(events: ProviderConfigurationCatalog) {
           continuation: formContinuation(value),
           max_runtime: value.maxRuntime.trim(),
           idle_timeout: value.idleTimeout.trim(),
-          ...(github === undefined ? {} : { github }),
+          ...events.authoredFormFields(value),
           prompt: value.prompt,
         },
       },
@@ -264,35 +258,6 @@ export function createTriggerEditor(events: ProviderConfigurationCatalog) {
     if (value.event !== "schedule.tick") return {};
     const parsed = RecurrenceSchema.safeParse(value.recurrence ?? DEFAULT_RECURRENCE);
     return parsed.success ? {} : { recurrence: parsed.error.issues[0]!.message };
-  }
-
-  function githubAuthority(value: TriggerFormValue) {
-    const connection = blankToUndefined(value.githubConnection);
-    if (connection === undefined) return undefined;
-    const repositories = commaSeparated(value.githubRepositories);
-    const permissions = parsePermissions(value.githubPermissions);
-    const duration = blankToUndefined(value.githubDuration);
-    return {
-      connection,
-      ...(repositories.length === 0 ? {} : { repositories }),
-      ...(permissions === undefined ? {} : { permissions }),
-      ...(duration === undefined ? {} : { duration }),
-    };
-  }
-
-  function parsePermissions(value: string): Record<string, "read" | "write" | "admin"> | undefined {
-    if (value.trim().length === 0) return undefined;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(value);
-    } catch {
-      throw new Error("GitHub permissions must be valid JSON.");
-    }
-    const permissions = GitHubPermissionsSchema.safeParse(parsed);
-    if (!permissions.success) {
-      throw new Error('GitHub permissions map a scope to "read", "write", or "admin".');
-    }
-    return permissions.data;
   }
 
   /**
@@ -332,10 +297,7 @@ export function createTriggerEditor(events: ProviderConfigurationCatalog) {
     if (value.mode.trim().length === 0) errors.mode = "Execution mode is required.";
     const options = refused(() => parseProviderOptions(value.providerOptions));
     if (options !== undefined) errors.providerOptions = options;
-    if (value.githubConnection.trim().length !== 0) {
-      const permissions = refused(() => parsePermissions(value.githubPermissions));
-      if (permissions !== undefined) errors.githubPermissions = permissions;
-    }
+    Object.assign(errors, events.formErrors(value));
     Object.assign(errors, continuationErrors(value));
     if (value.prompt.trim().length === 0) errors.prompt = "Instructions are required.";
     return errors;
@@ -371,19 +333,6 @@ export function createTriggerEditor(events: ProviderConfigurationCatalog) {
 
   function assertDocument(document: Document): void {
     if (document.errors.length > 0) throw new Error(document.errors[0]!.message);
-  }
-
-  function setIfChanged(document: Document, path: readonly string[], value: unknown): void {
-    if (JSON.stringify(document.getIn(path)) !== JSON.stringify(value)) document.setIn(path, value);
-  }
-
-  function setOptional(document: Document, path: readonly string[], value: unknown): void {
-    if (value === undefined) deleteIfPresent(document, path);
-    else setIfChanged(document, path, value);
-  }
-
-  function deleteIfPresent(document: Document, path: readonly string[]): void {
-    if (document.hasIn(path)) document.deleteIn(path);
   }
 
   function sameFormValue(left: TriggerFormValue, right: TriggerFormValue): boolean {

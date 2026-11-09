@@ -1028,7 +1028,7 @@ describe("durable multi-step workflow engine", () => {
       undefined,
     );
     assert.equal(intents.length, 1);
-    assert.equal(intents[0]?.github, undefined);
+    assert.equal(intents[0]?.["github"], undefined);
     assert.deepEqual(intents[0]?.env, {
       SOME_TOKEN: "${{ paseo.connections.some-connection.token }}",
     });

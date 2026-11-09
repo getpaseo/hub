@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { AuthoredGitHubAuthoritySchema } from "../../config/github-authority.js";
 import {
   qualifierValue,
   type ProviderConfigurationCatalog,
@@ -100,7 +99,6 @@ export const TriggerRunSchema = z
     idle_timeout: z.string().min(1).default("10m"),
     startup_timeout: z.string().min(1).optional(),
     env: z.record(z.string().min(1), z.string()).optional(),
-    github: AuthoredGitHubAuthoritySchema.optional(),
     output: z
       .object({ schema: z.record(z.string(), z.unknown()) })
       .strict()
@@ -119,12 +117,13 @@ const TriggerDocumentBaseSchema = z
     inputs: z.record(z.string().regex(IDENTIFIER), TriggerInputSchema).optional(),
     /** A distinct whole-trigger deadline; new one-run triggers normally omit it. */
     max_runtime: z.string().min(1).optional(),
-    run: TriggerRunSchema,
+    run: TriggerRunSchema.catchall(z.unknown()),
   })
   .strict();
 
 export function triggerDocumentSchema(events: ProviderConfigurationCatalog) {
   return TriggerDocumentBaseSchema.extend({
+    run: events.stepSchema(TriggerRunSchema, "authored"),
     on: z.record(
       z.string().regex(EVENT_NAME),
       TriggerEventSchema.extend({ filters: events.filterSchema(TriggerFilterSchema).optional() }),

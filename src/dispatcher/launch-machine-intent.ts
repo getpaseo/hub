@@ -1,8 +1,8 @@
-import type { AllowedOutput } from "../execution-capabilities/outputs.js";
-import type { TriggerAgentConfig } from "../triggers/index.js";
-import type { WorktreeTarget } from "../config/index.js";
 import type { JsonValue } from "../config/compiler.js";
-import type { CompiledGitHubAuthority } from "../config/github-authority.js";
+import type { WorktreeTarget } from "../config/index.js";
+import type { AllowedOutput } from "../execution-capabilities/outputs.js";
+import type { ProviderConfigurationCatalog } from "../providers/configuration.js";
+import type { TriggerAgentConfig } from "../triggers/index.js";
 
 export const DEFAULT_STARTUP_TIMEOUT_MS = 120_000;
 
@@ -16,6 +16,7 @@ export interface DaemonEnvironmentTarget {
 }
 
 export interface LaunchMachineIntent {
+  [key: string]: unknown;
   continuation?: { key: string | null; compatibility: unknown };
   kind: "launch_machine";
   organizationId: string;
@@ -27,7 +28,6 @@ export interface LaunchMachineIntent {
   environmentName: string;
   environment: DaemonEnvironmentTarget;
   env?: Readonly<Record<string, string>>;
-  github?: CompiledGitHubAuthority;
   /** Authored workspace title, already rendered; absent means Hub's default workspace title. */
   title?: string;
   prompt: string;
@@ -46,29 +46,32 @@ export interface LaunchMachineIntent {
   hubConfig: unknown;
 }
 
-export function buildLaunchMachineIntent(input: {
-  organizationId: string;
-  projectId: string;
-  triggerRunId: string;
-  configurationRevisionId: string;
-  triggerName: string;
-  environmentName: string;
-  environment: DaemonEnvironmentTarget;
-  env?: Readonly<Record<string, string>>;
-  github?: CompiledGitHubAuthority;
-  title?: string;
-  prompt: string;
-  agent: TriggerAgentConfig;
-  allowOutputs: readonly AllowedOutput[];
-  timeoutMs?: number;
-  startupTimeoutMs?: number;
-  idleTimeoutMs?: number;
-  autoArchive: boolean;
-  background: boolean;
-  triggerContext: unknown;
-  outputContext: unknown;
-  hubConfig: unknown;
-}): LaunchMachineIntent {
+export function buildLaunchMachineIntent(
+  input: {
+    organizationId: string;
+    projectId: string;
+    triggerRunId: string;
+    configurationRevisionId: string;
+    triggerName: string;
+    environmentName: string;
+    environment: DaemonEnvironmentTarget;
+    env?: Readonly<Record<string, string>>;
+    readonly [key: string]: unknown;
+    title?: string;
+    prompt: string;
+    agent: TriggerAgentConfig;
+    allowOutputs: readonly AllowedOutput[];
+    timeoutMs?: number;
+    startupTimeoutMs?: number;
+    idleTimeoutMs?: number;
+    autoArchive: boolean;
+    background: boolean;
+    triggerContext: unknown;
+    outputContext: unknown;
+    hubConfig: unknown;
+  },
+  catalog: ProviderConfigurationCatalog,
+): LaunchMachineIntent {
   return {
     kind: "launch_machine",
     organizationId: input.organizationId,
@@ -78,7 +81,7 @@ export function buildLaunchMachineIntent(input: {
     environmentName: input.environmentName,
     environment: input.environment,
     ...(input.env === undefined ? {} : { env: input.env }),
-    ...(input.github === undefined ? {} : { github: input.github }),
+    ...catalog.projectStepFields(input),
     ...(input.title === undefined ? {} : { title: input.title }),
     prompt: input.prompt,
     agent: input.agent,

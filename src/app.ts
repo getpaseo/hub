@@ -492,6 +492,7 @@ function createAppDaemonModule(
   const usesTestTiming =
     options.executionDeadlineClock !== undefined || options.dispatchTimeoutMs !== undefined;
   return createDaemonModule({
+    configurationCatalog: options.providerRegistry.configuration,
     database: options.database,
     connectionForDaemon: options.daemonConnectionForId ?? ((id) => daemons?.connection(id)),
     executionCapabilities: outputRegistry,

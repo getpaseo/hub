@@ -9,11 +9,10 @@ import type {
   ConnectionResolver,
   ConnectionTokenLease,
 } from "../config/connections.js";
-import type { CompiledGitHubAuthority } from "../config/github-authority.js";
 import type { Database } from "../db/types.js";
 import { reportFailure } from "../failures/index.js";
-import type { GitHubAuthorityRegistration } from "../providers/github/runtime.js";
 import type { ExecutionCredentialLease } from "./internal/store.js";
+
 export { ExecutionAuthorityRepository } from "./internal/store.js";
 export type {
   ExecutionAuthorityRecord,
@@ -41,7 +40,7 @@ export interface ExecutionAuthorityMaterialization {
   projectId: string;
   triggerContext: unknown;
   env?: Readonly<Record<string, string>> | undefined;
-  github?: CompiledGitHubAuthority | undefined;
+  readonly [key: string]: unknown;
 }
 export interface MaterializedExecutionAuthority {
   env: Record<string, string>;
@@ -59,6 +58,20 @@ export interface ExecutionAuthorityResourceCounts {
   leases: number;
   pendingMaterializations: number;
 }
+export type RegisterExecutionCredential = (
+  credential: ConnectionTokenLease,
+  durationMs?: number,
+) => Promise<void>;
+export interface ProviderExecutionAuthority {
+  step?: {
+    requires(input: ExecutionAuthorityMaterialization): boolean;
+    materialize(
+      input: ExecutionAuthorityMaterialization,
+      register: RegisterExecutionCredential,
+    ): Promise<Readonly<Record<string, string>>>;
+  };
+  revoke(token: string): Promise<void>;
+}
 export interface CreateExecutionAuthorityOptions {
   database: Pick<
     Database,
@@ -68,7 +81,7 @@ export interface CreateExecutionAuthorityOptions {
     | "listAgentSessionExecutions"
   >;
   connectionsForProject: (projectId: string) => ConnectionResolver;
-  githubAuthority?: GitHubAuthorityRegistration | undefined;
+  providerAuthorities: ReadonlyMap<string, ProviderExecutionAuthority>;
   clock?: ExecutionAuthorityClock | undefined;
   isExecutionActive: (executionId: string) => Promise<boolean>;
   logger?: Pick<Logger, "warn" | "error">;
@@ -116,6 +129,8 @@ export function createExecutionAuthority(
         return { env: existing.env };
       }
       const register = async (credential: ConnectionTokenLease, durationMs?: number) => {
+        if (!options.providerAuthorities.has(credential.provider))
+          throw new Error(`unknown execution credential provider: ${credential.provider}`);
         const lease: ExecutionCredentialLease = {
           id: randomUUID(),
           executionId: input.executionId,
@@ -171,23 +186,9 @@ export function createExecutionAuthority(
           ),
         ),
       );
-      if (input.github) {
-        if (!options.githubAuthority)
-          throw authorityError(
-            "github_authority_unavailable",
-            "GitHub step authority is unavailable",
-          );
-        const github = await options.githubAuthority.mint({
-          projectId: input.projectId,
-          connectionSlug: input.github.connection,
-          repositories: repositoriesForAuthority(input.github, input.triggerContext),
-          permissions: input.github.permissions,
-        });
-        await register(
-          { provider: "github", token: github.token, expiresAt: github.expiresAt },
-          input.github.durationMs,
-        );
-        Object.assign(env, githubEnvironment(github.botUserId, github.botLogin, github.token));
+      for (const authority of options.providerAuthorities.values()) {
+        if (authority.step?.requires(input) === true)
+          Object.assign(env, await authority.step.materialize(input, register));
       }
       await assertActive();
       // A concurrent launch may have won. Keep its environment and revoke only our unused tokens.
@@ -227,7 +228,9 @@ export function createExecutionAuthority(
 
   async function canResume(input: ExecutionAuthorityMaterialization): Promise<boolean> {
     if (
-      input.github === undefined &&
+      !Array.from(options.providerAuthorities.values()).some(
+        (authority) => authority.step?.requires(input) === true,
+      ) &&
       !Object.values(input.env ?? {}).some((value) => parseConnectionTemplate(value).length > 0)
     )
       return true;
@@ -356,9 +359,10 @@ export function createExecutionAuthority(
     try {
       await Promise.race([
         Promise.resolve().then(() => {
-          if (!options.githubAuthority)
-            throw new Error("GitHub credential revocation is unavailable");
-          return options.githubAuthority.revoke(lease.token);
+          const authority = options.providerAuthorities.get(lease.provider);
+          if (authority === undefined)
+            throw new Error(`Execution credential revocation is unavailable: ${lease.provider}`);
+          return authority.revoke(lease.token);
         }),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
@@ -411,52 +415,8 @@ export function createExecutionAuthority(
     },
   };
 }
-function repositoriesForAuthority(
-  github: CompiledGitHubAuthority,
-  triggerContext: unknown,
-): readonly string[] {
-  if (github.repositories !== undefined) return github.repositories;
-  if (
-    typeof triggerContext === "object" &&
-    triggerContext !== null &&
-    "provider" in triggerContext &&
-    triggerContext.provider === "github" &&
-    "target" in triggerContext &&
-    typeof triggerContext.target === "object" &&
-    triggerContext.target !== null &&
-    "repository" in triggerContext.target &&
-    typeof triggerContext.target.repository === "string"
-  ) {
-    return [triggerContext.target.repository];
-  }
-  throw authorityError(
-    "github_authority_scope_invalid",
-    "github.repositories is required for this trigger source; Hub cannot safely expand authority to all installation repositories",
-  );
-}
-
-function githubEnvironment(
-  botUserId: number,
-  botLogin: string,
-  token: string,
-): Record<string, string> {
-  return {
-    GH_TOKEN: token,
-    GIT_CONFIG_COUNT: "5",
-    GIT_CONFIG_KEY_0: "user.name",
-    GIT_CONFIG_VALUE_0: botLogin,
-    GIT_CONFIG_KEY_1: "user.email",
-    GIT_CONFIG_VALUE_1: `${botUserId}+${botLogin}@users.noreply.github.com`,
-    GIT_CONFIG_KEY_2: "url.https://github.com/.insteadOf",
-    GIT_CONFIG_VALUE_2: "git@github.com:",
-    GIT_CONFIG_KEY_3: "url.https://github.com/.insteadOf",
-    GIT_CONFIG_VALUE_3: "ssh://git@github.com/",
-    GIT_CONFIG_KEY_4: "credential.https://github.com.helper",
-    GIT_CONFIG_VALUE_4: "!gh auth git-credential",
-    GIT_CONFIG_GLOBAL: "/dev/null",
-    GIT_CONFIG_NOSYSTEM: "1",
-    GIT_TERMINAL_PROMPT: "0",
-  };
+function authorityError(code: string, message: string): Error & { code: string } {
+  return Object.assign(new Error(message), { code });
 }
 
 function terminalExecutionError(executionId: string): Error {
@@ -468,8 +428,4 @@ function terminalExecutionError(executionId: string): Error {
 
 function authorityStoppedError(): Error {
   return authorityError("execution_authority_stopped", "execution authority is stopped");
-}
-
-function authorityError(code: string, message: string): Error & { code: string } {
-  return Object.assign(new Error(message), { code });
 }

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "vitest";
+import { currentProjectConfigurationFiles } from "../test-utils/current-project-configuration.js";
 import { DaemonDispatchFailure } from "./index.js";
 import { DaemonResponseLostError } from "./protocol.js";
 import { ENROLLMENT_LIFETIME_MS } from "./registration.js";
 import { HubHarness } from "./test-utils/hub-harness.js";
-import { currentProjectConfigurationFiles } from "../test-utils/current-project-configuration.js";
 
 describe("daemon enrollment and execution", () => {
   let hub: HubHarness;
@@ -214,7 +214,7 @@ describe("daemon enrollment and execution", () => {
 
     assert.equal(launchEnv["GH_TOKEN"], undefined);
     assert.equal(launchEnv["GIT_CONFIG_COUNT"], undefined);
-    assert.equal((await hub.execution(result.execution.id)).launchIntent?.github, undefined);
+    assert.equal((await hub.execution(result.execution.id)).launchIntent?.["github"], undefined);
     assert.deepEqual(hub.authorityMintInputs(), []);
   });
 
@@ -523,7 +523,7 @@ describe("daemon enrollment and execution", () => {
     assert.deepEqual(persisted.launchIntent?.env, {
       SOME_TOKEN: "prefix-${{ paseo.connections.some-connection.token }}",
     });
-    assert.deepEqual(persisted.launchIntent?.github, {
+    assert.deepEqual(persisted.launchIntent?.["github"], {
       connection: "getpaseo-github",
       repositories: ["getpaseo/paseo"],
       permissions: { contents: "write", pull_requests: "write" },

@@ -1,5 +1,5 @@
-/* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-new-array-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop -- focused trigger screens bind one document, and a row's link, timestamp, and action are that row's own slots */
-/* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- generated routes cannot express server-resolved organization URLs */
+import { ProviderTriggerFields } from "./provider-fields.js";
+import type { CoreTriggerFormValue } from "./configuration/editor.js";
 import { useSnapshotQuery } from "../queries/index.js";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -42,6 +42,9 @@ import { EventFields } from "./event-fields.js";
 import { selectedProviderModel } from "./provider-catalog.js";
 import { supportsUnattendedRuns } from "./configuration/unattended.js";
 
+/* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-new-array-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop -- focused trigger screens bind one document, and a row's link, timestamp, and action are that row's own slots */
+/* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- generated routes cannot express server-resolved organization URLs */
+
 const {
   describeTriggerEvent,
   changeTriggerEvent,
@@ -60,8 +63,8 @@ type EditorMode = "form" | "yaml";
 /** Every form value the operator types into a control, i.e. everything but the event and the switch. */
 type TriggerTextField = Exclude<
   {
-    [Key in keyof TriggerFormValue]-?: TriggerFormValue[Key] extends string ? Key : never;
-  }[keyof TriggerFormValue],
+    [Key in keyof CoreTriggerFormValue]-?: CoreTriggerFormValue[Key] extends string ? Key : never;
+  }[keyof CoreTriggerFormValue],
   "event"
 >;
 
@@ -584,9 +587,6 @@ function TriggerForm({
 }) {
   const { provider } = eventDefinition(form.event);
   const connections = snapshot.connections.filter((connection) => connection.provider === provider);
-  const githubConnections = snapshot.connections.filter(
-    (connection) => connection.provider === "github",
-  );
   const connectionOptions = connections.map((connection) => ({
     value: connection.slug,
     label: connection.label,
@@ -596,15 +596,6 @@ function TriggerForm({
     label: daemon.slug,
     detail: daemon.presence,
   }));
-  const githubConnectionOptions = [
-    { value: "", label: "Do not inject a GitHub token" },
-    ...githubConnections.map((connection) => ({
-      value: connection.slug,
-      label: connection.label,
-    })),
-  ];
-  const githubEnabled = form.githubConnection !== "";
-  const [githubExpanded, setGithubExpanded] = useState(githubEnabled);
   const [optionsExpanded, setOptionsExpanded] = useState(false);
   const everyone = form.allowedUsers.trim() === "*";
   const update = <Key extends keyof TriggerFormValue>(key: Key, value: TriggerFormValue[Key]) =>
@@ -906,67 +897,12 @@ function TriggerForm({
                   {...fieldError(errors, "providerOptions")}
                 />
               </Disclosure>
-              <Disclosure
-                id="trigger-github"
-                open={githubExpanded}
-                onOpenChange={setGithubExpanded}
-                title="GitHub access"
-                description="Give the run a short-lived token scoped to the repositories you name."
-              >
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <FormField
-                    id="trigger-github-connection"
-                    label="GitHub connection"
-                    description="Mints a short-lived, restricted GH_TOKEN for this run."
-                  >
-                    {(control) => (
-                      <Combobox
-                        {...control}
-                        value={form.githubConnection}
-                        options={githubConnectionOptions}
-                        placeholder="Select a GitHub connection"
-                        empty="No GitHub connections found."
-                        onChange={(option) => update("githubConnection", option.value)}
-                      />
-                    )}
-                  </FormField>
-                  {githubEnabled ? (
-                    <>
-                      <FormField
-                        id="trigger-github-repositories"
-                        label="GitHub repositories"
-                        description="Comma-separated owner/repository names."
-                        kind="text"
-                        name="githubRepositories"
-                        value={form.githubRepositories}
-                        onChange={text("githubRepositories")}
-                        required
-                      />
-                      <FormField
-                        id="trigger-github-duration"
-                        label="GitHub token lifetime"
-                        description="At most 1h."
-                        kind="text"
-                        name="githubDuration"
-                        value={form.githubDuration}
-                        onChange={text("githubDuration")}
-                        required
-                      />
-                      <FormField
-                        id="trigger-github-permissions"
-                        label="GitHub permissions (JSON)"
-                        description="Defaults to read-only repository contents when empty."
-                        kind="multiline"
-                        name="githubPermissions"
-                        value={form.githubPermissions}
-                        onChange={text("githubPermissions")}
-                        placeholder={'{"contents":"write","pull_requests":"write"}'}
-                        {...fieldError(errors, "githubPermissions")}
-                      />
-                    </>
-                  ) : null}
-                </div>
-              </Disclosure>
+              <ProviderTriggerFields
+                form={form}
+                errors={errors}
+                connections={snapshot.connections}
+                onChange={onChange}
+              />
             </>
           )}
         </Card>
@@ -1283,10 +1219,7 @@ function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
     continuationKey: "",
     maxRuntime: "2h",
     idleTimeout: "10m",
-    githubConnection: "",
-    githubRepositories: "",
-    githubPermissions: "",
-    githubDuration: "1h",
+    ...browserConfiguration.initialFormFields(),
     prompt:
       "Handle this request in the originating conversation.\n\nWhen hub.reply is available, use it for useful progress updates and your final user-facing response. Call hub.finish_execution once the request is complete.\n\nRequest:\n${{ paseo.prompt }}",
   };

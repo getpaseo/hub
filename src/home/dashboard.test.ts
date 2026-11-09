@@ -5,7 +5,10 @@ import { parseCompiledHubConfig } from "../config/compiler.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database } from "../db/types.js";
 import { buildLaunchMachineIntent } from "../dispatcher/index.js";
-import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
+import {
+  createProviderRegistry as createAuthorityProviders,
+  createProviderRegistry as createCompositionProviders,
+} from "../providers/server.js";
 import { slackPersistence } from "../providers/slack/persistence.js";
 import { acceptingAgentValidator } from "../test-utils/agent-validator.js";
 import {
@@ -15,6 +18,8 @@ import {
 } from "../test-utils/project-configuration.js";
 import { OrganizationTriggerStore } from "../triggers/store.js";
 import { HomeDashboard } from "./dashboard.js";
+
+const authorityConfiguration = createAuthorityProviders().configuration;
 
 const compositionProviders = createCompositionProviders();
 
@@ -292,28 +297,31 @@ async function recordRun(
       deadlineAt: new Date(NOW.getTime() + 3_600_000),
       idleDeadlineAt: new Date(NOW.getTime() + 600_000),
       startedAt: new Date(NOW.getTime() - 30_000),
-      launchIntent: buildLaunchMachineIntent({
-        organizationId: "org-1",
-        projectId,
-        triggerRunId: run.id,
-        configurationRevisionId: revision.id,
-        triggerName: "manual-task",
-        environmentName: "target",
-        environment: {
-          kind: "daemon",
-          daemonId: TEST_DAEMON_ID,
-          authoredSlug: TEST_DAEMON_SLUG,
-          cwd: "/workspace",
+      launchIntent: buildLaunchMachineIntent(
+        {
+          organizationId: "org-1",
+          projectId,
+          triggerRunId: run.id,
+          configurationRevisionId: revision.id,
+          triggerName: "manual-task",
+          environmentName: "target",
+          environment: {
+            kind: "daemon",
+            daemonId: TEST_DAEMON_ID,
+            authoredSlug: TEST_DAEMON_SLUG,
+            cwd: "/workspace",
+          },
+          prompt: "run it",
+          agent: { provider: "codex", model: "gpt-5.4", mode: "full-access" },
+          allowOutputs: [],
+          autoArchive: true,
+          background: false,
+          triggerContext: {},
+          outputContext: {},
+          hubConfig: {},
         },
-        prompt: "run it",
-        agent: { provider: "codex", model: "gpt-5.4", mode: "full-access" },
-        allowOutputs: [],
-        autoArchive: true,
-        background: false,
-        triggerContext: {},
-        outputContext: {},
-        hubConfig: {},
-      }),
+        authorityConfiguration,
+      ),
     },
   });
   if (status === "succeeded") await database.succeedTriggerRun(run.id);

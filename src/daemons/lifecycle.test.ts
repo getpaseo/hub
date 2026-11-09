@@ -158,6 +158,7 @@ describe("durable Hub action acknowledgement state", () => {
         validateAgentConfiguration: async () => ({ valid: true }),
       };
       const lifecycle = createDaemonDispatchLifecycle({
+        configurationCatalog: composedEvents,
         database,
         connectionForDaemon: () => connection,
         publicBaseUrl: "https://hub.test",
@@ -211,6 +212,7 @@ describe("durable Hub action acknowledgement state", () => {
     vi.spyOn(database, "findAgentExecutionById").mockRejectedValueOnce(new Error(canary));
     const stream = new FailureLogStream();
     const lifecycle = createDaemonDispatchLifecycle({
+      configurationCatalog: composedEvents,
       database,
       connectionForDaemon: () => new AcknowledgementConnection(),
       publicBaseUrl: "http://hub.test",
@@ -254,6 +256,7 @@ describe("durable Hub action acknowledgement state", () => {
       },
     };
     const lifecycle = createDaemonDispatchLifecycle({
+      configurationCatalog: composedEvents,
       database,
       connectionForDaemon: () => undefined,
       providers: [provider],
@@ -449,6 +452,7 @@ function createLifecycle(
   connection: AcknowledgementConnection,
 ): DaemonDispatchLifecycle {
   return createDaemonDispatchLifecycle({
+    configurationCatalog: composedEvents,
     database,
     publicBaseUrl: "http://hub.test",
     completionTokenSecret: "test-secret",

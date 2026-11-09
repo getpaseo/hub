@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
+import { CompiledGitHubAuthoritySchema } from "../providers/github/authority-configuration.js";
 import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
 import {
   compileHubConfig,
@@ -328,7 +329,7 @@ describe("workflow compiler", () => {
     assert.deepEqual(compiled.triggers[0]?.steps[0]?.env, {
       SOME_TOKEN: "prefix-${{ paseo.connections.some-connection.token }}",
     });
-    assert.deepEqual(compiled.triggers[0]?.steps[0]?.github, {
+    assert.deepEqual(compiled.triggers[0]?.steps[0]?.["github"], {
       connection: "getpaseo-github",
       repositories: ["getpaseo/paseo"],
       permissions: { contents: "read" },
@@ -355,7 +356,7 @@ describe("workflow compiler", () => {
       codecCatalog,
     );
 
-    assert.deepEqual(compiled.triggers[0]?.steps[0]?.github, {
+    assert.deepEqual(compiled.triggers[0]?.steps[0]?.["github"], {
       connection: "getpaseo-github",
       permissions: { contents: "read" },
       durationMs: 60 * 60 * 1000,
@@ -466,7 +467,9 @@ describe("workflow compiler", () => {
           compileHubConfig(
             {
               ...base,
-              triggers: [{ ...base.triggers[0], steps: [{ ...step, github: candidate.github }] }],
+              triggers: [
+                { ...base.triggers[0], steps: [{ ...step, github: candidate["github"] }] },
+              ],
             },
             codecCatalog,
           ),
@@ -492,7 +495,10 @@ describe("workflow compiler", () => {
     });
 
     const compiled = compileHubConfig(raw, codecCatalog);
-    assert.deepEqual(compiled.triggers[0]?.steps[0]?.github?.permissions, { [name]: level });
+    assert.deepEqual(
+      CompiledGitHubAuthoritySchema.parse(compiled.triggers[0]?.steps[0]?.["github"]).permissions,
+      { [name]: level },
+    );
   });
 
   it.each(["actions_variables", "repository_advisories"])(

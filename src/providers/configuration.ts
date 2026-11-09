@@ -1,4 +1,6 @@
+import type { Document } from "yaml";
 import { z } from "zod";
+import { validateConnectionTemplate } from "../config/connection-template.js";
 
 export type QualifierKey = string;
 export type QualifierValues = Partial<Record<QualifierKey, string>>;
@@ -23,7 +25,68 @@ export interface ProviderLaunchPolicyInput {
   on: string;
   filters?: Readonly<Record<string, unknown>> | undefined;
 }
+export interface ProviderStepContext {
+  triggerName: string;
+  event: string;
+  stepId: string;
+  env: Readonly<Record<string, string>> | undefined;
+}
+export interface ProviderStepConfiguration {
+  key: string;
+  authoredSchema: z.ZodType;
+  compiledSchema: z.ZodType;
+  compile(value: unknown, context: ProviderStepContext): unknown;
+  validate(value: unknown, context: ProviderStepContext): void;
+  validateEnvironmentKey?(key: string, context: ProviderStepContext): void;
+  decompile(value: unknown): unknown;
+  compatibility(value: unknown): unknown;
+  executionAuthority?: { unavailable(): Error };
+}
+export interface ProviderFormConnection {
+  provider: string;
+  slug: string;
+  label: string;
+}
+interface ProviderFormFieldBase {
+  key: string;
+  id: string;
+  label: string;
+  description: string;
+  value: string;
+  required?: boolean;
+}
+export type ProviderFormField = ProviderFormFieldBase &
+  (
+    | {
+        kind: "choice";
+        options: readonly { value: string; label: string }[];
+        placeholder: string;
+        empty: string;
+      }
+    | { kind: "text" | "multiline"; placeholder?: string }
+  );
+export interface ProviderFormSection {
+  id: string;
+  title: string;
+  description: string;
+  initialOpen: boolean;
+  fields: readonly ProviderFormField[];
+}
+export interface ProviderTriggerForm {
+  initialValues: Readonly<Record<string, string>>;
+  project(run: Readonly<Record<string, unknown>>): Readonly<Record<string, string>>;
+  authored(value: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>>;
+  patch(document: Document, value: Readonly<Record<string, unknown>>): void;
+  errors(value: Readonly<Record<string, unknown>>): Readonly<Record<string, string>>;
+  section(
+    value: Readonly<Record<string, unknown>>,
+    connections: readonly ProviderFormConnection[],
+  ): ProviderFormSection;
+}
 export interface ProviderConfigurationDefinition {
+  form?: ProviderTriggerForm;
+  step?: ProviderStepConfiguration;
+  preparationFailureCodes?: readonly string[];
   filterFields: Readonly<Record<string, z.ZodType>>;
   projectLegacyFilters(value: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>>;
   allowsLaunchWithoutActor?(trigger: ProviderLaunchPolicyInput): boolean;
@@ -75,12 +138,15 @@ export class ProviderConfigurationCatalog {
       qualifiers: [],
     });
   }
-  filterSchema<Shape extends z.ZodRawShape>(base: z.ZodObject<Shape>) {
+  private validateFields<Shape extends z.ZodRawShape>(
+    base: z.ZodObject<Shape>,
+    fields: ReadonlyMap<string, z.ZodType>,
+  ) {
     return base.catchall(z.unknown()).transform((value, context) => {
       const unknownKeys: string[] = [];
       for (const [key, field] of Object.entries(value)) {
         if (Object.hasOwn(base.shape, key)) continue;
-        const schema = this.filterFields.get(key);
+        const schema = fields.get(key);
         if (schema === undefined) {
           unknownKeys.push(key);
           continue;
@@ -96,6 +162,85 @@ export class ProviderConfigurationCatalog {
       return value;
     });
   }
+  filterSchema<Shape extends z.ZodRawShape>(base: z.ZodObject<Shape>) {
+    return this.validateFields(base, this.filterFields);
+  }
+  stepSchema<Shape extends z.ZodRawShape>(base: z.ZodObject<Shape>, kind: "authored" | "compiled") {
+    return this.validateFields(
+      base,
+      new Map(
+        this.steps().map((step) => [
+          step.key,
+          kind === "authored" ? step.authoredSchema : step.compiledSchema,
+        ]),
+      ),
+    );
+  }
+  private steps(): readonly ProviderStepConfiguration[] {
+    return Array.from(this.providers.values()).flatMap((provider) =>
+      provider.step === undefined ? [] : [provider.step],
+    );
+  }
+  compileStepFields(
+    value: Readonly<Record<string, unknown>>,
+    context: ProviderStepContext,
+  ): Readonly<Record<string, unknown>> {
+    return Object.fromEntries(
+      this.steps().flatMap((step) =>
+        value[step.key] === undefined ? [] : [[step.key, step.compile(value[step.key], context)]],
+      ),
+    );
+  }
+  validateStepFields(value: Readonly<Record<string, unknown>>, context: ProviderStepContext): void {
+    for (const [key, field] of Object.entries(context.env ?? {})) {
+      validateConnectionTemplate(
+        field,
+        `trigger ${context.triggerName} step ${context.stepId} env.${key}`,
+      );
+      for (const step of this.steps())
+        if (value[step.key] !== undefined) step.validateEnvironmentKey?.(key, context);
+    }
+    for (const step of this.steps())
+      if (value[step.key] !== undefined) step.validate(value[step.key], context);
+  }
+  projectStepFields(value: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
+    return Object.fromEntries(
+      this.steps().flatMap((step) =>
+        value[step.key] === undefined ? [] : [[step.key, value[step.key]]],
+      ),
+    );
+  }
+  decompileStepFields(value: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
+    return Object.fromEntries(
+      this.steps().flatMap((step) =>
+        value[step.key] === undefined ? [] : [[step.key, step.decompile(value[step.key])]],
+      ),
+    );
+  }
+  compatibilityFields(value: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
+    return Object.fromEntries(
+      this.steps().map((step) => [step.key, step.compatibility(value[step.key])]),
+    );
+  }
+  requiresExecutionAuthority(value: Readonly<Record<string, unknown>>): boolean {
+    return this.steps().some(
+      (step) => step.executionAuthority !== undefined && value[step.key] !== undefined,
+    );
+  }
+  assertExecutionAuthorityAvailable(
+    value: Readonly<Record<string, unknown>>,
+    available: boolean,
+  ): void {
+    if (available) return;
+    for (const step of this.steps())
+      if (value[step.key] !== undefined && step.executionAuthority !== undefined)
+        throw step.executionAuthority.unavailable();
+  }
+  preparationFailureCode(code: string): boolean {
+    return Array.from(this.providers.values()).some(
+      (provider) => provider.preparationFailureCodes?.includes(code) === true,
+    );
+  }
   projectLegacyFilters(
     value: Readonly<Record<string, unknown>>,
   ): Readonly<Record<string, unknown>> {
@@ -109,6 +254,32 @@ export class ProviderConfigurationCatalog {
       this.providers.get(trigger.on.split(".")[0] ?? "")?.allowsLaunchWithoutActor?.(trigger) ===
       true
     );
+  }
+  private forms(): readonly ProviderTriggerForm[] {
+    return Array.from(this.providers.values()).flatMap((provider) =>
+      provider.form === undefined ? [] : [provider.form],
+    );
+  }
+  initialFormFields(): Readonly<Record<string, string>> {
+    return Object.fromEntries(this.forms().flatMap((form) => Object.entries(form.initialValues)));
+  }
+  projectFormFields(run: Readonly<Record<string, unknown>>): Readonly<Record<string, string>> {
+    return Object.fromEntries(this.forms().flatMap((form) => Object.entries(form.project(run))));
+  }
+  authoredFormFields(value: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
+    return Object.fromEntries(this.forms().flatMap((form) => Object.entries(form.authored(value))));
+  }
+  patchForm(document: Document, value: Readonly<Record<string, unknown>>): void {
+    for (const form of this.forms()) form.patch(document, value);
+  }
+  formErrors(value: Readonly<Record<string, unknown>>): Readonly<Record<string, string>> {
+    return Object.fromEntries(this.forms().flatMap((form) => Object.entries(form.errors(value))));
+  }
+  formSections(
+    value: Readonly<Record<string, unknown>>,
+    connections: readonly ProviderFormConnection[],
+  ): readonly ProviderFormSection[] {
+    return this.forms().map((form) => form.section(value, connections));
   }
   list(): readonly string[] {
     return [...this.definitions.keys()];

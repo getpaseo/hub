@@ -41,3 +41,23 @@ export interface ActiveProviderRuntime {
     operation: (registration: Registration | undefined) => Promise<Value>,
   ): Promise<Value>;
 }
+
+/** A fixed composition has no replacements to drain; consumers still use the same lease interface. */
+export function staticProviderRuntime(
+  registrations: readonly ProviderRegistration[],
+): ActiveProviderRuntime {
+  return {
+    read(definition, operation) {
+      const registration = registrations
+        .map((item) => definition.find(item))
+        .find((item) => item !== undefined);
+      return operation(registration);
+    },
+    async use(definition, operation) {
+      const registration = registrations
+        .map((item) => definition.find(item))
+        .find((item) => item !== undefined);
+      return operation(registration);
+    },
+  };
+}
