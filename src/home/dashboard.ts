@@ -1,9 +1,10 @@
 import type { AuthServer } from "../auth/server.js";
 import type { Database, OrganizationRunRecord, UnroutedProviderEventCount } from "../db/types.js";
 import { resolveRouteTenant } from "../projects/access.js";
+import type { ProviderConfigurationCatalog } from "../providers/configuration.js";
 import type { ProviderRegistry } from "../providers/registry.js";
 import { organizationConnections } from "../providers/resources.js";
-import { projectTriggerForm } from "../triggers/configuration/editor.js";
+import { createTriggerEditor } from "../triggers/configuration/editor.js";
 
 /** How far back the overview looks. One week is long enough to hold a first run and short enough that a nudge fades once a trigger listens. */
 export const HOME_WINDOW_DAYS = 7;
@@ -11,7 +12,7 @@ const RUNS_SHOWN = 50;
 
 export interface HomeSnapshot {
   organization: { id: string; name: string; slug: string };
-  /** Whether any provider app (GitHub, Slack, Discord, Linear) is set up on this Hub at all. */
+  /** Whether any registered provider app is set up on this Hub at all. */
   appsConfigured: boolean;
   connections: readonly {
     provider: string;
@@ -84,7 +85,7 @@ export class HomeDashboard {
       triggers: triggers.map((trigger, index) => ({
         id: trigger.id,
         name: trigger.name,
-        event: triggerEvent(revisions[index]?.yaml),
+        event: triggerEvent(revisions[index]?.yaml, this.providers.configuration),
         enabled: trigger.enabled,
       })),
       runs: runs.map((run) => ({
@@ -103,8 +104,8 @@ export class HomeDashboard {
 }
 
 /** The one event a self-contained trigger listens for; a legacy document has none to name. */
-function triggerEvent(yaml: string | undefined): string {
+function triggerEvent(yaml: string | undefined, events: ProviderConfigurationCatalog): string {
   if (yaml === undefined) return "manual.run";
-  const projection = projectTriggerForm(yaml);
+  const projection = createTriggerEditor(events).projectTriggerForm(yaml);
   return projection.status === "editable" ? projection.value.event : "manual.run";
 }

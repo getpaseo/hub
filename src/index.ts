@@ -79,7 +79,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     const providerRegistry = createProviderRegistry();
     const { database, runtime, locks } = await createDatabaseHandle(providerRegistry);
     resources.own(() => database.close());
-    const migration = await migrateLegacyProjectTriggers(database);
+    const migration = await migrateLegacyProjectTriggers(database, providerRegistry.configuration);
     if (migration.projects > 0) {
       logger.info(migration, "migrated project configurations to organization triggers");
     }

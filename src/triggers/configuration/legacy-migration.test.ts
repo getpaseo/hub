@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
+import { createProviderRegistry as createEventProviders } from "../../providers/server.js";
 import { migrateLegacyBundle } from "./index.js";
+
+const composedEvents = createEventProviders().configuration;
 
 const hub = `
 environments:
@@ -16,12 +19,13 @@ agents:
 
 describe("legacy project bundle migration", () => {
   it("inlines a one-step workflow and its prompt partial into one trigger document", () => {
-    const migrated = migrateLegacyBundle({
-      files: [
-        { path: ".paseo/hub.yml", content: hub },
-        {
-          path: ".paseo/workflows/slack.yml",
-          content: `
+    const migrated = migrateLegacyBundle(
+      {
+        files: [
+          { path: ".paseo/hub.yml", content: hub },
+          {
+            path: ".paseo/workflows/slack.yml",
+            content: `
 name: slack-help
 on: slack.mention
 max_runtime: 2h
@@ -40,13 +44,15 @@ steps:
     allow_outputs:
       - { type: slack.reply, max: 5 }
 `,
-        },
-        {
-          path: ".paseo/workflows/partials/safety.md",
-          content: "Never disclose secrets.",
-        },
-      ],
-    });
+          },
+          {
+            path: ".paseo/workflows/partials/safety.md",
+            content: "Never disclose secrets.",
+          },
+        ],
+      },
+      composedEvents,
+    );
 
     assert.equal(migrated.length, 1);
     const trigger = migrated[0];
@@ -59,12 +65,13 @@ steps:
   });
 
   it("preserves a multi-step workflow as one self-contained normalized legacy trigger", () => {
-    const migrated = migrateLegacyBundle({
-      files: [
-        { path: ".paseo/hub.yml", content: hub },
-        {
-          path: ".paseo/workflows/route.yml",
-          content: `
+    const migrated = migrateLegacyBundle(
+      {
+        files: [
+          { path: ".paseo/hub.yml", content: hub },
+          {
+            path: ".paseo/workflows/route.yml",
+            content: `
 name: route
 on: manual.run
 max_runtime: 2h
@@ -82,9 +89,11 @@ steps:
     agent: codex
     prompt: [{ text: work }]
 `,
-        },
-      ],
-    });
+          },
+        ],
+      },
+      composedEvents,
+    );
 
     assert.equal(migrated[0]?.format, "legacy_multistep");
     const trigger = migrated[0];

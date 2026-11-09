@@ -1,6 +1,7 @@
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop -- event controls bind their own configuration */
 import { FormField } from "../components/app/form-field.js";
-import { eventDefinition, type QualifierKey } from "./configuration/events.js";
+import { browserConfiguration } from "../providers/browser.js";
+import type { QualifierKey } from "../providers/configuration.js";
 import type { TriggerFieldErrors, TriggerFormValue } from "./configuration/editor.js";
 import { ScheduleFields } from "./schedule/fields.js";
 
@@ -24,7 +25,7 @@ export function EventFields({
         error={errors.recurrence}
         onChange={(recurrence) => onChange({ ...value, recurrence })}
       />
-      {eventDefinition(value.event).qualifiers.map((qualifier) => {
+      {browserConfiguration.definition(value.event).qualifiers.map((qualifier) => {
         const error = errors[`qualifiers.${qualifier.key}`];
         return (
           <FormField

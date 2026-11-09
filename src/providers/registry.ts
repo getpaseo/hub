@@ -7,6 +7,10 @@ import type {
 } from "../provider-applications/index.js";
 import type { ProviderApplicationContext } from "../provider-applications/workflow.js";
 import type { TriggerProvider } from "../triggers/index.js";
+import {
+  ProviderConfigurationCatalog,
+  type ProviderConfigurationDefinition,
+} from "./configuration.js";
 import type { ProviderRegistration } from "./registration.js";
 
 export interface ProviderManifest {
@@ -76,6 +80,7 @@ export interface ProviderApplication {
 }
 
 export interface ProviderModule {
+  configuration: ProviderConfigurationDefinition;
   configurationSource?: import("./configuration-source.js").ProviderConfigurationSource;
   resources: import("./resources.js").ProviderResources;
   summarizeEvent(payload: unknown): import("./presentation.js").ProviderEventSummary;
@@ -85,6 +90,7 @@ export interface ProviderModule {
 }
 
 export class ProviderRegistry {
+  readonly configuration: ProviderConfigurationCatalog;
   private readonly modules = new Map<string, ProviderModule>();
 
   constructor(modules: readonly ProviderModule[]) {
@@ -92,8 +98,13 @@ export class ProviderRegistry {
       const id = module.manifest.id;
       if (!/^[a-z][a-z0-9_-]*$/u.test(id)) throw new Error(`invalid provider id: ${id}`);
       if (this.modules.has(id)) throw new Error(`provider already registered: ${id}`);
+      if (module.configuration.provider !== id)
+        throw new Error(`trigger provider id mismatch: ${id}`);
       this.modules.set(id, module);
     }
+    this.configuration = new ProviderConfigurationCatalog(
+      modules.map((module) => module.configuration),
+    );
   }
 
   list(): readonly ProviderModule[] {

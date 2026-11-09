@@ -1,16 +1,19 @@
 import assert from "node:assert/strict";
-import { describe, it, vi } from "vitest";
 import { Octokit } from "octokit";
-import { createMemoryDatabase } from "../../db/memory.js";
-import type { DurableProviderEvent } from "../../db/types.js";
-import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
-import { createDurableWorkflowHandler } from "../../workflows/engine.js";
-import type { GitHubReactionClient } from "./provider.js";
-import { createGitHubReactionClient, createGitHubTriggerProvider } from "./provider.js";
+import { describe, it, vi } from "vitest";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
 import type { GitHubAuth } from "../../auth/github.js";
-import { isAcceptedTriggerProviderMatch } from "../index.js";
+import { createMemoryDatabase } from "../../db/memory.js";
+import type { DurableProviderEvent } from "../../db/types.js";
 import { createUnlimitedEntitlementsService } from "../../entitlements/test-utils.js";
+import { createProviderRegistry as createEventProviders } from "../../providers/server.js";
+import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
+import { createDurableWorkflowHandler } from "../../workflows/engine.js";
+import { isAcceptedTriggerProviderMatch } from "../index.js";
+import type { GitHubReactionClient } from "./provider.js";
+import { createGitHubReactionClient, createGitHubTriggerProvider } from "./provider.js";
+
+const composedEvents = createEventProviders().configuration;
 
 describe("GitHub Phase 1 trigger provider", () => {
   it("retries reaction cleanup before posting an execution-limit notice", async () => {
@@ -521,6 +524,7 @@ describe("GitHub Phase 1 trigger provider", () => {
 
       let dispatches = 0;
       const { handler, engine } = createDurableWorkflowHandler({
+        configurationCatalog: composedEvents,
         database,
         entitlements: createUnlimitedEntitlementsService(),
         providers: [provider],

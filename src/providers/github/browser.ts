@@ -4,6 +4,8 @@ import { connectionPresentation } from "./connection-presentation.js";
 import { failure } from "./failure.js";
 import { glyph, identityLabel, runHint, setup } from "./presentation.js";
 import { resourceSchemas } from "./public-resources.js";
+import { triggerConfiguration } from "./trigger-configuration.js";
+
 export const GITHUB_GUIDE: ProviderGuide = {
   provider: "github",
   name: "GitHub",
@@ -206,6 +208,7 @@ export const GITHUB_GUIDE: ProviderGuide = {
 };
 
 export const githubBrowserProvider = {
+  configuration: triggerConfiguration,
   resourceSchemas,
   connection: connectionPresentation,
   failure,

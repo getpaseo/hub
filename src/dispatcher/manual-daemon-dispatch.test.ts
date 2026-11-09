@@ -6,11 +6,14 @@ import {
   type CompiledHubConfig,
 } from "../config/compiler.js";
 import { createMemoryDatabase } from "../db/memory.js";
-import type { ManualTriggerInput } from "../triggers/manual/schema.js";
-import type { TriggerProvider } from "../triggers/index.js";
-import { createManualTriggerSource, dispatchManualTrigger } from "../triggers/manual/source.js";
 import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
+import { createProviderRegistry as createEventProviders } from "../providers/server.js";
+import type { TriggerProvider } from "../triggers/index.js";
+import type { ManualTriggerInput } from "../triggers/manual/schema.js";
+import { createManualTriggerSource, dispatchManualTrigger } from "../triggers/manual/source.js";
 import { createDispatcherWithEngine } from "./index.js";
+
+const composedEvents = createEventProviders().configuration;
 
 const PROJECT_ID = "00000000-0000-4000-8000-000000000001";
 
@@ -20,6 +23,7 @@ describe("manual trigger durable workflow boundary", () => {
     const { project, revision } = await createManualProject(database);
     const source = createManualTriggerSource(database);
     const { handler } = createDispatcherWithEngine({
+      configurationCatalog: composedEvents,
       database,
       entitlements: createUnlimitedEntitlementsService(),
       providers: [noMatchingProvider()],
@@ -60,6 +64,7 @@ describe("manual trigger durable workflow boundary", () => {
     const source = createManualTriggerSource(database);
     const dispatches: string[] = [];
     const { handler, engine } = createDispatcherWithEngine({
+      configurationCatalog: composedEvents,
       database,
       entitlements: createUnlimitedEntitlementsService(),
       providers: [matchingProvider(configuration, revision.id)],

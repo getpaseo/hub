@@ -234,6 +234,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
         }),
   };
   const { handler: workflowDispatcher, engine: workflowEngine } = createDispatcherWithEngine({
+    configurationCatalog: options.providerRegistry.configuration,
     ...dispatcherOptions,
     ...(durableDispatchHandler === undefined
       ? {}

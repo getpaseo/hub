@@ -4,6 +4,8 @@ import { connectionPresentation } from "./connection-presentation.js";
 import { failure } from "./failure.js";
 import { glyph, identityLabel, runHint, setup } from "./presentation.js";
 import { resourceSchemas } from "./public-resources.js";
+import { triggerConfiguration } from "./trigger-configuration.js";
+
 export const DISCORD_GUIDE: ProviderGuide = {
   provider: "discord",
   name: "Discord",
@@ -113,6 +115,7 @@ export const DISCORD_GUIDE: ProviderGuide = {
 };
 
 export const discordBrowserProvider = {
+  configuration: triggerConfiguration,
   resourceSchemas,
   connection: connectionPresentation,
   failure,

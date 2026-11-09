@@ -11,6 +11,7 @@ import type { LaunchMachineIntent } from "./launch-machine-intent.js";
 export { buildLaunchMachineIntent, type LaunchMachineIntent } from "./launch-machine-intent.js";
 
 export interface DispatcherOptions {
+  configurationCatalog: DurableWorkflowEngineOptions["configurationCatalog"];
   database: Database | null;
   /** Required end to end so the executions meter can never be silently skipped. */
   entitlements: EntitlementsService | null;
@@ -39,6 +40,7 @@ export function createDispatcherWithEngine(options: DispatcherOptions): {
   engine: DurableWorkflowEngine;
 } {
   const engineOptions: DurableWorkflowEngineOptions = {
+    configurationCatalog: options.configurationCatalog,
     ...(options.canDispatchToDaemon === undefined
       ? {}
       : { canDispatchToDaemon: options.canDispatchToDaemon }),

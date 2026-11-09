@@ -13,6 +13,11 @@ describe("summarizeTrigger", () => {
     const example = {
       ...registry.require("github"),
       manifest: { ...registry.require("github").manifest, id: "example" },
+      configuration: {
+        ...registry.require("github").configuration,
+        provider: "example",
+        events: { "example.received": { label: "Example received" } },
+      },
       summarizeEvent(payload: unknown) {
         assert.deepEqual(payload, { message: "received" });
         return {

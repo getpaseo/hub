@@ -5,9 +5,10 @@ import type { DaemonAgentConfigurationValidator } from "../configuration/store.j
 import type { Database, OrganizationTriggerRecord } from "../db/types.js";
 import { resolveRouteTenant } from "../projects/access.js";
 import { ProjectCommandError } from "../projects/command-error.js";
+import type { ProviderConfigurationCatalog } from "../providers/configuration.js";
 import type { ProviderRegistry } from "../providers/registry.js";
 import { organizationConnections } from "../providers/resources.js";
-import { projectTriggerForm } from "./configuration/editor.js";
+import { createTriggerEditor } from "./configuration/editor.js";
 import { OrganizationTriggerStore } from "./store.js";
 
 export class TriggerDashboard {
@@ -47,6 +48,7 @@ export class TriggerDashboard {
           triggerView(
             store,
             trigger,
+            this.providers.configuration,
             activity.find(({ triggerId }) => triggerId === trigger.id),
           ),
         ),
@@ -132,6 +134,7 @@ export class TriggerDashboard {
 async function triggerView(
   store: OrganizationTriggerStore,
   trigger: OrganizationTriggerRecord,
+  events: ProviderConfigurationCatalog,
   lastTriggered:
     | { provider: string; source: string; status: string; receivedAt: string }
     | undefined,
@@ -154,11 +157,11 @@ async function triggerView(
       blockers: stringArray(evidence?.["conversionBlockers"]),
       draft: null,
       event,
-      provider: triggerProvider(event, lastTriggered?.provider),
+      provider: triggerProvider(event, lastTriggered?.provider, events),
       lastTriggered: operational,
     };
   }
-  const projection = projectTriggerForm(revision.yaml);
+  const projection = createTriggerEditor(events).projectTriggerForm(revision.yaml);
   return {
     id: trigger.id,
     name: trigger.name,
@@ -172,6 +175,7 @@ async function triggerView(
     provider: triggerProvider(
       projection.status === "editable" ? projection.value.event : event,
       lastTriggered?.provider,
+      events,
     ),
     lastTriggered: operational,
   };
@@ -187,18 +191,15 @@ function triggerEvent(yaml: string, fallback: string | undefined): string {
 function triggerProvider(
   event: string,
   fallback: string | undefined,
-): "github" | "discord" | "slack" | "linear" | "manual" | "schedule" {
+  events: ProviderConfigurationCatalog,
+): string {
   const provider = event.split(".")[0] ?? fallback;
-  if (
-    provider === "schedule" ||
-    provider === "github" ||
-    provider === "discord" ||
-    provider === "slack" ||
-    provider === "linear"
-  ) {
-    return provider;
-  }
-  return "manual";
+  return provider !== undefined &&
+    (provider === "manual" ||
+      provider === "schedule" ||
+      events.list().some((id) => events.definition(id).provider === provider))
+    ? provider
+    : "manual";
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

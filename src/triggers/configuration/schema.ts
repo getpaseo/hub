@@ -1,8 +1,11 @@
-import { RecurrenceSchema } from "../schedule/recurrence.js";
 import { z } from "zod";
-import { ContinuationSchema } from "../continuation.js";
-import { eventDefinition, isEditorEvent } from "./events.js";
 import { AuthoredGitHubAuthoritySchema } from "../../config/github-authority.js";
+import {
+  qualifierValue,
+  type ProviderConfigurationCatalog,
+} from "../../providers/configuration.js";
+import { ContinuationSchema } from "../continuation.js";
+import { RecurrenceSchema } from "../schedule/recurrence.js";
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -119,7 +122,7 @@ export const TriggerRunSchema = z
   })
   .strict();
 
-export const TriggerDocumentSchema = z
+const TriggerDocumentBaseSchema = z
   .object({
     name: z.string().regex(IDENTIFIER),
     enabled: z.boolean().default(true),
@@ -129,8 +132,10 @@ export const TriggerDocumentSchema = z
     max_runtime: z.string().min(1).optional(),
     run: TriggerRunSchema,
   })
-  .strict()
-  .superRefine((trigger, context) => {
+  .strict();
+
+export function triggerDocumentSchema(events: ProviderConfigurationCatalog) {
+  return TriggerDocumentBaseSchema.superRefine((trigger, context) => {
     for (const [event, definition] of Object.entries(trigger.on)) {
       if (event === "schedule.tick") {
         if (
@@ -160,9 +165,9 @@ export const TriggerDocumentSchema = z
           message: "Recurrence is only supported for schedule.tick.",
         });
       }
-      if (!isEditorEvent(event)) continue;
-      for (const qualifier of eventDefinition(event).qualifiers) {
-        const value = definition.filters?.[qualifier.key];
+      if (!events.has(event)) continue;
+      for (const qualifier of events.definition(event).qualifiers) {
+        const value = qualifierValue(definition.filters, qualifier.key);
         if (qualifier.required && (value === undefined || value.trim().length === 0)) {
           context.addIssue({
             code: z.ZodIssueCode.custom,
@@ -187,5 +192,5 @@ export const TriggerDocumentSchema = z
       });
     }
   });
-
-export type TriggerDocument = z.infer<typeof TriggerDocumentSchema>;
+}
+export type TriggerDocument = z.infer<typeof TriggerDocumentBaseSchema>;

@@ -3,8 +3,11 @@ import { describe, it } from "vitest";
 import { compileHubBundle, type HubBundleFile } from "../config/bundle.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database, ProjectRecord } from "../db/types.js";
+import { createProviderRegistry as createEventProviders } from "../providers/server.js";
 import { slackPersistence } from "../providers/slack/persistence.js";
 import { migrateLegacyProjectTriggers } from "./migration.js";
+
+const composedEvents = createEventProviders().configuration;
 
 const hub = `
 environments:
@@ -36,7 +39,7 @@ describe("startup project trigger migration", () => {
       ],
     );
 
-    assert.deepEqual(await migrateLegacyProjectTriggers(database), {
+    assert.deepEqual(await migrateLegacyProjectTriggers(database, composedEvents), {
       projects: 1,
       triggers: 2,
       legacyMultistepTriggers: 1,
@@ -65,7 +68,7 @@ describe("startup project trigger migration", () => {
       });
       assert.equal(accepted.status, "accepted");
     }
-    assert.deepEqual(await migrateLegacyProjectTriggers(database), {
+    assert.deepEqual(await migrateLegacyProjectTriggers(database, composedEvents), {
       projects: 0,
       triggers: 0,
       legacyMultistepTriggers: 0,
@@ -78,7 +81,7 @@ describe("startup project trigger migration", () => {
     await activeProject(database, "hub", [workflow("request", "manual.run", oneStep())]);
     await activeProject(database, "paseo", [workflow("request", "manual.run", oneStep())]);
 
-    await migrateLegacyProjectTriggers(database);
+    await migrateLegacyProjectTriggers(database, composedEvents);
     assert.deepEqual(
       (await database.listOrganizationTriggers("org")).map(({ name }) => name).sort(),
       ["paseo-request", "request"],
@@ -102,7 +105,10 @@ describe("startup project trigger migration", () => {
     });
     await database.activateProjectConfigurationRevision(project.id, revision.id);
 
-    await assert.rejects(migrateLegacyProjectTriggers(database), /has no authored bundle/u);
+    await assert.rejects(
+      migrateLegacyProjectTriggers(database, composedEvents),
+      /has no authored bundle/u,
+    );
     assert.equal((await database.listPendingProjectTriggerMigrations()).length, 1);
     assert.equal((await database.listOrganizationTriggers("org")).length, 0);
   });
@@ -124,7 +130,7 @@ describe("startup project trigger migration", () => {
     );
 
     await assert.rejects(
-      migrateLegacyProjectTriggers(database),
+      migrateLegacyProjectTriggers(database, composedEvents),
       /project trigger routes do not match migrated triggers/u,
     );
     assert.equal((await database.listPendingProjectTriggerMigrations()).length, 1);

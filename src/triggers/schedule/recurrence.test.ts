@@ -1,8 +1,13 @@
-import { scheduleYaml } from "./test-fixture.js";
 import { describe, expect, it } from "vitest";
-import { RecurrenceSchema, nextOccurrence, type Recurrence } from "./recurrence.js";
+import { browserConfiguration } from "../../providers/browser.js";
+import { createProviderRegistry as createEventProviders } from "../../providers/server.js";
+import { createTriggerEditor } from "../configuration/editor.js";
 import { compileTriggerDocument, parseTriggerDocument } from "../configuration/index.js";
-import { patchTriggerYaml, projectTriggerForm } from "../configuration/editor.js";
+import { RecurrenceSchema, nextOccurrence, type Recurrence } from "./recurrence.js";
+import { scheduleYaml } from "./test-fixture.js";
+
+const composedEvents = createEventProviders().configuration;
+const { patchTriggerYaml, projectTriggerForm } = createTriggerEditor(browserConfiguration);
 
 const daily: Recurrence = {
   start: "2026-01-01T09:00:00",
@@ -66,7 +71,7 @@ it("round trips recurrence through YAML, compiler and the existing execution for
       timezone: "America/New_York",
     },
   });
-  const parsed = parseTriggerDocument(yaml);
+  const parsed = parseTriggerDocument(yaml, composedEvents);
   expect(parsed.on["schedule.tick"]?.recurrence).toEqual({
     start: "2026-01-01T08:15:00",
     rule: "FREQ=WEEKLY;BYDAY=MO,FR;BYHOUR=8,16;BYMINUTE=15,45;BYSETPOS=1,4,5,8",
@@ -78,7 +83,7 @@ it("round trips recurrence through YAML, compiler and the existing execution for
     thinkingOptionId: "low",
   });
   expect(yaml).toContain("# scheduled scan");
-  expect(compileTriggerDocument(yaml).events[0]?.on).toBe("schedule.tick");
+  expect(compileTriggerDocument(yaml, composedEvents).events[0]?.on).toBe("schedule.tick");
   expect(projectTriggerForm(yaml)).toMatchObject({
     status: "editable",
     value: { recurrence: parsed.on["schedule.tick"]?.recurrence },

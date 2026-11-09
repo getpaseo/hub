@@ -94,7 +94,7 @@ export class OrganizationTriggerStore {
    * skips the daemon — a prompt edit does not need the daemon online, a new agent does.
    */
   async validate(yaml: string, options: { previousYaml?: string } = {}) {
-    const compiled = compileTriggerDocument(yaml);
+    const compiled = compileTriggerDocument(yaml, this.providers.configuration);
     if (options.previousYaml !== yaml) validateAuthoringContract(compiled.authored);
     const resolved = await resolveTriggerConfigurationForOrganization(
       this.database,
@@ -108,7 +108,10 @@ export class OrganizationTriggerStore {
     if (!resolved.success) {
       throw new TriggerDocumentError(resolved.issues);
     }
-    if (options.previousYaml === undefined || runtimeChanged(options.previousYaml, compiled)) {
+    if (
+      options.previousYaml === undefined ||
+      runtimeChanged(options.previousYaml, compiled, this.providers.configuration)
+    ) {
       await this.validateAgainstDaemon(compiled, resolved.configuration);
     }
     return { compiled, resolved };
@@ -194,10 +197,14 @@ function daemonUnavailable(slug: string, error: unknown): string {
 }
 
 /** Whether the daemon has anything new to say: the target or an agent differs from what runs now. */
-function runtimeChanged(previousYaml: string, compiled: CompiledTriggerDocument): boolean {
+function runtimeChanged(
+  previousYaml: string,
+  compiled: CompiledTriggerDocument,
+  events: import("../providers/configuration.js").ProviderConfigurationCatalog,
+): boolean {
   let previous: TriggerDocument;
   try {
-    previous = parseTriggerDocument(previousYaml);
+    previous = parseTriggerDocument(previousYaml, events);
   } catch {
     return true;
   }

@@ -2,9 +2,14 @@ import { dump } from "js-yaml";
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
-import { createProviderRegistry as createCompositionProviders } from "../providers/server.js";
+import {
+  createProviderRegistry as createCompositionProviders,
+  createProviderRegistry as createEventProviders,
+} from "../providers/server.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
 import { parseProjectConfiguration, ProjectConfigurationStore } from "./store.js";
+
+const composedEvents = createEventProviders().configuration;
 const compositionProviders = createCompositionProviders();
 
 describe("compiled workflow activation", () => {
@@ -47,7 +52,7 @@ describe("compiled workflow activation", () => {
     });
 
     assert.equal(revision.validationErrors, null);
-    const compiled = parseProjectConfiguration(revision);
+    const compiled = parseProjectConfiguration(revision, composedEvents);
     assert.equal(compiled.triggers[0]?.maxRuntimeMs, 3_600_000);
     assert.equal("max_runtime" in compiled.triggers[0], false);
 

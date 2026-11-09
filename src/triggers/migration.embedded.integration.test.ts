@@ -7,9 +7,14 @@ import { afterEach, describe, it } from "vitest";
 import { compileHubBundle } from "../config/bundle.js";
 import { createDatabase } from "../db/pg.js";
 import { embeddedDatabaseRuntime } from "../db/runtime/index.js";
-import { createProviderRegistry as createDatabaseProviders } from "../providers/server.js";
+import {
+  createProviderRegistry as createDatabaseProviders,
+  createProviderRegistry as createEventProviders,
+} from "../providers/server.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
 import { migrateLegacyProjectTriggers } from "./migration.js";
+
+const composedEvents = createEventProviders().configuration;
 const databaseProviders = createDatabaseProviders();
 
 describe("embedded startup trigger migration", () => {
@@ -65,7 +70,7 @@ describe("embedded startup trigger migration", () => {
       contentHash: bundle.authoredHash,
     });
     await database.activateProjectConfigurationRevision(project.id, revision.id);
-    await migrateLegacyProjectTriggers(database);
+    await migrateLegacyProjectTriggers(database, composedEvents);
     await database.close();
 
     const reopened = await embeddedDatabaseRuntime(join(root, "database"));
@@ -74,7 +79,7 @@ describe("embedded startup trigger migration", () => {
     try {
       assert.equal((await reopenedDatabase.listOrganizationTriggers("org")).length, 1);
       assert.equal((await reopenedDatabase.listPendingProjectTriggerMigrations()).length, 0);
-      assert.deepEqual(await migrateLegacyProjectTriggers(reopenedDatabase), {
+      assert.deepEqual(await migrateLegacyProjectTriggers(reopenedDatabase, composedEvents), {
         projects: 0,
         triggers: 0,
         legacyMultistepTriggers: 0,

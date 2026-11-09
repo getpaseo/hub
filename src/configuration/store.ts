@@ -22,6 +22,7 @@ import type {
   ProjectConfigurationRevisionRecord,
   ProjectTriggerRoute,
 } from "../db/types.js";
+import type { ProviderConfigurationCatalog } from "../providers/configuration.js";
 import type { ProviderRegistry } from "../providers/registry.js";
 import type { ProviderResourceConnection, ProviderResources } from "../providers/resources.js";
 import { organizationConnections } from "../providers/resources.js";
@@ -196,7 +197,7 @@ export class ProjectConfigurationStore {
       revisionId,
     );
     if (candidate === undefined) throw new Error("configuration revision not found");
-    const configuration = parseProjectConfiguration(candidate);
+    const configuration = parseProjectConfiguration(candidate, this.providers.configuration);
     const bundleFiles = revisionBundleFiles(candidate);
     if (bundleFiles.length === 0) {
       throw new Error("configuration revision has no authored bundle");
@@ -227,7 +228,7 @@ export class ProjectConfigurationStore {
   async rollback(): Promise<StoredProjectConfiguration> {
     const target = await this.database.findProjectConfigurationRollbackTarget(this.projectId);
     if (target === undefined) throw new Error("configuration rollback target not found");
-    const configuration = parseProjectConfiguration(target);
+    const configuration = parseProjectConfiguration(target, this.providers.configuration);
     const routes = await compileTriggerRoutes(
       this.database,
       this.providers,
@@ -246,7 +247,10 @@ export class ProjectConfigurationStore {
     const revision = await this.database.findActiveProjectConfiguration(this.projectId);
     return revision === undefined
       ? undefined
-      : { revision, configuration: parseProjectConfiguration(revision) };
+      : {
+          revision,
+          configuration: parseProjectConfiguration(revision, this.providers.configuration),
+        };
   }
 
   async getRevision(revisionId: string): Promise<StoredProjectConfiguration | undefined> {
@@ -256,7 +260,10 @@ export class ProjectConfigurationStore {
     );
     return revision === undefined
       ? undefined
-      : { revision, configuration: parseProjectConfiguration(revision) };
+      : {
+          revision,
+          configuration: parseProjectConfiguration(revision, this.providers.configuration),
+        };
   }
 
   async switchToManual(userId: string): Promise<StoredProjectConfiguration> {
@@ -268,7 +275,7 @@ export class ProjectConfigurationStore {
     const rawYaml =
       bundle.files.find(({ path }) => path === HUB_RESOURCE_PATH)?.content ??
       dump(active.normalizedConfiguration, { noRefs: true, lineWidth: -1 });
-    const configuration = parseProjectConfiguration(active);
+    const configuration = parseProjectConfiguration(active, this.providers.configuration);
     const routes = await compileTriggerRoutes(
       this.database,
       this.providers,
@@ -284,7 +291,10 @@ export class ProjectConfigurationStore {
       bundle: { authoredHash: bundle.authoredHash, files: bundle.files },
       routes,
     });
-    return { revision, configuration: parseProjectConfiguration(revision) };
+    return {
+      revision,
+      configuration: parseProjectConfiguration(revision, this.providers.configuration),
+    };
   }
 }
 
@@ -316,11 +326,12 @@ export async function validateHubBundleForOrganization(
 
 export function parseProjectConfiguration(
   revision: ProjectConfigurationRevisionRecord,
+  events: ProviderConfigurationCatalog,
 ): CompiledProjectConfiguration {
   const configuration = parseCompiledHubConfig(revision.normalizedConfiguration);
   // Migrate the newly introduced default at the authored-document boundary. Existing
   // execution launch intents remain untouched and finish with their original contract.
-  const document = triggerDocument(revision);
+  const document = triggerDocument(revision, events);
   if (document !== undefined) {
     const policy = document.run.continuation;
     return toProjectConfiguration({
@@ -342,11 +353,17 @@ export function parseProjectConfiguration(
  * each of its events under an internal name that only the store uses. Undefined when the compiled
  * trigger names are the authored ones: a project's own configuration, or a preserved legacy workflow.
  */
-export function triggerDocumentName(revision: ProjectConfigurationRevisionRecord) {
-  return triggerDocument(revision)?.name;
+export function triggerDocumentName(
+  revision: ProjectConfigurationRevisionRecord,
+  events: ProviderConfigurationCatalog,
+) {
+  return triggerDocument(revision, events)?.name;
 }
 
-function triggerDocument(revision: ProjectConfigurationRevisionRecord) {
+function triggerDocument(
+  revision: ProjectConfigurationRevisionRecord,
+  events: ProviderConfigurationCatalog,
+) {
   const adapter = z
     .object({ kind: z.literal("organization_trigger_adapter") })
     .safeParse(revision.sourceEvidence);
@@ -356,7 +373,7 @@ function triggerDocument(revision: ProjectConfigurationRevisionRecord) {
   // Preserved legacy workflows share the adapter but retain their original run policy.
   const legacy = z.object({ legacy_multistep: z.object({}) }).safeParse(load(revision.rawYaml));
   if (legacy.success) return undefined;
-  return parseTriggerDocument(revision.rawYaml);
+  return parseTriggerDocument(revision.rawYaml, events);
 }
 
 function toProjectConfiguration(configuration: CompiledHubConfig): CompiledProjectConfiguration {
