@@ -66,7 +66,14 @@ async function fixture(now = Date.now) {
       replies.push({ executionId: input.agentExecutionId, context: input.outputContext });
     },
   });
-  const sessions = new AgentSessions(database, "secret", "https://hub.test", outputs, now);
+  const sessions = new AgentSessions(
+    database,
+    codecCatalog,
+    "secret",
+    "https://hub.test",
+    outputs,
+    now,
+  );
   const capabilities = createExecutionCapabilityServer({
     database,
     outputs,
@@ -125,7 +132,7 @@ async function fixture(now = Date.now) {
           createOptions: async () => ({
             provider: "codex",
             cwd: "/repo",
-            env: intent.github === undefined ? {} : { GH_TOKEN: "scoped-github-token" },
+            env: intent["github"] === undefined ? {} : { GH_TOKEN: "scoped-github-token" },
             toolPolicy: { preapproved: [] },
           }),
         }),

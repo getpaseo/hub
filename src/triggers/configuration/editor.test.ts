@@ -104,7 +104,7 @@ describe("trigger form YAML bridge", () => {
     expect(value.max_runtime).toBe("4h");
     expect(value.run.startup_timeout).toBe("3m");
     expect(value.run.env).toEqual({ TEAM: "core" });
-    expect(value.run.github).toEqual({
+    expect(value.run["github"]).toEqual({
       connection: "company-github",
       repositories: ["paseo/hub"],
     });
@@ -309,19 +309,21 @@ describe("what the form still needs", () => {
 
   test("reads GitHub permissions only when a GitHub connection is chosen", () => {
     expect(
-      triggerFormErrors({ ...editable(), githubConnection: "", githubPermissions: "{" })
-        .githubPermissions,
+      triggerFormErrors({ ...editable(), githubConnection: "", githubPermissions: "{" })[
+        "githubPermissions"
+      ],
     ).toBeUndefined();
     expect(
-      triggerFormErrors({ ...editable(), githubConnection: "company", githubPermissions: "{" })
-        .githubPermissions,
+      triggerFormErrors({ ...editable(), githubConnection: "company", githubPermissions: "{" })[
+        "githubPermissions"
+      ],
     ).toBe("GitHub permissions must be valid JSON.");
     expect(
       triggerFormErrors({
         ...editable(),
         githubConnection: "company",
         githubPermissions: '{"a":1}',
-      }).githubPermissions,
+      })["githubPermissions"],
     ).toBe('GitHub permissions map a scope to "read", "write", or "admin".');
   });
 

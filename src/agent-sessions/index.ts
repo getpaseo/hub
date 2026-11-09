@@ -1,22 +1,23 @@
-import { parseConnectionTemplate } from "../config/connection-template.js";
 import { createHash } from "node:crypto";
-import type { Database, AgentExecutionRecord } from "../db/types.js";
-import {
-  DEFAULT_STARTUP_TIMEOUT_MS,
-  type LaunchMachineIntent,
-} from "../dispatcher/launch-machine-intent.js";
-import type { DaemonCreateAgentOptions } from "../daemons/protocol.js";
-import type { AgentConnection, AgentEvent } from "../daemons/agents/index.js";
-import {
-  executionToolDefinitions,
-  type OutputExecutorRegistry,
-} from "../execution-capabilities/outputs.js";
 import {
   deriveAgentExecutionCompletionToken,
   hashAgentExecutionCompletionToken,
 } from "../agent-executions/completion-token.js";
+import { parseConnectionTemplate } from "../config/connection-template.js";
+import type { AgentConnection, AgentEvent } from "../daemons/agents/index.js";
+import type { DaemonCreateAgentOptions } from "../daemons/protocol.js";
+import type { AgentExecutionRecord, Database } from "../db/types.js";
+import {
+  DEFAULT_STARTUP_TIMEOUT_MS,
+  type LaunchMachineIntent,
+} from "../dispatcher/launch-machine-intent.js";
+import {
+  executionToolDefinitions,
+  type OutputExecutorRegistry,
+} from "../execution-capabilities/outputs.js";
 import type { AgentSessionRecord } from "./types.js";
-export type { AgentSessionRecord, AgentSessionAction } from "./types.js";
+
+export type { AgentSessionAction, AgentSessionRecord } from "./types.js";
 
 export class AgentSessionError extends Error {}
 
@@ -24,6 +25,7 @@ export class AgentSessionError extends Error {}
 export class AgentSessions {
   constructor(
     private readonly database: Database,
+    private readonly configurationCatalog: import("../providers/configuration.js").ProviderConfigurationCatalog,
     private readonly secret: string,
     private readonly publicBaseUrl: string,
     private readonly outputs: OutputExecutorRegistry,
@@ -65,7 +67,8 @@ export class AgentSessions {
         !executions.some(isActive) &&
         executions.some(
           (execution) =>
-            execution.launchIntent !== null && hasTemporaryCredentials(execution.launchIntent),
+            execution.launchIntent !== null &&
+            hasTemporaryCredentials(execution.launchIntent, this.configurationCatalog),
         )
       );
     };
@@ -271,9 +274,12 @@ function fingerprint(value: unknown): string {
 function isActive(execution: AgentExecutionRecord): boolean {
   return execution.status === "spawning" || execution.status === "running";
 }
-function hasTemporaryCredentials(intent: LaunchMachineIntent): boolean {
+function hasTemporaryCredentials(
+  intent: LaunchMachineIntent,
+  catalog: import("../providers/configuration.js").ProviderConfigurationCatalog,
+): boolean {
   return (
-    intent.github !== undefined ||
+    catalog.requiresExecutionAuthority(intent) ||
     Object.values({ ...intent.environment.env, ...intent.env }).some(
       (value) => parseConnectionTemplate(value).length > 0,
     )

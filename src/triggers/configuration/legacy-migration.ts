@@ -11,6 +11,7 @@ import type {
   JsonPrimitive,
 } from "../../config/compiler.js";
 import { parseCompiledHubConfig } from "../../config/compiler.js";
+import { formatDuration as duration } from "../../config/duration-format.js";
 import { compileTriggerDocument, serializeTriggerDocument } from "./index.js";
 import { TriggerFilterSchema, type TriggerDocument } from "./schema.js";
 
@@ -166,18 +167,7 @@ function singleRunDocument(
         ? {}
         : { startup_timeout: duration(step.startupTimeoutMs) }),
       ...(step.env === undefined ? {} : { env: { ...step.env } }),
-      ...(step.github === undefined
-        ? {}
-        : {
-            github: {
-              connection: step.github.connection,
-              ...(step.github.repositories === undefined
-                ? {}
-                : { repositories: [...step.github.repositories] }),
-              permissions: { ...step.github.permissions },
-              duration: duration(step.github.durationMs),
-            },
-          }),
+      ...events.decompileStepFields(step),
       ...(step.output === undefined
         ? {}
         : { output: { schema: structuredClone(asJsonObject(step.output.schema)) } }),
@@ -254,11 +244,4 @@ function asJsonObject(value: JsonPrimitive | readonly unknown[] | object): Recor
 
 function hasDuplicateOutputs(step: CompiledStep): boolean {
   return new Set(step.allowOutputs.map(({ type }) => type)).size !== step.allowOutputs.length;
-}
-
-function duration(milliseconds: number): string {
-  if (milliseconds % 3_600_000 === 0) return `${String(milliseconds / 3_600_000)}h`;
-  if (milliseconds % 60_000 === 0) return `${String(milliseconds / 60_000)}m`;
-  if (milliseconds % 1000 === 0) return `${String(milliseconds / 1000)}s`;
-  return `${String(milliseconds)}ms`;
 }

@@ -12,6 +12,7 @@ import { ProjectConfigurationStore } from "../../configuration/store.js";
 import { createDatabase } from "../../db/pg.js";
 import { embeddedDatabaseRuntime, type DatabaseRuntime } from "../../db/runtime/index.js";
 import type { Database } from "../../db/types.js";
+import { createExecutionAuthority } from "../../execution-authority/index.js";
 import { createFetchServer } from "../../http/node-server.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../../http/request-origin.js";
 import {
@@ -25,14 +26,11 @@ import {
   type ProviderApplicationIdentity,
   type ProviderApplications,
 } from "../../provider-applications/index.js";
+import { staticProviderRuntime } from "../../providers/active-runtime.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { discordPersistence } from "../../providers/discord/persistence.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
 import { githubPersistence } from "../../providers/github/persistence.js";
-import {
-  githubExecutionAuthority,
-  staticGitHubExecutionAuthority,
-} from "../../providers/github/runtime.js";
 import { createLinearRegistration } from "../../providers/linear/index.js";
 import type { ProviderRegistration } from "../../providers/registration.js";
 import { ProviderRegistry } from "../../providers/registry.js";
@@ -1157,7 +1155,13 @@ async function providerRuntimeOptions(
   }
   return {
     registrations,
-    createExecutionAuthority: (context) => staticGitHubExecutionAuthority(context, registrations),
+    createExecutionAuthority: (context) =>
+      createExecutionAuthority({
+        ...context,
+        providerAuthorities: providerRegistry.executionAuthorities(
+          staticProviderRuntime(registrations),
+        ),
+      }),
   };
 }
 
@@ -1281,7 +1285,11 @@ async function composeProviderApplications(input: {
   return {
     capability,
     registrations: providerRuntime.registrations(),
-    createExecutionAuthority: (context) => githubExecutionAuthority(context, providerRuntime),
+    createExecutionAuthority: (context) =>
+      createExecutionAuthority({
+        ...context,
+        providerAuthorities: providerRegistry.executionAuthorities(providerRuntime),
+      }),
   };
 }
 

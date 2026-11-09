@@ -30,6 +30,7 @@ import {
   type ProviderRuntimeCandidate,
   type ProviderRuntimeOwner,
 } from "./index.js";
+
 const providerRegistry = createProviderRegistry();
 
 const roots: string[] = [];
@@ -80,7 +81,7 @@ describe("pre-provider-app connection upgrade", () => {
           fixture.bundle.runtime,
           providerRegistry,
         );
-        const first = identity(ENVIRONMENT_APPLICATIONS.github);
+        const first = identity(ENVIRONMENT_APPLICATIONS["github"]);
         const second = { ...first, id: "competing-github-app" };
 
         const claims = await Promise.all([
@@ -153,7 +154,7 @@ describe("pre-provider-app connection upgrade", () => {
           environment: {
             ...ENVIRONMENT_APPLICATIONS,
             github: testApplicationConfiguration({
-              ...ENVIRONMENT_APPLICATIONS.github,
+              ...ENVIRONMENT_APPLICATIONS["github"],
               appId: "different-app",
             }),
           },

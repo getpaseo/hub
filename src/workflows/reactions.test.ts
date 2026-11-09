@@ -370,6 +370,7 @@ async function runTwoStepWorkflow<
     },
   };
   const lifecycle = createDaemonDispatchLifecycle({
+    configurationCatalog: composedEvents,
     database,
     connectionForDaemon: (daemonId) => (daemonId === TEST_DAEMON_ID ? connection : undefined),
     providers: [input.provider],

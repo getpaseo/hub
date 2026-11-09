@@ -82,6 +82,7 @@ describe("structured daemon completion", () => {
     });
     await database.linkWorkflowStepRunExecution(step.id, execution.id, intent);
     const lifecycle = createDaemonDispatchLifecycle({
+      configurationCatalog: codecCatalog,
       database,
       connectionForDaemon: () => undefined,
       completionTokenSecret: "completion-secret",

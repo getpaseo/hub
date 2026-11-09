@@ -33,10 +33,7 @@ import type {
 } from "../../db/types.js";
 import type { LaunchMachineIntent } from "../../dispatcher/launch-machine-intent.js";
 import { createUnlimitedEntitlementsService } from "../../entitlements/test-utils.js";
-import {
-  createExecutionAuthority,
-  type ExecutionAuthority,
-} from "../../execution-authority/index.js";
+import { type ExecutionAuthority } from "../../execution-authority/index.js";
 import {
   OutputExecutorRegistry,
   outputContextProvider,
@@ -48,6 +45,7 @@ import {
   type HubExecutionAgentSnapshot,
   type HubExecutionControlAction,
 } from "../../hub/protocol.js";
+import { createGitHubExecutionAuthority as createExecutionAuthority } from "../../providers/github/execution-authority.js";
 import type { GitHubAuthorityRegistration } from "../../providers/github/runtime.js";
 import { createProviderRegistry as createCompositionProviders } from "../../providers/server.js";
 import { startApplication, stopApplication } from "../../server/runtime.js";
@@ -58,6 +56,7 @@ import type { SlackBotClient, SlackThreadReadResult } from "../../triggers/slack
 import { createSlackTriggerProvider } from "../../triggers/slack/provider.js";
 import { ENROLLMENT_LIFETIME_MS } from "../registration.js";
 import type { DaemonClock } from "../registry.js";
+
 const compositionProviders = createCompositionProviders();
 
 const HUB_ORGANIZATION_ID = "org_1";

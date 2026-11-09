@@ -1,9 +1,7 @@
-import {
-  createExecutionAuthority,
-  type CreateExecutionAuthorityOptions,
-} from "../../execution-authority/index.js";
 import { ProviderRuntimeDefinition, type ActiveProviderRuntime } from "../active-runtime.js";
 import type { ProviderRegistration } from "../registration.js";
+import { githubExecutionAuthorityProvider } from "./execution-authority.js";
+
 export interface GitHubAuthorityRegistration {
   mint(input: {
     projectId: string;
@@ -46,23 +44,8 @@ export function githubAuthority(runtime: ActiveProviderRuntime): GitHubAuthority
       }),
   };
 }
-export function githubExecutionAuthority(
-  options: Omit<CreateExecutionAuthorityOptions, "githubAuthority">,
-  runtime: ActiveProviderRuntime,
-) {
-  return createExecutionAuthority({ ...options, githubAuthority: githubAuthority(runtime) });
-}
-export function staticGitHubExecutionAuthority(
-  options: Omit<CreateExecutionAuthorityOptions, "githubAuthority">,
-  registrations: readonly ProviderRegistration[],
-) {
-  const native = registrations
-    .map((registration) => githubRuntime.find(registration))
-    .find((registration) => registration?.githubAuthority !== undefined);
-  return createExecutionAuthority({
-    ...options,
-    ...(native?.githubAuthority === undefined ? {} : { githubAuthority: native.githubAuthority }),
-  });
+export function providerExecutionAuthority(runtime: ActiveProviderRuntime) {
+  return githubExecutionAuthorityProvider(githubAuthority(runtime));
 }
 
 function isGitHubRegistration(

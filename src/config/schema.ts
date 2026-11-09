@@ -17,7 +17,6 @@ import {
   type CompiledTrigger,
   type CompiledTriggerFilter,
 } from "./compiler.js";
-import type { CompiledGitHubAuthority, GitHubPermissionLevel } from "./github-authority.js";
 
 export {
   compiledConfigurationHash,
@@ -43,7 +42,6 @@ export type HubConfig = AuthoredHubConfig;
 export type CompiledConfiguration = CompiledHubConfig;
 export type CompiledTriggerConfig = CompiledTrigger;
 export type CompiledStepConfig = CompiledStep;
-export type { CompiledGitHubAuthority, GitHubPermissionLevel };
 export type InputDefinition = AuthoredInput;
 export type CompiledInputDefinition = CompiledInput;
 export type WorktreeTarget = NonNullable<DaemonEnvironment["worktree"]>;

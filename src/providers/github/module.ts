@@ -8,11 +8,13 @@ import { configurationSource } from "./configuration-source.js";
 import { readEnvironment } from "./environment.js";
 import { createGitHubRegistration } from "./index.js";
 import { resources } from "./resources.js";
+import { providerExecutionAuthority } from "./runtime.js";
 import { triggerConfiguration } from "./trigger-configuration.js";
 import { verifyGitHub } from "./verification.js";
 
 export const githubProvider: ProviderModule = {
   configuration: triggerConfiguration,
+  executionAuthority: providerExecutionAuthority,
   configurationSource,
   resources,
   summarizeEvent,

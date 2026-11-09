@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import type { CompiledGitHubAuthority } from "../config/github-authority.js";
 import { createMemoryDatabase } from "../db/memory.js";
+import type { CompiledGitHubAuthority } from "../providers/github/authority-configuration.js";
+import {
+  createGitHubExecutionAuthority as createProductionExecutionAuthority,
+  type CreateGitHubExecutionAuthorityOptions as CreateExecutionAuthorityOptions,
+} from "../providers/github/execution-authority.js";
 import { createProviderRegistry as createCodecProviders } from "../providers/server.js";
-import type { CreateExecutionAuthorityOptions, ExecutionAuthorityClock } from "./index.js";
-import { createExecutionAuthority as createProductionExecutionAuthority } from "./index.js";
+import type { ExecutionAuthorityClock } from "./index.js";
 
 const codecCatalog = createCodecProviders().configuration;
 

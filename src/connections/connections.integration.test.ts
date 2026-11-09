@@ -26,6 +26,7 @@ import type { ProviderRegistration } from "../providers/registration.js";
 import { organizationConnections } from "../providers/resources.js";
 import { createProviderRegistry } from "../providers/server.js";
 import { MemoryDiscordBotClient } from "../triggers/discord/memory-bot.js";
+
 const connectionProviders = createProviderRegistry();
 
 const TEST_WEBHOOK_SECRET = "provider-registration-test-secret";
@@ -1181,7 +1182,7 @@ interface CreateConnectionsOptions {
 function createConnections(options: CreateConnectionsOptions): ProviderFixture {
   const registrations: ProviderRegistration[] = [];
   let discordBot: MemoryDiscordBotClient | undefined;
-  if (options.github !== undefined) {
+  if (options["github"] !== undefined) {
     registrations.push(
       createGitHubRegistration({
         database: options.database,
@@ -1196,7 +1197,7 @@ function createConnections(options: CreateConnectionsOptions): ProviderFixture {
           webhookSecret: TEST_WEBHOOK_SECRET,
           privateKey: "test-private-key",
         },
-        connectionClient: options.github,
+        connectionClient: options["github"],
         configurationProvider: options.githubRepositories ?? new TestGitHubRepositories(),
       }),
     );

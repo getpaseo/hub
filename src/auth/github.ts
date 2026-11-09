@@ -2,9 +2,9 @@ import jwt from "jsonwebtoken";
 import { Octokit } from "octokit";
 import { z } from "zod";
 import { logger } from "../logger.js";
-import { GITHUB_APP_PERMISSION_VOCABULARY } from "../config/github-authority.js";
-import { GitHubInstallationSchema } from "./github-events.js";
+import { GITHUB_APP_PERMISSION_VOCABULARY } from "../providers/github/authority-configuration.js";
 import type { GitHubInstallation } from "./github-events.js";
+import { GitHubInstallationSchema } from "./github-events.js";
 
 interface InstallationTokenCacheEntry {
   expiresAt: number;

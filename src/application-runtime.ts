@@ -17,6 +17,7 @@ import { OrganizationResources } from "./organizations/resources.js";
 import { resolveRouteTenant } from "./projects/access.js";
 import { ProjectDashboard } from "./projects/dashboard.js";
 import type { ProviderApplications } from "./provider-applications/index.js";
+import { staticProviderRuntime } from "./providers/active-runtime.js";
 import type {
   ProviderConnectionRegistration,
   ProviderIntegrationRegistration,
@@ -95,6 +96,8 @@ async function createOwnedApplicationRuntime(
     options.database,
     connectionsForProject,
     options.createExecutionAuthority,
+    options.providerRegistry,
+    registrations,
   );
   const outputRegistry = new OutputExecutorRegistry();
   for (const output of registrations.flatMap((registration) => registration.outputs)) {
@@ -448,6 +451,8 @@ function createRuntimeExecutionAuthority(
   database: Database | null,
   connectionsForProject: (projectId: string) => ConnectionResolver,
   factory: ApplicationCompositionOptions["createExecutionAuthority"],
+  providers: ProviderRegistry,
+  registrations: readonly ProviderRegistration[],
 ): ExecutionAuthority | undefined {
   if (database === null) return undefined;
   const context: ExecutionAuthorityContext = {
@@ -458,7 +463,12 @@ function createRuntimeExecutionAuthority(
       return execution?.status === "spawning" || execution?.status === "running";
     },
   };
-  return factory === undefined ? createExecutionAuthority(context) : factory(context);
+  return factory === undefined
+    ? createExecutionAuthority({
+        ...context,
+        providerAuthorities: providers.executionAuthorities(staticProviderRuntime(registrations)),
+      })
+    : factory(context);
 }
 
 /**

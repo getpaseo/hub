@@ -1,32 +1,27 @@
+import type { Logger } from "pino";
 import type { Database } from "../db/types.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
-import type { TriggerProvider } from "../triggers/index.js";
 import type { ExecutionAuthority } from "../execution-authority/index.js";
+import type { OutputExecutorRegistry } from "../execution-capabilities/outputs.js";
+import type { TriggerProvider } from "../triggers/index.js";
 import {
-  createDaemonDispatchLifecycle,
   AgentExecutionCompletionFailure,
+  createDaemonDispatchLifecycle,
   DaemonDispatchFailure,
   DaemonSpawnAckTimeoutError,
   type DaemonDispatchLifecycle,
   type DaemonDispatchResult,
 } from "./lifecycle.js";
-import type {
-  DaemonAgentStreamEvent,
-  DaemonConnection,
-  DaemonCreateAgentOptions,
-} from "./protocol.js";
-import type { Logger } from "pino";
-import type { OutputExecutorRegistry } from "../execution-capabilities/outputs.js";
+import type { DaemonConnection } from "./protocol.js";
 
 export type {
   DaemonAgentStreamEvent,
   DaemonConnection,
   DaemonCreateAgentOptions,
 } from "./protocol.js";
-export { DaemonDispatchFailure, DaemonSpawnAckTimeoutError };
-export { AgentExecutionCompletionFailure };
-export { ActiveDaemonRegistry, createDaemonUpgradeHandler, type DaemonClock } from "./registry.js";
 export { enrollDaemon, revokeDaemon, updateDaemonPermissions } from "./registration.js";
+export { ActiveDaemonRegistry, createDaemonUpgradeHandler, type DaemonClock } from "./registry.js";
+export { AgentExecutionCompletionFailure, DaemonDispatchFailure, DaemonSpawnAckTimeoutError };
 
 interface DaemonModuleTestOptions {
   logger?: Logger;
@@ -35,6 +30,7 @@ interface DaemonModuleTestOptions {
 }
 
 export interface DaemonModuleOptions {
+  configurationCatalog: import("../providers/configuration.js").ProviderConfigurationCatalog;
   database: Database;
   executionCapabilities?: OutputExecutorRegistry;
   providers?: readonly TriggerProvider[];
@@ -54,6 +50,7 @@ export function createDaemonModule(options: DaemonModuleOptions): DaemonModule {
   return {
     kind: "daemon-module",
     lifecycle: createDaemonDispatchLifecycle({
+      configurationCatalog: options.configurationCatalog,
       database: options.database,
       connectionForDaemon: (daemonId) => options.connectionForDaemon(daemonId),
       ...(options.executionCapabilities === undefined

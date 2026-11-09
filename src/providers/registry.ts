@@ -80,6 +80,9 @@ export interface ProviderApplication {
 }
 
 export interface ProviderModule {
+  executionAuthority?(
+    runtime: import("./active-runtime.js").ActiveProviderRuntime,
+  ): import("../execution-authority/index.js").ProviderExecutionAuthority;
   configuration: ProviderConfigurationDefinition;
   configurationSource?: import("./configuration-source.js").ProviderConfigurationSource;
   resources: import("./resources.js").ProviderResources;
@@ -107,6 +110,17 @@ export class ProviderRegistry {
     );
   }
 
+  executionAuthorities(
+    runtime: import("./active-runtime.js").ActiveProviderRuntime,
+  ): ReadonlyMap<string, import("../execution-authority/index.js").ProviderExecutionAuthority> {
+    return new Map(
+      this.list().flatMap((module) =>
+        module.executionAuthority === undefined
+          ? []
+          : [[module.manifest.id, module.executionAuthority(runtime)]],
+      ),
+    );
+  }
   list(): readonly ProviderModule[] {
     return [...this.modules.values()];
   }

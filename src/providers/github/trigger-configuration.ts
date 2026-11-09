@@ -1,5 +1,7 @@
 import type { ProviderConfigurationDefinition } from "../configuration.js";
 import { filterFields, projectLegacyFilters } from "./filter-configuration.js";
+import { formConfiguration } from "./form-configuration.js";
+import { stepConfiguration } from "./step-configuration.js";
 
 const ADDED_LABEL = {
   key: "label",
@@ -10,6 +12,14 @@ const ADDED_LABEL = {
   required: true,
 } as const;
 export const triggerConfiguration: ProviderConfigurationDefinition = {
+  step: stepConfiguration,
+  form: formConfiguration,
+  preparationFailureCodes: [
+    "github_authority_scope_invalid",
+    "github_authority_unavailable",
+    "github_integration_unavailable",
+    "github_trigger_unavailable",
+  ],
   filterFields,
   projectLegacyFilters,
   provider: "github",

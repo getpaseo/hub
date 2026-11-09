@@ -1,37 +1,38 @@
-import { DaemonAgentError } from "./agents/index.js";
-import { AgentSessions, AgentSessionError } from "../agent-sessions/index.js";
-import type { AgentEvent } from "./agents/index.js";
+import { MAX_EXPLICIT_AGENT_TITLE_CHARS } from "@getpaseo/protocol/agent-title-limits";
+import { createHash, randomUUID } from "node:crypto";
+import type { Logger } from "pino";
 import {
   buildExecutionCapabilityMcpServer,
   deriveAgentExecutionCompletionToken,
   hashAgentExecutionCompletionToken,
   verifyAgentExecutionCompletionToken,
 } from "../agent-executions/completion-token.js";
-import { createHash, randomUUID } from "node:crypto";
+import { AgentSessionError, AgentSessions } from "../agent-sessions/index.js";
+import type { JsonValue } from "../config/compiler.js";
 import type {
-  AgentExecutionRecord,
+  AcceptedTriggerRunRecord,
   AgentExecutionHubFinishExecutionStatus,
-  Database,
+  AgentExecutionRecord,
   DaemonRecord,
+  Database,
   HubAction,
   TransitionAgentExecutionFields,
   TransitionAgentExecutionResult,
-  AcceptedTriggerRunRecord,
   TriggerRunRecord,
-  WorkflowDeadlineKind,
   WorkflowAgentCompletionInput,
+  WorkflowDeadlineKind,
 } from "../db/types.js";
 import {
   DEFAULT_STARTUP_TIMEOUT_MS,
   type LaunchMachineIntent,
 } from "../dispatcher/launch-machine-intent.js";
-import { logger as defaultLogger } from "../logger.js";
-import { MAX_EXPLICIT_AGENT_TITLE_CHARS } from "@getpaseo/protocol/agent-title-limits";
-import { reportFailure } from "../failures/index.js";
-import type { TriggerProvider } from "../triggers/index.js";
 import type { ExecutionAuthority } from "../execution-authority/index.js";
 import { OutputExecutorRegistry } from "../execution-capabilities/outputs.js";
 import { executionToolPolicy } from "../execution-capabilities/tool-policy.js";
+import { reportFailure } from "../failures/index.js";
+import { isHubFinishExecutionToolName } from "../hub/protocol.js";
+import { logger as defaultLogger } from "../logger.js";
+import type { TriggerProvider, TriggerProviderReactionState } from "../triggers/index.js";
 import {
   notifyAgentExecutionCompleted,
   notifyAgentExecutionFailed,
@@ -40,7 +41,9 @@ import {
   notifyDispatchAccepted,
   notifyMachineTerminated,
 } from "../triggers/lifecycle.js";
-import type { TriggerProviderReactionState } from "../triggers/index.js";
+import { compileJsonSchema, formatJsonSchemaErrors } from "../workflows/json-schema.js";
+import type { AgentEvent } from "./agents/index.js";
+import { DaemonAgentError } from "./agents/index.js";
 import {
   DaemonResponseLostError,
   type DaemonAgentStreamEvent,
@@ -48,10 +51,6 @@ import {
   type DaemonCreateAgentOptions,
   type DaemonEvent,
 } from "./protocol.js";
-import type { JsonValue } from "../config/compiler.js";
-import { compileJsonSchema, formatJsonSchemaErrors } from "../workflows/json-schema.js";
-import type { Logger } from "pino";
-import { isHubFinishExecutionToolName } from "../hub/protocol.js";
 
 export interface DaemonDispatchResult {
   execution: AgentExecutionRecord;
@@ -100,6 +99,7 @@ const systemExecutionDeadlineClock: ExecutionDeadlineClock = {
 };
 
 export interface DaemonDispatchLifecycleOptions {
+  configurationCatalog: import("../providers/configuration.js").ProviderConfigurationCatalog;
   database: Database;
   connectionForDaemon(daemonId: string): DaemonConnection | undefined;
   executionCapabilities?: OutputExecutorRegistry;
@@ -562,9 +562,12 @@ export class DaemonDispatchLifecycle {
         ...(environmentWorktree === undefined ? {} : { worktree: environmentWorktree }),
       },
     };
-    if (this.options.executionAuthority === undefined && materializedIntent.github !== undefined) {
-      throw new Error("GitHub step authority is unavailable");
-    }
+    const catalog = this.options.configurationCatalog;
+    catalog.assertExecutionAuthorityAvailable(
+      materializedIntent,
+      this.options.executionAuthority !== undefined,
+    );
+    const requiresAuthority = catalog.requiresExecutionAuthority(materializedIntent);
     const authoredEnv = {
       ...(materialized.environmentEnv ?? intent.environment.env),
       ...materializedIntent.env,
@@ -572,7 +575,7 @@ export class DaemonDispatchLifecycle {
     let env: Record<string, string>;
     if (
       this.options.executionAuthority === undefined ||
-      (Object.keys(authoredEnv).length === 0 && materializedIntent.github === undefined)
+      (Object.keys(authoredEnv).length === 0 && !requiresAuthority)
     ) {
       env = authoredEnv;
     } else {
@@ -582,7 +585,7 @@ export class DaemonDispatchLifecycle {
           projectId: materializedIntent.projectId,
           triggerContext: materializedIntent.triggerContext,
           ...(Object.keys(authoredEnv).length === 0 ? {} : { env: authoredEnv }),
-          ...(materializedIntent.github === undefined ? {} : { github: materializedIntent.github }),
+          ...catalog.projectStepFields(materializedIntent),
         })
       ).env;
     }
@@ -1028,7 +1031,7 @@ export class DaemonDispatchLifecycle {
           projectId: intent.projectId,
           triggerContext: intent.triggerContext,
           env: { ...intent.environment.env, ...intent.env },
-          ...(intent.github === undefined ? {} : { github: intent.github }),
+          ...this.options.configurationCatalog.projectStepFields(intent),
         }),
       ))
     ) {
@@ -1523,6 +1526,7 @@ export class DaemonDispatchLifecycle {
       throw new Error("Session capabilities are unavailable");
     return new AgentSessions(
       this.options.database,
+      this.options.configurationCatalog,
       this.options.completionTokenSecret,
       this.options.publicBaseUrl,
       this.executionCapabilities,
@@ -1546,7 +1550,7 @@ export class DaemonDispatchLifecycle {
         createOptions: () =>
           this.buildCreateAgentOptions(input.intent, input.hubExecutionEnv).catch(
             (error: unknown) => {
-              throw toDispatchPreparationFailure(error);
+              throw toDispatchPreparationFailure(error, this.options.configurationCatalog);
             },
           ),
         onEvent: (event) => this.observeSessionEvent(input.executionId, input.daemonId, event),
@@ -1913,24 +1917,24 @@ function toDaemonDispatchFailure(error: unknown): DaemonDispatchFailure {
   return new DaemonDispatchFailure("internal", { cause: error });
 }
 
-function toDispatchPreparationFailure(error: unknown): DaemonDispatchFailure {
+function toDispatchPreparationFailure(
+  error: unknown,
+  catalog: import("../providers/configuration.js").ProviderConfigurationCatalog,
+): DaemonDispatchFailure {
   const candidate =
     typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
       ? error.code
       : "internal";
-  const code = DISPATCH_PREPARATION_FAILURE_CODES.has(candidate) ? candidate : "internal";
+  const code =
+    DISPATCH_PREPARATION_FAILURE_CODES.has(candidate) || catalog.preparationFailureCode(candidate)
+      ? candidate
+      : "internal";
   return new DaemonDispatchFailure(code, { cause: error });
 }
 
 const DISPATCH_PREPARATION_FAILURE_CODES = new Set([
-  "discord_trigger_unavailable",
   "execution_authority_stopped",
   "execution_terminal",
-  "github_authority_scope_invalid",
-  "github_authority_unavailable",
-  "github_integration_unavailable",
-  "github_trigger_unavailable",
-  "slack_trigger_unavailable",
 ]);
 
 function isDurablePrelaunchFailure(error: unknown): error is DaemonDispatchFailure {
