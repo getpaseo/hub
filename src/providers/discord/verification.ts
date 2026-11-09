@@ -1,10 +1,10 @@
 import { z } from "zod";
-import type {
-  ProviderApplicationConfiguration,
-  ProviderApplicationIdentity,
-} from "../../provider-applications/index.js";
 import { ProviderVerificationError } from "../../provider-applications/index.js";
 import { fixedRequest, rejectFailedResponse, safeJson } from "../verification.js";
+import type {
+  DiscordProviderApplicationConfiguration,
+  DiscordProviderApplicationIdentity,
+} from "./application-configuration.js";
 const discordIdentitySchema = z.object({
   id: z.string().min(1),
   username: z.string().min(1),
@@ -19,20 +19,20 @@ const DISCORD_API = "https://discord.com/api/v10";
  * claim "Verified" for an application that cannot complete a single authorization.
  */
 export async function verifyDiscord(
-  configuration: Extract<ProviderApplicationConfiguration, { provider: "discord" }>,
+  configuration: DiscordProviderApplicationConfiguration,
   request: typeof fetch,
   timeoutMs: number,
-): Promise<ProviderApplicationIdentity> {
+): Promise<DiscordProviderApplicationIdentity> {
   const identity = await verifyDiscordBot(configuration, request, timeoutMs);
   await verifyDiscordClientSecret(configuration, request, timeoutMs);
   return identity;
 }
 
 export async function verifyDiscordBot(
-  configuration: Extract<ProviderApplicationConfiguration, { provider: "discord" }>,
+  configuration: DiscordProviderApplicationConfiguration,
   request: typeof fetch,
   timeoutMs: number,
-): Promise<ProviderApplicationIdentity> {
+): Promise<DiscordProviderApplicationIdentity> {
   const response = await fixedRequest(
     request,
     `${DISCORD_API}/users/@me`,
@@ -64,7 +64,7 @@ export async function verifyDiscordBot(
  * applications are limited to `identify`, which is why that is the scope asked for.
  */
 export async function verifyDiscordClientSecret(
-  configuration: Extract<ProviderApplicationConfiguration, { provider: "discord" }>,
+  configuration: DiscordProviderApplicationConfiguration,
   request: typeof fetch,
   timeoutMs: number,
 ): Promise<void> {

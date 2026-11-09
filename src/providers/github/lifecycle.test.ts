@@ -1,3 +1,5 @@
+import { testApplicationIdentity } from "../testing.js";
+import { testApplicationConfiguration } from "../testing.js";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -291,7 +293,7 @@ it("does not let an unpublished app candidate consume the active app's pending s
     await stable.sources[0]!.start(async () => undefined);
     const candidate = await owner.prepare(
       "github",
-      {
+      testApplicationConfiguration({
         provider: "github",
         appId: "84",
         appSlug: "other-app",
@@ -299,9 +301,9 @@ it("does not let an unpublished app candidate consume the active app's pending s
         clientSecret: "secret",
         privateKey: "unused",
         webhookSecret: "secret",
-      },
+      }),
       "https://hub.test",
-      { provider: "github", id: "84", name: "Other", ownerLogin: "other" },
+      testApplicationIdentity({ provider: "github", id: "84", name: "Other", ownerLogin: "other" }),
       1,
     );
     try {

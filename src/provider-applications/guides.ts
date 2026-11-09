@@ -1,9 +1,12 @@
 import { browserProvider, browserProviders } from "../providers/browser.js";
 import type { GuideField, GuideGroup, ProviderGuide, Tone } from "../providers/presentation.js";
-import type { Provider, ProviderApplicationIdentity, ProviderApplicationStatus } from "./index.js";
-export { DISCORD_GUIDE } from "../providers/discord/browser.js";
-export { GITHUB_GUIDE } from "../providers/github/browser.js";
-export { LINEAR_GUIDE } from "../providers/linear/browser.js";
+import type {
+  Provider,
+  ProviderApplicationIdentity,
+  ProviderApplicationOverview,
+  ProviderApplicationStatus,
+  ProviderApplicationView,
+} from "./index.js";
 export { guideUrl, isSecureOrigin } from "../providers/presentation.js";
 export type {
   GuideField,
@@ -13,7 +16,6 @@ export type {
   ProviderGuide,
   StepSegment,
 } from "../providers/presentation.js";
-export { SLACK_GUIDE, SLACK_WEBHOOK_GUIDE, slackManifest } from "../providers/slack/browser.js";
 export const PROVIDER_GUIDES: readonly ProviderGuide[] = browserProviders.map(
   (provider) => provider.guide,
 );
@@ -54,4 +56,13 @@ export function statusPresentation(status: ProviderApplicationStatus): {
 
 export function identityLabel(identity: ProviderApplicationIdentity): string {
   return browserProvider(identity.provider).identityLabel(identity);
+}
+
+export function providerApplicationView(
+  overview: ProviderApplicationOverview,
+  provider: string,
+): ProviderApplicationView {
+  const view = overview.providers[provider];
+  if (view === undefined) throw new Error(`provider application view unavailable: ${provider}`);
+  return view;
 }

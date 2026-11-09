@@ -1,46 +1,38 @@
+import { configureSocket } from "../providers/slack/socket-application.js";
+import { providerApplicationView } from "./guides.js";
+import { testApplicationConfiguration, testApplicationIdentity } from "../providers/testing.js";
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AccountAccessValue } from "../auth/organization-access.js";
+import { createMemoryDatabase } from "../db/memory.js";
 import type { ActiveProviderRuntime } from "../providers/active-runtime.js";
 import { completeLinearInstallation } from "../providers/linear/application.js";
+import type { LinearPersistence } from "../providers/linear/persistence.js";
 import type { ProviderInstallation } from "../providers/registry.js";
 import { ProviderRegistry } from "../providers/registry.js";
 import { createProviderRegistry } from "../providers/server.js";
-import { configureSlackSocket } from "../providers/slack/application-capability.js";
+import {
+  SlackApplication,
+  configureSlackSocket,
+} from "../providers/slack/application-capability.js";
 import { completeSlackInstallation } from "../providers/slack/application.js";
-import { createSlackProvider } from "../providers/slack/module.js";
+import type { SlackPersistence } from "../providers/slack/persistence.js";
+import type {
+  TestProviderApplicationConfiguration as ProviderApplicationConfiguration,
+  TestProviderApplicationIdentity as ProviderApplicationIdentity,
+} from "../providers/testing.js";
+import { parseTestApplicationConfiguration } from "../providers/testing.js";
 import {
   ProviderApplicationError,
   activateProviderApplicationsAtStartup,
   createProviderApplications,
   providerApplicationReturnRoute,
-  type ProviderApplicationConfiguration,
-  type ProviderApplicationIdentity,
   type ProviderApplicationStore,
   type ProviderRuntimeCandidate,
   type ProviderRuntimeOwner,
 } from "./index.js";
 type Provider = ProviderApplicationConfiguration["provider"];
-const providerRegistry = new ProviderRegistry(
-  createProviderRegistry()
-    .list()
-    .map((module) =>
-      module.manifest.id === "slack"
-        ? createSlackProvider({
-            verify: (_appToken, botToken) =>
-              Promise.resolve({
-                appId: "A1",
-                teamId: "T1",
-                teamName: "Acme",
-                botId: "B1",
-                botUserId: "U1",
-                botAccessToken: botToken,
-                scopes: ["app_mentions:read", "chat:write"],
-              }),
-          })
-        : module,
-    ),
-);
+const providerRegistry = createProviderRegistry();
 
 const githubConfiguration: ProviderApplicationConfiguration = {
   provider: "github",
@@ -98,7 +90,7 @@ describe("provider applications", () => {
     assert.equal(serialized.includes("client-secret"), false);
     assert.equal(serialized.includes("private-key"), false);
     assert.equal(serialized.includes("webhook-secret"), false);
-    assert.deepEqual(overview.providers["github"].identifiers, {
+    assert.deepEqual(providerApplicationView(overview, "github").identifiers, {
       appId: "42",
       appSlug: "paseo",
       clientId: "client",
@@ -109,18 +101,22 @@ describe("provider applications", () => {
     const fixture = createFixture({ eventEvidenceVersion: 1 });
     await fixture.applications.verifyAndSave(request("POST"), "github", githubConfiguration);
     assert.equal(
-      (await fixture.applications.overview(request())).providers["github"].lastEventAt,
+      providerApplicationView(await fixture.applications.overview(request()), "github").lastEventAt,
       "2026-08-14T10:00:00.000Z",
     );
 
-    await fixture.applications.verifyAndSave(request("POST"), "github", {
-      ...githubConfiguration,
-      clientSecret: "rotated-secret",
-      expectedVersion: 1,
-    });
+    await fixture.applications.verifyAndSave(
+      request("POST"),
+      "github",
+      testApplicationConfiguration({
+        ...githubConfiguration,
+        clientSecret: "rotated-secret",
+        expectedVersion: 1,
+      }),
+    );
 
     assert.equal(
-      (await fixture.applications.overview(request())).providers["github"].lastEventAt,
+      providerApplicationView(await fixture.applications.overview(request()), "github").lastEventAt,
       null,
     );
   });
@@ -130,13 +126,18 @@ describe("provider applications", () => {
     await fixture.store.save({
       provider: "github",
       configuration: githubConfiguration,
-      identity: { provider: "github", id: "42", name: "Paseo", ownerLogin: "acme" },
+      identity: testApplicationIdentity({
+        provider: "github",
+        id: "42",
+        name: "Paseo",
+        ownerLogin: "acme",
+      }),
       expectedVersion: undefined,
       updatedByUserId: "operator",
     });
 
     assert.equal(
-      (await fixture.applications.overview(request())).providers["github"].status,
+      providerApplicationView(await fixture.applications.overview(request()), "github").status,
       "actionNeeded",
     );
   });
@@ -156,12 +157,16 @@ describe("provider applications", () => {
       "github",
       githubConfiguration,
     );
-    const discord = fixture.applications.verifyAndSave(request("POST"), "discord", {
-      provider: "discord",
-      applicationId: "100",
-      clientSecret: "discord-secret",
-      botToken: "discord-token",
-    });
+    const discord = fixture.applications.verifyAndSave(
+      request("POST"),
+      "discord",
+      testApplicationConfiguration({
+        provider: "discord",
+        applicationId: "100",
+        clientSecret: "discord-secret",
+        botToken: "discord-token",
+      }),
+    );
 
     await fixture.runtime.waitUntilPrepared("discord");
     assert.equal(fixture.runtime.prepareCount("github"), 1);
@@ -209,10 +214,14 @@ describe("provider applications", () => {
     fixture.runtime.failNextStart("github");
 
     await assert.rejects(
-      fixture.applications.verifyAndSave(request("POST"), "github", {
-        ...githubConfiguration,
-        clientSecret: "rotated-secret",
-      }),
+      fixture.applications.verifyAndSave(
+        request("POST"),
+        "github",
+        testApplicationConfiguration({
+          ...githubConfiguration,
+          clientSecret: "rotated-secret",
+        }),
+      ),
       (error: unknown) => error instanceof ProviderApplicationError && error.code === "internal",
     );
 
@@ -225,7 +234,12 @@ describe("provider applications", () => {
     fixture.store.values.set("github", {
       provider: "github",
       configuration: githubConfiguration,
-      identity: { provider: "github", id: "42", name: "Paseo", ownerLogin: "acme" },
+      identity: testApplicationIdentity({
+        provider: "github",
+        id: "42",
+        name: "Paseo",
+        ownerLogin: "acme",
+      }),
       version: 1,
       verifiedAt: new Date("2026-08-14T10:00:00Z"),
       updatedAt: new Date("2026-08-14T10:00:00Z"),
@@ -259,7 +273,12 @@ describe("provider applications", () => {
     fixture.store.values.set("github", {
       provider: "github",
       configuration: githubConfiguration,
-      identity: { provider: "github", id: "42", name: "Stored", ownerLogin: "acme" },
+      identity: testApplicationIdentity({
+        provider: "github",
+        id: "42",
+        name: "Stored",
+        ownerLogin: "acme",
+      }),
       version: 3,
       verifiedAt: new Date(),
       updatedAt: new Date(),
@@ -267,8 +286,8 @@ describe("provider applications", () => {
     });
 
     const overridden = await fixture.applications.overview(request());
-    assert.equal(overridden.providers["github"].status, "managedByEnvironment");
-    assert.deepEqual(overridden.providers["github"].identifiers, {
+    assert.equal(providerApplicationView(overridden, "github").status, "managedByEnvironment");
+    assert.deepEqual(providerApplicationView(overridden, "github").identifiers, {
       appId: "84",
       appSlug: "environment-app",
       clientId: "environment-client",
@@ -278,7 +297,7 @@ describe("provider applications", () => {
     const resumed = createFixture();
     resumed.store.values.set("github", fixture.store.values.get("github")!);
     assert.deepEqual(
-      (await resumed.applications.overview(request())).providers["github"].identifiers,
+      providerApplicationView(await resumed.applications.overview(request()), "github").identifiers,
       {
         appId: "42",
         appSlug: "paseo",
@@ -292,14 +311,25 @@ describe("provider applications", () => {
     await fixture.store.save({
       provider: "github",
       configuration: githubConfiguration,
-      identity: { provider: "github", id: "42", name: "Stored", ownerLogin: "acme" },
+      identity: testApplicationIdentity({
+        provider: "github",
+        id: "42",
+        name: "Stored",
+        ownerLogin: "acme",
+      }),
       expectedVersion: undefined,
       updatedByUserId: "operator",
     });
     const failures = await activateProviderApplicationsAtStartup({
       registry: providerRegistry,
       store: fixture.store,
-      environment: { github: { ...githubConfiguration, appId: "84", clientSecret: "rotated" } },
+      environment: {
+        github: testApplicationConfiguration({
+          ...githubConfiguration,
+          appId: "84",
+          clientSecret: "rotated",
+        }),
+      },
       runtime: fixture.runtime,
       verifier: {
         verify: () =>
@@ -318,14 +348,21 @@ describe("provider applications", () => {
     await fixture.store.save({
       provider: "github",
       configuration: githubConfiguration,
-      identity: { provider: "github", id: "42", name: "Stored", ownerLogin: "acme" },
+      identity: testApplicationIdentity({
+        provider: "github",
+        id: "42",
+        name: "Stored",
+        ownerLogin: "acme",
+      }),
       expectedVersion: undefined,
       updatedByUserId: "operator",
     });
     const failures = await activateProviderApplicationsAtStartup({
       registry: providerRegistry,
       store: fixture.store,
-      environment: { github: { ...githubConfiguration, clientSecret: "rotated" } },
+      environment: {
+        github: testApplicationConfiguration({ ...githubConfiguration, clientSecret: "rotated" }),
+      },
       runtime: fixture.runtime,
       verifier: {
         verify: () =>
@@ -612,7 +649,7 @@ function createFixture(
   } = {},
 ) {
   const store = new MemoryStore();
-  const runtime = new BlockingRuntime();
+  const runtime = new BlockingRuntime(store);
   const returnRoutes: string[] = [];
   let verificationIdentity: ProviderApplicationIdentity = {
     provider: "github",
@@ -620,8 +657,44 @@ function createFixture(
     name: "Paseo",
     ownerLogin: "acme",
   };
+  const database = createMemoryDatabase();
+  const registry = new ProviderRegistry(
+    providerRegistry.list().map((module) =>
+      module.manifest.id !== "slack"
+        ? module
+        : Object.assign({}, module, {
+            application: new (class extends SlackApplication {
+              override configureSocket(
+                context: Parameters<SlackApplication["configureSocket"]>[0],
+                input: Parameters<SlackApplication["configureSocket"]>[1],
+              ) {
+                return configureSocket(
+                  context,
+                  input,
+                  {
+                    verify: (_appToken, botToken) =>
+                      Promise.resolve({
+                        appId: "A1",
+                        teamId: "T1",
+                        teamName: "Acme",
+                        botUserId: "U1",
+                        botAccessToken: botToken,
+                        scopes: ["app_mentions:read", "chat:write"],
+                      }),
+                  },
+                  {
+                    completeSlackSocketApplication: (value) =>
+                      store.completeSlackSocketApplication(value),
+                  },
+                );
+              }
+            })(),
+          }),
+    ),
+  );
   const applications = createProviderApplications({
-    registry: providerRegistry,
+    database,
+    registry,
     auth: {
       resolveAccount: () =>
         Promise.resolve({
@@ -653,7 +726,7 @@ function createFixture(
             : [],
         ),
       claimLegacyConnections: () => Promise.resolve(true),
-      lastEventAt: (_provider, _identity?: ProviderApplicationIdentity, version?: number) =>
+      lastEventAt: (_provider, _identity: unknown, version?: number) =>
         Promise.resolve(
           version === options.eventEvidenceVersion ? new Date("2026-08-14T10:00:00Z") : null,
         ),
@@ -751,7 +824,7 @@ class MemoryStore implements ProviderApplicationStore {
   }
 
   async completeSlackInstallation(
-    input: Parameters<ProviderApplicationStore["completeSlackInstallation"]>[0],
+    input: Parameters<SlackPersistence["completeSlackProviderApplication"]>[0],
   ) {
     if (this.failSlackCompletion) {
       this.failSlackCompletion = false;
@@ -759,27 +832,31 @@ class MemoryStore implements ProviderApplicationStore {
     }
     await this.save({
       provider: "slack",
-      configuration: input.configuration,
-      identity: input.identity,
-      expectedVersion: input.expectedVersion,
-      updatedByUserId: input.updatedByUserId,
+      configuration: providerRegistry.parseConfiguration(input.providerConfiguration.configuration),
+      identity: providerRegistry
+        .require("slack")
+        .application.parseIdentity(input.providerConfiguration.identity),
+      expectedVersion: input.providerConfiguration.expectedVersion,
+      updatedByUserId: input.providerConfiguration.updatedByUserId,
     });
   }
 
   async completeLinearInstallation(
-    input: Parameters<ProviderApplicationStore["completeLinearInstallation"]>[0],
+    input: Parameters<LinearPersistence["completeLinearProviderApplication"]>[0],
   ) {
     await this.save({
       provider: "linear",
-      configuration: input.configuration,
-      identity: input.identity,
-      expectedVersion: input.expectedVersion,
-      updatedByUserId: input.updatedByUserId,
+      configuration: providerRegistry.parseConfiguration(input.providerConfiguration.configuration),
+      identity: providerRegistry
+        .require("linear")
+        .application.parseIdentity(input.providerConfiguration.identity),
+      expectedVersion: input.providerConfiguration.expectedVersion,
+      updatedByUserId: input.providerConfiguration.updatedByUserId,
     });
   }
 
   completeSlackSocketApplication(
-    input: Parameters<ProviderApplicationStore["completeSlackSocketApplication"]>[0],
+    input: Parameters<SlackPersistence["completeSlackSocketApplication"]>[0],
   ) {
     this.socketOrganizationId = input.organizationId;
     return this.save({
@@ -793,6 +870,7 @@ class MemoryStore implements ProviderApplicationStore {
 }
 
 class BlockingRuntime implements ProviderRuntimeOwner {
+  constructor(private readonly store: MemoryStore) {}
   read: ActiveProviderRuntime["read"] = (_definition, operation) => operation(undefined);
   use: ActiveProviderRuntime["use"] = (_definition, operation) => operation(undefined);
   private readonly candidates = new Map<string, Candidate[]>();
@@ -810,12 +888,20 @@ class BlockingRuntime implements ProviderRuntimeOwner {
   completeSlack(input: Parameters<typeof completeSlackInstallation>[1]) {
     const handler = this.installationHandlers.get("slack");
     if (handler === undefined) throw new Error("handler unavailable");
-    return handler((options) => completeSlackInstallation(options, input));
+    return handler((options) =>
+      completeSlackInstallation(options, input, {
+        completeSlackProviderApplication: (value) => this.store.completeSlackInstallation(value),
+      }),
+    );
   }
   completeLinear(input: Parameters<typeof completeLinearInstallation>[1]) {
     const handler = this.installationHandlers.get("linear");
     if (handler === undefined) throw new Error("handler unavailable");
-    return handler((options) => completeLinearInstallation(options, input));
+    return handler((options) =>
+      completeLinearInstallation(options, input, {
+        completeLinearProviderApplication: (value) => this.store.completeLinearInstallation(value),
+      }),
+    );
   }
 
   prepare(
@@ -939,7 +1025,8 @@ class Candidate implements ProviderRuntimeCandidate {
   }
 }
 
-function candidateConfigurationId(configuration: ProviderApplicationConfiguration): string {
+function candidateConfigurationId(value: unknown): string {
+  const configuration = parseTestApplicationConfiguration(value);
   if (configuration.provider === "github" || configuration.provider === "slack") {
     return configuration.appId;
   }

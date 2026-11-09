@@ -1,3 +1,5 @@
+import type { ProviderSetup } from "../presentation.js";
+import { saveProviderApplication } from "../setup.js";
 import { identitySchema } from "./application-configuration.js";
 export const glyph = {
   viewBox: "0 0 16 16",
@@ -10,3 +12,12 @@ export function identityLabel(value: unknown): string {
   const identity = identitySchema.parse(value);
   return identity.name;
 }
+
+export const setup: ProviderSetup = {
+  save: (input) => saveProviderApplication("linear", input),
+  summary(view, guide) {
+    if (view.identity === null) return [];
+    const identity = identitySchema.parse(view.identity);
+    return [{ label: guide.summaryLabels.identity, value: identity.name }];
+  },
+};

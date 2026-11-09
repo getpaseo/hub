@@ -1,3 +1,5 @@
+import { failure } from "./failure.js";
+import { setup } from "./presentation.js";
 import { glyph, runHint, identityLabel } from "./presentation.js";
 import { type ProviderGuide } from "../presentation.js";
 import { normalizeRequest, requestSchema, requestSecrets } from "./application-configuration.js";
@@ -110,6 +112,7 @@ export const DISCORD_GUIDE: ProviderGuide = {
 };
 
 export const discordBrowserProvider = {
+  failure,
   request: {
     parse: (input: unknown) => {
       const data = requestSchema.parse(input);
@@ -121,6 +124,7 @@ export const discordBrowserProvider = {
     normalize: (input: unknown) => normalizeRequest(requestSchema.parse(input)),
     secrets: (input: unknown) => requestSecrets(requestSchema.parse(input)),
   },
+  setup,
   glyph,
   runHint,
   identityLabel,

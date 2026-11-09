@@ -1,3 +1,5 @@
+import { failure } from "./failure.js";
+import { setup } from "./presentation.js";
 import { glyph, runHint, identityLabel } from "./presentation.js";
 import { isSecureOrigin, type ProviderGuide } from "../presentation.js";
 import { normalizeRequest, requestSchema, requestSecrets } from "./application-configuration.js";
@@ -203,6 +205,7 @@ export const GITHUB_GUIDE: ProviderGuide = {
 };
 
 export const githubBrowserProvider = {
+  failure,
   request: {
     parse: (input: unknown) => {
       const data = requestSchema.parse(input);
@@ -214,6 +217,7 @@ export const githubBrowserProvider = {
     normalize: (input: unknown) => normalizeRequest(requestSchema.parse(input)),
     secrets: (input: unknown) => requestSecrets(requestSchema.parse(input)),
   },
+  setup,
   glyph,
   runHint,
   identityLabel,

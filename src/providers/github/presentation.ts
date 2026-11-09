@@ -1,3 +1,6 @@
+import { isSecureOrigin } from "../presentation.js";
+import type { ProviderSetup } from "../presentation.js";
+import { saveProviderApplication } from "../setup.js";
 import { identitySchema } from "./application-configuration.js";
 export const glyph = {
   viewBox: "0 0 16 16",
@@ -10,3 +13,17 @@ export function identityLabel(value: unknown): string {
   const identity = identitySchema.parse(value);
   return `${identity.name} · owned by ${identity.ownerLogin}`;
 }
+
+export const setup: ProviderSetup = {
+  save: (input) => saveProviderApplication("github", input),
+  summary(view, guide) {
+    if (view.identity === null) return [];
+    const identity = identitySchema.parse(view.identity);
+    const rows = [{ label: guide.summaryLabels.identity, value: identity.name }];
+    if (guide.summaryLabels.owner !== undefined)
+      rows.push({ label: guide.summaryLabels.owner, value: identity.ownerLogin });
+    return rows;
+  },
+  eventState: (_view, origin) =>
+    isSecureOrigin(origin) ? undefined : "Needs a public HTTPS address",
+};

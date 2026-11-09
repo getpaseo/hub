@@ -14,6 +14,7 @@ import {
   isIdentityConflict,
 } from "../../provider-applications/workflow.js";
 import type { SlackSocketInstallationVerifier } from "./installation.js";
+import { slackPersistence, type SlackPersistence } from "./persistence.js";
 export async function configureSocket(
   {
     options,
@@ -22,6 +23,9 @@ export async function configureSocket(
   }: Pick<ProviderApplicationContext, "options" | "request" | "account">,
   input: { appToken: string; botToken: string; expectedVersion?: number },
   verifier: SlackSocketInstallationVerifier,
+  persistence: Pick<SlackPersistence, "completeSlackSocketApplication"> = slackPersistence(
+    options.database,
+  ),
 ): Promise<ProviderApplicationResult> {
   if (!input.appToken.startsWith("xapp-") || !input.botToken.startsWith("xoxb-")) {
     throw new ProviderApplicationError("invalidInput");
@@ -58,7 +62,7 @@ export async function configureSocket(
       (input.expectedVersion ?? 0) + 1,
     );
     await candidate.start();
-    const saved = await options.store.completeSlackSocketApplication({
+    const saved = await persistence.completeSlackSocketApplication({
       configuration,
       identity,
       expectedVersion: input.expectedVersion,

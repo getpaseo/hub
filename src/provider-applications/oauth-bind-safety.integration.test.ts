@@ -18,12 +18,15 @@ import { linearPersistence } from "../providers/linear/persistence.js";
 import { createProviderRegistry } from "../providers/server.js";
 import { SLACK_REQUIRED_BOT_SCOPES } from "../providers/slack/client.js";
 import { slackPersistence } from "../providers/slack/persistence.js";
+import type {
+  TestProviderApplicationConfiguration as ProviderApplicationConfiguration,
+  TestProviderApplicationIdentity as ProviderApplicationIdentity,
+} from "../providers/testing.js";
+import { parseTestApplicationConfiguration } from "../providers/testing.js";
 import {
   activateProviderApplicationsAtStartup,
   createProviderApplicationInventory,
   createProviderApplicationStore,
-  type ProviderApplicationConfiguration,
-  type ProviderApplicationIdentity,
   type ProviderRuntimeCandidate,
   type ProviderRuntimeOwner,
 } from "./index.js";
@@ -61,12 +64,7 @@ describe("provider application OAuth bind authority", () => {
 
 async function rejectsStoredReplacement(bundle: DatabaseRuntimeBundle, provider: Provider) {
   const database = createDatabase(bundle.runtime, bundle.locks);
-  const store = createProviderApplicationStore(
-    bundle.runtime,
-    bundle.locks,
-    providerRegistry,
-    database,
-  );
+  const store = createProviderApplicationStore(bundle.runtime, bundle.locks, providerRegistry);
   const first = application(provider, "A");
   const replacement = application(provider, "B");
   await store.save({
@@ -108,12 +106,7 @@ async function rejectsStoredReplacement(bundle: DatabaseRuntimeBundle, provider:
 
 async function serializesReplacementRace(bundle: DatabaseRuntimeBundle, provider: Provider) {
   const database = createDatabase(bundle.runtime, bundle.locks);
-  const store = createProviderApplicationStore(
-    bundle.runtime,
-    bundle.locks,
-    providerRegistry,
-    database,
-  );
+  const store = createProviderApplicationStore(bundle.runtime, bundle.locks, providerRegistry);
   const first = application(provider, "RACE-A");
   const replacement = application(provider, "RACE-B");
   await store.save({
@@ -151,12 +144,7 @@ async function serializesReplacementRace(bundle: DatabaseRuntimeBundle, provider
 
 async function rejectsEnvironmentFallback(bundle: DatabaseRuntimeBundle, provider: Provider) {
   const database = createDatabase(bundle.runtime, bundle.locks);
-  const store = createProviderApplicationStore(
-    bundle.runtime,
-    bundle.locks,
-    providerRegistry,
-    database,
-  );
+  const store = createProviderApplicationStore(bundle.runtime, bundle.locks, providerRegistry);
   const environment = application(provider, "ENV");
   const fallback = application(provider, "STORED");
   await store.save({
@@ -427,7 +415,8 @@ function application(provider: Provider, suffix: string) {
   return { configuration, identity: identity(configuration) };
 }
 
-function identity(configuration: ProviderApplicationConfiguration): ProviderApplicationIdentity {
+function identity(value: unknown): ProviderApplicationIdentity {
+  const configuration = parseTestApplicationConfiguration(value);
   if (configuration.provider === "github") {
     return {
       provider: "github",

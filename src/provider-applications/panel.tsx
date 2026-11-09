@@ -1,3 +1,4 @@
+import { providerApplicationView } from "./guides.js";
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop -- open/close handlers are bound per rendered provider section */
 import { useSnapshotQuery } from "../queries/index.js";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -17,6 +18,10 @@ import { PROVIDER_GUIDES } from "./guides.js";
 import { providerApplicationsOverview } from "./functions.js";
 import { ProviderSection, ProviderSectionLoading } from "./provider-section.js";
 import type { Provider, ProviderApplicationOverview, ProviderApplicationSurface } from "./index.js";
+
+const providerNames = new Intl.ListFormat("en", { style: "long", type: "conjunction" }).format(
+  PROVIDER_GUIDES.map((guide) => guide.name),
+);
 
 const OVERVIEW_KEY = ["provider-applications"] as const;
 
@@ -81,7 +86,7 @@ function ProviderApplications({
         >
           <ProviderSection
             guide={guide}
-            view={overview.providers[guide.provider]}
+            view={providerApplicationView(overview, guide.provider)}
             callbackOrigin={overview.callbackOrigin}
             surface={surface}
             organizationId={organizationId}
@@ -143,7 +148,7 @@ export function AppSetupEntry({
     <AuthLayout width="xl">
       <PageHeader
         title="Set up your apps"
-        description="Paseo Hub talks to GitHub, Slack, Discord, and Linear through apps you create and own. Set up the ones you want to use."
+        description={`Paseo Hub talks to ${providerNames} through apps you create and own. Set up the ones you want to use.`}
         focusOnMount
       />
       <div className="grid min-w-0 gap-6">
@@ -192,7 +197,7 @@ export function AppsPanel() {
     <>
       <PageHeader
         title="Apps"
-        description="The GitHub, Slack, Discord, and Linear apps Hub uses to reach your workspaces."
+        description={`The ${providerNames} apps Hub uses to reach your workspaces.`}
       />
       <ProviderApplications surface="apps" organizationId={account.organization.id} />
     </>

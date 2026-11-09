@@ -1,10 +1,6 @@
 import type { DatabaseRuntime } from "../../db/runtime/index.js";
 import type { Locks } from "../../db/runtime/locks/index.js";
-import type { Database } from "../../db/types.js";
-import { linearPersistence } from "../../providers/linear/persistence.js";
 import type { ProviderRegistry } from "../../providers/registry.js";
-import { slackPersistence } from "../../providers/slack/persistence.js";
-import { completeSocketApplication } from "../../providers/slack/socket-persistence.js";
 import type { ProviderApplicationConfiguration, ProviderApplicationStore } from "../index.js";
 import {
   type ProviderConfigurationRow,
@@ -27,7 +23,6 @@ export function createProviderApplicationStore(
   database: DatabaseRuntime,
   locks: Locks,
   registry: ProviderRegistry,
-  providerDatabase?: Pick<Database, "providerPersistence">,
 ): ProviderApplicationStore {
   return {
     async read(provider) {
@@ -37,7 +32,9 @@ export function createProviderApplicationStore(
          from runtime_provider_configuration where provider = $1`,
         [provider],
       );
-      return result.rows[0] === undefined ? undefined : parseRow(result.rows[0], registry);
+      return result.rows[0] === undefined
+        ? undefined
+        : parseRow(result.rows[0], registry.require(result.rows[0].provider).application);
     },
     async readAll() {
       const result = await database.query<ProviderConfigurationRow>(
@@ -45,7 +42,7 @@ export function createProviderApplicationStore(
                 verified_at, updated_at, updated_by_user_id
          from runtime_provider_configuration order by provider`,
       );
-      return result.rows.map((row) => parseRow(row, registry));
+      return result.rows.map((row) => parseRow(row, registry.require(row.provider).application));
     },
     save(input) {
       return locks.withLock(`provider-configuration:${input.provider}`, () =>
@@ -90,7 +87,7 @@ export function createProviderApplicationStore(
           );
           const saved = result.rows[0];
           if (saved === undefined) throw new Error("provider configuration save returned no row");
-          const parsed = parseRow(saved, registry);
+          const parsed = parseRow(saved, registry.require(saved.provider).application);
           await writeProviderActivation(
             transaction,
             input.provider,
@@ -117,35 +114,6 @@ export function createProviderApplicationStore(
           );
         }),
       );
-    },
-    completeSlackInstallation(input) {
-      if (providerDatabase === undefined)
-        throw new Error("Slack application persistence unavailable");
-      return slackPersistence(providerDatabase).completeSlackProviderApplication({
-        ...input.binding,
-        providerConfiguration: {
-          configuration: input.configuration,
-          identity: input.identity,
-          expectedVersion: input.expectedVersion,
-          updatedByUserId: input.updatedByUserId,
-        },
-      });
-    },
-    completeLinearInstallation(input) {
-      if (providerDatabase === undefined)
-        throw new Error("Linear application persistence unavailable");
-      return linearPersistence(providerDatabase).completeLinearProviderApplication({
-        ...input.binding,
-        providerConfiguration: {
-          configuration: input.configuration,
-          identity: input.identity,
-          expectedVersion: input.expectedVersion,
-          updatedByUserId: input.updatedByUserId,
-        },
-      });
-    },
-    completeSlackSocketApplication(input) {
-      return completeSocketApplication(database, locks, registry, input);
     },
   };
 }

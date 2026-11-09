@@ -1,3 +1,10 @@
+import type { FailureKind } from "../failures/index.js";
+import type { Result } from "../contract/respond.js";
+import type {
+  ProviderApplicationSaveResult,
+  ProviderApplicationSurface,
+  ProviderApplicationView,
+} from "../provider-applications/index.js";
 import type { ProviderApplicationConfiguration } from "../provider-applications/index.js";
 /**
  * Presentation unions spelled here rather than imported from the components, so this module stays
@@ -26,7 +33,7 @@ export interface GuideStep {
   /** Keys of the guide URLs rendered as copy fields under this step. */
   urls?: readonly string[];
   /** Renders the generated manifest under this step. */
-  manifest?: boolean;
+  manifest?: { label: string; action: string; build(origin: string): string };
   /**
    * A portal control and the value to give it, rendered as a mapping. Prose that lists six
    * settings in one sentence is prose nobody checks off against the screen they are on.
@@ -79,7 +86,6 @@ interface GuideGroupSource extends Omit<GuideGroup, "unavailable"> {
 
 export interface ProviderGuide {
   provider: ProviderApplicationConfiguration["provider"];
-  transport?: "socket" | "webhook";
   name: string;
   summary: string;
   portal: { label: string; href: string };
@@ -115,6 +121,8 @@ export function isSecureOrigin(origin: string): boolean {
   return origin.startsWith("https://");
 }
 export interface BrowserProviderModule {
+  failure: ProviderSetupFailure;
+  setup: ProviderSetup;
   glyph: { viewBox: string; paths: readonly string[] };
   runHint: string;
   identityLabel(value: unknown): string;
@@ -142,4 +150,43 @@ export interface ProviderEventSummary {
 
 export function truncateEventText(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
+
+export interface ProviderSetupInput {
+  values: Readonly<Record<string, string>>;
+  expectedVersion?: number;
+  surface: ProviderApplicationSurface;
+  variant?: string;
+}
+export interface ProviderSetupRetry {
+  available(view: ProviderApplicationView): boolean;
+  execute(): Promise<Result<void>>;
+  successMessage: string;
+}
+export interface ProviderSetup {
+  save: (input: ProviderSetupInput) => Promise<Result<ProviderApplicationSaveResult>>;
+  summary(
+    view: ProviderApplicationView,
+    guide: ProviderGuide,
+  ): readonly { label: string; value: string }[];
+  eventState?(view: ProviderApplicationView, origin: string): string | undefined;
+  showConnect?(view: ProviderApplicationView): boolean;
+  retry?: ProviderSetupRetry;
+  variants?: {
+    label: string;
+    choices: readonly { value: string; label: string; hint?: string }[];
+    current(view: ProviderApplicationView): string;
+    guide(value: string): ProviderGuide;
+  };
+}
+
+export interface ProviderSetupFailure {
+  host: string;
+  applicationNoun: string;
+  credentials(subject: string | undefined): string;
+  special?(
+    code: string | undefined,
+    subject: string | undefined,
+  ): { kind: FailureKind; message: string } | undefined;
+  diagnostic?(error: unknown): Record<string, unknown> | undefined;
 }

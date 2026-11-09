@@ -1,6 +1,5 @@
 import type { QueryRow } from "../db/runtime/index.js";
 import type { Locks } from "../db/runtime/locks/index.js";
-import type { ProviderRegistry } from "../providers/registry.js";
 import type { Provider, StoredProviderApplication } from "./index.js";
 export interface ProviderConfigurationRow extends QueryRow {
   provider: string;
@@ -46,12 +45,14 @@ export async function writeProviderActivation(
 }
 export function parseRow(
   row: ProviderConfigurationRow,
-  registry: ProviderRegistry,
+  application: Pick<
+    import("../providers/registry.js").ProviderApplication,
+    "parseConfiguration" | "parseIdentity"
+  >,
 ): StoredProviderApplication {
   const provider = row.provider;
-  const module = registry.require(provider);
-  const configuration = registry.parseConfiguration(row.configuration);
-  const identity = module.application.parseIdentity(row.verified_external_identity);
+  const configuration = application.parseConfiguration(row.configuration);
+  const identity = application.parseIdentity(row.verified_external_identity);
   if (configuration.provider !== provider || identity.provider !== provider) {
     throw new Error("stored provider configuration has inconsistent provider identity");
   }

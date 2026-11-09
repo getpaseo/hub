@@ -1,22 +1,22 @@
 import jwt from "jsonwebtoken";
 import { z } from "zod";
-import type {
-  ProviderApplicationConfiguration,
-  ProviderApplicationIdentity,
-} from "../../provider-applications/index.js";
 import { ProviderVerificationError } from "../../provider-applications/index.js";
 import { fixedRequest, rejectFailedResponse, safeJson } from "../verification.js";
+import type {
+  GitHubProviderApplicationConfiguration,
+  GitHubProviderApplicationIdentity,
+} from "./application-configuration.js";
 const githubIdentitySchema = z.object({
   id: z.union([z.number(), z.string()]),
   name: z.string().min(1),
   owner: z.object({ login: z.string().min(1) }),
 });
 export async function verifyGitHub(
-  configuration: Extract<ProviderApplicationConfiguration, { provider: "github" }>,
+  configuration: GitHubProviderApplicationConfiguration,
   request: typeof fetch,
   now: () => number,
   timeoutMs: number,
-): Promise<ProviderApplicationIdentity> {
+): Promise<GitHubProviderApplicationIdentity> {
   let token: string;
   try {
     const nowSeconds = Math.floor(now() / 1000);

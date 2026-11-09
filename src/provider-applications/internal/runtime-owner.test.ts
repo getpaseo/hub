@@ -7,14 +7,18 @@ import { OutputExecutorRegistry, replyOutputTool } from "../../execution-capabil
 import { githubAuthority, type GitHubRegistration } from "../../providers/github/runtime.js";
 import type { ProviderRegistration } from "../../providers/registration.js";
 import { createProviderRegistry } from "../../providers/server.js";
-import { registrationRegistry } from "../../providers/testing.js";
+import type { SlackProviderApplicationConfiguration } from "../../providers/slack/application-configuration.js";
+import type {
+  TestProviderApplicationConfiguration as ProviderApplicationConfiguration,
+  TestProviderApplicationIdentity as ProviderApplicationIdentity,
+} from "../../providers/testing.js";
+import {
+  parseTestApplicationConfiguration,
+  registrationRegistry,
+} from "../../providers/testing.js";
 import { createGitHubReplyExecutor, githubReplyAvailable } from "../../triggers/github/reply.js";
 import type { ExternalTrigger, TriggerHandler, TriggerProvider } from "../../triggers/index.js";
-import type {
-  ProviderApplicationConfiguration,
-  ProviderApplicationIdentity,
-  SlackProviderApplicationConfiguration,
-} from "../index.js";
+
 import { DynamicProviderRuntime } from "./runtime-owner.js";
 type Provider = ProviderApplicationConfiguration["provider"];
 const providerRegistry = createProviderRegistry();
@@ -701,7 +705,8 @@ function providerIdentity(provider: Provider, id: string): ProviderApplicationId
   return { provider, id, name: id };
 }
 
-function providerConfigurationId(configuration: ProviderApplicationConfiguration): string {
+function providerConfigurationId(value: unknown): string {
+  const configuration = parseTestApplicationConfiguration(value);
   if (configuration.provider === "github") return configuration.appId;
   if (configuration.provider === "slack") return configuration.appId;
   if (configuration.provider === "linear") return configuration.clientId;
@@ -746,7 +751,8 @@ function slackConfiguration(appId: string): SlackProviderApplicationConfiguratio
   };
 }
 
-function configurationId(configuration: ProviderApplicationConfiguration): string {
+function configurationId(value: unknown): string {
+  const configuration = parseTestApplicationConfiguration(value);
   if (configuration.provider !== "slack") throw new Error("expected Slack configuration");
   return configuration.appId;
 }

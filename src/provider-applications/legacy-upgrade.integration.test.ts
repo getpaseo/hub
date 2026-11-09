@@ -14,13 +14,19 @@ import {
 import type { ActiveProviderRuntime } from "../providers/active-runtime.js";
 import { createProviderRegistry } from "../providers/server.js";
 import { SLACK_REQUIRED_BOT_SCOPES } from "../providers/slack/client.js";
+import type {
+  TestProviderApplicationConfiguration as ProviderApplicationConfiguration,
+  TestProviderApplicationIdentity as ProviderApplicationIdentity,
+} from "../providers/testing.js";
+import {
+  parseTestApplicationConfiguration,
+  testApplicationConfiguration,
+} from "../providers/testing.js";
 import {
   activateProviderApplicationsAtStartup,
   createProviderApplicationInventory,
   createProviderApplicationStore,
   type Provider,
-  type ProviderApplicationConfiguration,
-  type ProviderApplicationIdentity,
   type ProviderRuntimeCandidate,
   type ProviderRuntimeOwner,
 } from "./index.js";
@@ -146,7 +152,10 @@ describe("pre-provider-app connection upgrade", () => {
           ),
           environment: {
             ...ENVIRONMENT_APPLICATIONS,
-            github: { ...ENVIRONMENT_APPLICATIONS.github, appId: "different-app" },
+            github: testApplicationConfiguration({
+              ...ENVIRONMENT_APPLICATIONS.github,
+              appId: "different-app",
+            }),
           },
           runtime: changed,
           verifier: {
@@ -339,7 +348,8 @@ async function seedLegacyConnections(bundle: DatabaseRuntimeBundle): Promise<voi
   );
 }
 
-function identity(configuration: ProviderApplicationConfiguration): ProviderApplicationIdentity {
+function identity(value: unknown): ProviderApplicationIdentity {
+  const configuration = parseTestApplicationConfiguration(value);
   if (configuration.provider === "github") {
     return { provider: "github", id: configuration.appId, name: "GitHub app", ownerLogin: "acme" };
   }

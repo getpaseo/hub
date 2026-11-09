@@ -128,12 +128,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       process.env,
       providerRegistry,
     );
-    const providerStore = createProviderApplicationStore(
-      runtime,
-      locks,
-      providerRegistry,
-      database,
-    );
+    const providerStore = createProviderApplicationStore(runtime, locks, providerRegistry);
     const providerVerifier = createProviderApplicationVerifier(providerRegistry);
     const providerInventory = createProviderApplicationInventory(runtime, providerRegistry);
     const providerRuntime = new DynamicProviderRuntime({
@@ -143,6 +138,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       applicationBaseUrl: identity.appUrl,
     });
     const providerApplications = createProviderApplications({
+      database: database,
       registry: providerRegistry,
       auth,
       store: providerStore,

@@ -1,6 +1,6 @@
-import { summarizeEvent } from "./activity.js";
 import { replyOutputTool } from "../../execution-capabilities/outputs.js";
 import type { ProviderModule } from "../registry.js";
+import { summarizeEvent } from "./activity.js";
 import { configurationSchema, identitySchema } from "./application-configuration.js";
 import { connectionInventory } from "./application-persistence.js";
 import { beginLinearConfiguration, completeLinearInstallation } from "./application.js";
@@ -38,7 +38,11 @@ export const linearProvider: ProviderModule = {
       return { provider: "linear", id: configuration.clientId, name: "Linear app" };
     },
     configure(context, value) {
-      const input = value;
+      const parsed = configurationSchema.parse(value);
+      const input = {
+        ...parsed,
+        ...(value.expectedVersion === undefined ? {} : { expectedVersion: value.expectedVersion }),
+      };
       if (input.provider !== "linear") throw new Error("provider configuration mismatch");
       return beginLinearConfiguration(
         context.options,

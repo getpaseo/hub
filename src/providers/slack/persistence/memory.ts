@@ -7,6 +7,7 @@ import type {
   ProviderEventAcceptance,
   SlackConnectionRecord,
 } from "../../../db/types.js";
+import type { SlackSocketApplicationCommit } from "../persistence.js";
 export class SlackMemoryPersistence {
   private readonly slackConnections = new Map<string, SlackConnectionRecord>();
   constructor(private readonly context: MemoryProviderContext) {
@@ -24,6 +25,9 @@ export class SlackMemoryPersistence {
       input.teamId,
       reason,
     );
+  }
+  completeSlackSocketApplication(_input: SlackSocketApplicationCommit): never {
+    return connectionPersistenceUnavailable();
   }
   bindSlackConnection(_input: BindSlackConnectionInput): Promise<void> {
     return connectionPersistenceUnavailable();
