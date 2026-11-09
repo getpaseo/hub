@@ -135,7 +135,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       database,
     );
     const providerVerifier = createProviderApplicationVerifier(providerRegistry);
-    const providerInventory = createProviderApplicationInventory(runtime);
+    const providerInventory = createProviderApplicationInventory(runtime, providerRegistry);
     const providerRuntime = new DynamicProviderRuntime({
       registry: providerRegistry,
       database,

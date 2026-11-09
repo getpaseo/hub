@@ -1,117 +1,97 @@
 import { randomUUID } from "node:crypto";
-import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
 import { parseCompiledHubConfig, type JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
-import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
-import { launchedAgent } from "./mappers.js";
-import type {
-  AgentExecutionRecord,
-  AgentExecutionOutputAttempt,
-  AgentExecutionHubAcknowledgementInput,
-  AgentExecutionHubAcknowledgements,
-  Database,
-  InsertAgentExecutionInput,
-  InsertMachineInput,
-  MachineRecord,
-  TerminateMachineFields,
-  TransitionAgentExecutionFields,
-  TransitionAgentExecutionResult,
-  ProviderEventReceiptRecord,
-  EnrollDaemonInput,
-  EnrollmentTokenRecord,
-  DaemonRecord,
-  CliAuthorizationRecord,
-  CliAuthorizationDecisionInput,
-  CliAuthorizationPollResult,
-  StartCliAuthorizationInput,
-  AdvanceGitHubConnectionAttemptInput,
-  BindDiscordConnectionInput,
-  BindGitHubConnectionInput,
-  BindLinearConnectionInput,
-  BindSlackConnectionInput,
-  CompleteLinearProviderApplicationInput,
-  CompleteSlackProviderApplicationInput,
-  ConnectionStartAuthority,
-  ConnectionProvider,
-  ReadConnectionAttemptInput,
-  StartConnectionAttemptInput,
-  SwitchProjectConfigurationToManualInput,
-  SetProjectGitHubConfigurationSourceInput,
-  RecordConfigurationSyncAttemptInput,
-  ConfigurationSyncAttemptRecord,
-  AcceptDiscordEventInput,
-  AcceptGitHubEventInput,
-  AcceptLinearEventInput,
-  AcceptSlackEventInput,
-  DurableProviderEvent,
-  GitHubInstallationSyncOwner,
-  GitHubInstallationSyncClaim,
-  GitHubLifecycleReceiptClaimInput,
-  AttachmentProvider,
-  AttachmentRecord,
-  GitHubInstallationSyncResult,
-  PersistManualEventInput,
-  ProviderEventAcceptance,
-  CreateProjectInput,
-  InsertProjectConfigurationRevisionInput,
-  InsertAttachmentInput,
-  ProjectConfigurationRevisionRecord,
-  ProjectRecord,
-  TenantRouteAccess,
-  GitHubConnectionRecord,
-  GitHubConfigurationTarget,
-  DiscordConnectionRecord,
-  SlackConnectionRecord,
-  LinearConnectionRecord,
-  GitHubRepositoryRecord,
-  GitHubRepositorySnapshot,
-  OrganizationConnectionUsage,
-  OrganizationRunRecord,
-  UnroutedProviderEventCount,
-  ProjectTriggerRoute,
-  MigrateProjectTriggersInput,
-  OrganizationTriggerRecord,
-  OrganizationTriggerRevisionRecord,
-  PendingProjectTriggerMigration,
-  SaveOrganizationTriggerInput,
-  OrganizationTriggerRoute,
-  CreateAcceptedTriggerRunInput,
-  CreateRejectedTriggerRunInput,
-  AcceptedTriggerRunRecord,
-  RejectedTriggerRunRecord,
-  TriggerRunRecord,
-  WorkflowStepExecutionInput,
-  WorkflowStepRunRecord,
-  WorkflowWakeupRecord,
-  WorkflowAgentCompletionInput,
-  WorkflowDeadlineKind,
-  WorkflowDeadlineRecovery,
-  ProjectActivityRunListRecord,
-  OrganizationEntitlementsRecord,
-  OperatorOrganizationRecord,
-  StampOrganizationEntitlementsInput,
-  OverrideOrganizationEntitlementsInput,
-  ClearOrganizationEntitlementsOverrideInput,
-  EntitlementChangeRecord,
-  OrganizationUsageRecord,
-  ConsumeOrganizationUsageInput,
-  BillingPlanRecord,
-  SyncBillingPlanInput,
-  OrganizationBillingCustomerRecord,
-  ReconcileOrganizationBillingInput,
-  UpdateLinearConnectionTokensInput,
-  LinearConnectionRefreshOperation,
-} from "./types.js";
 import {
   clearOverrideKey,
   entitlementOverridesSchema,
   mergeOverrides,
 } from "../entitlements/catalog.js";
-import { toProviderEventReceiptRecordSummary } from "./mappers.js";
+import { discordPersistence } from "../providers/discord/persistence.js";
+import { githubPersistence } from "../providers/github/persistence.js";
+import { linearPersistence } from "../providers/linear/persistence.js";
+import { slackPersistence } from "../providers/slack/persistence.js";
 import {
   isProviderEventDropReasonCode,
   type ProviderEventDropReasonCode,
 } from "../triggers/drop-reason.js";
+import { launchedAgent, toProviderEventReceiptRecordSummary } from "./mappers.js";
+import type { MemoryProviderContext, ProviderPersistenceHost } from "./provider-persistence.js";
+import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
+import type {
+  AcceptedTriggerRunRecord,
+  AgentExecutionHubAcknowledgementInput,
+  AgentExecutionHubAcknowledgements,
+  AgentExecutionOutputAttempt,
+  AgentExecutionRecord,
+  AttachmentProvider,
+  AttachmentRecord,
+  BillingPlanRecord,
+  ClearOrganizationEntitlementsOverrideInput,
+  CliAuthorizationDecisionInput,
+  CliAuthorizationPollResult,
+  CliAuthorizationRecord,
+  ConfigurationSyncAttemptRecord,
+  ConnectionProvider,
+  ConsumeOrganizationUsageInput,
+  CreateAcceptedTriggerRunInput,
+  CreateProjectInput,
+  CreateRejectedTriggerRunInput,
+  DaemonRecord,
+  Database,
+  DurableProviderEvent,
+  EnrollDaemonInput,
+  EnrollmentTokenRecord,
+  EntitlementChangeRecord,
+  InsertAgentExecutionInput,
+  InsertAttachmentInput,
+  InsertMachineInput,
+  InsertProjectConfigurationRevisionInput,
+  MachineRecord,
+  MigrateProjectTriggersInput,
+  OperatorOrganizationRecord,
+  OrganizationBillingCustomerRecord,
+  OrganizationConnectionUsage,
+  OrganizationEntitlementsRecord,
+  OrganizationRunRecord,
+  OrganizationTriggerRecord,
+  OrganizationTriggerRevisionRecord,
+  OrganizationTriggerRoute,
+  OrganizationUsageRecord,
+  OverrideOrganizationEntitlementsInput,
+  PendingProjectTriggerMigration,
+  PersistManualEventInput,
+  ProjectActivityRunListRecord,
+  ProjectConfigurationRevisionRecord,
+  ProjectRecord,
+  ProjectTriggerRoute,
+  ProviderEventAcceptance,
+  ProviderEventEvidence,
+  ProviderEventReceiptRecord,
+  ReadConnectionAttemptInput,
+  ReconcileOrganizationBillingInput,
+  RecordConfigurationSyncAttemptInput,
+  RejectedTriggerRunRecord,
+  SaveOrganizationTriggerInput,
+  SetProjectGitHubConfigurationSourceInput,
+  SlackConnectionRecord,
+  StampOrganizationEntitlementsInput,
+  StartCliAuthorizationInput,
+  StartConnectionAttemptInput,
+  SwitchProjectConfigurationToManualInput,
+  SyncBillingPlanInput,
+  TenantRouteAccess,
+  TerminateMachineFields,
+  TransitionAgentExecutionFields,
+  TransitionAgentExecutionResult,
+  TriggerRunRecord,
+  UnroutedProviderEventCount,
+  WorkflowAgentCompletionInput,
+  WorkflowDeadlineKind,
+  WorkflowDeadlineRecovery,
+  WorkflowStepExecutionInput,
+  WorkflowStepRunRecord,
+  WorkflowWakeupRecord,
+} from "./types.js";
 
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
 
@@ -159,6 +139,8 @@ export function createMemoryDatabase(options: MemoryDatabaseOptions = {}): Datab
 }
 
 class MemoryDatabase implements Database {
+  readonly providerPersistence: ProviderPersistenceHost;
+  private readonly providerContext: MemoryProviderContext;
   // This test double has no background work. Scheduling tests use the actual embedded/PG runtime.
   get schedules(): import("../triggers/schedule/index.js").ScheduleStore {
     return (
@@ -217,18 +199,29 @@ class MemoryDatabase implements Database {
   >();
   private readonly migratedProjects = new Set<string>();
   private readonly organizationTriggerRoutes = new Map<string, OrganizationTriggerRoute[]>();
-  private readonly githubRepositories = new Map<string, GitHubRepositoryRecord>();
-  private readonly githubConnections = new Map<number, GitHubConnectionRecord>();
-  private readonly discordConnections = new Map<string, DiscordConnectionRecord>();
-  private readonly slackConnections = new Map<string, SlackConnectionRecord>();
-  private readonly linearConnections = new Map<string, LinearConnectionRecord>();
   private readonly organizationIds: Set<string>;
 
   constructor(private readonly options: MemoryDatabaseOptions = {}) {
     this.organizationIds = new Set(options.organizationIds);
-    for (const connection of options.slackConnections ?? []) {
-      this.slackConnections.set(connection.teamId, connection);
-    }
+    this.providerContext = {
+      findProjectById: (id) => this.projects.get(id),
+      options,
+      withLock: (key, operation) => this.withAdvisoryLock(key, operation),
+      accept: (...args) => this.acceptMemoryEvent(...args),
+      findReceiptId: (...args) => this.findReceiptId(...args),
+      insertReceipt: (input) => this.insertProviderEventReceipt(input),
+      removeConnectionReferences: (connectionId) => this.removeConnectionReferences(connectionId),
+      configurationSource: (projectId) => {
+        const source = this.githubConfigurationSources.get(projectId);
+        return source === undefined ? undefined : { kind: "github", ...source };
+      },
+      configurationSources: () =>
+        Array.from(this.githubConfigurationSources, ([projectId, source]) => ({
+          projectId,
+          source: { kind: "github" as const, ...source },
+        })),
+    };
+    this.providerPersistence = { create: (factory) => factory.memory(this.providerContext) };
   }
 
   private now(): Date {
@@ -1038,54 +1031,6 @@ class MemoryDatabase implements Database {
     });
   }
 
-  async acceptGitHubEvent(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance> {
-    const binding = await this.findGitHubConnection(input.installationId);
-    const reason = githubDropReason(input, binding);
-    return this.acceptMemoryEvent(
-      input,
-      binding?.organizationId,
-      binding?.id,
-      input.repositoryId === undefined ? null : String(input.repositoryId),
-      reason,
-    );
-  }
-
-  async acceptDiscordEvent(input: AcceptDiscordEventInput): Promise<ProviderEventAcceptance> {
-    const binding = await this.findDiscordConnection(input.guildId);
-    const reason = discordDropReason(input, binding);
-    return this.acceptMemoryEvent(
-      input,
-      binding?.organizationId,
-      binding?.id,
-      input.guildId,
-      reason,
-    );
-  }
-
-  async acceptSlackEvent(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance> {
-    const binding = await this.findSlackConnection(input.teamId);
-    const reason = slackDropReason(input, binding);
-    return this.acceptMemoryEvent(
-      input,
-      binding?.organizationId,
-      binding?.id,
-      input.teamId,
-      reason,
-    );
-  }
-
-  async acceptLinearEvent(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance> {
-    const binding = await this.findLinearConnection(input.linearOrganizationId);
-    const reason = linearDropReason(input, binding);
-    return this.acceptMemoryEvent(
-      input,
-      binding?.organizationId,
-      binding?.id,
-      input.projectId ?? null,
-      reason,
-    );
-  }
-
   async persistManualEvent(input: PersistManualEventInput) {
     const existing = this.findReceiptId(
       input.organizationId,
@@ -1150,159 +1095,6 @@ class MemoryDatabase implements Database {
         resourceId: input.resourceId ?? null,
       },
     };
-  }
-
-  private readonly githubInstallationSyncs = new Map<
-    string,
-    GitHubLifecycleReceiptClaimInput & { connectionId: string | null; retryAt: number | null }
-  >();
-  private readonly githubSyncs = new Map<number, Promise<unknown>>();
-
-  async synchronizeGitHubInstallation<T>(
-    installationId: number,
-    operation: () => Promise<T>,
-  ): Promise<T> {
-    const previous = this.githubSyncs.get(installationId) ?? Promise.resolve();
-    const next = previous.catch(() => undefined).then(operation);
-    this.githubSyncs.set(installationId, next);
-    try {
-      return await next;
-    } finally {
-      if (this.githubSyncs.get(installationId) === next) this.githubSyncs.delete(installationId);
-    }
-  }
-
-  pendingGitHubInstallationSyncs(owner: GitHubInstallationSyncOwner) {
-    return Promise.resolve(
-      [...this.githubInstallationSyncs.entries()]
-        .filter(
-          ([, receipt]) =>
-            receipt.providerApplicationId === owner.providerApplicationId &&
-            receipt.retryAt !== null &&
-            receipt.retryAt <= Date.now() &&
-            (receipt.connectionId !== null || this.githubConnections.has(receipt.installationId)),
-        )
-        .map(([id, receipt]) => ({
-          status: "claimed" as const,
-          installationSyncId: id,
-          installationId: receipt.installationId,
-          removeBinding: receipt.source === "github.installation",
-        })),
-    );
-  }
-
-  async claimGitHubLifecycleReceipt(
-    input: GitHubLifecycleReceiptClaimInput,
-  ): Promise<GitHubInstallationSyncClaim> {
-    const existing = [...this.githubInstallationSyncs.entries()].find(
-      ([, receipt]) =>
-        receipt.deliveryId === input.deliveryId || receipt.signatureHash === input.signatureHash,
-    );
-    if (existing !== undefined) return { status: "duplicate", installationSyncId: existing[0] };
-    const connection = await this.findGitHubConnection(input.installationId);
-    const id = randomUUID();
-    this.githubInstallationSyncs.set(id, {
-      ...input,
-      connectionId: connection?.id ?? null,
-      retryAt: Date.now(),
-    });
-    if (connection !== undefined)
-      this.insertProviderEventReceipt({
-        organizationId: connection.organizationId,
-        provider: "github",
-        connectionId: connection.id,
-        resourceId: null,
-        input: { ...input, dropReason: "github_lifecycle" },
-      });
-    return { status: "claimed", installationSyncId: id, installationId: input.installationId };
-  }
-
-  async applyGitHubInstallationSync(
-    owner: GitHubInstallationSyncOwner,
-    claim: Extract<GitHubInstallationSyncClaim, { status: "claimed" }>,
-    result: GitHubInstallationSyncResult,
-  ): Promise<void> {
-    const receipt = this.githubInstallationSyncs.get(claim.installationSyncId);
-    if (
-      receipt === undefined ||
-      receipt.retryAt === null ||
-      receipt.providerApplicationId !== owner.providerApplicationId
-    )
-      return;
-    const connection = this.githubConnections.get(claim.installationId);
-    if (connection === undefined && receipt.connectionId === null) return;
-    receipt.retryAt = null;
-    if (
-      connection === undefined ||
-      (receipt.connectionId !== null && receipt.connectionId !== connection.id)
-    )
-      return;
-    receipt.connectionId = connection.id;
-    if (
-      this.findReceiptId(connection.organizationId, receipt.deliveryId, receipt.signatureHash) ===
-      undefined
-    )
-      this.insertProviderEventReceipt({
-        organizationId: connection.organizationId,
-        provider: "github",
-        connectionId: connection.id,
-        resourceId: null,
-        input: { ...receipt, dropReason: "github_lifecycle" },
-      });
-    if (result.status === "present") {
-      this.githubConnections.set(claim.installationId, { ...connection, ...result.identity });
-      await this.replaceGitHubRepositorySnapshot(connection, result.repositories);
-      return;
-    }
-    if (!result.removeBinding) return;
-    this.githubConnections.delete(claim.installationId);
-    for (const [key, repository] of this.githubRepositories) {
-      if (repository.connectionId === connection.id) this.githubRepositories.delete(key);
-    }
-    for (const [projectId, source] of this.githubConfigurationSources) {
-      if (source.githubConnectionId !== connection.id) continue;
-      this.configurationAuthorities.set(projectId, "manual");
-      this.githubConfigurationSources.delete(projectId);
-    }
-    for (const [projectId, attempts] of this.configurationSyncAttempts) {
-      this.configurationSyncAttempts.set(
-        projectId,
-        attempts.map((attempt) =>
-          attempt.githubConnectionId === connection.id
-            ? Object.assign({}, attempt, { githubConnectionId: null })
-            : attempt,
-        ),
-      );
-    }
-    for (const [projectId, routes] of this.projectTriggerRoutes) {
-      this.projectTriggerRoutes.set(
-        projectId,
-        routes.filter((route) => route.connectionId !== connection.id),
-      );
-    }
-  }
-
-  private async replaceGitHubRepositorySnapshot(
-    connection: GitHubConnectionRecord,
-    repositories: GitHubRepositorySnapshot,
-  ): Promise<void> {
-    for (const [key, repository] of this.githubRepositories) {
-      if (
-        repository.connectionId === connection.id &&
-        !repositories.some((item) => item.repositoryId === repository.repositoryId)
-      )
-        this.githubRepositories.delete(key);
-    }
-    await this.upsertGitHubRepositories(connection.organizationId, connection.id, repositories);
-  }
-
-  retryGitHubInstallationSync(
-    _owner: GitHubInstallationSyncOwner,
-    installationSyncId: string,
-  ): Promise<void> {
-    const receipt = this.githubInstallationSyncs.get(installationSyncId);
-    if (receipt !== undefined && receipt.retryAt !== null) receipt.retryAt = Date.now() + 30_000;
-    return Promise.resolve();
   }
 
   async findProviderEventReceiptByDeliveryId(
@@ -3030,120 +2822,22 @@ class MemoryDatabase implements Database {
   }
 
   async organizationConnectionUsage(organizationId: string): Promise<OrganizationConnectionUsage> {
-    return {
-      github: Array.from(this.githubConnections.values()).filter(
-        (connection) => connection.organizationId === organizationId,
-      ),
-      discord: Array.from(this.discordConnections.values()).filter(
-        (connection) => connection.organizationId === organizationId,
-      ),
-      slack: Array.from(this.slackConnections.values()).filter(
-        (connection) => connection.organizationId === organizationId,
-      ),
-      linear: Array.from(this.linearConnections.values()).filter(
-        (connection) => connection.organizationId === organizationId,
-      ),
-    };
+    const [github, discord, slack, linear] = await Promise.all([
+      githubPersistence(this).listConnections(organizationId),
+      discordPersistence(this).listConnections(organizationId),
+      slackPersistence(this).listConnections(organizationId),
+      linearPersistence(this).listConnections(organizationId),
+    ]);
+    return { github, discord, slack, linear };
   }
-
-  async listGitHubRepositories(organizationId: string) {
-    return Array.from(this.githubRepositories.values()).filter(
-      (repository) => repository.organizationId === organizationId,
-    );
+  listGitHubRepositories(organizationId: string) {
+    return githubPersistence(this).listGitHubRepositories(organizationId);
   }
-
-  async findGitHubRepositoryForOrganization(organizationId: string, fullName: string) {
-    const rows = Array.from(this.githubRepositories.values()).filter(
-      (repository) =>
-        repository.organizationId === organizationId && repository.fullName === fullName,
-    );
-    if (rows.length > 1) throw new Error("github repository resource is ambiguous");
-    return rows[0];
+  findGitHubRepositoryForOrganization(organizationId: string, fullName: string) {
+    return githubPersistence(this).findGitHubRepositoryForOrganization(organizationId, fullName);
   }
-
-  private async upsertGitHubRepositories(
-    organizationId: string,
-    connectionId: string,
-    repositories: Array<
-      Pick<GitHubRepositoryRecord, "repositoryId" | "fullName" | "defaultBranch">
-    >,
-  ) {
-    for (const repository of repositories) {
-      const id =
-        this.githubRepositories.get(`${connectionId}:${repository.repositoryId}`)?.id ??
-        randomUUID();
-      this.githubRepositories.set(`${connectionId}:${repository.repositoryId}`, {
-        id,
-        organizationId,
-        connectionId,
-        ...repository,
-      });
-    }
-  }
-
-  async findGitHubConfigurationTarget(
-    projectId: string,
-    repositoryId?: number,
-  ): Promise<GitHubConfigurationTarget | undefined> {
-    const source = this.githubConfigurationSources.get(projectId);
-    if (
-      source === undefined ||
-      (repositoryId !== undefined && source.githubRepositoryId !== repositoryId)
-    ) {
-      return undefined;
-    }
-    const repository = Array.from(this.githubRepositories.values()).find(
-      (candidate) =>
-        candidate.connectionId === source.githubConnectionId &&
-        candidate.repositoryId === source.githubRepositoryId,
-    );
-    const connection = Array.from(this.githubConnections.values()).find(
-      (candidate) => candidate.id === source.githubConnectionId,
-    );
-    return repository === undefined || connection === undefined
-      ? undefined
-      : {
-          ...repository,
-          projectId,
-          installationId: connection.installationId,
-          automaticDeploymentEnabled: source.automaticDeploymentEnabled,
-        };
-  }
-
-  async listGitHubConfigurationTargets(
-    organizationId: string,
-    connectionId: string,
-    repositoryId: number,
-  ): Promise<GitHubConfigurationTarget[]> {
-    return Array.from(this.githubConfigurationSources.entries()).flatMap(([projectId, source]) => {
-      const project = this.projects.get(projectId);
-      if (
-        project?.organizationId !== organizationId ||
-        project.status !== "active" ||
-        source.githubConnectionId !== connectionId ||
-        source.githubRepositoryId !== repositoryId
-      ) {
-        return [];
-      }
-      const repository = Array.from(this.githubRepositories.values()).find(
-        (candidate) =>
-          candidate.connectionId === source.githubConnectionId &&
-          candidate.repositoryId === source.githubRepositoryId,
-      );
-      const connection = Array.from(this.githubConnections.values()).find(
-        (candidate) => candidate.id === source.githubConnectionId,
-      );
-      return repository === undefined || connection === undefined
-        ? []
-        : [
-            {
-              ...repository,
-              projectId,
-              installationId: connection.installationId,
-              automaticDeploymentEnabled: source.automaticDeploymentEnabled,
-            },
-          ];
-    });
+  findGitHubConfigurationTarget(projectId: string, repositoryId?: number) {
+    return githubPersistence(this).findGitHubConfigurationTarget(projectId, repositoryId);
   }
 
   async listUnroutedProviderEventsForOrganization(organizationId: string) {
@@ -3252,109 +2946,31 @@ class MemoryDatabase implements Database {
     return connectionPersistenceUnavailable();
   }
 
-  advanceGitHubConnectionAttempt(_input: AdvanceGitHubConnectionAttemptInput): Promise<void> {
-    return connectionPersistenceUnavailable();
-  }
-
-  bindGitHubConnection(_input: BindGitHubConnectionInput): Promise<void> {
-    return connectionPersistenceUnavailable();
-  }
-
-  bindDiscordConnection(_input: BindDiscordConnectionInput): Promise<void> {
-    return connectionPersistenceUnavailable();
-  }
-
-  bindSlackConnection(_input: BindSlackConnectionInput): Promise<void> {
-    return connectionPersistenceUnavailable();
-  }
-
-  completeSlackProviderApplication(_input: CompleteSlackProviderApplicationInput): Promise<void> {
-    return connectionPersistenceUnavailable();
-  }
-
-  bindLinearConnection(_input: BindLinearConnectionInput): Promise<void> {
-    return connectionPersistenceUnavailable();
-  }
-
-  completeLinearProviderApplication(_input: CompleteLinearProviderApplicationInput): Promise<void> {
-    return connectionPersistenceUnavailable();
-  }
-
-  updateLinearConnectionTokens(_input: UpdateLinearConnectionTokensInput): Promise<void> {
-    return connectionPersistenceUnavailable();
-  }
-
-  withLinearConnectionRefresh<T>(
-    linearOrganizationId: string,
-    operation: LinearConnectionRefreshOperation<T>,
-  ): Promise<T> {
-    return this.withAdvisoryLock(
-      JSON.stringify(["paseo-connection", "linear", "external", linearOrganizationId]),
-      async () => {
-        const connection = this.linearConnections.get(linearOrganizationId);
-        return operation(connection, async (input) => {
-          const current = this.linearConnections.get(linearOrganizationId);
-          if (current === undefined) throw new Error("Linear connection unavailable");
-          this.linearConnections.set(linearOrganizationId, { ...current, ...input });
-        });
-      },
-    );
-  }
-
-  disconnectConnection(
-    _provider: ConnectionProvider,
-    _connectionId: string,
-    _access: ConnectionStartAuthority,
-  ) {
-    return connectionPersistenceUnavailable();
-  }
-
-  findGitHubConnection(_installationId: number): Promise<GitHubConnectionRecord | undefined> {
-    return Promise.resolve(this.githubConnections.get(_installationId));
-  }
-
-  findDiscordConnection(_guildId: string): Promise<DiscordConnectionRecord | undefined> {
-    return Promise.resolve(this.discordConnections.get(_guildId));
-  }
-
-  findSlackConnection(_teamId: string): Promise<SlackConnectionRecord | undefined> {
-    return Promise.resolve(this.slackConnections.get(_teamId));
-  }
-
-  findLinearConnection(_linearOrganizationId: string): Promise<LinearConnectionRecord | undefined> {
-    return Promise.resolve(this.linearConnections.get(_linearOrganizationId));
-  }
-
-  findSlackConnectionForOrganization(
-    organizationId: string,
-    teamId: string,
-  ): Promise<SlackConnectionRecord | undefined> {
-    const connection = this.slackConnections.get(teamId);
-    return Promise.resolve(connection?.organizationId === organizationId ? connection : undefined);
-  }
-
-  findLinearConnectionForOrganization(
-    organizationId: string,
-    linearOrganizationId: string,
-  ): Promise<LinearConnectionRecord | undefined> {
-    const connection = this.linearConnections.get(linearOrganizationId);
-    return Promise.resolve(connection?.organizationId === organizationId ? connection : undefined);
-  }
-
-  findDiscordConnectionForOrganization(
-    organizationId: string,
-    guildId: string,
-  ): Promise<DiscordConnectionRecord | undefined> {
-    const connection = this.discordConnections.get(guildId);
-    return Promise.resolve(connection?.organizationId === organizationId ? connection : undefined);
-  }
-
-  removeDiscordConnection(): Promise<void> {
-    return Promise.resolve();
-  }
-
   async close(): Promise<void> {}
 
+  private removeConnectionReferences(connectionId: string): void {
+    for (const [projectId, source] of this.githubConfigurationSources) {
+      if (source.githubConnectionId !== connectionId) continue;
+      this.configurationAuthorities.set(projectId, "manual");
+      this.githubConfigurationSources.delete(projectId);
+    }
+    for (const [projectId, attempts] of this.configurationSyncAttempts) {
+      this.configurationSyncAttempts.set(
+        projectId,
+        attempts.map((attempt) =>
+          attempt.githubConnectionId === connectionId
+            ? Object.assign({}, attempt, { githubConnectionId: null })
+            : attempt,
+        ),
+      );
+    }
+    for (const [projectId, routes] of this.projectTriggerRoutes) {
+      this.projectTriggerRoutes.set(
+        projectId,
+        routes.filter((route) => route.connectionId !== connectionId),
+      );
+    }
+  }
   private readAttachment(id: string): AttachmentRecord {
     const attachment = this.attachments.get(id);
     if (attachment === undefined) throw new Error(`attachment not found: ${id}`);
@@ -3362,11 +2978,8 @@ class MemoryDatabase implements Database {
   }
 
   private async acceptMemoryEvent(
-    input:
-      | AcceptGitHubEventInput
-      | AcceptDiscordEventInput
-      | AcceptSlackEventInput
-      | AcceptLinearEventInput,
+    provider: ConnectionProvider,
+    input: ProviderEventEvidence,
     organizationId: string | undefined,
     connectionId: string | undefined,
     resourceId: string | null,
@@ -3406,7 +3019,7 @@ class MemoryDatabase implements Database {
     }
     const receipt = this.insertProviderEventReceipt({
       organizationId,
-      provider: providerForInput(input),
+      provider,
       connectionId,
       resourceId,
       input,
@@ -3419,7 +3032,6 @@ class MemoryDatabase implements Database {
         reason,
       };
     }
-    const provider = providerForInput(input);
     const routes = Array.from(this.projectTriggerRoutes.entries()).flatMap(
       ([projectId, candidates]) => {
         const project = this.projects.get(projectId);
@@ -3555,58 +3167,6 @@ function emptyHubActionAcknowledgements(): AgentExecutionHubAcknowledgements {
 
 function connectionPersistenceUnavailable(): never {
   throw new Error("connection persistence requires PostgreSQL");
-}
-
-function providerForInput(
-  input:
-    | AcceptGitHubEventInput
-    | AcceptDiscordEventInput
-    | AcceptSlackEventInput
-    | AcceptLinearEventInput,
-): "github" | "discord" | "slack" | "linear" {
-  if ("installationId" in input) return "github";
-  if ("guildId" in input) return "discord";
-  return "teamId" in input ? "slack" : "linear";
-}
-
-function githubDropReason(
-  input: AcceptGitHubEventInput,
-  binding: GitHubConnectionRecord | undefined,
-): string | undefined {
-  if (input.dropReason !== undefined) return input.dropReason;
-  if (binding === undefined) return "github_unbound";
-  if (binding.status === "suspended") return "configuration_unavailable";
-  return undefined;
-}
-
-function discordDropReason(
-  input: AcceptDiscordEventInput,
-  binding: DiscordConnectionRecord | undefined,
-): string | undefined {
-  if (input.dropReason !== undefined) return input.dropReason;
-  if (binding === undefined) return "discord_unbound";
-  return undefined;
-}
-
-function slackDropReason(
-  input: AcceptSlackEventInput,
-  binding: SlackConnectionRecord | undefined,
-): string | undefined {
-  if (input.dropReason !== undefined) return input.dropReason;
-  if (binding === undefined) return "slack_unbound";
-  return undefined;
-}
-
-function linearDropReason(
-  input: AcceptLinearEventInput,
-  binding: LinearConnectionRecord | undefined,
-): string | undefined {
-  if (input.dropReason !== undefined) return input.dropReason;
-  if (binding === undefined) return "linear_unbound";
-  if (linearConnectionRequiresReauthorization(binding, input.receivedAt)) {
-    return "configuration_unavailable";
-  }
-  return undefined;
 }
 
 interface MemoryCliAuthorization extends CliAuthorizationRecord {

@@ -1,13 +1,13 @@
-import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
 import type { JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
-import type { InvocationRejection } from "../triggers/invocation.js";
-import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 import type {
   EntitlementPatch,
   EntitlementTemplate,
   OverrideKey,
 } from "../entitlements/catalog.js";
+import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
+import type { InvocationRejection } from "../triggers/invocation.js";
+import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
 
 export type WorkflowDeadlineKind = "step_hard" | "step_idle" | "whole_run";
 
@@ -1197,6 +1197,7 @@ export interface TerminateMachineFields {
 }
 
 export interface Database {
+  readonly providerPersistence: import("./provider-persistence.js").ProviderPersistenceHost;
   readonly executionAuthority: import("../execution-authority/index.js").ExecutionAuthorityStore;
   readonly schedules: import("../triggers/schedule/index.js").ScheduleStore;
   findAgentSessionByKey(
@@ -1302,29 +1303,7 @@ export interface Database {
     providerEventReceiptId: string,
     reason: ProviderEventDropReasonCode,
   ): Promise<void>;
-  acceptGitHubEvent(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance>;
-  acceptDiscordEvent(input: AcceptDiscordEventInput): Promise<ProviderEventAcceptance>;
-  acceptSlackEvent(input: AcceptSlackEventInput): Promise<ProviderEventAcceptance>;
-  acceptLinearEvent(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance>;
   persistManualEvent(input: PersistManualEventInput): Promise<ManualEventPersistence>;
-  synchronizeGitHubInstallation<T>(installationId: number, operation: () => Promise<T>): Promise<T>;
-  pendingGitHubInstallationSyncs(
-    owner: GitHubInstallationSyncOwner,
-  ): Promise<
-    Array<Extract<GitHubInstallationSyncClaim, { status: "claimed" }> & { removeBinding: boolean }>
-  >;
-  claimGitHubLifecycleReceipt(
-    input: GitHubLifecycleReceiptClaimInput,
-  ): Promise<GitHubInstallationSyncClaim>;
-  applyGitHubInstallationSync(
-    owner: GitHubInstallationSyncOwner,
-    claim: Extract<GitHubInstallationSyncClaim, { status: "claimed" }>,
-    result: GitHubInstallationSyncResult,
-  ): Promise<void>;
-  retryGitHubInstallationSync(
-    owner: GitHubInstallationSyncOwner,
-    installationSyncId: string,
-  ): Promise<void>;
   findProviderEventReceiptByDeliveryId(
     deliveryId: string,
     organizationId?: string,
@@ -1599,11 +1578,6 @@ export interface Database {
     projectId: string,
     repositoryId?: number,
   ): Promise<GitHubConfigurationTarget | undefined>;
-  listGitHubConfigurationTargets(
-    organizationId: string,
-    connectionId: string,
-    repositoryId: number,
-  ): Promise<GitHubConfigurationTarget[]>;
   listUnroutedProviderEventsForOrganization(
     organizationId: string,
   ): Promise<ProviderEventReceiptSummary[]>;
@@ -1629,44 +1603,5 @@ export interface Database {
   ): Promise<ConnectionAttemptConfigurationSnapshot | undefined>;
   readConnectionAttempt(input: ReadConnectionAttemptInput): Promise<ConnectionAttemptRecord>;
   consumeConnectionAttempt(input: ReadConnectionAttemptInput): Promise<void>;
-  advanceGitHubConnectionAttempt(input: AdvanceGitHubConnectionAttemptInput): Promise<void>;
-  bindGitHubConnection(input: BindGitHubConnectionInput): Promise<void>;
-  bindDiscordConnection(input: BindDiscordConnectionInput): Promise<void>;
-  bindSlackConnection(input: BindSlackConnectionInput): Promise<void>;
-  completeSlackProviderApplication(input: CompleteSlackProviderApplicationInput): Promise<void>;
-  bindLinearConnection(input: BindLinearConnectionInput): Promise<void>;
-  completeLinearProviderApplication(input: CompleteLinearProviderApplicationInput): Promise<void>;
-  updateLinearConnectionTokens(input: UpdateLinearConnectionTokensInput): Promise<void>;
-  /**
-   * Runs a Linear refresh decision under the same transaction-scoped external-connection lock
-   * used by OAuth rebind. The connection re-read and any token update use that transaction, so a
-   * stale refresh cannot overwrite a concurrent reauthorization or consume a rotating token twice.
-   */
-  withLinearConnectionRefresh<T>(
-    linearOrganizationId: string,
-    operation: LinearConnectionRefreshOperation<T>,
-  ): Promise<T>;
-  disconnectConnection(
-    provider: ConnectionProvider,
-    connectionId: string,
-    access: ConnectionStartAuthority,
-  ): Promise<DisconnectConnectionResult>;
-  findGitHubConnection(installationId: number): Promise<GitHubConnectionRecord | undefined>;
-  findDiscordConnection(guildId: string): Promise<DiscordConnectionRecord | undefined>;
-  findSlackConnection(teamId: string): Promise<SlackConnectionRecord | undefined>;
-  findLinearConnection(linearOrganizationId: string): Promise<LinearConnectionRecord | undefined>;
-  findSlackConnectionForOrganization(
-    organizationId: string,
-    teamId: string,
-  ): Promise<SlackConnectionRecord | undefined>;
-  findLinearConnectionForOrganization(
-    organizationId: string,
-    linearOrganizationId: string,
-  ): Promise<LinearConnectionRecord | undefined>;
-  findDiscordConnectionForOrganization(
-    organizationId: string,
-    guildId: string,
-  ): Promise<DiscordConnectionRecord | undefined>;
-  removeDiscordConnection(guildId: string): Promise<void>;
   close(): Promise<void>;
 }

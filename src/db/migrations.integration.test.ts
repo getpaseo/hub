@@ -3,24 +3,25 @@ import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, it } from "vitest";
+import { githubPersistence } from "../providers/github/persistence.js";
+import { slackPersistence } from "../providers/slack/persistence.js";
 
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { postgresDatabaseRuntime } from "./runtime/index.js";
-import type { DatabaseRuntime, QueryHandle, QueryRow } from "./runtime/index.js";
-import { createPostgresQueryRuntime } from "./test-utils/runtime.js";
-import { z } from "zod";
 import { dump } from "js-yaml";
-import { createDatabase } from "./test-utils/runtime.js";
+import { z } from "zod";
 import { createHubApplication } from "../app.js";
+import type { ApiKeyScope } from "../auth/api-key-contract.js";
+import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
+import type { OperationAuthenticator } from "../auth/operation-auth.js";
 import { ProjectConfigurationStore, revisionBundleFiles } from "../configuration/store.js";
-import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
+import { EntitlementsService } from "../entitlements/service.js";
 import { InstanceSetup } from "../instance-setup/index.js";
 import { UNLIMITED_PROVISIONING } from "../organizations/provisioning.js";
-import type { InstanceAuthPolicy } from "../auth/instance-policy.js";
-import type { ApiKeyScope } from "../auth/api-key-contract.js";
-import type { OperationAuthenticator } from "../auth/operation-auth.js";
-import { EntitlementsService } from "../entitlements/service.js";
+import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
 import { migrateLegacyProjectTriggers } from "../triggers/migration.js";
+import type { DatabaseRuntime, QueryHandle, QueryRow } from "./runtime/index.js";
+import { postgresDatabaseRuntime } from "./runtime/index.js";
+import { createDatabase, createPostgresQueryRuntime } from "./test-utils/runtime.js";
 import type { MigrateProjectTriggersInput } from "./types.js";
 
 const GITHUB_OWNER = { providerApplicationId: "42", configurationVersion: 0 };
@@ -649,7 +650,7 @@ describe("database migration application", () => {
         second.id,
         secondRoutes,
       );
-      const accepted = await database.acceptGitHubEvent({
+      const accepted = await githubPersistence(database).acceptGitHubEvent({
         installationId: 9101,
         repositoryId: 9001,
         deliveryId: "github-duplicate-project-routes",
@@ -663,7 +664,7 @@ describe("database migration application", () => {
       const rolledBack = await database.rollbackProjectConfiguration(project.id, first.id, [
         firstRoute,
       ]);
-      const replayed = await database.acceptGitHubEvent({
+      const replayed = await githubPersistence(database).acceptGitHubEvent({
         installationId: 9101,
         repositoryId: 9001,
         deliveryId: "github-duplicate-project-routes",
@@ -730,8 +731,8 @@ describe("database migration application", () => {
       };
 
       const results = await Promise.all([
-        database.acceptGitHubEvent(input),
-        database.acceptGitHubEvent(input),
+        githubPersistence(database).acceptGitHubEvent(input),
+        githubPersistence(database).acceptGitHubEvent(input),
       ]);
 
       assert.deepEqual(results.map((result) => result.status).sort(), ["accepted", "accepted"]);
@@ -789,7 +790,7 @@ describe("database migration application", () => {
       await store.activate(initial.id);
 
       const switched = await store.switchToManual("project-user");
-      const accepted = await database.acceptGitHubEvent({
+      const accepted = await githubPersistence(database).acceptGitHubEvent({
         installationId: 9251,
         repositoryId: 9252,
         deliveryId: "manual-authority-route",
@@ -928,13 +929,14 @@ describe("database migration application", () => {
     );
     const database = await createDatabase(url);
     try {
-      const pending = await database.pendingGitHubInstallationSyncs(GITHUB_OWNER);
+      const pending =
+        await githubPersistence(database).pendingGitHubInstallationSyncs(GITHUB_OWNER);
       assert.deepEqual(
         pending.map((work) => work.installationId).sort((a, b) => a - b),
         [42, 43],
       );
       for (const work of pending) {
-        await database.applyGitHubInstallationSync(GITHUB_OWNER, work, {
+        await githubPersistence(database).applyGitHubInstallationSync(GITHUB_OWNER, work, {
           status: "present",
           identity: {
             accountId: "1",
@@ -952,7 +954,10 @@ describe("database migration application", () => {
         });
       }
       assert.equal((await database.listGitHubRepositories("org")).length, 2);
-      assert.deepEqual(await database.pendingGitHubInstallationSyncs(GITHUB_OWNER), []);
+      assert.deepEqual(
+        await githubPersistence(database).pendingGitHubInstallationSyncs(GITHUB_OWNER),
+        [],
+      );
       assert.equal((await poolQuery(url, `select * from provider_event_receipts`)).rows.length, 2);
     } finally {
       await database.close();
@@ -982,8 +987,8 @@ describe("database migration application", () => {
         receivedAt: new Date(0),
       };
       const lifecycleResults = await Promise.all([
-        database.claimGitHubLifecycleReceipt(lifecycleInput),
-        database.claimGitHubLifecycleReceipt(lifecycleInput),
+        githubPersistence(database).claimGitHubLifecycleReceipt(lifecycleInput),
+        githubPersistence(database).claimGitHubLifecycleReceipt(lifecycleInput),
       ]);
       assert.deepEqual(lifecycleResults.map((result) => result.status).sort(), [
         "claimed",
@@ -1034,7 +1039,7 @@ describe("database migration application", () => {
         },
       ]);
 
-      const claim = await database.claimGitHubLifecycleReceipt({
+      const claim = await githubPersistence(database).claimGitHubLifecycleReceipt({
         providerApplicationId: "42",
         installationId: 9271,
         deliveryId: "lifecycle-removal",
@@ -1046,7 +1051,7 @@ describe("database migration application", () => {
       assert.equal(claim.status, "claimed");
       if (claim.status !== "claimed") return;
 
-      await database.applyGitHubInstallationSync(GITHUB_OWNER, claim, {
+      await githubPersistence(database).applyGitHubInstallationSync(GITHUB_OWNER, claim, {
         status: "absent",
         removeBinding: true,
       });
@@ -1094,7 +1099,7 @@ describe("database migration application", () => {
          values ('${connectionId}', 'organization-a', 9301, 'activity-github', 'account-9301',
                  'activity', 'Organization', 'active')`,
       );
-      const result = await database.acceptGitHubEvent({
+      const result = await githubPersistence(database).acceptGitHubEvent({
         installationId: 9301,
         repositoryId: 9302,
         deliveryId: "unrouted-activity-receipt",
@@ -1282,7 +1287,7 @@ describe("database migration application", () => {
       assert.notEqual(multi.runtimeProjectId, project.id);
       assert.notEqual(single.runtimeProjectId, multi.runtimeProjectId);
       assert.equal((await database.listProjectsForOrganization("organization-a")).length, 0);
-      const accepted = await database.acceptSlackEvent({
+      const accepted = await slackPersistence(database).acceptSlackEvent({
         teamId: "startup-team",
         deliveryId: "organization-trigger-adapter-route",
         source: "slack.mention",

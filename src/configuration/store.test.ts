@@ -1,12 +1,14 @@
+import { dump } from "js-yaml";
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { dump } from "js-yaml";
 import { compiledConfigurationHash, parseCompiledHubConfig } from "../config/compiler.js";
-import { ProjectConfigurationStore, revisionBundleFiles } from "./store.js";
 import { createMemoryDatabase } from "../db/memory.js";
-import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
 import type { DiscordConnectionRecord, LinearConnectionRecord } from "../db/types.js";
+import { discordPersistence } from "../providers/discord/persistence.js";
+import { linearPersistence } from "../providers/linear/persistence.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
+import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
+import { ProjectConfigurationStore, revisionBundleFiles } from "./store.js";
 
 const primary: DiscordConnectionRecord = {
   id: "00000000-0000-4000-8000-000000000001",
@@ -150,7 +152,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
     await enrollTestDaemon(database);
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: [], linear: [linear] });
-    database.findLinearConnection = async (linearOrganizationId) =>
+    linearPersistence(database).findLinearConnection = async (linearOrganizationId) =>
       linearOrganizationId === linear.linearOrganizationId ? linear : undefined;
     const project = await database.createProject({
       organizationId: "org_1",
@@ -195,7 +197,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
     assert.equal(active.configuration.triggers[0]?.filters?.connectionId, linear.id);
     assert.equal(active.configuration.triggers[0]?.filters?.resourceId, "linear-project-1");
 
-    const accepted = await database.acceptLinearEvent({
+    const accepted = await linearPersistence(database).acceptLinearEvent({
       linearOrganizationId: linear.linearOrganizationId,
       projectId: "linear-project-1",
       deliveryId: "linear-scout-entry",
@@ -206,11 +208,11 @@ describe("ProjectConfigurationStore resource compilation", () => {
     assert.equal(accepted.status, "accepted");
     if (accepted.status === "accepted") assert.equal(accepted.events[0]?.projectId, project.id);
 
-    database.findLinearConnection = async (linearOrganizationId) =>
+    linearPersistence(database).findLinearConnection = async (linearOrganizationId) =>
       linearOrganizationId === linear.linearOrganizationId
         ? { ...linear, scopes: ["read"] }
         : undefined;
-    const underScoped = await database.acceptLinearEvent({
+    const underScoped = await linearPersistence(database).acceptLinearEvent({
       linearOrganizationId: linear.linearOrganizationId,
       projectId: "linear-project-1",
       deliveryId: "linear-scout-under-scoped",
@@ -223,7 +225,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
       assert.equal(underScoped.reason, "configuration_unavailable");
     }
 
-    database.findLinearConnection = async (linearOrganizationId) =>
+    linearPersistence(database).findLinearConnection = async (linearOrganizationId) =>
       linearOrganizationId === linear.linearOrganizationId
         ? {
             ...linear,
@@ -232,7 +234,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
             accessTokenExpiresAt: new Date(0),
           }
         : undefined;
-    const expired = await database.acceptLinearEvent({
+    const expired = await linearPersistence(database).acceptLinearEvent({
       linearOrganizationId: linear.linearOrganizationId,
       projectId: "linear-project-1",
       deliveryId: "linear-scout-expired",
@@ -418,9 +420,11 @@ describe("ProjectConfigurationStore resource compilation", () => {
     await enrollTestDaemon(database);
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: [primary], linear: [] });
-    database.findDiscordConnection = () => Promise.resolve(primary);
-    database.findDiscordConnectionForOrganization = async (_organizationId, guildId) =>
-      guildId === primary.guildId ? primary : undefined;
+    discordPersistence(database).findDiscordConnection = () => Promise.resolve(primary);
+    discordPersistence(database).findDiscordConnectionForOrganization = async (
+      _organizationId,
+      guildId,
+    ) => (guildId === primary.guildId ? primary : undefined);
     const project = await database.createProject({
       organizationId: "org_1",
       name: "Fan-out project",
@@ -439,7 +443,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
     });
     await store.activate(revision.id);
 
-    const accepted = await database.acceptDiscordEvent({
+    const accepted = await discordPersistence(database).acceptDiscordEvent({
       guildId: "100",
       deliveryId: "discord-fan-out",
       source: "discord.mention",
@@ -457,9 +461,11 @@ describe("ProjectConfigurationStore resource compilation", () => {
     await enrollTestDaemon(database);
     database.organizationConnectionUsage = () =>
       Promise.resolve({ github: [], slack: [], discord: [primary], linear: [] });
-    database.findDiscordConnection = () => Promise.resolve(primary);
-    database.findDiscordConnectionForOrganization = async (_organizationId, guildId) =>
-      guildId === primary.guildId ? primary : undefined;
+    discordPersistence(database).findDiscordConnection = () => Promise.resolve(primary);
+    discordPersistence(database).findDiscordConnectionForOrganization = async (
+      _organizationId,
+      guildId,
+    ) => (guildId === primary.guildId ? primary : undefined);
     const project = await database.createProject({
       organizationId: "org_1",
       name: "Rollback routes project",
@@ -482,7 +488,7 @@ describe("ProjectConfigurationStore resource compilation", () => {
 
     const rolledBack = await store.rollback();
     assert.equal(rolledBack.revision.id, first.id);
-    const accepted = await database.acceptDiscordEvent({
+    const accepted = await discordPersistence(database).acceptDiscordEvent({
       guildId: "100",
       deliveryId: "discord-rollback-routes",
       source: "discord.mention",

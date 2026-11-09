@@ -1,6 +1,7 @@
 import { replyOutputTool } from "../../execution-capabilities/outputs.js";
 import type { ProviderModule } from "../registry.js";
 import { configurationSchema, identitySchema } from "./application-configuration.js";
+import { connectionInventory } from "./application-persistence.js";
 import { beginLinearConfiguration, completeLinearInstallation } from "./application.js";
 import { readEnvironment } from "./environment.js";
 import { createLinearRegistration } from "./index.js";
@@ -14,6 +15,7 @@ export const linearProvider: ProviderModule = {
     outputs: [{ type: "linear.reply", tool: replyOutputTool }],
   },
   application: {
+    persistence: connectionInventory,
     parseConfiguration(value) {
       const parsed = configurationSchema.parse(value);
       return parsed;

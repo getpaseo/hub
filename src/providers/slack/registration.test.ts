@@ -16,6 +16,7 @@ import {
   type SlackInstallation,
 } from "./client.js";
 import { createSlackRegistration } from "./index.js";
+import { slackPersistence } from "./persistence.js";
 
 describe("Slack registration", () => {
   it("constructs the complete webhook slice and starts OAuth with a protected state", async () => {
@@ -109,7 +110,7 @@ describe("Slack registration", () => {
         assert.deepEqual(input.configuration, { provider: "slack", ...slackConfiguration() });
         assert.equal(input.callbackOrigin, "https://callback.test");
         assert.equal(input.installation.teamName, "Acme");
-        await database.bindSlackConnection(input.binding);
+        await slackPersistence(database).bindSlackConnection(input.binding);
         activated = true;
       },
     });
@@ -212,7 +213,8 @@ describe("Slack registration", () => {
 
   it("does not publish configuration when the durable workspace bind fails", async () => {
     const callback = callbackDatabase();
-    callback.database.bindSlackConnection = () => Promise.reject(new Error("bind failed"));
+    slackPersistence(callback.database).bindSlackConnection = () =>
+      Promise.reject(new Error("bind failed"));
     let published = false;
     const registration = createSlackRegistration({
       database: callback.database,
@@ -224,7 +226,7 @@ describe("Slack registration", () => {
       botClient: new SlackBotFake(),
       activateConfiguration: true,
       onVerifiedInstallation: async (input) => {
-        await callback.database.bindSlackConnection(input.binding);
+        await slackPersistence(callback.database).bindSlackConnection(input.binding);
         published = true;
       },
     });
@@ -306,7 +308,7 @@ describe("Slack registration", () => {
 
   it("does not lend a rebound workspace token to an older organization execution", async () => {
     const database = createMemoryDatabase();
-    database.findSlackConnectionForOrganization = () =>
+    slackPersistence(database).findSlackConnectionForOrganization = () =>
       Promise.resolve({
         id: "slack-connection",
         organizationId: "org-b",
@@ -423,7 +425,7 @@ function callbackDatabase() {
     attempt = undefined;
     return Promise.resolve();
   };
-  database.bindSlackConnection = (input) => {
+  slackPersistence(database).bindSlackConnection = (input) => {
     boundInstallation = input;
     return Promise.resolve();
   };

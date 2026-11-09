@@ -1,9 +1,12 @@
-import assert from "node:assert/strict";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
+import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { describe, it } from "vitest";
+import { createLinearRegistration } from "../providers/linear/index.js";
+import { linearPersistence } from "../providers/linear/persistence.js";
 import { createDatabase } from "./pg.js";
-import { postgresDatabaseRuntime } from "./runtime/index.js";
 import type { DatabaseRuntimeBundle, TransactionHandle } from "./runtime/index.js";
+import { postgresDatabaseRuntime } from "./runtime/index.js";
 import type { Locks } from "./runtime/locks/index.js";
 import type { Database } from "./types.js";
 
@@ -24,6 +27,80 @@ const LINEAR_EXTERNAL_LOCK_KEY = JSON.stringify([
 ]);
 
 describe("Linear token refresh persistence", () => {
+  it("refreshes expired credentials through the registered webhook before hydrating an issue", async () => {
+    const postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    const bundle = await postgresDatabaseRuntime(postgres.getConnectionUri());
+    try {
+      await seedAuthority(bundle);
+      const database = createDatabase(bundle.runtime, bundle.locks);
+      await startLinearAttempt(database, "refresh-webhook");
+      await bindLinearConnection(database, "refresh-webhook", {
+        accessToken: "expired-token",
+        refreshToken: "rotating-token",
+        accessTokenExpiresAt: new Date(0),
+      });
+      let refreshes = 0;
+      const authorizations: string[] = [];
+      const registration = createLinearRegistration({
+        database,
+        auth: null,
+        applicationBaseUrl: "https://hub.test",
+        publicBaseUrl: "https://hub.test",
+        configuration: { clientId: "linear-app", clientSecret: "secret", webhookSecret: "signing" },
+        connectionClient: {
+          authorizationUrl: () => {
+            throw new Error("unused");
+          },
+          exchangeCode: async () => {
+            throw new Error("unused");
+          },
+          revoke: async () => {},
+          refresh: async (token) => {
+            assert.equal(token, "rotating-token");
+            refreshes += 1;
+            return {
+              accessToken: "fresh-token",
+              refreshToken: "rotated-token",
+              accessTokenExpiresAt: new Date(Date.now() + 3_600_000),
+            };
+          },
+        },
+        fetch: async (_input, init) => {
+          authorizations.push(new Headers(init?.headers).get("authorization") ?? "");
+          return Response.json({ data: { issue: null } });
+        },
+      });
+      const body = JSON.stringify({
+        action: "create",
+        type: "Comment",
+        organizationId: LINEAR_ORGANIZATION_ID,
+        webhookTimestamp: Date.now(),
+        data: { id: "comment", issueId: "issue", body: "Investigate" },
+      });
+      const response = await registration.requests[0]!.handle(
+        new Request("https://hub.test/api/integrations/linear/events", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "linear-delivery": "refresh-webhook",
+            "linear-event": "Comment",
+            "linear-signature": createHmac("sha256", "signing").update(body).digest("hex"),
+          },
+          body,
+        }),
+      );
+      assert.equal(response.status, 200);
+      assert.equal(refreshes, 1);
+      assert.deepEqual(authorizations, ["Bearer fresh-token"]);
+      const persisted =
+        await linearPersistence(database).findLinearConnection(LINEAR_ORGANIZATION_ID);
+      assert.equal(persisted?.accessToken, "fresh-token");
+      assert.equal(persisted?.refreshToken, "rotated-token");
+    } finally {
+      await bundle.runtime.close();
+      await postgres.stop();
+    }
+  }, 120_000);
   it("serializes an expired refresh with OAuth rebind on the canonical transaction lock", async () => {
     const postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
     const bundle = await postgresDatabaseRuntime(postgres.getConnectionUri());
@@ -71,7 +148,7 @@ describe("Linear token refresh persistence", () => {
         releaseRefresh = resolve;
       });
       captureExternalLocks = true;
-      const refresh = refreshDatabase.withLinearConnectionRefresh(
+      const refresh = linearPersistence(refreshDatabase).withLinearConnectionRefresh(
         LINEAR_ORGANIZATION_ID,
         async (connection, updateTokens) => {
           assert.equal(connection?.accessToken, "expired-access-token");
@@ -103,7 +180,8 @@ describe("Linear token refresh persistence", () => {
 
       assert.deepEqual(externalLockKeys, [LINEAR_EXTERNAL_LOCK_KEY, LINEAR_EXTERNAL_LOCK_KEY]);
       assert.equal(sessionLockCalls, 0);
-      const connection = await rebindDatabase.findLinearConnection(LINEAR_ORGANIZATION_ID);
+      const connection =
+        await linearPersistence(rebindDatabase).findLinearConnection(LINEAR_ORGANIZATION_ID);
       assert.equal(connection?.accessToken, "rebound-access-token");
       assert.equal(connection?.refreshToken, "rebound-refresh-token");
       assert.deepEqual(connection?.accessTokenExpiresAt, new Date("2031-01-01T00:00:00.000Z"));
@@ -138,7 +216,7 @@ function bindLinearConnection(
     accessTokenExpiresAt: Date;
   },
 ): Promise<void> {
-  return database.bindLinearConnection({
+  return linearPersistence(database).bindLinearConnection({
     stateVerifier,
     phase: "linear_authorization",
     access: CALLBACK_ACCESS,

@@ -1,5 +1,6 @@
 import { z } from "zod";
-import type { Database, LinearConnectionRecord } from "../../db/types.js";
+import type { LinearConnectionRecord } from "../../db/types.js";
+import { type LinearPersistence } from "./persistence.js";
 
 /** The minimum authority required to read issues and leave an outcome on the issue. */
 export const LINEAR_REQUIRED_SCOPES = ["read", "comments:create"] as const;
@@ -269,7 +270,7 @@ export function createLinearApiClient(options: {
   connectionForLinearOrganization(
     linearOrganizationId: string,
   ): Promise<LinearConnectionRecord | undefined>;
-  withLinearConnectionRefresh: Database["withLinearConnectionRefresh"];
+  withLinearConnectionRefresh: LinearPersistence["withLinearConnectionRefresh"];
   connectionClient: Pick<LinearConnectionClient, "refresh">;
   fetch?: typeof fetch;
   now?: () => Date;

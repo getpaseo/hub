@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../auth/server.js";
+import { parseCompiledHubConfig } from "../config/compiler.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database } from "../db/types.js";
-import { parseCompiledHubConfig } from "../config/compiler.js";
 import { buildLaunchMachineIntent } from "../dispatcher/index.js";
+import { slackPersistence } from "../providers/slack/persistence.js";
 import { acceptingAgentValidator } from "../test-utils/agent-validator.js";
 import {
   enrollTestDaemon,
@@ -310,7 +311,7 @@ async function dropSlackEvent(
   receivedAt: Date,
   reason = "no_project_route",
 ): Promise<void> {
-  const accepted = await database.acceptSlackEvent({
+  const accepted = await slackPersistence(database).acceptSlackEvent({
     teamId: "T-ACME",
     deliveryId,
     source: "slack.mention",

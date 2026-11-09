@@ -3,6 +3,7 @@ import { describe, it } from "vitest";
 import { compileHubBundle, type HubBundleFile } from "../config/bundle.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database, ProjectRecord } from "../db/types.js";
+import { slackPersistence } from "../providers/slack/persistence.js";
 import { migrateLegacyProjectTriggers } from "./migration.js";
 
 const hub = `
@@ -54,7 +55,7 @@ describe("startup project trigger migration", () => {
     );
     assert.match(revision?.yaml ?? "", /legacy_multistep:/u);
     for (const teamId of ["team-a", "team-b"]) {
-      const accepted = await database.acceptSlackEvent({
+      const accepted = await slackPersistence(database).acceptSlackEvent({
         teamId,
         deliveryId: `delivery-${teamId}`,
         source: "slack.mention",

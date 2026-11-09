@@ -1,13 +1,13 @@
 import type { AuthServer } from "../../auth/server.js";
 import {
-  CONNECTION_ATTEMPT_LIFETIME_MINUTES,
-  CONNECTIONS_RETURN_ROUTE,
   callbackConnectionAccess,
   cancelledConnectionResult,
+  CONNECTION_ATTEMPT_LIFETIME_MINUTES,
   connectionAccess,
   connectionActionFailure,
   connectionCallbackFailure,
   connectionResult,
+  CONNECTIONS_RETURN_ROUTE,
   manageConnectionAccess,
   newConnectionState,
   requiredConnectionId,
@@ -15,23 +15,24 @@ import {
 } from "../../connections/shared.js";
 import { DatabaseUnavailableError } from "../../db/errors.js";
 import type { BindSlackConnectionInput, Database, SlackConnectionRecord } from "../../db/types.js";
+import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { reportFailure } from "../../failures/index.js";
-import { createSlackBotClient, type SlackBotClient } from "../../triggers/slack/client.js";
-import { createSlackTriggerProvider } from "../../triggers/slack/provider.js";
 import { organizationBillingUrl } from "../../triggers/failure-notice.js";
 import { createSlackAttachmentResolver } from "../../triggers/slack/attachments.js";
+import { createSlackBotClient, type SlackBotClient } from "../../triggers/slack/client.js";
+import { createSlackTriggerProvider } from "../../triggers/slack/provider.js";
 import { createSlackReplyExecutor } from "../../triggers/slack/reply.js";
-import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { createSlackEventSource } from "../../triggers/slack/source/index.js";
 import type { SlackSocketSourceOptions } from "../../triggers/slack/source/internal/socket.js";
 import type { ProviderConnectionRegistration, ProviderRegistration } from "../registration.js";
 import {
   createSlackConnectionClient,
   hasRequiredSlackScopes,
+  SlackBotVerificationError,
   type SlackConnectionClient,
   type SlackInstallation,
-  SlackBotVerificationError,
 } from "./client.js";
+import { slackPersistence, type SlackPersistence } from "./persistence.js";
 
 export type SlackRegistrationConfiguration =
   | {
@@ -107,11 +108,11 @@ export function createSlackRegistration(
       ? () => Promise.reject(new DatabaseUnavailableError())
       : (
           input: Omit<
-            Parameters<Database["acceptSlackEvent"]>[0],
+            Parameters<SlackPersistence["acceptSlackEvent"]>[0],
             "providerApplicationId" | "providerConfigurationVersion"
           >,
         ) =>
-          database.acceptSlackEvent({
+          slackPersistence(database).acceptSlackEvent({
             ...input,
             providerApplicationId: configuration.appId,
             providerConfigurationVersion: options.configurationVersion ?? 0,
@@ -202,7 +203,10 @@ async function findSlackBindingForOrganization(
   organizationId: string,
   teamId: string,
 ): Promise<SlackConnectionRecord | undefined> {
-  const binding = await database.findSlackConnectionForOrganization(organizationId, teamId);
+  const binding = await slackPersistence(database).findSlackConnectionForOrganization(
+    organizationId,
+    teamId,
+  );
   return binding?.organizationId === organizationId && hasRequiredSlackScopes(binding.scopes)
     ? binding
     : undefined;
@@ -287,8 +291,7 @@ function createSlackConnection(
     if (rejected !== undefined) return rejected;
     try {
       const access = await manageConnectionAccess(options.auth, options.database, request);
-      const disconnected = await options.database.disconnectConnection(
-        "slack",
+      const disconnected = await slackPersistence(options.database).disconnectConnection(
         requiredConnectionId(request),
         connectionAccess(access),
       );
@@ -379,7 +382,7 @@ async function completeAuthorization(
         binding,
       });
     } else {
-      await options.database.bindSlackConnection(binding);
+      await slackPersistence(options.database).bindSlackConnection(binding);
     }
     return connectionResult(callbackOrigin, attempt.returnRoute, "slack_connected", "slack");
   } catch (error) {

@@ -10,6 +10,7 @@ import { embeddedDatabaseRuntime } from "../../db/runtime/index.js";
 import { DynamicProviderRuntime } from "../../provider-applications/internal/runtime-owner.js";
 import { registrationRegistry } from "../testing.js";
 import { createGitHubRegistration } from "./index.js";
+import { githubPersistence } from "./persistence.js";
 
 const GITHUB_OWNER = { providerApplicationId: "42", configurationVersion: 0 };
 
@@ -75,7 +76,10 @@ it("keeps the previous complete snapshot on page failure and resumes the durable
       (await database.listGitHubRepositories("org")).map((item) => item.repositoryId),
       [500],
     );
-    assert.equal((await database.findGitHubConnection(42))?.accountLogin, "acme");
+    assert.equal(
+      (await githubPersistence(database).findGitHubConnection(42))?.accountLogin,
+      "acme",
+    );
     const pending = await runtime.query(
       `select * from github_installation_syncs where retry_at is not null`,
     );
@@ -93,7 +97,10 @@ it("keeps the previous complete snapshot on page failure and resumes the durable
     await restarted.sources[0]!.start(async () => undefined);
     await restarted.sources[0]!.stop();
     assert.equal((await database.listGitHubRepositories("org")).length, 143);
-    assert.equal((await database.findGitHubConnection(42))?.accountLogin, "renamed");
+    assert.equal(
+      (await githubPersistence(database).findGitHubConnection(42))?.accountLogin,
+      "renamed",
+    );
     assert.equal(
       (await runtime.query(`select * from github_installation_syncs where retry_at is not null`))
         .rows.length,
@@ -141,7 +148,7 @@ it("acknowledges a durably accepted webhook while the GitHub request is still bl
 
 it("does not apply a receipt for a disconnected binding to a replacement connection", async () => {
   await fixture(async ({ database, runtime }) => {
-    const claim = await database.claimGitHubLifecycleReceipt({
+    const claim = await githubPersistence(database).claimGitHubLifecycleReceipt({
       providerApplicationId: "42",
       installationId: 42,
       deliveryId: "old-binding",
@@ -156,11 +163,11 @@ it("does not apply a receipt for a disconnected binding to a replacement connect
     await runtime.query(
       `insert into github_connections (provider_application_id, organization_id, installation_id, slug, account_id, account_login, account_type, status) values ('42', 'org', 42, 'new', '1', 'new', 'Organization', 'active')`,
     );
-    await database.applyGitHubInstallationSync(GITHUB_OWNER, claim, {
+    await githubPersistence(database).applyGitHubInstallationSync(GITHUB_OWNER, claim, {
       status: "absent",
       removeBinding: true,
     });
-    assert.equal((await database.findGitHubConnection(42))?.accountLogin, "new");
+    assert.equal((await githubPersistence(database).findGitHubConnection(42))?.accountLogin, "new");
   });
 });
 
@@ -180,14 +187,17 @@ it("retires legacy upgrade reconciliation after its original binding is replaced
     await runtime.query(
       `insert into github_connections (provider_application_id, organization_id, installation_id, slug, account_id, account_login, account_type, status) values ('42', 'org', 42, 'new', '1', 'new', 'Organization', 'active')`,
     );
-    const [claim] = await database.pendingGitHubInstallationSyncs(GITHUB_OWNER);
+    const [claim] = await githubPersistence(database).pendingGitHubInstallationSyncs(GITHUB_OWNER);
     assert.ok(claim);
-    await database.applyGitHubInstallationSync(GITHUB_OWNER, claim, {
+    await githubPersistence(database).applyGitHubInstallationSync(GITHUB_OWNER, claim, {
       status: "absent",
       removeBinding: true,
     });
-    assert.equal((await database.findGitHubConnection(42))?.accountLogin, "new");
-    assert.deepEqual(await database.pendingGitHubInstallationSyncs(GITHUB_OWNER), []);
+    assert.equal((await githubPersistence(database).findGitHubConnection(42))?.accountLogin, "new");
+    assert.deepEqual(
+      await githubPersistence(database).pendingGitHubInstallationSyncs(GITHUB_OWNER),
+      [],
+    );
   });
 });
 
@@ -211,10 +221,17 @@ it("leaves in-flight work pending when its configuration loses activation", asyn
         .rows.length,
       1,
     );
-    assert.deepEqual(await database.pendingGitHubInstallationSyncs(GITHUB_OWNER), []);
+    assert.deepEqual(
+      await githubPersistence(database).pendingGitHubInstallationSyncs(GITHUB_OWNER),
+      [],
+    );
     assert.equal(
-      (await database.pendingGitHubInstallationSyncs({ ...GITHUB_OWNER, configurationVersion: 1 }))
-        .length,
+      (
+        await githubPersistence(database).pendingGitHubInstallationSyncs({
+          ...GITHUB_OWNER,
+          configurationVersion: 1,
+        })
+      ).length,
       1,
     );
   });
@@ -222,7 +239,7 @@ it("leaves in-flight work pending when its configuration loses activation", asyn
 
 it("does not let an unpublished app candidate consume the active app's pending synchronization", async () => {
   await fixture(async ({ database, github }) => {
-    await database.claimGitHubLifecycleReceipt({
+    await githubPersistence(database).claimGitHubLifecycleReceipt({
       providerApplicationId: "42",
       installationId: 42,
       deliveryId: "active-app",
@@ -293,9 +310,12 @@ it("does not let an unpublished app candidate consume the active app's pending s
       await candidate.close();
       await stable.sources[0]!.stop();
     }
-    assert.ok(await database.findGitHubConnection(42));
+    assert.ok(await githubPersistence(database).findGitHubConnection(42));
     assert.equal(candidateReads, 0);
-    assert.equal((await database.pendingGitHubInstallationSyncs(GITHUB_OWNER)).length, 1);
+    assert.equal(
+      (await githubPersistence(database).pendingGitHubInstallationSyncs(GITHUB_OWNER)).length,
+      1,
+    );
   });
 });
 

@@ -48,6 +48,7 @@ describe("pre-provider-app connection upgrade", () => {
       assert.equal(saved?.version, 4);
       const connections = await createProviderApplicationInventory(
         fixture.bundle.runtime,
+        providerRegistry,
       ).connectedIdentities("slack");
       assert.deepEqual(
         connections.map(({ id: _id, ...connection }) => connection),
@@ -68,7 +69,10 @@ describe("pre-provider-app connection upgrade", () => {
       const fixture = await legacyDatabase(engine);
       try {
         await fixture.bundle.runtime.migrate();
-        const inventory = createProviderApplicationInventory(fixture.bundle.runtime);
+        const inventory = createProviderApplicationInventory(
+          fixture.bundle.runtime,
+          providerRegistry,
+        );
         const first = identity(ENVIRONMENT_APPLICATIONS.github);
         const second = { ...first, id: "competing-github-app" };
 
@@ -98,7 +102,10 @@ describe("pre-provider-app connection upgrade", () => {
       const fixture = await legacyDatabase(engine);
       try {
         await fixture.bundle.runtime.migrate();
-        const inventory = createProviderApplicationInventory(fixture.bundle.runtime);
+        const inventory = createProviderApplicationInventory(
+          fixture.bundle.runtime,
+          providerRegistry,
+        );
         const runtime = new RecordingRuntime();
         const failures = await activateProviderApplicationsAtStartup({
           registry: providerRegistry,
