@@ -5,6 +5,8 @@ test("creates a twice-daily schedule, edits weekly recurrence, and preserves it 
   hub,
   page,
 }) => {
+  // Daemon enrollment, a scheduled run and repeated edit/reload cycles share one test budget.
+  test.slow();
   await hub.signUpAs("owner", {
     name: "Schedule Owner",
     email: "schedule-owner@example.com",
