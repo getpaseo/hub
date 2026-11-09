@@ -1,3 +1,4 @@
+import { connectionPresentation } from "./connection-presentation.js";
 import { failure } from "./failure.js";
 import { createSetup } from "./presentation.js";
 import { glyph, runHint, identityLabel } from "./presentation.js";
@@ -196,6 +197,7 @@ ${requestUrl}    bot_events:
 }
 
 export const slackBrowserProvider = {
+  connection: connectionPresentation,
   failure,
   request: {
     parse: (input: unknown) => {
