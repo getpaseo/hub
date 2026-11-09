@@ -133,11 +133,16 @@ class PgDatabase implements Database {
   ) {
     this.schedules = new ScheduleRepository(this.pool);
     this.executionAuthority = new ExecutionAuthorityRepository(this.pool);
-    this.connections = new ConnectionRepository(this.pool, locks);
+    this.connections = new ConnectionRepository(this.pool, locks, providers);
     this.triggerAcceptance = new ProviderEventAcceptanceRepository(this.pool, locks);
     this.providerPersistence = {
       create: (factory) =>
-        factory.postgres({ runtime: this.pool, locks, events: this.triggerAcceptance }),
+        factory.postgres({
+          runtime: this.pool,
+          locks,
+          events: this.triggerAcceptance,
+          connections: this.connections,
+        }),
     };
   }
 

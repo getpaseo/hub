@@ -23,6 +23,7 @@ export const githubProvider: ProviderModule = {
     integration: true,
   },
   application: {
+    initialConnectionPhase: "github_setup",
     persistence: connectionInventory,
     parseConfiguration(value) {
       const parsed = configurationSchema.parse(value);

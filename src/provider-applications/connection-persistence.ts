@@ -11,6 +11,7 @@ export interface ConnectionIdentityRow extends QueryRow {
   access_token_expires_at?: unknown;
 }
 export interface ProviderConnectionInventory {
+  connectionSlugs(transaction: QueryHandle, organizationId: string): Promise<readonly string[]>;
   connectedIdentities(): Promise<readonly ConnectedProviderIdentity[]>;
   claimLegacyConnections(applicationId: string): Promise<boolean>;
   requireCompatibleConnections(transaction: QueryHandle, applicationId: string): Promise<void>;
@@ -26,6 +27,13 @@ export function createConnectionInventory(
   },
 ): ProviderConnectionInventory {
   return {
+    async connectionSlugs(transaction, organizationId) {
+      const result = await transaction.query<{ slug: string }>(
+        `select slug from ${specification.table} where organization_id = $1`,
+        [organizationId],
+      );
+      return result.rows.map((row) => row.slug);
+    },
     async connectedIdentities() {
       const result = await database.query<ConnectionIdentityRow>(specification.identityQuery);
       return result.rows.map((row) => ({

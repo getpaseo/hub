@@ -34,7 +34,7 @@ export interface SlackPersistence {
   disconnectConnection(
     connectionId: string,
     access: Types.ConnectionStartAuthority,
-  ): Promise<Extract<Types.DisconnectConnectionResult, { provider: "slack" }>>;
+  ): Promise<{ provider: "slack"; teamId: string | undefined; botAccessToken: string | undefined }>;
 }
 const persistence = new ProviderPersistence<SlackPersistence>({
   id: "slack",

@@ -10,6 +10,7 @@ import type {
 } from "./types.js";
 
 export interface PostgresProviderContext {
+  connections: import("./connections.js").ConnectionRepository;
   runtime: DatabaseRuntime;
   locks: Locks;
   events: ProviderEventAcceptanceRepository;

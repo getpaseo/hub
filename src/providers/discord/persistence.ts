@@ -15,7 +15,7 @@ export interface DiscordPersistence {
   disconnectConnection(
     connectionId: string,
     access: Types.ConnectionStartAuthority,
-  ): Promise<Extract<Types.DisconnectConnectionResult, { provider: "discord" }>>;
+  ): Promise<{ provider: "discord"; guildId: string | undefined }>;
 }
 const persistence = new ProviderPersistence<DiscordPersistence>({
   id: "discord",

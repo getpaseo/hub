@@ -10,9 +10,7 @@ import {
   lockStartAuthority,
   lockStoredAuthority,
   providerApplicationChanged,
-  requireConsumableAttempt,
   requireCurrentAttempt,
-  uniqueConnectionSlug,
 } from "../../../db/connections.js";
 import { ConnectionAccessDeniedError, ConnectionConflictError } from "../../../db/errors.js";
 import type { PostgresProviderContext } from "../../../db/provider-persistence.js";
@@ -32,11 +30,13 @@ import { completeSocketApplication } from "../socket-persistence.js";
 type HubTransaction = DrizzleHandle;
 type AttemptRow = typeof schema.organizationConnectionAttempts.$inferSelect;
 export class SlackPostgresPersistence {
+  private readonly connections: PostgresProviderContext["connections"];
   private readonly database: DrizzleHandle;
   private readonly runtime: DatabaseRuntime;
   private readonly locks: Locks;
   private readonly events: PostgresProviderContext["events"];
   constructor(context: PostgresProviderContext) {
+    this.connections = context.connections;
     this.runtime = context.runtime;
     this.locks = context.locks;
     this.events = context.events;
@@ -67,6 +67,7 @@ export class SlackPostgresPersistence {
         await requireCurrentAttempt(transaction, attempt, input.providerApplicationId);
       } else {
         await requireSlackActivationCandidate(
+          this.connections,
           transaction,
           attempt,
           input.providerApplicationId,
@@ -91,8 +92,8 @@ export class SlackPostgresPersistence {
           teamId: input.teamId,
           providerApplicationId: input.providerApplicationId,
           teamName: input.teamName,
-          slug: await uniqueConnectionSlug(
-            transaction,
+          slug: await this.connections.uniqueSlug(
+            runtimeTransaction,
             attempt.organizationId,
             "slack",
             input.teamName,
@@ -226,12 +227,13 @@ function slackConnection(row: typeof schema.slackConnections.$inferSelect): Slac
   };
 }
 async function requireSlackActivationCandidate(
+  connectionAttempts: PostgresProviderContext["connections"],
   transaction: HubTransaction,
   attempt: AttemptRow,
   bindingApplicationId: string,
   providerConfiguration: CompleteSlackProviderApplicationInput["providerConfiguration"],
 ): Promise<void> {
-  await requireConsumableAttempt(transaction, attempt);
+  await connectionAttempts.requireConsumableAttempt(transaction, attempt);
   if (
     attempt.providerApplicationId !== bindingApplicationId ||
     externalIdentityId(providerConfiguration.identity) !== bindingApplicationId ||

@@ -8,7 +8,6 @@ import {
   lockStartAuthority,
   lockStoredAuthority,
   requireCurrentAttempt,
-  uniqueConnectionSlug,
 } from "../../../db/connections.js";
 import { ConnectionAccessDeniedError, ConnectionConflictError } from "../../../db/errors.js";
 import type { PostgresProviderContext } from "../../../db/provider-persistence.js";
@@ -42,12 +41,14 @@ import type {
 } from "../source-types.js";
 type HubTransaction = DrizzleHandle;
 export class GitHubPostgresPersistence {
+  private readonly connections: PostgresProviderContext["connections"];
   private readonly database: DrizzleHandle;
   private readonly runtime: DatabaseRuntime;
   private readonly pool: DatabaseRuntime;
   private readonly locks: Locks;
   private readonly events: PostgresProviderContext["events"];
   constructor(context: PostgresProviderContext) {
+    this.connections = context.connections;
     this.runtime = context.runtime;
     this.pool = context.runtime;
     this.locks = context.locks;
@@ -224,8 +225,8 @@ export class GitHubPostgresPersistence {
                 organizationId: attempt.organizationId,
                 installationId: input.installationId,
                 providerApplicationId: input.providerApplicationId,
-                slug: await uniqueConnectionSlug(
-                  transaction,
+                slug: await this.connections.uniqueSlug(
+                  runtimeTransaction,
                   attempt.organizationId,
                   "github",
                   input.accountLogin,

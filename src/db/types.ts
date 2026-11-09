@@ -69,7 +69,7 @@ export interface ProviderEventRouteSnapshot {
   resourceId: string | null;
 }
 
-export type AttachmentProvider = "slack" | "discord";
+export type AttachmentProvider = string;
 
 export interface AttachmentRecord {
   id: string;
@@ -350,12 +350,7 @@ export interface PendingProjectTriggerMigration {
 
 export type ConnectionProvider = string;
 
-export type ConnectionAttemptPhase =
-  | "github_setup"
-  | "github_user_authorization"
-  | "discord_authorization"
-  | "slack_authorization"
-  | "linear_authorization";
+export type ConnectionAttemptPhase = string;
 
 export interface ConnectionAccountAccess {
   sessionId: string;
@@ -541,20 +536,6 @@ export type LinearConnectionRefreshOperation<T> = (
   connection: LinearConnectionRecord | undefined,
   updateTokens: (input: LinearConnectionTokenUpdate) => Promise<void>,
 ) => Promise<T>;
-
-export type DisconnectConnectionResult =
-  | { provider: "github" }
-  | { provider: "discord"; guildId: string | undefined }
-  | {
-      provider: "slack";
-      teamId: string | undefined;
-      botAccessToken: string | undefined;
-    }
-  | {
-      provider: "linear";
-      linearOrganizationId: string | undefined;
-      accessToken: string | undefined;
-    };
 
 export type GitHubLifecycleIdentity = Omit<
   GitHubConnectionRecord,

@@ -19,6 +19,8 @@ export const linearProvider: ProviderModule = {
     outputs: [{ type: "linear.reply", tool: replyOutputTool }],
   },
   application: {
+    initialConnectionPhase: "linear_authorization",
+    connectionConfigurationActivation: true,
     persistence: connectionInventory,
     parseConfiguration(value) {
       const parsed = configurationSchema.parse(value);

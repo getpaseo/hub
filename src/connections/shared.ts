@@ -105,11 +105,7 @@ export async function cancelledConnectionResult(input: {
   database: Database;
   request: Request;
   provider: ConnectionProvider;
-  phase:
-    | "github_user_authorization"
-    | "discord_authorization"
-    | "slack_authorization"
-    | "linear_authorization";
+  phase: string;
   state: string;
   applicationBaseUrl: string;
 }): Promise<Response> {

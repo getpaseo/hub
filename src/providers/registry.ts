@@ -40,6 +40,8 @@ export interface ProviderVerificationOptions {
 }
 
 export interface ProviderApplication {
+  initialConnectionPhase: string;
+  connectionConfigurationActivation?: true;
   persistence(
     database: import("../db/runtime/index.js").DatabaseRuntime,
   ): import("../provider-applications/connection-persistence.js").ProviderConnectionInventory;

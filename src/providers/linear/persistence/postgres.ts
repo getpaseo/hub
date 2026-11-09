@@ -10,9 +10,7 @@ import {
   lockStartAuthority,
   lockStoredAuthority,
   providerApplicationChanged,
-  requireConsumableAttempt,
   requireCurrentAttempt,
-  uniqueConnectionSlug,
 } from "../../../db/connections.js";
 import { ConnectionAccessDeniedError, ConnectionConflictError } from "../../../db/errors.js";
 import type { PostgresProviderContext } from "../../../db/provider-persistence.js";
@@ -33,11 +31,13 @@ import { linearConnectionRequiresReauthorization } from "../client.js";
 type HubTransaction = DrizzleHandle;
 type AttemptRow = typeof schema.organizationConnectionAttempts.$inferSelect;
 export class LinearPostgresPersistence {
+  private readonly connections: PostgresProviderContext["connections"];
   private readonly database: DrizzleHandle;
   private readonly runtime: DatabaseRuntime;
   private readonly locks: Locks;
   private readonly events: PostgresProviderContext["events"];
   constructor(context: PostgresProviderContext) {
+    this.connections = context.connections;
     this.runtime = context.runtime;
     this.locks = context.locks;
     this.events = context.events;
@@ -65,6 +65,7 @@ export class LinearPostgresPersistence {
         await requireCurrentAttempt(transaction, attempt, input.providerApplicationId);
       } else {
         await requireLinearActivationCandidate(
+          this.connections,
           transaction,
           attempt,
           input.providerApplicationId,
@@ -89,8 +90,8 @@ export class LinearPostgresPersistence {
           providerApplicationId: input.providerApplicationId,
           linearOrganizationId: input.linearOrganizationId,
           linearOrganizationName: input.linearOrganizationName,
-          slug: await uniqueConnectionSlug(
-            transaction,
+          slug: await this.connections.uniqueSlug(
+            runtimeTransaction,
             attempt.organizationId,
             "linear",
             input.linearOrganizationName,
@@ -286,12 +287,13 @@ function linearConnection(
   };
 }
 async function requireLinearActivationCandidate(
+  connectionAttempts: PostgresProviderContext["connections"],
   transaction: HubTransaction,
   attempt: AttemptRow,
   bindingApplicationId: string,
   providerConfiguration: CompleteLinearProviderApplicationInput["providerConfiguration"],
 ): Promise<void> {
-  await requireConsumableAttempt(transaction, attempt);
+  await connectionAttempts.requireConsumableAttempt(transaction, attempt);
   if (
     attempt.providerApplicationId !== bindingApplicationId ||
     externalIdentityId(providerConfiguration.identity) !== bindingApplicationId ||

@@ -1,4 +1,5 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import type { ProviderRegistry } from "../providers/registry.js";
 import { slugify } from "../slug.js";
 import { ConnectionAccessDeniedError, ConnectionAttemptUnavailableError } from "./errors.js";
 import type { DatabaseRuntime, DrizzleHandle, TransactionHandle } from "./runtime/index.js";
@@ -6,7 +7,6 @@ import type { Locks } from "./runtime/locks/index.js";
 import * as schema from "./schema.js";
 import type {
   ConnectionAccountAccess,
-  ConnectionAttemptPhase,
   ConnectionAttemptRecord,
   ConnectionProvider,
   ConnectionStartAuthority,
@@ -24,18 +24,48 @@ export class ConnectionRepository {
   constructor(
     private readonly runtime: DatabaseRuntime,
     private readonly locks: Locks,
+    private readonly providers: ProviderRegistry,
   ) {
     this.database = runtime.drizzle();
   }
 
+  async requireConsumableAttempt(transaction: HubTransaction, attempt: AttemptRow): Promise<void> {
+    const application = this.providers.require(attempt.provider).application;
+    await requireConsumableAttempt(
+      transaction,
+      attempt,
+      application.connectionConfigurationActivation === true,
+    );
+  }
+
+  async uniqueSlug(
+    transaction: TransactionHandle,
+    organizationId: string,
+    provider: string,
+    identity: string,
+  ): Promise<string> {
+    const base = `${slugify(identity, "connection")}-${provider}`;
+    const used = new Set<string>();
+    for (const module of this.providers.list()) {
+      const inventory = module.application.persistence(this.runtime);
+      for (const slug of await inventory.connectionSlugs(transaction, organizationId))
+        used.add(slug);
+    }
+    if (!used.has(base)) return base;
+    let suffix = 2;
+    while (used.has(`${base}-${suffix}`)) suffix += 1;
+    return `${base}-${suffix}`;
+  }
+
   async startAttempt(input: StartConnectionAttemptInput): Promise<void> {
+    const phase = this.providers.require(input.provider).application.initialConnectionPhase;
     await this.runtime.transaction(async (runtimeTransaction) => {
       const transaction = runtimeTransaction.drizzle();
       await lockStartAuthority(transaction, input.access);
       await transaction.delete(schema.organizationConnectionAttempts).where(orExpiredOrConsumed());
       await transaction.insert(schema.organizationConnectionAttempts).values({
         provider: input.provider,
-        phase: initialConnectionAttemptPhase(input.provider),
+        phase,
         stateVerifier: input.stateVerifier,
         organizationId: input.access.organizationId,
         returnRoute: input.access.returnRoute,
@@ -99,7 +129,7 @@ export class ConnectionRepository {
       const attempt = await lockAttempt(transaction, input);
       await lockStoredAuthority(transaction, attempt);
       await lockProviderApplication(this.locks, runtimeTransaction, attempt.provider);
-      await requireConsumableAttempt(transaction, attempt);
+      await this.requireConsumableAttempt(transaction, attempt);
       await consumeLockedAttempt(transaction, attempt.id);
     });
   }
@@ -249,15 +279,16 @@ export async function requireCurrentAttempt(
   }
 }
 
-export async function requireConsumableAttempt(
+async function requireConsumableAttempt(
   transaction: HubTransaction,
   attempt: AttemptRow,
+  allowsActivation: boolean,
 ): Promise<void> {
   if (!attempt.activateConfiguration) {
     await requireCurrentAttempt(transaction, attempt);
     return;
   }
-  if (attempt.provider !== "slack" && attempt.provider !== "linear") {
+  if (!allowsActivation) {
     throw providerApplicationChanged();
   }
   const provider = attempt.provider;
@@ -333,12 +364,6 @@ export async function consumeLockedAttempt(
     .where(eq(schema.organizationConnectionAttempts.id, attemptId));
 }
 
-function initialConnectionAttemptPhase(provider: ConnectionProvider): ConnectionAttemptPhase {
-  if (provider === "github") return "github_setup";
-  if (provider === "discord") return "discord_authorization";
-  return provider === "slack" ? "slack_authorization" : "linear_authorization";
-}
-
 function toAttempt(row: AttemptRow): ConnectionAttemptRecord {
   return {
     id: row.id,
@@ -359,33 +384,6 @@ function toAttempt(row: AttemptRow): ConnectionAttemptRecord {
     expiresAt: row.expiresAt,
     consumedAt: row.consumedAt,
   };
-}
-
-export async function uniqueConnectionSlug(
-  transaction: HubTransaction,
-  organizationId: string,
-  provider: ConnectionProvider,
-  identity: string,
-): Promise<string> {
-  const base = `${slugify(identity, "connection")}-${provider}`;
-  const rows = await transaction.execute<{ slug: string }>(sql`
-    select slug from (
-      select slug from github_connections where organization_id = ${organizationId}
-      union all
-      select slug from slack_connections where organization_id = ${organizationId}
-      union all
-      select slug from discord_connections where organization_id = ${organizationId}
-      union all
-      select slug from linear_connections where organization_id = ${organizationId}
-    ) slugs
-    where slug = ${base} or slug like ${`${base}-%`}
-    order by slug
-  `);
-  const used = new Set(rows.rows.map((row) => row.slug));
-  if (!used.has(base)) return base;
-  let suffix = 2;
-  while (used.has(`${base}-${suffix}`)) suffix += 1;
-  return `${base}-${suffix}`;
 }
 
 export async function commitProviderApplication(

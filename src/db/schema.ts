@@ -98,7 +98,7 @@ export const attachmentCapabilities = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
     connectionId: uuid("connection_id").notNull(),
-    provider: text().$type<"slack" | "discord">().notNull(),
+    provider: text().$type<string>().notNull(),
     sourceId: text("source_id").notNull(),
     locator: jsonb().notNull(),
     filename: text().notNull(),
@@ -858,15 +858,7 @@ export const organizationConnectionAttempts = pgTable(
   {
     id: uuid().defaultRandom().primaryKey(),
     provider: text().$type<string>().notNull(),
-    phase: text()
-      .$type<
-        | "github_setup"
-        | "github_user_authorization"
-        | "discord_authorization"
-        | "slack_authorization"
-        | "linear_authorization"
-      >()
-      .notNull(),
+    phase: text().$type<string>().notNull(),
     stateVerifier: text("state_verifier").notNull().unique(),
     organizationId: text("organization_id")
       .notNull()
