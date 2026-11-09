@@ -1,3 +1,5 @@
+import { connectionBrowserProviders } from "../providers/browser.js";
+import { statusForProvider } from "../connections/functions.js";
 import { browserProvider } from "../providers/browser.js";
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-array-as-prop, eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop, typescript-eslint/no-unsafe-type-assertion -- route links and mutation controls are intentionally scoped to each rendered tenant snapshot */
 import { useSnapshotQuery } from "../queries/index.js";
@@ -52,8 +54,8 @@ import {
 } from "./panel-state.js";
 import { archiveProject, activityRunSnapshot, updateProjectSlug } from "./functions.js";
 const CONNECTIONS_DESCRIPTION = "Organization provider connections.";
-const CONNECTION_PROVIDERS = ["github", "discord", "slack", "linear"] as const;
-type ConnectionProviderName = (typeof CONNECTION_PROVIDERS)[number];
+const CONNECTION_PROVIDERS = connectionBrowserProviders.map((module) => module.id);
+type ConnectionProviderName = string;
 
 function ConnectionsLoading() {
   return (
@@ -120,30 +122,18 @@ export function OrganizationConnectionsPanel() {
   };
   const rows = connectionRows(data);
   const busy = connect.isPending || disconnect.isPending;
-  const connectionActionLabel = (provider: ConnectionProviderName) => {
-    if (
-      (provider === "slack" || provider === "linear") &&
-      status.data[provider].status === "requiresReauthorization"
-    ) {
-      return "Reauthorize";
-    }
-    if (
-      provider === "github" &&
-      rows.some(
-        (connection) => connection.provider === "github" && connection.status === "suspended",
-      )
-    ) {
-      return "Reconnect";
-    }
-    return "Connect";
-  };
+  const connectionActionLabel = (provider: string) =>
+    browserProvider(provider).connection.actionLabel?.(
+      statusForProvider(status.data, provider),
+      rows.filter((row) => row.provider === provider),
+    ) ?? "Connect";
   const providerAction = (provider: ConnectionProviderName): ReactNode => {
     if (!data.capabilities.manageResources) return undefined;
     // An app nobody has given Hub credentials for cannot be connected from here, and only an
     // instance operator can change that. Everyone else is told nothing about instance
     // credentials: a state they cannot act on is not news, and a card with only a name on it is
     // the page talking about work they cannot do.
-    if (status.data[provider].status === "notConfigured") {
+    if (statusForProvider(status.data, provider).status === "notConfigured") {
       if (!isInstanceOperator) return undefined;
       return (
         <Button variant="outline" size="sm" asChild>
@@ -168,7 +158,7 @@ export function OrganizationConnectionsPanel() {
   // Whose problem the empty page is: an instance with no provider apps is the operator's, an
   // organization that has connected nothing is its owners'.
   const nothingToConnect = CONNECTION_PROVIDERS.every(
-    (provider) => status.data[provider].status === "notConfigured",
+    (provider) => statusForProvider(status.data, provider).status === "notConfigured",
   )
     ? "This Hub has no provider apps set up yet. Ask whoever runs it to add one."
     : "An organization owner connects the providers this organization can use.";
@@ -294,6 +284,10 @@ export function ProjectOverviewPanel() {
   const snapshot = useProjectSnapshot();
   if (!snapshot.ok) return snapshot.element;
   const data = snapshot.data;
+  const connectionCount = Object.values(data.connections).reduce(
+    (total, connections) => total + connections.length,
+    0,
+  );
   const base = `/o/${tenant.organization.slug}/projects/${data.project.slug}`;
   return (
     <>
@@ -313,14 +307,8 @@ export function ProjectOverviewPanel() {
         />
         <SetupCard
           label="Connections"
-          ready={
-            data.connections.github.length +
-              data.connections.discord.length +
-              data.connections.slack.length +
-              data.connections.linear.length >
-            0
-          }
-          detail={`${String(data.connections.github.length + data.connections.discord.length + data.connections.slack.length + data.connections.linear.length)} organization connections`}
+          ready={connectionCount > 0}
+          detail={`${String(connectionCount)} organization connections`}
         />
       </Section>
       <Section
@@ -684,40 +672,9 @@ function ConnectionReturnBanner({ copy }: { copy: ConnectionReturnCopy }) {
 type ConnectionRecord = ReturnType<typeof connectionRows>[number];
 
 function connectionRows(data: OrganizationSnapshot) {
-  return [
-    ...data.connections.github.map((connection) => ({
-      provider: "github" as const,
-      id: connection.id,
-      name: connection.slug,
-      externalId: `${connection.accountLogin} · installation ${connection.installationId}`,
-      status: connection.status,
-    })),
-    ...data.connections.discord.map((connection) => ({
-      provider: "discord" as const,
-      id: connection.id,
-      name: connection.slug,
-      externalId: `guild ${connection.guildId}`,
-      status: "connected" as const,
-    })),
-    ...data.connections.slack.map((connection) => ({
-      provider: "slack" as const,
-      id: connection.id,
-      name: connection.slug,
-      externalId: `workspace ${connection.teamId}`,
-      status: connection.requiresReauthorization
-        ? ("requiresReauthorization" as const)
-        : ("connected" as const),
-    })),
-    ...data.connections.linear.map((connection) => ({
-      provider: "linear" as const,
-      id: connection.id,
-      name: connection.slug,
-      externalId: `workspace ${connection.linearOrganizationId}`,
-      status: connection.requiresReauthorization
-        ? ("requiresReauthorization" as const)
-        : ("connected" as const),
-    })),
-  ];
+  return connectionBrowserProviders.flatMap((module) =>
+    module.connection.rows(Reflect.get(data.connections, module.id)),
+  );
 }
 function providerLabel(provider: ConnectionProviderName) {
   return browserProvider(provider).guide.name;

@@ -1,3 +1,5 @@
+import { browserProvider, browserProviders } from "../providers/browser.js";
+import { failed } from "../providers/connection-presentation.js";
 import { z } from "zod";
 import { withReference } from "../failures/reference.js";
 
@@ -10,35 +12,11 @@ import { withReference } from "../failures/reference.js";
  * nobody mapped cannot leak through as raw text.
  */
 
-export const CONNECTION_PROVIDERS = ["github", "discord", "slack", "linear"] as const;
-export type ConnectionProvider = (typeof CONNECTION_PROVIDERS)[number];
-
-export const connectionResultSchema = z.enum([
-  "github_connected",
-  "discord_connected",
-  "slack_connected",
-  "linear_connected",
-  "github_disconnected",
-  "discord_disconnected",
-  "slack_disconnected",
-  "linear_disconnected",
-  "github_cancelled",
-  "discord_cancelled",
-  "slack_cancelled",
-  "linear_cancelled",
-  "github_approval_required",
-  "slack_bot_failed",
-  "provider_not_configured",
-  /** The state was forged, expired, already used, or belongs to a different session. */
-  "connection_invalid",
-  /** The provider account is already bound to another organization. */
-  "connection_conflict",
-  /** The browser that came back from the provider carried no Hub session. */
-  "connection_unauthenticated",
-  /** Hub itself failed; the reference correlates the banner with the operator log. */
-  "connection_unavailable",
-]);
-export type ConnectionResult = z.infer<typeof connectionResultSchema>;
+export type ConnectionProvider = string;
+export type ConnectionResult = string;
+export const connectionResultSchema = z
+  .string()
+  .refine((result) => resultCopy(result) !== undefined);
 
 export interface ConnectionReturn {
   provider: ConnectionProvider;
@@ -87,14 +65,17 @@ export function connectionReturnUrl(
  * instead of being echoed or dropped.
  */
 export function readConnectionReturn(url: URL): ConnectionReturn | undefined {
-  const provider = z
-    .enum(CONNECTION_PROVIDERS)
-    .safeParse(url.searchParams.get(RETURN_PARAMS.provider));
+  const provider = url.searchParams.get(RETURN_PARAMS.provider);
   const result = url.searchParams.get(RETURN_PARAMS.result);
-  if (!provider.success || result === null) return undefined;
+  if (
+    provider === null ||
+    result === null ||
+    !browserProviders.some((module) => module.id === provider)
+  )
+    return undefined;
   const reference = url.searchParams.get(RETURN_PARAMS.reference);
   return {
-    provider: provider.data,
+    provider,
     result: connectionResultSchema.catch("connection_unavailable").parse(result),
     ...(reference === null ? {} : { reference }),
   };
@@ -107,23 +88,16 @@ export function stripConnectionReturn(url: URL): boolean {
   return present;
 }
 
-const PROVIDER_NAMES: Readonly<Record<ConnectionProvider, string>> = {
-  github: "GitHub",
-  discord: "Discord",
-  slack: "Slack",
-  linear: "Linear",
-};
-
 export function connectionProviderName(provider: ConnectionProvider): string {
-  return PROVIDER_NAMES[provider];
+  return browserProvider(provider).guide.name;
 }
-
 /**
  * Every outcome says what happened, whether anything changed, and what to do next. A
  * cancellation is neutral because nothing about it is broken.
  */
 export function connectionReturnCopy(value: ConnectionReturn): ConnectionReturnCopy {
-  const copy = RETURN_COPY[value.result](connectionProviderName(value.provider));
+  const render = resultCopy(value.result) ?? RETURN_COPY.connection_unavailable;
+  const copy = render(connectionProviderName(value.provider));
   if (value.reference === undefined) return copy;
   return { ...copy, message: withReference(copy.message, value.reference) };
 }
@@ -132,33 +106,7 @@ export function connectionReturnCopy(value: ConnectionReturn): ConnectionReturnC
  * A return that connected nothing is a failed request, and it is headed the way every other
  * failure on the dashboard is: the thing that did not happen, then why, then what to do next.
  */
-function failed(name: string, message: string): ConnectionReturnCopy {
-  return { tone: "error", title: `${name} wasn't connected`, message };
-}
-
-const RETURN_COPY: Readonly<Record<ConnectionResult, (name: string) => ConnectionReturnCopy>> = {
-  github_connected: connected,
-  discord_connected: connected,
-  slack_connected: connected,
-  linear_connected: connected,
-  github_disconnected: disconnected,
-  discord_disconnected: disconnected,
-  slack_disconnected: disconnected,
-  linear_disconnected: disconnected,
-  github_cancelled: (name) => cancelled("Installation", name),
-  slack_cancelled: (name) => cancelled("Installation", name),
-  discord_cancelled: (name) => cancelled("Authorization", name),
-  linear_cancelled: (name) => cancelled("Authorization", name),
-  github_approval_required: (name) =>
-    failed(
-      name,
-      "A GitHub organization owner has to approve this installation. Nothing was connected. Ask an owner to approve the request, then install again.",
-    ),
-  slack_bot_failed: (name) =>
-    failed(
-      name,
-      "Slack installed the app without every permission Hub needs. Nothing was saved. Reapply the manifest under Features → OAuth & Permissions, then install again.",
-    ),
+const RETURN_COPY = {
   provider_not_configured: (name) =>
     failed(name, "There are no saved credentials to connect yet. Verify and save the app first."),
   connection_invalid: (name) =>
@@ -181,19 +129,13 @@ const RETURN_COPY: Readonly<Record<ConnectionResult, (name: string) => Connectio
       name,
       `Hub couldn't finish the ${name} connection. Nothing was connected. Start the connection again from this page.`,
     ),
-};
+} satisfies Readonly<Record<string, (name: string) => ConnectionReturnCopy>>;
 
-function connected(name: string): ConnectionReturnCopy {
-  return { tone: "success", message: `${name} connected.` };
-}
+const resultCopies = new Map([
+  ...Object.entries(RETURN_COPY),
+  ...browserProviders.flatMap((module) => Object.entries(module.connection.returns)),
+]);
 
-function disconnected(name: string): ConnectionReturnCopy {
-  return { tone: "success", message: `${name} disconnected.` };
-}
-
-function cancelled(action: "Installation" | "Authorization", name: string): ConnectionReturnCopy {
-  return {
-    tone: "success",
-    message: `${action} cancelled at ${name}. Nothing changed. Start again when you're ready.`,
-  };
+function resultCopy(result: string): ((name: string) => ConnectionReturnCopy) | undefined {
+  return resultCopies.get(result);
 }

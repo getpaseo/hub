@@ -14,3 +14,7 @@ export function browserProvider(id: string): BrowserProviderModule {
   if (module === undefined) throw new Error(`unknown provider: ${id}`);
   return module;
 }
+
+export const connectionBrowserProviders = [...browserProviders].sort(
+  (a, b) => a.connection.order - b.connection.order,
+);

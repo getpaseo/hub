@@ -200,43 +200,12 @@ export async function handleProviderRequest(name: string, request: Request): Pro
 
 export async function handleConnections(
   request: Request,
-  operation:
-    | "status"
-    | "githubStart"
-    | "githubDisconnect"
-    | "githubSetup"
-    | "githubCallback"
-    | "discordStart"
-    | "discordDisconnect"
-    | "discordCallback"
-    | "slackStart"
-    | "slackDisconnect"
-    | "slackCallback"
-    | "linearStart"
-    | "linearDisconnect"
-    | "linearCallback",
+  operation: "status" | { provider: string; action: string },
 ): Promise<Response> {
   const runtime = await getApplication();
   if (operation === "status") return runtime.connectionStatus(request);
-  const action = CONNECTION_ACTIONS[operation];
-  return runtime.connectionAction(request, action.provider, action.name);
+  return runtime.connectionAction(request, operation.provider, operation.action);
 }
-
-const CONNECTION_ACTIONS = {
-  githubStart: { provider: "github", name: "start" },
-  githubDisconnect: { provider: "github", name: "disconnect" },
-  githubSetup: { provider: "github", name: "setup" },
-  githubCallback: { provider: "github", name: "callback" },
-  discordStart: { provider: "discord", name: "start" },
-  discordDisconnect: { provider: "discord", name: "disconnect" },
-  discordCallback: { provider: "discord", name: "callback" },
-  slackStart: { provider: "slack", name: "start" },
-  slackDisconnect: { provider: "slack", name: "disconnect" },
-  slackCallback: { provider: "slack", name: "callback" },
-  linearStart: { provider: "linear", name: "start" },
-  linearDisconnect: { provider: "linear", name: "disconnect" },
-  linearCallback: { provider: "linear", name: "callback" },
-} as const;
 
 export async function resolveOrganizationResources(
   request: Request,

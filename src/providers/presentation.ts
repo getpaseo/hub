@@ -121,6 +121,7 @@ export function isSecureOrigin(origin: string): boolean {
   return origin.startsWith("https://");
 }
 export interface BrowserProviderModule {
+  connection: import("./connection-presentation.js").ProviderConnectionPresentation;
   failure: ProviderSetupFailure;
   setup: ProviderSetup;
   glyph: { viewBox: string; paths: readonly string[] };

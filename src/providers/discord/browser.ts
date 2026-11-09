@@ -1,3 +1,4 @@
+import { connectionPresentation } from "./connection-presentation.js";
 import { failure } from "./failure.js";
 import { setup } from "./presentation.js";
 import { glyph, runHint, identityLabel } from "./presentation.js";
@@ -112,6 +113,7 @@ export const DISCORD_GUIDE: ProviderGuide = {
 };
 
 export const discordBrowserProvider = {
+  connection: connectionPresentation,
   failure,
   request: {
     parse: (input: unknown) => {

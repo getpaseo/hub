@@ -36,6 +36,10 @@ describe("connection return contract", () => {
       undefined,
     );
     assert.deepEqual(
+      readConnectionReturn(new URL("https://hub.test/connections?app=slack&result=toString")),
+      { provider: "slack", result: "connection_unavailable" },
+    );
+    assert.deepEqual(
       readConnectionReturn(
         new URL("https://hub.test/o/acme/connections?app=slack&result=something_nobody_mapped"),
       ),

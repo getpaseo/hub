@@ -1,63 +1,54 @@
+import { browserProviders, connectionBrowserProviders } from "../providers/browser.js";
+import type { ProviderConnectionStatus } from "../providers/connection-presentation.js";
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
 import { respondOk, type Result } from "../contract/respond.js";
 import { respondWithFailure } from "../failures/index.js";
 import { handleConnections } from "../server/runtime.js";
-import {
-  CONNECTION_PROVIDERS,
-  connectionProviderName,
-  type ConnectionProvider,
-} from "./result-contract.js";
+import { connectionProviderName, type ConnectionProvider } from "./result-contract.js";
 
 export type { ConnectionProvider } from "./result-contract.js";
 
-const githubStatusSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("notConfigured") }),
-  z.object({ status: z.literal("disconnected") }),
-  z.object({
-    status: z.enum(["connected", "suspended"]),
-  }),
-]);
-const discordStatusSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("notConfigured") }),
-  z.object({ status: z.literal("disconnected") }),
-  z.object({
-    status: z.literal("connected"),
-  }),
-]);
-const slackStatusSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("notConfigured") }),
-  z.object({ status: z.literal("disconnected") }),
-  z.object({ status: z.literal("requiresReauthorization") }),
-  z.object({
-    status: z.literal("connected"),
-  }),
-]);
-const linearStatusSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("notConfigured") }),
-  z.object({ status: z.literal("disconnected") }),
-  z.object({ status: z.literal("requiresReauthorization") }),
-  z.object({ status: z.literal("connected") }),
-]);
-export const connectionStatusSchema = z.object({
-  canManage: z.boolean(),
-  github: githubStatusSchema,
-  discord: discordStatusSchema,
-  slack: slackStatusSchema,
-  linear: linearStatusSchema,
-});
+export interface ConnectionStatus {
+  canManage: boolean;
+  [key: string]: boolean | ProviderConnectionStatus;
+}
+export const connectionStatusSchema = z
+  .object({ canManage: z.boolean() })
+  .passthrough()
+  .transform((value, context) => {
+    const result: ConnectionStatus = { canManage: value.canManage };
+    for (const module of connectionBrowserProviders) {
+      try {
+        result[module.id] = module.connection.parseStatus(value[module.id]);
+      } catch (error) {
+        if (!(error instanceof z.ZodError)) throw error;
+        for (const issue of error.issues)
+          context.addIssue({ ...issue, path: [module.id, ...issue.path] });
+      }
+    }
+    return result;
+  });
+export function statusForProvider(
+  snapshot: ConnectionStatus,
+  provider: string,
+): ProviderConnectionStatus {
+  const status = snapshot[provider];
+  if (status === undefined || typeof status === "boolean")
+    throw new Error(`connection status unavailable: ${provider}`);
+  return status;
+}
 const scopeSchema = z.object({
   organizationSlug: z.string().min(1),
   projectSlug: z.string().min(1).optional(),
 });
 const providerSchema = scopeSchema.extend({
-  provider: z.enum(CONNECTION_PROVIDERS),
+  provider: z.string().refine((id) => browserProviders.some((module) => module.id === id)),
 });
 const disconnectSchema = providerSchema.extend({ connectionId: z.string().uuid() });
 const startSchema = z.object({ url: z.string().url() });
 
-export type ConnectionStatus = z.infer<typeof connectionStatusSchema>;
 export type ConnectionDisconnectResult = `${ConnectionProvider}_disconnected`;
 
 export const connectionStatus = createServerFn({ method: "GET" })
@@ -89,10 +80,9 @@ export const startConnection = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<Result<{ url: string }>> => {
     const name = connectionProviderName(data.provider);
     try {
-      const operation = CONNECTION_OPERATIONS[data.provider].start;
       const response = await handleConnections(
         operationRequest("POST", "/connections/start", data),
-        operation,
+        { provider: data.provider, action: "start" },
       );
       if (response.status === 403) {
         return connectionResponseFailure(
@@ -123,10 +113,9 @@ export const disconnectConnection = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<Result<{ result: ConnectionDisconnectResult }>> => {
     const name = connectionProviderName(data.provider);
     try {
-      const operation = CONNECTION_OPERATIONS[data.provider].disconnect;
       const response = await handleConnections(
         operationRequest("POST", "/connections/disconnect", data, data.connectionId),
-        operation,
+        { provider: data.provider, action: "disconnect" },
       );
       if (response.status === 403) {
         return connectionResponseFailure(
@@ -151,13 +140,6 @@ export const disconnectConnection = createServerFn({ method: "POST" })
       });
     }
   });
-
-const CONNECTION_OPERATIONS = {
-  github: { start: "githubStart", disconnect: "githubDisconnect" },
-  discord: { start: "discordStart", disconnect: "discordDisconnect" },
-  slack: { start: "slackStart", disconnect: "slackDisconnect" },
-  linear: { start: "linearStart", disconnect: "linearDisconnect" },
-} as const;
 
 function connectionContext(
   operation: string,
