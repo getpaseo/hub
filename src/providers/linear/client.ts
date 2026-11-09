@@ -1,5 +1,6 @@
 import { z } from "zod";
-import type { LinearConnectionRecord } from "../../db/types.js";
+import type { LinearConnectionRecord } from "./persistence-types.js";
+
 import { type LinearPersistence } from "./persistence.js";
 
 /** The minimum authority required to read issues and leave an outcome on the issue. */

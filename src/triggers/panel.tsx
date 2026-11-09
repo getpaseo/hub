@@ -1193,7 +1193,7 @@ function useDaemonProviderCatalog(
 }
 
 /**
- * A new trigger starts from what the organization already has: its Slack workspace, its daemon.
+ * A new trigger starts from what the organization already has: its connections and daemon.
  * The working directory is the one thing nobody but the reader knows — a prefilled path that does
  * not exist on the daemon was accepted as it was, and the first run failed on it — so it stays
  * empty until they type the real one.

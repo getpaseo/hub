@@ -20,7 +20,7 @@ import {
   stateHash,
 } from "../../connections/shared.js";
 import { DatabaseUnavailableError } from "../../db/errors.js";
-import type { Database, GitHubConnectionRecord } from "../../db/types.js";
+import type { Database } from "../../db/types.js";
 import { replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { logger } from "../../logger.js";
 import { organizationBillingUrl } from "../../triggers/failure-notice.js";
@@ -41,6 +41,7 @@ import type { GitHubConfigurationProvider } from "./configuration-source.js";
 import { synchronizeGitHubDefaultBranch } from "./configuration-source.js";
 import { createGitHubConfigurationProvider } from "./configuration.js";
 import { createGitHubLifecycle } from "./lifecycle.js";
+import type { GitHubConnectionRecord } from "./persistence-types.js";
 import { githubPersistence } from "./persistence.js";
 import { githubRuntime, type GitHubRegistration } from "./runtime.js";
 
@@ -602,7 +603,7 @@ async function bindGitHub(
   access: Awaited<ReturnType<typeof callbackConnectionAccess>>,
   identity: GitHubInstallationIdentity,
   providerApplicationId: string,
-  repositories: import("../../db/types.js").GitHubRepositorySnapshot,
+  repositories: import("./persistence-types.js").GitHubRepositorySnapshot,
 ): Promise<void> {
   await githubPersistence(database).bindGitHubConnection({
     providerApplicationId,

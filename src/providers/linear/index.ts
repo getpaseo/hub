@@ -14,11 +14,7 @@ import {
   stateHash,
 } from "../../connections/shared.js";
 import { DatabaseUnavailableError } from "../../db/errors.js";
-import type {
-  BindLinearConnectionInput,
-  Database,
-  LinearConnectionRecord,
-} from "../../db/types.js";
+import type { Database } from "../../db/types.js";
 import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { logger } from "../../logger.js";
 import { createLinearTriggerProvider } from "../../triggers/linear/provider.js";
@@ -33,6 +29,7 @@ import {
   type LinearConnectionClient,
   type LinearInstallation,
 } from "./client.js";
+import type { BindLinearConnectionInput, LinearConnectionRecord } from "./persistence-types.js";
 import { linearPersistence, type LinearPersistence } from "./persistence.js";
 
 export interface LinearRegistrationConfiguration {

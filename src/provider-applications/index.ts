@@ -592,11 +592,6 @@ function parseHttpOrigin(value: string): string {
   return url.origin;
 }
 
-/**
- * Linear cannot verify an OAuth client's secret without an authorization grant. Treat saving
- * credentials as a candidate connection: the callback verifies the grant, persists the app and
- * workspace binding atomically, then publishes the prepared runtime.
- */
 async function verifyAndActivateProvider(
   options: ProviderApplicationsOptions,
   account: AccountAccessValue,

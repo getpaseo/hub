@@ -1,5 +1,17 @@
 import { ProviderPersistence } from "../../db/provider-persistence.js";
 import type * as Types from "../../db/types.js";
+import type {
+  AcceptGitHubEventInput,
+  AdvanceGitHubConnectionAttemptInput,
+  BindGitHubConnectionInput,
+  GitHubConfigurationTarget,
+  GitHubConnectionRecord,
+  GitHubInstallationSyncClaim,
+  GitHubInstallationSyncOwner,
+  GitHubInstallationSyncResult,
+  GitHubLifecycleReceiptClaimInput,
+  GitHubRepositoryRecord,
+} from "./persistence-types.js";
 import { githubMemoryPersistence } from "./persistence/memory.js";
 import { GitHubPostgresPersistence } from "./persistence/postgres.js";
 import type * as Source from "./source-types.js";
@@ -14,45 +26,43 @@ export interface GitHubPersistence {
     projectId: string,
   ): Promise<Source.ConfigurationSyncAttemptRecord | null>;
 
-  acceptGitHubEvent(input: Types.AcceptGitHubEventInput): Promise<Types.ProviderEventAcceptance>;
+  acceptGitHubEvent(input: AcceptGitHubEventInput): Promise<Types.ProviderEventAcceptance>;
   synchronizeGitHubInstallation<T>(installationId: number, operation: () => Promise<T>): Promise<T>;
   pendingGitHubInstallationSyncs(
-    owner: Types.GitHubInstallationSyncOwner,
+    owner: GitHubInstallationSyncOwner,
   ): Promise<
-    Array<
-      Extract<Types.GitHubInstallationSyncClaim, { status: "claimed" }> & { removeBinding: boolean }
-    >
+    Array<Extract<GitHubInstallationSyncClaim, { status: "claimed" }> & { removeBinding: boolean }>
   >;
   claimGitHubLifecycleReceipt(
-    input: Types.GitHubLifecycleReceiptClaimInput,
-  ): Promise<Types.GitHubInstallationSyncClaim>;
+    input: GitHubLifecycleReceiptClaimInput,
+  ): Promise<GitHubInstallationSyncClaim>;
   applyGitHubInstallationSync(
-    owner: Types.GitHubInstallationSyncOwner,
-    claim: Extract<Types.GitHubInstallationSyncClaim, { status: "claimed" }>,
-    result: Types.GitHubInstallationSyncResult,
+    owner: GitHubInstallationSyncOwner,
+    claim: Extract<GitHubInstallationSyncClaim, { status: "claimed" }>,
+    result: GitHubInstallationSyncResult,
   ): Promise<void>;
   retryGitHubInstallationSync(
-    owner: Types.GitHubInstallationSyncOwner,
+    owner: GitHubInstallationSyncOwner,
     installationSyncId: string,
   ): Promise<void>;
-  advanceGitHubConnectionAttempt(input: Types.AdvanceGitHubConnectionAttemptInput): Promise<void>;
-  bindGitHubConnection(input: Types.BindGitHubConnectionInput): Promise<void>;
-  findGitHubConnection(installationId: number): Promise<Types.GitHubConnectionRecord | undefined>;
+  advanceGitHubConnectionAttempt(input: AdvanceGitHubConnectionAttemptInput): Promise<void>;
+  bindGitHubConnection(input: BindGitHubConnectionInput): Promise<void>;
+  findGitHubConnection(installationId: number): Promise<GitHubConnectionRecord | undefined>;
   listGitHubConfigurationTargets(
     organizationId: string,
     connectionId: string,
     repositoryId: number,
-  ): Promise<Types.GitHubConfigurationTarget[]>;
-  listGitHubRepositories(organizationId?: string): Promise<Types.GitHubRepositoryRecord[]>;
+  ): Promise<GitHubConfigurationTarget[]>;
+  listGitHubRepositories(organizationId?: string): Promise<GitHubRepositoryRecord[]>;
   findGitHubRepositoryForOrganization(
     organizationId: string,
     fullName: string,
-  ): Promise<Types.GitHubRepositoryRecord | undefined>;
+  ): Promise<GitHubRepositoryRecord | undefined>;
   findGitHubConfigurationTarget(
     projectId: string,
     repositoryId?: number,
-  ): Promise<Types.GitHubConfigurationTarget | undefined>;
-  listConnections(organizationId?: string): Promise<Types.GitHubConnectionRecord[]>;
+  ): Promise<GitHubConfigurationTarget | undefined>;
+  listConnections(organizationId?: string): Promise<GitHubConnectionRecord[]>;
   disconnectConnection(
     connectionId: string,
     access: Types.ConnectionStartAuthority,

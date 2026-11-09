@@ -17,17 +17,16 @@ import type { PostgresProviderContext } from "../../../db/provider-persistence.j
 import type { DatabaseRuntime, DrizzleHandle } from "../../../db/runtime/index.js";
 import type { Locks } from "../../../db/runtime/locks/index.js";
 import * as schema from "../../../db/schema.js";
+import type { ConnectionStartAuthority, ProviderEventAcceptance } from "../../../db/types.js";
+import { linearConnectionRequiresReauthorization } from "../client.js";
 import type {
   AcceptLinearEventInput,
   BindLinearConnectionInput,
   CompleteLinearProviderApplicationInput,
-  ConnectionStartAuthority,
   LinearConnectionRecord,
   LinearConnectionRefreshOperation,
-  ProviderEventAcceptance,
   UpdateLinearConnectionTokensInput,
-} from "../../../db/types.js";
-import { linearConnectionRequiresReauthorization } from "../client.js";
+} from "../persistence-types.js";
 type HubTransaction = DrizzleHandle;
 type AttemptRow = typeof schema.organizationConnectionAttempts.$inferSelect;
 export class LinearPostgresPersistence {

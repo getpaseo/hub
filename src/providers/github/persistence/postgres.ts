@@ -20,11 +20,11 @@ import type {
 import type { Locks } from "../../../db/runtime/locks/index.js";
 import * as schema from "../../../db/schema.js";
 import { claimProviderReceipt } from "../../../db/trigger-acceptance.js";
+import type { ConnectionStartAuthority, ProviderEventAcceptance } from "../../../db/types.js";
 import type {
   AcceptGitHubEventInput,
   AdvanceGitHubConnectionAttemptInput,
   BindGitHubConnectionInput,
-  ConnectionStartAuthority,
   GitHubConfigurationTarget,
   GitHubConnectionRecord,
   GitHubInstallationSyncClaim,
@@ -32,8 +32,7 @@ import type {
   GitHubInstallationSyncResult,
   GitHubLifecycleReceiptClaimInput,
   GitHubRepositoryRecord,
-  ProviderEventAcceptance,
-} from "../../../db/types.js";
+} from "../persistence-types.js";
 import type {
   ConfigurationSyncAttemptRecord,
   RecordConfigurationSyncAttemptInput,
@@ -672,7 +671,7 @@ export async function replaceGitHubRepositories(
   transaction: DrizzleHandle,
   organizationId: string,
   connectionId: string,
-  repositories: import("../../../db/types.js").GitHubRepositorySnapshot,
+  repositories: import("../persistence-types.js").GitHubRepositorySnapshot,
 ): Promise<void> {
   const ids = repositories.map((repository) => repository.repositoryId);
   await transaction

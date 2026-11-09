@@ -1,5 +1,6 @@
 import type { AccountAccessValue } from "../../auth/organization-access.js";
-import type { BindLinearConnectionInput } from "../../db/types.js";
+import type { BindLinearConnectionInput } from "./persistence-types.js";
+
 import type {
   ProviderApplicationContinuation,
   ProviderApplicationIdentity,

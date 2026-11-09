@@ -1,4 +1,4 @@
-import { browserProvider } from "../providers/browser.js";
+import { browserProvider, browserProviders } from "../providers/browser.js";
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop -- one screen binds one snapshot; a row's action and status are that row's own slots */
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- generated routes cannot express server-resolved organization URLs */
 import { useSnapshotQuery } from "../queries/index.js";
@@ -26,6 +26,10 @@ import { queryState } from "../projects/panel-state.js";
 import { useRouteTenant } from "../projects/context.js";
 import { deriveChecklist, type Checklist, type ChecklistStep } from "./checklist.js";
 import { homeSnapshot, type HomeSnapshot } from "./functions.js";
+
+const APP_NAMES = new Intl.ListFormat("en", { style: "long", type: "disjunction" }).format(
+  browserProviders.map((provider) => provider.guide.name),
+);
 
 const HOME_DESCRIPTION = "What to do next, and what has run.";
 const RECENT_RUNS_SHOWN = 5;
@@ -287,8 +291,8 @@ function appStep(
     return {
       title,
       hint: operator
-        ? "This Hub has no GitHub, Slack, or Discord app yet. Set one up first."
-        : "This Hub has no GitHub, Slack, or Discord app yet. Ask whoever runs it to set one up.",
+        ? `This Hub has no ${APP_NAMES} app yet. Set one up first.`
+        : `This Hub has no ${APP_NAMES} app yet. Ask whoever runs it to set one up.`,
       status: { label: "Needs setup", tone: "warning" },
       ...(operator
         ? {
@@ -303,7 +307,7 @@ function appStep(
   }
   return {
     title,
-    hint: "GitHub, Slack, or Discord: the place events come from.",
+    hint: `${APP_NAMES}: the place events come from.`,
     status: TO_DO,
     action: (
       <Button asChild variant="outline" size="sm">

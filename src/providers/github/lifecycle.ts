@@ -1,11 +1,11 @@
-import type {
-  Database,
-  GitHubInstallationSyncOwner,
-  GitHubLifecycleReceiptClaimInput,
-} from "../../db/types.js";
+import type { Database } from "../../db/types.js";
 import { reportFailure } from "../../failures/index.js";
 import type { GitHubConnectionClient } from "./client.js";
 import type { GitHubConfigurationProvider } from "./configuration-source.js";
+import type {
+  GitHubInstallationSyncOwner,
+  GitHubLifecycleReceiptClaimInput,
+} from "./persistence-types.js";
 import { githubPersistence } from "./persistence.js";
 
 /** A receipt and its pending job are accepted together before acknowledging GitHub. */

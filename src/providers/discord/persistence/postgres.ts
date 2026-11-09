@@ -14,13 +14,12 @@ import type { PostgresProviderContext } from "../../../db/provider-persistence.j
 import type { DatabaseRuntime, DrizzleHandle } from "../../../db/runtime/index.js";
 import type { Locks } from "../../../db/runtime/locks/index.js";
 import * as schema from "../../../db/schema.js";
+import type { ConnectionStartAuthority, ProviderEventAcceptance } from "../../../db/types.js";
 import type {
   AcceptDiscordEventInput,
   BindDiscordConnectionInput,
-  ConnectionStartAuthority,
   DiscordConnectionRecord,
-  ProviderEventAcceptance,
-} from "../../../db/types.js";
+} from "../persistence-types.js";
 export class DiscordPostgresPersistence {
   private readonly connections: PostgresProviderContext["connections"];
   private readonly database: DrizzleHandle;

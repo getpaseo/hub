@@ -650,7 +650,7 @@ function VariableList({ names }: { names: readonly string[] }) {
   );
 }
 
-/** Slack's plain-HTTP state is terminal: the requirement and nothing to press. */
+/** A provider can require HTTPS before offering a setup action. */
 function HttpsGate({ guide, origin }: { guide: ProviderGuide; origin: string }) {
   return <WarningAlert title="HTTPS required">{guide.httpsRequirement(origin)}</WarningAlert>;
 }

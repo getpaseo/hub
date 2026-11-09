@@ -13,7 +13,7 @@ import {
   requiredConnectionId,
   stateHash,
 } from "../../connections/shared.js";
-import type { Database, DiscordConnectionRecord } from "../../db/types.js";
+import type { Database } from "../../db/types.js";
 import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { reportFailure } from "../../failures/index.js";
 import { createDiscordAttachmentResolver } from "../../triggers/discord/attachments.js";
@@ -28,6 +28,7 @@ import {
   type DiscordConnectionClient,
   type DiscordGuildIdentity,
 } from "./client.js";
+import type { DiscordConnectionRecord } from "./persistence-types.js";
 import { discordPersistence } from "./persistence.js";
 
 export interface DiscordRegistrationConfiguration {
