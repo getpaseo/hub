@@ -164,6 +164,26 @@ export interface CurrentSubscriptionView {
   manageable: boolean;
 }
 
+/** What an instance operator needs to find an organization's billing during support: its plan,
+ * the Stripe customer to look up, and the live subscription. */
+export interface OperatorBillingView {
+  planName: string | null;
+  stripeCustomerId: string | null;
+  subscription: OperatorSubscriptionView;
+}
+
+/** The live Stripe subscription. Plan and customer come from Hub's own records, so a Stripe
+ * outage marks only this part unavailable. */
+export type OperatorSubscriptionView =
+  | { kind: "unavailable" }
+  | {
+      kind: "loaded";
+      /** Stripe's status, or null when there is no live subscription. */
+      status: string | null;
+      cancelAtPeriodEnd: boolean;
+      currentPeriodEnd: string | null;
+    };
+
 /** Thrown when a checkout is requested for a plan/interval that is not in the mirror. */
 export class BillingRequestError extends Error {
   constructor(message: string) {
@@ -347,11 +367,8 @@ export class BillingRuntime {
       this.database.getOrganizationEntitlements(organizationId),
     ]);
     const stamped = plans.find((plan) => plan.id === entitlements?.planId);
-    const subscriptions =
-      customer === undefined ? [] : await this.customerSubscriptions(customer.stripeCustomerId);
-    const subscription = subscriptions.find(
-      (candidate) => !TERMINAL_SUBSCRIPTION_STATUSES.has(candidate.status),
-    );
+    const subscription =
+      customer === undefined ? undefined : await this.liveSubscription(customer.stripeCustomerId);
     const live = subscription !== undefined;
     return {
       planSlug: stamped?.slug ?? null,
@@ -361,6 +378,55 @@ export class BillingRuntime {
       currentPeriodEnd: live ? (subscription.currentPeriodEnd?.toISOString() ?? null) : null,
       manageable: live,
     };
+  }
+
+  /**
+   * What an instance operator sees beside an organization. Stripe being unreachable must not take
+   * the operator console down with it — entitlements are the reason the operator is there, and an
+   * override that already committed must not read as failed — so a failed subscription read is
+   * reported and comes back as `unavailable`, next to the plan and customer Hub stores itself.
+   */
+  async operatorBilling(organizationId: string): Promise<OperatorBillingView> {
+    const [customer, plans, entitlements] = await Promise.all([
+      this.database.getOrganizationBillingCustomer(organizationId),
+      this.database.listBillingPlans(),
+      this.database.getOrganizationEntitlements(organizationId),
+    ]);
+    return {
+      planName: plans.find((plan) => plan.id === entitlements?.planId)?.name ?? null,
+      stripeCustomerId: customer?.stripeCustomerId ?? null,
+      subscription: await this.operatorSubscription(customer?.stripeCustomerId),
+    };
+  }
+
+  private async operatorSubscription(
+    customerId: string | undefined,
+  ): Promise<OperatorSubscriptionView> {
+    try {
+      const live =
+        customerId === undefined
+          ? undefined
+          : await withTimeout(this.liveSubscription(customerId), OPERATOR_SUBSCRIPTION_TIMEOUT_MS);
+      return {
+        kind: "loaded",
+        status: live?.status ?? null,
+        cancelAtPeriodEnd: live?.cancelAtPeriodEnd ?? false,
+        currentPeriodEnd: live?.currentPeriodEnd?.toISOString() ?? null,
+      };
+    } catch (error) {
+      reportFailure(error, {
+        operation: "billing.operator.subscription",
+        component: "billing",
+        provider: "stripe",
+      });
+      return { kind: "unavailable" };
+    }
+  }
+
+  private async liveSubscription(customerId: string): Promise<StripeSubscriptionState | undefined> {
+    return (await this.customerSubscriptions(customerId)).find(
+      (candidate) => !TERMINAL_SUBSCRIPTION_STATUSES.has(candidate.status),
+    );
   }
 
   async handleWebhook(request: Request): Promise<Response> {
@@ -612,4 +678,21 @@ export function composeBilling(options: ComposeBillingOptions): BillingRuntime {
     options.seatUsage,
     options.presentations ?? HUB_PLAN_PRESENTATIONS,
   );
+}
+
+/**
+ * The operator page and the response to a saved override both wait on the subscription read, and
+ * Stripe's own timeout is 80 seconds with retries. A slow Stripe reads as unavailable instead.
+ */
+const OPERATOR_SUBSCRIPTION_TIMEOUT_MS = 5_000;
+
+function withTimeout<T>(work: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(Object.assign(new Error("Stripe did not answer in time"), { code: "timeout" })),
+      milliseconds,
+    );
+  });
+  return Promise.race([work, expired]).finally(() => clearTimeout(timer));
 }

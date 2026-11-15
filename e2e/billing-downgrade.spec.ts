@@ -88,6 +88,14 @@ test("a manual override survives a plan change while the rest re-stamps, and cle
     await hub.grantOperator("owner");
   });
 
+  await test.step("the operator console names the plan and the Stripe customer", async () => {
+    await hub.expectOperatorDetails("owner", {
+      org: "Globex",
+      details: { Plan: PLAN, Subscription: "Active", "Stripe customer": "cus_" },
+    });
+    await page.screenshot({ path: `${DIR}/03b-operator-details.png`, fullPage: true });
+  });
+
   await test.step("hand-set a three-seat override from the operator console", async () => {
     await hub.openSeatOverrideEditor("owner", { org: "Globex", max: 3, reason: seatReason });
     await hub.saveSeatOverride("owner", 3);

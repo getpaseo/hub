@@ -1,10 +1,17 @@
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop -- each item's select handler is scoped to the option rendered beside it */
 import { CheckIcon, ChevronsUpDownIcon } from "lucide-react";
-import { useCallback, useId, useState, type ReactNode } from "react";
+import { useCallback, useId, useMemo, useState, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils.js";
 import { Button } from "../ui/button.js";
-import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "../ui/command.js";
+import {
+  Command,
+  CommandEmpty,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  defaultFilter,
+} from "../ui/command.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover.js";
 import { LoadingLine, Spinner } from "./loading.js";
 
@@ -16,6 +23,13 @@ export interface ComboboxOption {
   keywords?: readonly string[];
   /** The quiet second line under the label. */
   detail?: string;
+  /**
+   * An opaque ID, shown as the second line when there is no `detail`. Typing part of it finds the
+   * option, but only as a run of consecutive characters: the search's usual leniency, letters in
+   * order however far apart, would match nearly every option through the scattered characters of
+   * a random ID.
+   */
+  identifier?: string;
   icon?: ReactNode;
   disabled?: boolean;
 }
@@ -76,6 +90,7 @@ export function Combobox<T extends ComboboxOption>({
 }) {
   const [open, setOpen] = useState(false);
   const listId = useId();
+  const filter = useMemo(() => comboboxFilter(options), [options]);
   const choose = useCallback(
     (option: T) => {
       onChange(option);
@@ -121,7 +136,7 @@ export function Combobox<T extends ComboboxOption>({
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-(--radix-popper-anchor-width) p-0" align="start">
-        <Command>
+        <Command filter={filter}>
           <CommandInput placeholder={searchPlaceholder ?? `${placeholder}…`} />
           <CommandList id={listId}>
             {loading ? (
@@ -137,7 +152,7 @@ export function Combobox<T extends ComboboxOption>({
                     // cmdk keys its search on `value`, and an empty string makes it fall back to
                     // the rendered text. Naming the label keeps an explicit "no choice" option
                     // searchable while the real value still travels back through `onChange`.
-                    value={option.value === "" ? option.label : option.value}
+                    value={itemValue(option)}
                     {...(option.keywords === undefined ? {} : { keywords: [...option.keywords] })}
                     {...(option.disabled === undefined ? {} : { disabled: option.disabled })}
                     data-value={option.value}
@@ -151,9 +166,9 @@ export function Combobox<T extends ComboboxOption>({
                     {renderOption === undefined ? (
                       <span className="grid min-w-0 gap-0.5">
                         <span className="truncate">{option.label}</span>
-                        {option.detail === undefined ? null : (
+                        {(option.detail ?? option.identifier) === undefined ? null : (
                           <span className="truncate text-xs text-muted-foreground">
-                            {option.detail}
+                            {option.detail ?? option.identifier}
                           </span>
                         )}
                       </span>
@@ -170,6 +185,42 @@ export function Combobox<T extends ComboboxOption>({
     </Popover>
   );
 }
+
+/** The value cmdk keys an option by. An empty stored value is keyed by its label. */
+function itemValue(option: ComboboxOption): string {
+  // cmdk falls back to the rendered text for an empty value. Naming the label keeps an explicit
+  // "no choice" option searchable while the real value still travels back through `onChange`.
+  return option.value === "" ? option.label : option.value;
+}
+
+/**
+ * How a search scores each option: cmdk's own scoring, so shorthand like "pr" or "ny" keeps
+ * working. An option with an `identifier` is scored on its label and keywords alone, never on its
+ * stored value, which can embed the ID; a consecutive-characters match on the identifier or the
+ * stored value (a pasted slug) only keeps the option in the list, below every named match.
+ */
+export function comboboxFilter(
+  options: readonly ComboboxOption[],
+): (value: string, search: string, keywords?: string[]) => number {
+  const byIdentifier = new Map<string, ComboboxOption & { identifier: string }>();
+  for (const option of options) {
+    if (option.identifier !== undefined) {
+      byIdentifier.set(itemValue(option), { ...option, identifier: option.identifier });
+    }
+  }
+  return (value, search, keywords) => {
+    const option = byIdentifier.get(value);
+    if (option === undefined) return defaultFilter(value, search, keywords);
+    const score = defaultFilter(option.label, search, keywords);
+    const typed = search.trim().toLowerCase();
+    const runs = [option.identifier, value].some((text) => text.toLowerCase().includes(typed));
+    if (score > 0 || typed === "" || !runs) return score;
+    return IDENTIFIER_ONLY_SCORE;
+  };
+}
+
+/** Below any score cmdk gives a word match, so an ID-only hit never outranks a named one. */
+const IDENTIFIER_ONLY_SCORE = 1e-6;
 
 /** The option a stored value refers to, or `undefined` when it refers to nothing on offer. */
 export function comboboxSelection<T extends ComboboxOption>(

@@ -456,9 +456,10 @@ function requireAuth(options: ApplicationCompositionOptions): AuthServer {
 
 /**
  * The two org/instance entitlement surfaces, present together whenever a database, browser auth,
- * and the core entitlements service all exist. Neither depends on billing — Usage renders on
+ * and the core entitlements service all exist. Neither requires billing — Usage renders on
  * self-hosted and hosted alike, and the operator console is gated by its own server-side flag,
- * not by Stripe.
+ * not by Stripe. When billing is mounted the operator console also shows each organization's
+ * plan and Stripe customer.
  */
 function entitlementSurfaces(options: ApplicationCompositionOptions): {
   usageDashboard: UsageDashboard | null;
@@ -470,7 +471,7 @@ function entitlementSurfaces(options: ApplicationCompositionOptions): {
   }
   return {
     usageDashboard: new UsageDashboard(database, auth, entitlements),
-    operatorConsole: new OperatorConsole(database, auth, entitlements),
+    operatorConsole: new OperatorConsole(database, auth, entitlements, options.billing),
   };
 }
 
