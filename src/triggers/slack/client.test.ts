@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { createSlackBotClient } from "./client.js";
+import { createSlackBotClient, SlackApiError } from "./client.js";
 
 describe("Slack Web API client", () => {
   it("looks up an authored username with the workspace bot token", async () => {
@@ -71,7 +71,10 @@ describe("Slack Web API client", () => {
           messageTs: "1.1",
           name: "eyes",
         }),
-      /Slack API ratelimited/u,
+      (error: unknown) =>
+        error instanceof SlackApiError &&
+        error.code === "ratelimited" &&
+        error.message === "Slack API ratelimited",
     );
   });
 
@@ -127,6 +130,47 @@ describe("Slack Web API client", () => {
       { name: "TimeoutError" },
     );
     assert.equal(requestSignal?.aborted, true);
+  });
+
+  it("treats a reaction that is already in place, or whose message is gone, as done", async () => {
+    const client = createSlackBotClient({
+      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      fetch: async (input) =>
+        Response.json({
+          ok: false,
+          error: requestUrl(input).endsWith("reactions.add") ? "already_reacted" : "no_reaction",
+        }),
+    });
+    const reaction = {
+      organizationId: "org-1",
+      teamId: "T1",
+      channelId: "C1",
+      messageTs: "1.1",
+      name: "white_check_mark",
+    };
+
+    await client.addReaction(reaction);
+    await client.removeReaction(reaction);
+
+    for (const error of ["message_not_found", "channel_not_found"]) {
+      const gone = createSlackBotClient({
+        tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+        fetch: async () => Response.json({ ok: false, error }),
+      });
+      await gone.addReaction(reaction);
+      await gone.removeReaction(reaction);
+    }
+
+    const mismatched = createSlackBotClient({
+      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      fetch: async (input) =>
+        Response.json({
+          ok: false,
+          error: requestUrl(input).endsWith("reactions.add") ? "no_reaction" : "already_reacted",
+        }),
+    });
+    await assert.rejects(() => mismatched.addReaction(reaction), /Slack API no_reaction/u);
+    await assert.rejects(() => mismatched.removeReaction(reaction), /Slack API already_reacted/u);
   });
 
   it("keeps the root with the latest 49 preceding Slack replies, oldest first", async () => {
