@@ -97,6 +97,10 @@ describe("which options a search keeps", () => {
     assert.ok(identifierOnly > 0, "the identifier-only hit stays findable");
     assert.ok(named > identifierOnly);
     assert.equal(filter("zeta-a9c8d7e6", "zq", ["Zeta"]), 0);
+    // A slug pasted from a URL finds its organization; scattered letters of it do not.
+    assert.ok(filter(acme.value, "acme-q1w2e3r4", ["Acme"]) > 0);
+    assert.ok(filter(acme.value, "acme-q1w2", ["Acme"]) > 0);
+    assert.equal(filter(zeta.value, "z9c", ["Zeta"]), 0);
   });
 
   it("still reads shorthand as letters in order everywhere else", () => {

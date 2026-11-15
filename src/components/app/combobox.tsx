@@ -196,8 +196,8 @@ function itemValue(option: ComboboxOption): string {
 /**
  * How a search scores each option: cmdk's own scoring, so shorthand like "pr" or "ny" keeps
  * working. An option with an `identifier` is scored on its label and keywords alone, never on its
- * stored value, which can embed the ID; a consecutive-characters match on the identifier only
- * keeps the option in the list, below every option the typed words matched.
+ * stored value, which can embed the ID; a consecutive-characters match on the identifier or the
+ * stored value (a pasted slug) only keeps the option in the list, below every named match.
  */
 export function comboboxFilter(
   options: readonly ComboboxOption[],
@@ -213,9 +213,8 @@ export function comboboxFilter(
     if (option === undefined) return defaultFilter(value, search, keywords);
     const score = defaultFilter(option.label, search, keywords);
     const typed = search.trim().toLowerCase();
-    if (score > 0 || typed === "" || !option.identifier.toLowerCase().includes(typed)) {
-      return score;
-    }
+    const runs = [option.identifier, value].some((text) => text.toLowerCase().includes(typed));
+    if (score > 0 || typed === "" || !runs) return score;
     return IDENTIFIER_ONLY_SCORE;
   };
 }
