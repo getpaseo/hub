@@ -108,7 +108,7 @@ test("adds the App to another account from the chooser and stops offering a conn
   await again.expectChooser([
     {
       account: "acme-inc",
-      explanation: "Already connected to this organization.",
+      explanation: "Connected",
       connectable: false,
     },
     { account: "octo", explanation: "Personal account", connectable: true },

@@ -5,7 +5,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { AuthLayout } from "../../components/app/auth-layout.js";
 import { Card, CardSkeleton } from "../../components/app/card.js";
 import { FailureAlert } from "../../components/app/failure-alert.js";
-import { PageHeader, PageHeaderSkeleton } from "../../components/app/page.js";
+import { PageHeader } from "../../components/app/page.js";
 import { RecordList, RecordRow } from "../../components/app/record-list.js";
 import { StatusPill } from "../../components/app/status-pill.js";
 import { TwoLine } from "../../components/app/two-line.js";
@@ -20,12 +20,13 @@ import {
 } from "./functions.js";
 
 const TITLE = "Choose a GitHub account";
-const DESCRIPTION = "Connect an account that has the Hub app, or add the app to another account.";
 
 /**
  * Where a GitHub connection lands when the App is already installed somewhere the person can see.
  * Framed like every surface outside the dashboard, because it can be reached before there is one.
- * Their one decision is which account; everything that cannot be connected says why in a line.
+ * Their one decision is which account, so the title asks it and the rows answer it; a row that
+ * cannot be connected says why in a line. An account that is not listed is the page's other way
+ * forward, so it sits with Cancel beside the title.
  */
 export function GitHubAccountChooserPage({
   state,
@@ -52,9 +53,16 @@ export function GitHubAccountChooserPage({
   );
   return (
     <AuthLayout width="lg">
-      <PageHeader title={TITLE} description={DESCRIPTION}>
+      <PageHeader title={TITLE}>
         <Button variant="ghost" asChild>
           <Link to={chooser.returnRoute as never}>Cancel</Link>
+        </Button>
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() => addAccount.mutate({ data: { state } })}
+        >
+          Add another account
         </Button>
       </PageHeader>
       {failed === undefined ? null : (
@@ -65,20 +73,7 @@ export function GitHubAccountChooserPage({
           fallback="Hub couldn't reach this GitHub connection. Connect GitHub again."
         />
       )}
-      <Card
-        title="GitHub accounts"
-        description="Accounts where you can see the Hub app."
-        action={
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy}
-            onClick={() => addAccount.mutate({ data: { state } })}
-          >
-            Add another account
-          </Button>
-        }
-      >
+      <Card>
         <RecordList label="GitHub accounts">
           {chooser.choices.map((choice) => (
             <RecordRow
@@ -110,7 +105,7 @@ export function GitHubAccountChooserPage({
 export function GitHubAccountChooserSkeleton() {
   return (
     <AuthLayout width="lg">
-      <PageHeaderSkeleton description={DESCRIPTION} />
+      <PageHeader title={TITLE} />
       <CardSkeleton lines={2} />
     </AuthLayout>
   );
@@ -119,7 +114,7 @@ export function GitHubAccountChooserSkeleton() {
 export function GitHubAccountChooserUnavailable({ error }: { error: Result<unknown> }) {
   return (
     <AuthLayout width="lg">
-      <PageHeader title={TITLE} description={DESCRIPTION} />
+      <PageHeader title={TITLE} />
       <FailureAlert
         title="GitHub accounts unavailable"
         error={error}
@@ -151,12 +146,14 @@ function ChoiceAction({
   );
 }
 
-/** One line per account: what connecting it means, or why it cannot be connected. */
+/**
+ * One line per account: what kind of account it is, or why it cannot be connected. A connected
+ * account's pill already says so, so its line stays the kind of account.
+ */
 function explanation(choice: GitHubAccountChoice): string {
-  if (choice.availability === "available") {
+  if (choice.availability === "available" || choice.availability === "connected") {
     return choice.accountType === "User" ? "Personal account" : "Organization";
   }
-  if (choice.availability === "connected") return "Already connected to this organization.";
   if (choice.availability === "connectedElsewhere") {
     return "Connected to another organization on this Hub. Disconnect it there to connect it here.";
   }

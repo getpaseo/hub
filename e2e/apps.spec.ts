@@ -788,7 +788,7 @@ test("an account that already has the App connects from the chooser on both app 
     await github.connectFromGitHubChooser("orbit-inc", [
       {
         account: "acme-inc",
-        explanation: "Already connected to this organization.",
+        explanation: "Connected",
         connectable: false,
       },
       { account: "orbit-inc", explanation: "Organization", connectable: true },

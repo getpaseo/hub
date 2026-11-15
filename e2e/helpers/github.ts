@@ -7,7 +7,7 @@ const CHOOSER = "/connections/github";
 
 export interface GitHubAccountChoice {
   account: string;
-  /** The line under the account that says what connecting it means, or why it cannot. */
+  /** What the row says about the account: its kind, that it is connected, or why it cannot be. */
   explanation: string | RegExp;
   connectable: boolean;
 }
