@@ -575,7 +575,7 @@ function invocationRows(activity: RunActivity): readonly SummaryRow[] {
       ),
     },
     { label: "Failure reason", value: activity.failureReason ?? "—" },
-    { label: "Delivery", value: <span className="font-mono text-xs">{activity.deliveryId}</span> },
+    { label: "Delivery", identifier: activity.deliveryId },
   ];
 }
 

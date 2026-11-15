@@ -108,6 +108,7 @@ import type {
   ProjectActivityRunRecord,
   OrganizationEntitlementsRecord,
   OperatorOrganizationRecord,
+  OperatorMemberRecord,
   StampOrganizationEntitlementsInput,
   OverrideOrganizationEntitlementsInput,
   ClearOrganizationEntitlementsOverrideInput,
@@ -2617,7 +2618,7 @@ class PgDatabase implements Database {
   async listOrganizationsForOperator(): Promise<OperatorOrganizationRecord[]> {
     const rows = await query<OperatorOrganizationRow>(
       this.pool,
-      `select id, name, slug from organization order by lower(name), id`,
+      `select id, name, slug, created_at from organization order by lower(name), id`,
     );
     return rows.rows.map(toOperatorOrganizationRecord);
   }
@@ -2625,10 +2626,26 @@ class PgDatabase implements Database {
   async findOrganizationForOperator(slug: string): Promise<OperatorOrganizationRecord | undefined> {
     const rows = await query<OperatorOrganizationRow>(
       this.pool,
-      `select id, name, slug from organization where slug = $1 limit 1`,
+      `select id, name, slug, created_at from organization where slug = $1 limit 1`,
       [slug],
     );
     return rows.rows[0] === undefined ? undefined : toOperatorOrganizationRecord(rows.rows[0]);
+  }
+
+  async listOrganizationMembersForOperator(
+    organizationId: string,
+  ): Promise<OperatorMemberRecord[]> {
+    const rows = await query<OperatorMemberRow>(
+      this.pool,
+      `select member.id, member.user_id, "user".name, "user".email, member.role, member.created_at
+       from member
+       join "user" on "user".id = member.user_id
+       where member.organization_id = $1
+       order by case member.role when 'owner' then 0 when 'admin' then 1 else 2 end,
+         lower("user".name), member.id`,
+      [organizationId],
+    );
+    return rows.rows.map(toOperatorMemberRecord);
   }
 
   async findOrganizationSlugById(organizationId: string): Promise<string | undefined> {
@@ -4913,10 +4930,31 @@ interface OperatorOrganizationRow extends QueryRow {
   id: string;
   name: string;
   slug: string;
+  created_at: Date;
 }
 
 function toOperatorOrganizationRecord(row: OperatorOrganizationRow): OperatorOrganizationRecord {
-  return { id: row.id, name: row.name, slug: row.slug };
+  return { id: row.id, name: row.name, slug: row.slug, createdAt: row.created_at };
+}
+
+interface OperatorMemberRow extends QueryRow {
+  id: string;
+  user_id: string;
+  name: string;
+  email: string;
+  role: "owner" | "admin" | "member";
+  created_at: Date;
+}
+
+function toOperatorMemberRecord(row: OperatorMemberRow): OperatorMemberRecord {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    email: row.email,
+    role: row.role,
+    joinedAt: row.created_at,
+  };
 }
 
 export interface EntitlementChangeRow extends QueryRow {

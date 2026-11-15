@@ -927,6 +927,18 @@ export interface OperatorOrganizationRecord {
   id: string;
   name: string;
   slug: string;
+  createdAt: Date;
+}
+
+/** A member of an organization as the instance-operator surface sees it, for telling apart
+ * organizations that share a name. */
+export interface OperatorMemberRecord {
+  id: string;
+  userId: string;
+  name: string;
+  email: string;
+  role: "owner" | "admin" | "member";
+  joinedAt: Date;
 }
 
 export interface StampOrganizationEntitlementsInput {
@@ -1494,6 +1506,11 @@ export interface Database {
    * the operator flag at the caller. Undefined when no organization has that slug.
    */
   findOrganizationForOperator(slug: string): Promise<OperatorOrganizationRecord | undefined>;
+  /**
+   * An organization's members, owners first, without any membership check on the caller. The
+   * operator support path; gate on the operator flag at the caller.
+   */
+  listOrganizationMembersForOperator(organizationId: string): Promise<OperatorMemberRecord[]>;
   findOrganizationSlugById(organizationId: string): Promise<string | undefined>;
   /**
    * Single atomic conditional upsert: increments `used` by `amount` and returns the new

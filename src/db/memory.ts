@@ -89,6 +89,7 @@ import type {
   ProjectActivityRunListRecord,
   OrganizationEntitlementsRecord,
   OperatorOrganizationRecord,
+  OperatorMemberRecord,
   StampOrganizationEntitlementsInput,
   OverrideOrganizationEntitlementsInput,
   ClearOrganizationEntitlementsOverrideInput,
@@ -2782,6 +2783,24 @@ class MemoryDatabase implements Database {
     return this.operatorOrganizations().find((organization) => organization.slug === slug);
   }
 
+  /** The in-memory store keeps no user records, so a fixture membership's user id stands in for
+   * the member's name and email. */
+  async listOrganizationMembersForOperator(
+    organizationId: string,
+  ): Promise<OperatorMemberRecord[]> {
+    const joinedAt = this.options.now?.() ?? new Date();
+    return (this.options.memberships ?? [])
+      .filter((membership) => membership.organizationId === organizationId)
+      .map((membership) => ({
+        id: membership.membershipId,
+        userId: membership.userId,
+        name: membership.userId,
+        email: membership.userId,
+        role: membership.role,
+        joinedAt,
+      }));
+  }
+
   async findOrganizationSlugById(organizationId: string): Promise<string | undefined> {
     return this.operatorOrganizations().find((organization) => organization.id === organizationId)
       ?.slug;
@@ -2791,11 +2810,13 @@ class MemoryDatabase implements Database {
    * organizations only through those, so the operator picker reads the same source. */
   private operatorOrganizations(): OperatorOrganizationRecord[] {
     const seen = new Map<string, OperatorOrganizationRecord>();
+    const createdAt = this.options.now?.() ?? new Date();
     for (const membership of this.options.memberships ?? []) {
       seen.set(membership.organizationId, {
         id: membership.organizationId,
         name: membership.organizationName,
         slug: membership.organizationSlug,
+        createdAt,
       });
     }
     return Array.from(seen.values()).sort((left, right) => left.name.localeCompare(right.name));

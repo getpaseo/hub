@@ -164,6 +164,15 @@ export interface CurrentSubscriptionView {
   manageable: boolean;
 }
 
+/** What an instance operator needs to find an organization's billing during support: the plan
+ * view the organization itself sees, plus the Stripe customer to look up. */
+export interface OperatorBillingView extends Omit<
+  CurrentSubscriptionView,
+  "planSlug" | "manageable"
+> {
+  stripeCustomerId: string | null;
+}
+
 /** Thrown when a checkout is requested for a plan/interval that is not in the mirror. */
 export class BillingRequestError extends Error {
   constructor(message: string) {
@@ -360,6 +369,20 @@ export class BillingRuntime {
       cancelAtPeriodEnd: live ? subscription.cancelAtPeriodEnd : false,
       currentPeriodEnd: live ? (subscription.currentPeriodEnd?.toISOString() ?? null) : null,
       manageable: live,
+    };
+  }
+
+  async operatorBilling(organizationId: string): Promise<OperatorBillingView> {
+    const [subscription, customer] = await Promise.all([
+      this.subscriptionSnapshot(organizationId),
+      this.database.getOrganizationBillingCustomer(organizationId),
+    ]);
+    return {
+      planName: subscription.planName,
+      status: subscription.status,
+      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+      currentPeriodEnd: subscription.currentPeriodEnd,
+      stripeCustomerId: customer?.stripeCustomerId ?? null,
     };
   }
 

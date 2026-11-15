@@ -12,7 +12,7 @@ export interface ComboboxOption {
   /** The stored value. May be empty for an explicit "no choice" option. */
   value: string;
   label: string;
-  /** Extra words the search should match, e.g. a provider name or an alias. */
+  /** Words the search should match beyond the label and detail, e.g. an alias. */
   keywords?: readonly string[];
   /** The quiet second line under the label. */
   detail?: string;
@@ -138,7 +138,7 @@ export function Combobox<T extends ComboboxOption>({
                     // the rendered text. Naming the label keeps an explicit "no choice" option
                     // searchable while the real value still travels back through `onChange`.
                     value={option.value === "" ? option.label : option.value}
-                    {...(option.keywords === undefined ? {} : { keywords: [...option.keywords] })}
+                    keywords={comboboxSearchTerms(option)}
                     {...(option.disabled === undefined ? {} : { disabled: option.disabled })}
                     data-value={option.value}
                     onSelect={() => choose(option)}
@@ -169,6 +169,15 @@ export function Combobox<T extends ComboboxOption>({
       </PopoverContent>
     </Popover>
   );
+}
+
+/** Everything an option is found by: what it shows, plus its own keywords. */
+export function comboboxSearchTerms(option: ComboboxOption): string[] {
+  return [
+    option.label,
+    ...(option.detail === undefined ? [] : [option.detail]),
+    ...(option.keywords ?? []),
+  ];
 }
 
 /** The option a stored value refers to, or `undefined` when it refers to nothing on offer. */

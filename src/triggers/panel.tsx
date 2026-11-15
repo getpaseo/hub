@@ -72,7 +72,6 @@ const EVENT_OPTIONS: readonly ComboboxOption[] = EDITOR_EVENTS.map((value) => {
     value,
     label,
     detail: value,
-    keywords: [label, value],
     icon: <ProviderGlyph provider={provider} />,
   };
 });
@@ -1138,7 +1137,7 @@ function ProviderCatalogFields({
             value: `${entry.provider}/${model.id}`,
             label: model.label,
             detail: `${entry.label ?? entry.provider} · ${entry.provider}/${model.id}`,
-            keywords: [model.label, entry.label ?? entry.provider, model.id],
+            keywords: [entry.label ?? entry.provider],
           })),
   ) satisfies ComboboxOption[];
   const modeOptions = (selected.entry?.modes ?? []).map((mode) => ({

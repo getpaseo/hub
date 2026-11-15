@@ -87,6 +87,14 @@ describe("OperatorConsole authorization", () => {
       organizationSlug: customerSlug,
     });
     assert.equal(before.entitlements.effective.seats.max, null);
+    assert.equal(before.organization.slug, customerSlug);
+    assert.ok(!Number.isNaN(Date.parse(before.organization.createdAt)));
+    assert.equal(before.billing, null);
+    // The members tell two same-named organizations apart during support.
+    assert.deepEqual(
+      before.members.map(({ name, email, role }) => ({ name, email, role })),
+      [{ name: "Cyril", email: "cyril-operator@example.com", role: "owner" }],
+    );
 
     const after = await hub.console.override(
       operator.request(),
@@ -128,7 +136,7 @@ class OperatorHarness {
     private readonly entitlements: ComposedEntitlements,
     private readonly auth: AuthServer,
   ) {
-    this.console = new OperatorConsole(database, auth, entitlements.service);
+    this.console = new OperatorConsole(database, auth, entitlements.service, null);
   }
 
   static async start(postgres: StartedPostgreSqlContainer): Promise<OperatorHarness> {

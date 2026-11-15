@@ -56,6 +56,14 @@ test("an operator caps seats, a blocked invite explains itself, and the audit tr
     await page.screenshot({ path: `${SLICE_2_DIR}/01-operator-console.png`, fullPage: true });
   });
 
+  await test.step("find the organization by its ID and confirm it by its members", async () => {
+    await hub.expectOperatorFindsOrganizationById("owner", {
+      org: "Acme",
+      member: { name: owner.name, email: owner.email, role: "Owner" },
+    });
+    await page.screenshot({ path: `${SLICE_2_DIR}/01b-operator-members.png`, fullPage: true });
+  });
+
   await test.step("cap seats at 2 from the operator console with a required reason", async () => {
     await hub.openSeatOverrideEditor("owner", { org: "Acme", max: 2, reason });
     await page.screenshot({ path: `${SLICE_2_DIR}/02-override-editor.png`, fullPage: true });

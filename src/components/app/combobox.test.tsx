@@ -4,7 +4,13 @@ import { describe, it } from "vitest";
 
 const NOOP = (): void => {};
 
-import { Combobox, comboboxLabel, comboboxSelection, type ComboboxOption } from "./combobox.js";
+import {
+  Combobox,
+  comboboxLabel,
+  comboboxSearchTerms,
+  comboboxSelection,
+  type ComboboxOption,
+} from "./combobox.js";
 
 interface Model extends ComboboxOption {
   provider: string;
@@ -38,6 +44,20 @@ describe("what a combobox selection means", () => {
 
   it("resolves nothing for a value no option offers", () => {
     assert.equal(comboboxSelection(MODELS, "gemini"), undefined);
+  });
+});
+
+describe("what a combobox search matches", () => {
+  it("finds an option by what it shows, even when its value is an opaque key", () => {
+    assert.deepEqual(
+      comboboxSearchTerms({
+        value: "acme-2",
+        label: "Acme",
+        detail: "org_123",
+        keywords: ["acme"],
+      }),
+      ["Acme", "org_123", "acme"],
+    );
   });
 });
 

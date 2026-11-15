@@ -1135,6 +1135,23 @@ export class PaseoHub {
     return id;
   }
 
+  /** The operator console's details panel for one organization, read as label → value. */
+  async expectOperatorDetails(
+    alias: string,
+    input: { org: string; details: Readonly<Record<string, string>> },
+  ): Promise<void> {
+    await this.requireUser(alias).expectOperatorDetails(input);
+  }
+
+  /** The operator finds an organization by its ID and confirms it by who belongs to it. */
+  async expectOperatorFindsOrganizationById(
+    alias: string,
+    input: { org: string; member: { name: string; email: string; role: string } },
+  ): Promise<void> {
+    const id = await this.organizationIdForAlias(alias);
+    await this.requireUser(alias).expectOperatorFindsOrganizationById({ ...input, id });
+  }
+
   async openSeatOverrideEditor(
     alias: string,
     input: { org: string; max: number; reason: string },
@@ -4259,7 +4276,9 @@ class HubUser {
     // The heading renders immediately, before the organization list has loaded — wait for the
     // real picker (a combobox) rather than its loading skeleton, so this fails if the list never
     // arrives instead of racing ahead of it.
-    await expect(this.page.getByRole("combobox", { name: "Manage organization" })).toBeVisible();
+    await expect(
+      this.page.getByRole("combobox", { name: "Organization", exact: true }),
+    ).toBeVisible();
   }
 
   private limitRow(table: Locator, resource: string): Locator {
@@ -4278,8 +4297,55 @@ class HubUser {
    * loaded. Every operator override and audit read starts here. */
   private async openOperatorFor(org: string): Promise<void> {
     await this.openOperatorConsole();
-    await this.chooseOption(this.page.getByRole("combobox", { name: "Manage organization" }), org);
+    const picker = this.page.getByRole("combobox", { name: "Organization", exact: true });
+    await picker.click();
+    // Search by name, then pick the option by its name line: its ID line sits beneath it.
+    await this.page.getByPlaceholder("Search by name or ID…").fill(org);
+    await this.page
+      .getByRole("option")
+      .filter({ has: this.page.getByText(org, { exact: true }) })
+      .click();
+    await expect(picker).toHaveText(org);
     await expect(this.page.getByRole("table", { name: "Entitlements" })).toBeVisible();
+  }
+
+  async expectOperatorFindsOrganizationById(input: {
+    org: string;
+    id: string;
+    member: { name: string; email: string; role: string };
+  }): Promise<void> {
+    await this.openOperatorConsole();
+    const picker = this.page.getByRole("combobox", { name: "Organization", exact: true });
+    await picker.click();
+    await this.page.getByPlaceholder("Search by name or ID…").fill(input.id);
+    const option = this.page.getByRole("option");
+    await expect(option).toHaveCount(1);
+    await expect(option).toContainText(input.org);
+    await expect(option).toContainText(input.id);
+    await option.click();
+    await expect(picker).toHaveText(input.org);
+    await expect(this.operatorDetail("ID")).toContainText(input.id);
+    const members = this.page.getByRole("table", { name: "Members" });
+    await expect(members.getByRole("row").filter({ hasText: input.member.email })).toContainText(
+      `${input.member.name}${input.member.email}${input.member.role}`,
+    );
+  }
+
+  async expectOperatorDetails(input: {
+    org: string;
+    details: Readonly<Record<string, string>>;
+  }): Promise<void> {
+    await this.openOperatorFor(input.org);
+    for (const [label, value] of Object.entries(input.details)) {
+      await expect(this.operatorDetail(label)).toContainText(value);
+    }
+  }
+
+  private operatorDetail(label: string): Locator {
+    return this.page
+      .locator('dl[data-summary="Organization details"] > div')
+      .filter({ has: this.page.locator("dt", { hasText: new RegExp(`^${label}$`, "u") }) })
+      .locator("dd");
   }
 
   async openSeatOverrideEditor(input: { org: string; max: number; reason: string }): Promise<void> {
