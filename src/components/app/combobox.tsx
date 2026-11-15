@@ -121,7 +121,7 @@ export function Combobox<T extends ComboboxOption>({
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-(--radix-popper-anchor-width) p-0" align="start">
-        <Command>
+        <Command filter={comboboxMatches}>
           <CommandInput placeholder={searchPlaceholder ?? `${placeholder}…`} />
           <CommandList id={listId}>
             {loading ? (
@@ -178,6 +178,29 @@ export function comboboxSearchTerms(option: ComboboxOption): string[] {
     ...(option.detail === undefined ? [] : [option.detail]),
     ...(option.keywords ?? []),
   ];
+}
+
+/**
+ * Whether an option answers a search: every word typed appears as written inside something the
+ * option shows. cmdk's own filter accepts the letters in order however far apart, and once an
+ * opaque ID is part of what an option shows, "ac" matches nearly every organization by letters
+ * scattered through its ID. Reading a search as words people recognise keeps the list to the
+ * options they are looking at.
+ *
+ * `value` and `terms` are what cmdk hands its filter: the item's value and its `keywords`, which
+ * `comboboxSearchTerms` fills with everything the option displays.
+ */
+export function comboboxMatches(
+  value: string,
+  search: string,
+  terms: readonly string[] = [],
+): number {
+  const haystack = [value, ...terms].join(" ").toLowerCase();
+  const words = search
+    .toLowerCase()
+    .split(/\s+/u)
+    .filter((word) => word !== "");
+  return words.every((word) => haystack.includes(word)) ? 1 : 0;
 }
 
 /** The option a stored value refers to, or `undefined` when it refers to nothing on offer. */

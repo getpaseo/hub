@@ -30,7 +30,7 @@ import {
 import { Skeleton } from "../components/ui/skeleton.js";
 import type { EntitlementChangeSource } from "../db/types.js";
 import type { EntitlementPatch, OverrideKey } from "../entitlements/catalog.js";
-import type { OperatorConsole } from "./console.js";
+import type { OperatorBilling, OperatorConsole } from "./console.js";
 import {
   operatorClearOverride,
   operatorOrganizations,
@@ -490,17 +490,19 @@ function detailRows(snapshot: Snapshot): SummaryRow[] {
     { label: "Created", value: <RelativeTime value={organization.createdAt} /> },
   ];
   if (billing === null) return rows;
+  if (billing.kind === "unavailable") return [...rows, { label: "Billing", value: "Unavailable" }];
+  const { facts } = billing;
   return [
     ...rows,
-    { label: "Plan", value: billing.planName ?? "No plan" },
-    { label: "Subscription", value: <Subscription billing={billing} /> },
-    billing.stripeCustomerId === null
+    { label: "Plan", value: facts.planName ?? "No plan" },
+    { label: "Subscription", value: <Subscription billing={facts} /> },
+    facts.stripeCustomerId === null
       ? { label: "Stripe customer", value: "None" }
-      : { label: "Stripe customer", identifier: billing.stripeCustomerId },
+      : { label: "Stripe customer", identifier: facts.stripeCustomerId },
   ];
 }
 
-function Subscription({ billing }: { billing: NonNullable<Snapshot["billing"]> }) {
+function Subscription({ billing }: { billing: OperatorBilling }) {
   if (billing.status === null) return "None";
   const status = statusLabel(billing.status);
   if (billing.currentPeriodEnd === null) return status;

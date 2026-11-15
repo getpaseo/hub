@@ -1,4 +1,5 @@
 import type { AccountAccessValue } from "../auth/organization-access.js";
+import { reportFailure } from "../failures/index.js";
 import type {
   Database,
   EntitlementChangeSource,
@@ -48,6 +49,15 @@ export interface OperatorBilling {
   currentPeriodEnd: string | null;
   stripeCustomerId: string | null;
 }
+
+/**
+ * Billing is a side fact of the snapshot, never a dependency of it: Stripe being unreachable must
+ * not take down entitlements or make a committed override look failed. A failed read is reported
+ * and surfaces as `unavailable` so the Details panel can say so.
+ */
+export type OperatorBillingState =
+  | { kind: "unavailable" }
+  | { kind: "loaded"; facts: OperatorBilling };
 
 export interface OperatorOrganization {
   id: string;
@@ -118,7 +128,7 @@ export interface OperatorMember {
 export interface OperatorSnapshot {
   organization: OperatorOrganization;
   /** Null on an instance without billing. */
-  billing: OperatorBilling | null;
+  billing: OperatorBillingState | null;
   members: OperatorMember[];
   entitlements: OperatorEntitlementsView;
   seatsInUse: number;
@@ -192,9 +202,23 @@ export class OperatorConsole {
     return organization;
   }
 
+  private async readBilling(organizationId: string): Promise<OperatorBillingState | null> {
+    if (this.billing === null) return null;
+    try {
+      return { kind: "loaded", facts: await this.billing.operatorBilling(organizationId) };
+    } catch (error) {
+      reportFailure(error, {
+        operation: "operator.billing",
+        component: "operator",
+        provider: "stripe",
+      });
+      return { kind: "unavailable" };
+    }
+  }
+
   private async buildSnapshot(organization: OperatorOrganizationRecord): Promise<OperatorSnapshot> {
     const [billing, members, record, seats, usage, overages, history] = await Promise.all([
-      this.billing === null ? null : this.billing.operatorBilling(organization.id),
+      this.readBilling(organization.id),
       this.database.listOrganizationMembersForOperator(organization.id),
       this.entitlements.read(organization.id),
       this.entitlements.capUsage(organization.id, "seats"),
