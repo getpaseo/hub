@@ -5,7 +5,7 @@ export type OrganizationSection =
   | "Triggers"
   | "Activity"
   | "Daemons"
-  | "Connections"
+  | "Integrations"
   | "Settings";
 export type OrganizationSettingsSection = "Team" | "API keys" | "Usage" | "Billing";
 export type ProjectSection = "Overview" | "Configuration" | "Activity" | "Settings";

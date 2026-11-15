@@ -14,7 +14,7 @@ import { githubAccountChoices } from "../connections/github-accounts/functions.j
  * A step of the round trip to GitHub, so it sits outside the dashboard shell: a connection
  * started from first-run app setup reaches it before the shell exists for that account.
  */
-export const Route = createFileRoute("/connections_/github")({
+export const Route = createFileRoute("/integrations_/github")({
   validateSearch: z.object({ state: z.string().catch("") }),
   loaderDeps: ({ search }) => ({ state: search.state }),
   loader: async ({ deps }) => {

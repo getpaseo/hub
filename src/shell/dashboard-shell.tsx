@@ -374,7 +374,7 @@ const ORGANIZATION_SECTIONS: readonly SectionDestination[] = [
   { section: "triggers", label: "Triggers", icon: Zap, subtree: true },
   { section: "activity", label: "Activity", icon: History },
   { section: "daemons", label: "Daemons", icon: Cpu },
-  { section: "connections", label: "Connections", icon: Cable },
+  { section: "integrations", label: "Integrations", icon: Cable },
   { section: "settings", label: "Settings", icon: Settings, subtree: true },
 ];
 const PROJECT_SECTIONS: readonly SectionDestination[] = [

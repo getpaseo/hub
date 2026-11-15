@@ -3,7 +3,7 @@ import { expect, type Page } from "@playwright/test";
 const GITHUB = "/e2e/github";
 const AUTHORIZE_PAGE = `${GITHUB}/login/oauth/authorize`;
 const INSTALL_PAGE = `${GITHUB}/apps/paseo/installations/new`;
-const CHOOSER = "/connections/github";
+const CHOOSER = "/integrations/github";
 
 export interface GitHubAccountChoice {
   account: string;

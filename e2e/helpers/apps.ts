@@ -223,7 +223,7 @@ export class AppSection {
     await github.authorizeWhenAsked();
     await github.expectChooser(choices);
     await github.choose(account);
-    await expect(this.page).not.toHaveURL((url) => url.pathname.startsWith("/connections"));
+    await expect(this.page).not.toHaveURL((url) => url.pathname.startsWith("/integrations"));
     github.expectInstallPageNotVisited();
   }
 

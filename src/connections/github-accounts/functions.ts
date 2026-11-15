@@ -9,7 +9,7 @@ import { connectionOperationRequest } from "../operation-request.server.js";
  * The chooser's three requests. Each carries only the attempt's state; the daemon side reads
  * what the attempt verified and refuses anything else. When the attempt is gone, or a step
  * fails, the answer is where to send the browser, so the page never has to explain a failure
- * the connections page already knows how to show.
+ * the integrations page already knows how to show.
  */
 
 const availabilitySchema = z.enum(["available", "connected", "connectedElsewhere", "notOwner"]);

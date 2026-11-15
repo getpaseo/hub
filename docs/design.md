@@ -130,6 +130,7 @@ missing app component.
 | `Section`                                                               | Group content under a quiet heading with an optional trailing action.               |
 | `Card`, `CardSkeleton`                                                  | Put content in a bordered surface. Icon, title, description, and action optional.   |
 | `Steps`                                                                 | Number a run of cards in order and join them with a rail.                           |
+| `ProgressSteps`                                                         | Walk a checklist inside a card, one open step at a time.                            |
 | `DataTable`, `DataRow`, `DataCell`, `DataTableSkeleton`                 | List records at page level, in columns.                                             |
 | `RecordList`, `RecordRow`                                               | List a card's own few records, with no header row to repeat the card's subject.     |
 | `TwoLine`                                                               | Show a primary fact over a muted secondary one, in a cell or a row.                 |

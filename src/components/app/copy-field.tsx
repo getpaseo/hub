@@ -133,9 +133,15 @@ export function CopyField({
   value,
   copyLabel,
   focusOnMount = false,
+  labelHidden = false,
 }: {
   label: string;
   value: string;
+  /**
+   * Keep the label for assistive technology only, when the text right above the field already
+   * says what the value is — a checklist step whose title and hint introduce its command.
+   */
+  labelHidden?: boolean;
   /** The copy button's accessible name, when "Copy <label>" is not what it should say. */
   copyLabel?: string;
   focusOnMount?: boolean;
@@ -170,7 +176,9 @@ export function CopyField({
   }, [copy, select]);
   return (
     <Field className="min-w-0 gap-2">
-      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      <FieldLabel htmlFor={id} className={labelHidden ? "sr-only" : undefined}>
+        {label}
+      </FieldLabel>
       {/*
         The box is the control, so the box carries the ring: the input inside it is borderless
         and drawing a 2px-offset outline around it would land the ring inside the border it is

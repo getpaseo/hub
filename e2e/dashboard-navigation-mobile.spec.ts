@@ -24,7 +24,7 @@ test("shows the flat organization product in the mobile drawer", async ({ hub, p
     "Triggers",
     "Activity",
     "Daemons",
-    "Connections",
+    "Integrations",
     "Settings",
   ]);
   await expect(organizationSwitcher).toContainText("Acme");

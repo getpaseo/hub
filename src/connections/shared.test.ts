@@ -3,7 +3,7 @@ import { Writable } from "node:stream";
 import { describe, it } from "vitest";
 import { ProductRequestError } from "../auth/organization-access.js";
 import { createLogger } from "../logger.js";
-import { CONNECTIONS_RETURN_ROUTE, connectionCallbackFailure } from "./shared.js";
+import { INTEGRATIONS_RETURN_ROUTE, connectionCallbackFailure } from "./shared.js";
 
 class CaptureStream extends Writable {
   readonly chunks: string[] = [];
@@ -35,7 +35,7 @@ describe("connection callback failures", () => {
         headers: { cookie: "session=secret" },
       }),
       applicationBaseUrl: "https://hub.test",
-      returnRoute: "/o/acme/connections",
+      returnRoute: "/o/acme/integrations",
       log: createLogger(stream),
     });
 
@@ -53,7 +53,7 @@ describe("connection callback failures", () => {
     assert.match(output, /"sessionCookiePresent":true/u);
     assert.equal(response.status, 303);
     const location = new URL(response.headers.get("location")!);
-    assert.equal(location.origin + location.pathname, "https://hub.test/o/acme/connections");
+    assert.equal(location.origin + location.pathname, "https://hub.test/o/acme/integrations");
     assert.equal(location.searchParams.get("app"), "github");
     assert.equal(location.searchParams.get("result"), "connection_unavailable");
     const reference = location.searchParams.get("reference");
@@ -72,14 +72,14 @@ describe("connection callback failures", () => {
         headers: { host: "hub.fly.example" },
       }),
       applicationBaseUrl: "https://hub.test",
-      returnRoute: CONNECTIONS_RETURN_ROUTE,
+      returnRoute: INTEGRATIONS_RETURN_ROUTE,
       log: createLogger(stream),
     });
 
     assert.equal(response.status, 303);
     assert.equal(
       response.headers.get("location"),
-      "https://hub.test/connections?app=github&result=connection_unauthenticated",
+      "https://hub.test/integrations?app=github&result=connection_unauthenticated",
     );
     const output = stream.text();
     assert.match(output, /"failureKind":"authentication"/u);

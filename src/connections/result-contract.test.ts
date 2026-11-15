@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import {
-  CONNECTIONS_RETURN_ROUTE,
+  INTEGRATIONS_RETURN_ROUTE,
   connectionReturnCopy,
   connectionReturnUrl,
   readConnectionReturn,
@@ -10,14 +10,14 @@ import {
 
 describe("connection return contract", () => {
   it("round-trips a return through the location it is carried in", () => {
-    const url = connectionReturnUrl("https://hub.test", "/o/acme/connections", {
+    const url = connectionReturnUrl("https://hub.test", "/o/acme/integrations", {
       provider: "github",
       result: "connection_unavailable",
       reference: "req-1",
     });
     assert.equal(
       url.toString(),
-      "https://hub.test/o/acme/connections?app=github&result=connection_unavailable&reference=req-1",
+      "https://hub.test/o/acme/integrations?app=github&result=connection_unavailable&reference=req-1",
     );
     assert.deepEqual(readConnectionReturn(url), {
       provider: "github",
@@ -28,16 +28,16 @@ describe("connection return contract", () => {
 
   it("only reads returns from providers it knows, and shows unknown results as failures", () => {
     assert.equal(
-      readConnectionReturn(new URL("https://hub.test/o/acme/connections?result=github_connected")),
+      readConnectionReturn(new URL("https://hub.test/o/acme/integrations?result=github_connected")),
       undefined,
     );
     assert.equal(
-      readConnectionReturn(new URL("https://hub.test/o/acme/connections?app=jira&result=x")),
+      readConnectionReturn(new URL("https://hub.test/o/acme/integrations?app=jira&result=x")),
       undefined,
     );
     assert.deepEqual(
       readConnectionReturn(
-        new URL("https://hub.test/o/acme/connections?app=slack&result=something_nobody_mapped"),
+        new URL("https://hub.test/o/acme/integrations?app=slack&result=something_nobody_mapped"),
       ),
       { provider: "slack", result: "connection_unavailable" },
     );
@@ -51,7 +51,7 @@ describe("connection return contract", () => {
   });
 
   it("falls back to the connections landing, never the dashboard landing", () => {
-    assert.equal(CONNECTIONS_RETURN_ROUTE, "/connections");
+    assert.equal(INTEGRATIONS_RETURN_ROUTE, "/integrations");
   });
 
   it("phrases every outcome with what happened and what to do next", () => {

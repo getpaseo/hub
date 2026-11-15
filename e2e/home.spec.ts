@@ -23,33 +23,36 @@ test("walks a hosted organization from sign-in to its first run", async ({ hub, 
   const home = new OrganizationHome(page);
   const triggers = new OrganizationTriggers(page);
 
-  await test.step("a fresh organization lands on Home with every step to do", async () => {
+  await test.step("a fresh organization lands on Home with only the first step open", async () => {
     await home.expectOpen();
-    await home.expectProgress("0 of 4 done");
-    await home.expectStep("Connect an app", "To do");
-    await home.expectStep("Connect a daemon", "To do");
-    await expect(home.command("Connect a daemon")).toHaveText(
-      `paseo hub login ${hub.primaryApplication().origin}`,
-    );
-    await home.expectStep("Create a trigger", "To do");
-    await home.expectStep("Run it", "To do");
+    await home.expectProgress("0 of 4");
+    await home.expectCurrentStep("Connect an integration");
+    await home.expectStep("Connect a daemon", "to do");
+    await expect(home.command("Connect a daemon")).toHaveCount(0);
+    await home.expectStep("Create a trigger", "to do");
+    await home.expectStep("Run it", "to do");
     await home.expectNoNudge();
-    await home.expectRuns(0, "0 succeeded · 0 failed");
+    await home.expectNoOverview();
     await home.capture(`${SHOTS}/01-fresh.png`);
   });
 
-  await test.step("connecting GitHub completes the first step", async () => {
-    await home.followStepAction("Connect an app", "Connect an app");
+  await test.step("connecting GitHub completes the first step and opens the daemon step", async () => {
+    await home.followStepAction("Connect an integration", "Connect integration");
     await hub.connectGitHub("owner");
     await home.open();
-    await home.expectStep("Connect an app", "Done");
-    await home.expectStep("Connect an app", "acme-inc");
+    await home.expectStep("Connect an integration", "done");
+    await home.expectStepText("Connect an integration", "acme-inc");
+    await home.expectCurrentStep("Connect a daemon");
+    await expect(home.command("Connect a daemon")).toHaveText(
+      `paseo hub login ${hub.primaryApplication().origin}`,
+    );
   });
 
   await test.step("a daemon enrolled without execute permission is connected but cannot run agents", async () => {
     await hub.seedConnectedOnlyDaemon("owner", "laptop");
     await home.reload();
-    await home.expectStep("Connect a daemon", "Cannot run agents");
+    await home.expectStep("Connect a daemon", "needs attention");
+    await home.expectStepText("Connect a daemon", "laptop cannot run agents yet");
     await expect(home.command("Connect a daemon")).toHaveText(
       "paseo hub permissions grant hub.execute",
     );
@@ -60,8 +63,8 @@ test("walks a hosted organization from sign-in to its first run", async ({ hub, 
   await test.step("a daemon that can run agents completes the second step", async () => {
     daemon = await hub.connectProviderDaemon("owner", "Acme");
     await home.reload();
-    await home.expectStep("Connect a daemon", "Done");
-    await home.expectProgress("2 of 4 done");
+    await home.expectStep("Connect a daemon", "done");
+    await home.expectProgress("2 of 4");
   });
 
   await test.step("events arriving with no trigger listening are a nudge to create one", async () => {
@@ -87,10 +90,10 @@ test("walks a hosted organization from sign-in to its first run", async ({ hub, 
     });
     await triggers.save("deploy");
     await home.open();
-    await home.expectStep("Create a trigger", "Done");
-    await home.expectStep("Run it", "To do");
-    await home.expectStep("Run it", "POST /api/v1/manual-runs");
-    await home.expectProgress("3 of 4 done");
+    await home.expectStep("Create a trigger", "done");
+    await home.expectCurrentStep("Run it");
+    await home.expectStepText("Run it", "POST /api/v1/manual-runs");
+    await home.expectProgress("3 of 4");
   });
 
   await test.step("the first run completes the list, which collapses and stays toggleable", async () => {
@@ -102,14 +105,14 @@ test("walks a hosted organization from sign-in to its first run", async ({ hub, 
     });
     expect(run.workflowStatus).toBe("running");
     await home.open();
-    await home.expectProgress("4 of 4 done");
+    await home.expectProgress("4 of 4");
     await home.expectCollapsed();
     await home.expectRuns(1, "0 succeeded · 0 failed");
     await home.expectRecentRun("deploy", "Running");
     await home.capture(`${SHOTS}/04-complete.png`);
     await home.toggle();
     await home.expectExpanded();
-    await home.expectStep("Run it", "Done");
+    await home.expectStep("Run it", "done");
     await home.reload();
     await home.expectCollapsed();
   });
@@ -125,9 +128,9 @@ test("sends a self-hosted operator with no provider app to app setup", async ({ 
     await session.surface.leave("Do this later");
     const home = new OrganizationHome(session.page);
     await home.expectOpen();
-    await home.expectStep("Connect an app", "Needs setup");
+    await home.expectStep("Connect an integration", "needs attention");
     await home.capture(`${SHOTS}/05-self-hosted-setup.png`);
-    await home.followStepAction("Connect an app", "Set up apps");
+    await home.followStepAction("Connect an integration", "Set up apps");
     await expect(session.page).toHaveURL(/\/apps$/u);
     await session.surface.expectManagement();
   } finally {
