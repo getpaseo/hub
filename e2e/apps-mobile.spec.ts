@@ -58,7 +58,7 @@ test("the whole app setup journey completes at phone width", async ({ hub }) => 
     await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-03-github-verified.mobile");
 
-    await github.action("Install on GitHub").click();
+    await github.connectGitHub();
     await github.expectStatus("Connected");
     await github.expectSummary({
       Installations: "acme-inc",

@@ -29,7 +29,10 @@ export function RecordRow({
   children: ReactNode;
   /** Its state, always a `StatusPill`. */
   status?: ReactNode;
-  /** Its actions, always behind a `RowActions` kebab. */
+  /**
+   * Its actions: a `RowActions` kebab for managing the record, or a single button when acting on
+   * it is why the list is shown, as when picking which account to connect.
+   */
   actions?: ReactNode;
 }) {
   return (

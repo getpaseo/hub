@@ -1,9 +1,9 @@
 import { createServerFn } from "@tanstack/react-start";
-import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
 import { respondOk, type Result } from "../contract/respond.js";
 import { respondWithFailure } from "../failures/index.js";
 import { handleConnections } from "../server/runtime.js";
+import { connectionOperationRequest } from "./operation-request.server.js";
 import {
   CONNECTION_PROVIDERS,
   connectionProviderName,
@@ -207,16 +207,9 @@ function operationRequest(
   scope: { organizationSlug: string; projectSlug?: string | undefined },
   connectionId?: string,
 ): Request {
-  const incoming = getRequest();
-  const headers = new Headers(incoming.headers);
-  headers.delete("content-length");
-  const url = new URL(path, incoming.url);
-  url.searchParams.set("organizationSlug", scope.organizationSlug);
-  if (scope.projectSlug !== undefined) url.searchParams.set("projectSlug", scope.projectSlug);
-  if (connectionId !== undefined) url.searchParams.set("connectionId", connectionId);
-  return new Request(url, {
-    method,
-    headers,
-    ...(method === "POST" ? { body: "{}" } : {}),
+  return connectionOperationRequest(method, path, {
+    organizationSlug: scope.organizationSlug,
+    ...(scope.projectSlug === undefined ? {} : { projectSlug: scope.projectSlug }),
+    ...(connectionId === undefined ? {} : { connectionId }),
   });
 }

@@ -13,7 +13,7 @@ import {
   TEST_DAEMON_SLUG,
 } from "../../test-utils/project-configuration.js";
 import type { ProjectRecord, StartConnectionAttemptInput } from "../../db/types.js";
-import type { GitHubConnectionClient } from "./client.js";
+import { FakeGitHub, fakeGitHubConnectionClient } from "../../test-utils/fake-github.js";
 import { createGitHubRegistration } from "./index.js";
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
@@ -94,7 +94,7 @@ describe("GitHub registration", () => {
       publicBaseUrl: "https://hub.test",
       configuration: githubConfiguration(),
       appAuth: githubAuth(),
-      connectionClient: new GitHubClientFake(),
+      connectionClient: githubConnectionClient(),
       configurationProvider: configuration,
       reactionClient: {
         createReaction: () => Promise.resolve({ id: 1 }),
@@ -169,7 +169,7 @@ describe("GitHub registration", () => {
         revokeInstallationToken: () => Promise.resolve(),
         createInstallationOctokit: () => Promise.reject(new Error("unused")),
       },
-      connectionClient: new GitHubClientFake(),
+      connectionClient: githubConnectionClient(),
       reactionClient: {
         createReaction: () => Promise.resolve({ id: 1 }),
         deleteReaction: () => Promise.resolve(),
@@ -196,7 +196,7 @@ describe("GitHub registration", () => {
     const body: unknown = await response.json();
     assert(body !== null && typeof body === "object" && "url" in body);
     assert(typeof body.url === "string");
-    assert.match(body.url, /^https:\/\/github\.test\/setup/u);
+    assert.match(body.url, /^https:\/\/github\.test\/login\/oauth\/authorize\?/u);
   });
 
   it("reports readiness without constructing partial provider behavior", () => {
@@ -263,7 +263,7 @@ describe("GitHub registration", () => {
         revokeInstallationToken: () => Promise.resolve(),
         createInstallationOctokit: () => Promise.reject(new Error("unused")),
       },
-      connectionClient: new GitHubClientFake(),
+      connectionClient: githubConnectionClient(),
       reactionClient: {
         createReaction: () => Promise.resolve({ id: 1 }),
         deleteReaction: () => Promise.resolve(),
@@ -335,7 +335,7 @@ describe("GitHub registration", () => {
         },
         createInstallationOctokit: () => Promise.reject(new Error("unused")),
       },
-      connectionClient: new GitHubClientFake(),
+      connectionClient: githubConnectionClient(),
       reactionClient: {
         createReaction: () => Promise.resolve({ id: 1 }),
         deleteReaction: () => Promise.resolve(),
@@ -429,7 +429,7 @@ describe("GitHub registration", () => {
       publicBaseUrl: "https://hub.test",
       configuration: githubConfiguration(),
       appAuth: githubAuth(),
-      connectionClient: new GitHubClientFake(),
+      connectionClient: githubConnectionClient(),
       reactionClient: {
         createReaction: () => Promise.resolve({ id: 1 }),
         deleteReaction: () => Promise.resolve(),
@@ -457,7 +457,7 @@ describe("GitHub registration", () => {
       publicBaseUrl: "https://hub.test",
       configuration: githubConfiguration(),
       appAuth: githubAuth(),
-      connectionClient: new GitHubClientFake(),
+      connectionClient: githubConnectionClient(),
       reactionClient: {
         createReaction: () => Promise.resolve({ id: 1 }),
         deleteReaction: () => Promise.resolve(),
@@ -557,19 +557,11 @@ class RegistrationConfigurationFake implements GitHubConfigurationProvider {
   }
 }
 
-class GitHubClientFake implements GitHubConnectionClient {
-  setupUrl(state: string): string {
-    return `https://github.test/setup?state=${state}`;
-  }
-  authorizationUrl({ state }: { state: string; challenge: string }): string {
-    return `https://github.test/authorize?state=${state}`;
-  }
-  verifyUserInstallation() {
-    return Promise.resolve(undefined);
-  }
-  getInstallation(): ReturnType<GitHubConnectionClient["getInstallation"]> {
-    return Promise.resolve({ status: "absent" as const });
-  }
+function githubConnectionClient() {
+  return fakeGitHubConnectionClient(
+    new FakeGitHub({ webBaseUrl: "https://github.test", hubOrigin: () => "https://hub.test" }),
+    "https://hub.test",
+  );
 }
 
 class RegistrationAuth implements AuthServer {

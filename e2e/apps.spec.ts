@@ -99,7 +99,6 @@ test("GitHub repository access is set up on plain HTTP while event triggers wait
       Issues: "Read and write",
       "Pull requests": "Read and write",
       Metadata: "Read-only",
-      Members: "Read-only",
     });
 
     // Event triggers are a separate, deferred job here — and repository access is not blocked.
@@ -135,7 +134,7 @@ test("GitHub repository access is set up on plain HTTP while event triggers wait
     await surface.accessible();
     await surface.shoot(SHOTS, "apps-03-github-verified.desktop");
 
-    await github.action("Install on GitHub").click();
+    await github.connectGitHub();
     await github.expectFocusedResult("GitHub connected.");
     // The outcome is consumed, so a reload cannot replay it.
     await expect(page).not.toHaveURL(/[?&](?:app|result)=/u);
@@ -179,7 +178,7 @@ test("on HTTPS GitHub event triggers are set up beside repository access", async
     await github.expectStatus("Verified");
     await github.expectSummary({ Events: "Not set up" });
 
-    await github.action("Install on GitHub").click();
+    await github.connectGitHub();
     await github.expectStatus("Connected");
     await github.expectSummary({ Installations: "acme-inc", Events: "Not set up" });
 
@@ -564,7 +563,7 @@ test("every way a provider can send the operator back is answered in that sectio
       {
         provider: "github" as const,
         result: "github_cancelled",
-        copy: "Installation cancelled at GitHub. Nothing changed. Start again when you're ready.",
+        copy: "Authorization cancelled at GitHub. Nothing changed. Start again when you're ready.",
         focus: "result" as const,
       },
       {
@@ -671,7 +670,7 @@ test("an environment-managed app is read-only, connectable, and names its variab
     await surface.shoot(SHOTS, "apps-16-instance-apps-environment.desktop");
 
     // Environment-managed is still connectable.
-    await github.action("Install on GitHub").click();
+    await github.connectGitHub();
     await github.expectStatus("Managed by environment");
     await github.expectSummary({ Installations: "acme-inc" });
   } finally {
@@ -689,7 +688,7 @@ test("the operator finishes, then manages the same apps from the account menu", 
     await surface.github.expand();
     await surface.github.fillWorkingCredentials();
     await surface.github.save();
-    await surface.github.action("Install on GitHub").click();
+    await surface.github.connectGitHub();
     await surface.github.expectStatus("Connected");
 
     await surface.slack.expand();
@@ -757,6 +756,46 @@ test("the operator finishes, then manages the same apps from the account menu", 
       await expect(github.form()).toHaveCount(0);
       await github.expectStatus("Connected");
     });
+  } finally {
+    await session.close();
+  }
+});
+
+test("an account that already has the App connects from the chooser on both app surfaces", async ({
+  hub,
+}) => {
+  const session = await openSetup(hub);
+  try {
+    const { surface, page, application } = session;
+    const github = surface.github;
+    await github.expand();
+    await github.fillWorkingCredentials();
+    await github.save();
+    await github.expectStatus("Verified");
+
+    await application.github({ op: "install", account: "acme-inc" });
+    await github.connectFromGitHubChooser("acme-inc", [
+      { account: "acme-inc", explanation: "Organization", connectable: true },
+    ]);
+    await expect(page).toHaveURL((url) => url.pathname === "/");
+    await github.expectFocusedResult("GitHub connected.");
+    await github.expectSummary({ Installations: "acme-inc" });
+
+    await surface.leave("Finish");
+    await session.navigateToApps();
+    await application.github({ op: "install", account: "orbit-inc" });
+    await github.expand();
+    await github.connectFromGitHubChooser("orbit-inc", [
+      {
+        account: "acme-inc",
+        explanation: "Connected",
+        connectable: false,
+      },
+      { account: "orbit-inc", explanation: "Organization", connectable: true },
+    ]);
+    await expect(page).toHaveURL((url) => url.pathname === "/apps");
+    await github.expectFocusedResult("GitHub connected.");
+    await github.expectSummary({ Installations: /acme-inc.*orbit-inc|orbit-inc.*acme-inc/u });
   } finally {
     await session.close();
   }

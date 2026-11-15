@@ -404,6 +404,7 @@ function callbackDatabase() {
       sessionId: input.access.sessionId,
       candidateExternalId: null,
       pkceVerifier: null,
+      installationChoices: null,
       configurationVersion: input.configurationVersion,
       providerApplicationId: input.providerApplicationId,
       callbackOrigin: input.callbackOrigin,

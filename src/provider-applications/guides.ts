@@ -176,18 +176,6 @@ export const GITHUB_GUIDE: ProviderGuide = {
         },
         {
           segments: [
-            { kind: "text", value: "Under " },
-            { kind: "term", value: "Organization permissions" },
-            {
-              kind: "text",
-              value:
-                ", grant Members read-only access so Hub can verify that the person connecting an organization installation is an organization admin. For an existing App, approve this permission on the installation before reconnecting.",
-            },
-          ],
-          permissions: [{ name: "Members", access: "Read-only" }],
-        },
-        {
-          segments: [
             { kind: "text", value: "Create the App, then generate a " },
             { kind: "term", value: "Client secret" },
             { kind: "text", value: " and a " },
@@ -301,8 +289,8 @@ export const GITHUB_GUIDE: ProviderGuide = {
   actions: {
     save: "Verify and save",
     savePending: "Verifying…",
-    connect: "Install on GitHub",
-    connectAgain: "Add another installation",
+    connect: "Connect GitHub",
+    connectAgain: "Connect GitHub",
   },
   verifiedMessage: "GitHub accepted this App.",
   requiresHttps: false,

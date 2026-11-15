@@ -380,6 +380,7 @@ export type ConnectionProvider = "github" | "discord" | "slack" | "linear";
 export type ConnectionAttemptPhase =
   | "github_setup"
   | "github_user_authorization"
+  | "github_selection"
   | "discord_authorization"
   | "slack_authorization"
   | "linear_authorization";
@@ -405,6 +406,8 @@ export interface ConnectionAttemptRecord {
   sessionId: string;
   candidateExternalId: string | null;
   pkceVerifier: string | null;
+  /** The GitHub accounts offered in `github_selection`, as the GitHub module stored them. */
+  installationChoices: unknown;
   configurationVersion: number;
   providerApplicationId: string | null;
   callbackOrigin: string;
@@ -474,6 +477,8 @@ export interface StartConnectionAttemptInput {
   provider: ConnectionProvider;
   stateVerifier: string;
   access: ConnectionStartAuthority;
+  /** Set when the attempt opens with a PKCE authorization, as GitHub's does. */
+  pkceVerifier?: string;
   lifetimeMinutes: number;
   configurationVersion: number;
   providerApplicationId: string;
@@ -489,10 +494,18 @@ export interface ReadConnectionAttemptInput {
   access: ConnectionAccountAccess;
 }
 
+/** Where a GitHub attempt goes next. Every step issues a new state, so an old link stops working. */
+export type GitHubConnectionAttemptStep =
+  /** Off to GitHub's install page. */
+  | { phase: "github_setup" }
+  /** Off to GitHub's authorize page, with the installation GitHub just reported, if any. */
+  | { phase: "github_user_authorization"; installationId: number | null; pkceVerifier: string }
+  /** On Hub's chooser, offering the accounts verified for this person. */
+  | { phase: "github_selection"; installationChoices: unknown };
+
 export interface AdvanceGitHubConnectionAttemptInput extends ReadConnectionAttemptInput {
   nextStateVerifier: string;
-  installationId: number;
-  pkceVerifier: string;
+  next: GitHubConnectionAttemptStep;
 }
 
 export type GitHubRepositorySnapshot = Pick<

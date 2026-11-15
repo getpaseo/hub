@@ -19,6 +19,7 @@ import type { HubBundleFile } from "../../src/config/bundle.js";
 import type { BrowserDiscordEvent } from "../../src/e2e/harness/browser-providers.js";
 import type { BrowserProviderScenario } from "../../src/e2e/harness/browser-providers.js";
 import type { FixtureBillingProduct } from "../../src/e2e/harness/browser-billing.js";
+import type { FakeGitHubCommand } from "../../src/test-utils/fake-github.js";
 import {
   FIXTURE_BILLING_PRODUCTS,
   fixtureSubscriptionId,
@@ -26,6 +27,7 @@ import {
 import { configurationBundleFixture } from "../../src/test-utils/configuration-bundle.js";
 import { slugify } from "../../src/slug.js";
 import { AppSetupSurface, allowClipboard } from "./apps.js";
+import { GitHubConnectFlow, type GitHubAccountChoice } from "./github.js";
 import { SHOTS } from "./app-evidence.js";
 import {
   ProjectNavigation,
@@ -38,6 +40,8 @@ export interface BuiltApplication {
   machineKey: string;
   logs(): string;
   deliverDiscord(event: BrowserDiscordEvent): Promise<void>;
+  /** Acts on GitHub's side, as a person on github.com would, outside of Hub. */
+  github(command: FakeGitHubCommand): Promise<void>;
   setGitHubConfiguration(input: {
     repositoryId: number;
     commitSha: string;
@@ -84,7 +88,6 @@ export interface BuiltApplicationOptions {
   registrationMode?: "open" | "invite_only" | "disabled";
   organizationCreation?: "open" | "disabled";
   providerConnections?: boolean;
-  githubApprovalRequired?: boolean;
   providerScenario?: BrowserProviderScenario;
   /** Operator-managed provider applications, starting from nothing configured. */
   providerApplications?: boolean;
@@ -1180,8 +1183,75 @@ export class PaseoHub {
     await this.requireUser(alias).expectMemberConnections();
   }
 
-  async connectGitHub(alias: string): Promise<void> {
-    await this.requireUser(alias).connectGitHub();
+  async connectGitHub(alias: string, account?: string): Promise<void> {
+    await this.requireUser(alias).connectGitHub(account);
+  }
+
+  /** Acts on GitHub's side of the primary application, as a person on github.com would. */
+  async onGitHub(command: FakeGitHubCommand): Promise<void> {
+    await this.primary.github(command);
+  }
+
+  async connectFromGitHubChooser(
+    alias: string,
+    account: string,
+    choices: readonly GitHubAccountChoice[],
+  ): Promise<void> {
+    await this.requireUser(alias).connectFromGitHubChooser(account, choices);
+  }
+
+  async expectGitHubConnection(
+    alias: string,
+    expected: { account: string; installationId: string },
+  ): Promise<void> {
+    await this.requireUser(alias).expectGitHubConnection(expected);
+  }
+
+  async pressConnectGitHub(alias: string): Promise<GitHubConnectFlow> {
+    return await this.requireUser(alias).pressConnectGitHub();
+  }
+
+  async startGitHubConnection(alias: string): Promise<GitHubConnectFlow> {
+    return await this.requireUser(alias).startGitHubConnection();
+  }
+
+  async expectGitHubConnected(alias: string): Promise<void> {
+    await this.requireUser(alias).expectGitHubConnected();
+  }
+
+  async expectGitHubNotConnected(alias: string, message: string): Promise<void> {
+    await this.requireUser(alias).expectGitHubNotConnected(message);
+  }
+
+  async expectGitHubNotice(alias: string, message: string): Promise<void> {
+    await this.requireUser(alias).expectGitHubNotice(message);
+  }
+
+  async disconnectGitHub(alias: string): Promise<void> {
+    await this.requireUser(alias).disconnectGitHub();
+  }
+
+  async expectNoConnections(alias: string): Promise<void> {
+    await this.requireUser(alias).expectNoConnections();
+  }
+
+  /**
+   * GitHub installs the App, but its return reaches Hub after the attempt expired. Hub refuses
+   * the return, and Connect GitHub again finds the installation in the chooser.
+   */
+  async proveExpiredGitHubReturnRecovers(alias: string): Promise<void> {
+    const user = this.requireUser(alias);
+    const expired = await user.beginProviderConnection("github");
+    await this.queryDatabase(
+      this.primary,
+      `update organization_connection_attempts
+       set expires_at = clock_timestamp() - interval '1 millisecond'`,
+      [],
+    );
+    await user.expectConnectionReturnUnavailable(expired);
+    await user.connectFromGitHubChooser("acme-inc", [
+      { account: "acme-inc", explanation: "Organization", connectable: true },
+    ]);
   }
 
   async connectDiscord(alias: string): Promise<void> {
@@ -1348,10 +1418,8 @@ export class PaseoHub {
   }
 
   async proveGitHubApprovalRequired(account: Account): Promise<void> {
-    const application = await this.startApplication({
-      databaseProfile: "fresh",
-      githubApprovalRequired: true,
-    });
+    const application = await this.startApplication({ databaseProfile: "fresh" });
+    await application.github({ op: "signIn", login: "mona" });
     const context = await this.browser.newContext();
     try {
       const user = new HubUser(application, context, await context.newPage());
@@ -1379,7 +1447,9 @@ export class PaseoHub {
         [],
       );
       await user.expectConnectionReturnUnavailable(expired);
-      const replayed = await user.beginProviderConnection("github");
+      // GitHub installed on acme-inc before the expired return reached Hub; the next attempt
+      // installs on the other account octo owns.
+      const replayed = await user.beginProviderConnection("github", "orbit-inc");
       await user.expectConnectionReturnConnected(replayed, "GitHub connected.");
       await user.expectConnectionReturnUnavailable(replayed);
     } finally {
@@ -4645,12 +4715,70 @@ class HubUser {
     await expectAccessible(this.page);
   }
 
-  async connectGitHub(): Promise<void> {
+  async connectGitHub(account = "acme-inc"): Promise<void> {
+    const github = await this.pressConnectGitHub();
+    await github.connect(account);
+    await this.expectGitHubConnected();
+  }
+
+  /** Presses Connect GitHub on Connections. The browser is on its way to GitHub's authorize page. */
+  async pressConnectGitHub(): Promise<GitHubConnectFlow> {
     await this.openOrganizationSection("Connections");
-    const connectionsUrl = this.page.url();
+    const github = new GitHubConnectFlow(this.page);
     await this.page.getByRole("button", { name: "Connect GitHub" }).click();
-    await expect(this.page).toHaveURL(connectionsUrl);
+    return github;
+  }
+
+  /** Presses Connect GitHub and authorizes if GitHub asks. The browser rests where that leads. */
+  async startGitHubConnection(): Promise<GitHubConnectFlow> {
+    const github = await this.pressConnectGitHub();
+    await github.authorizeWhenAsked();
+    return github;
+  }
+
+  /** Connects an account that already has the App, from the chooser, without GitHub's install page. */
+  async connectFromGitHubChooser(
+    account: string,
+    choices: readonly GitHubAccountChoice[],
+  ): Promise<void> {
+    const github = await this.startGitHubConnection();
+    await github.expectChooser(choices);
+    await expectAccessible(this.page);
+    await github.choose(account);
+    await this.expectGitHubConnected();
+    github.expectInstallPageNotVisited();
+  }
+
+  async expectGitHubConnected(): Promise<void> {
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/connections$/u);
     await expect(this.page.getByRole("status")).toHaveText("GitHub connected.");
+  }
+
+  /** Back on Connections with the reason nothing was connected, and nothing connected. */
+  async expectGitHubNotConnected(message: string): Promise<void> {
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/connections$/u);
+    await this.expectConnectionFailure(message);
+    await expect(this.connectionRow("GitHub")).toHaveCount(0);
+  }
+
+  /** Back on Connections with a notice, such as a cancellation, and nothing connected. */
+  async expectGitHubNotice(message: string): Promise<void> {
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/connections$/u);
+    await expect(this.page.getByRole("status")).toHaveText(message);
+    await expect(this.connectionRow("GitHub")).toHaveCount(0);
+  }
+
+  async disconnectGitHub(): Promise<void> {
+    await this.openOrganizationSection("Connections");
+    await this.disconnectProvider("GitHub");
+  }
+
+  async expectGitHubConnection(expected: { account: string; installationId: string }) {
+    await this.openOrganizationSection("Connections");
+    const github = this.connectionRow("GitHub");
+    await expect(github).toHaveCount(1);
+    await expect(github).toContainText(expected.account);
+    await expect(github).toContainText(`installation ${expected.installationId}`);
   }
 
   async connectDiscord(): Promise<void> {
@@ -4660,17 +4788,39 @@ class HubUser {
     await expect(this.page.getByRole("status")).toHaveText("Discord connected.");
   }
 
-  async beginProviderConnection(provider: "github" | "discord"): Promise<string> {
+  /**
+   * Starts a connection and captures the provider's first return to Hub without delivering it.
+   * For GitHub that is the setup return after installing on `account`. GitHub reaches it by a
+   * redirect, which Playwright does not route, so the install itself is sent to GitHub and its
+   * redirect is read instead of followed.
+   */
+  async beginProviderConnection(
+    provider: "github" | "discord",
+    account = "acme-inc",
+  ): Promise<string> {
     await this.openOrganizationSection("Connections");
     const connectionsUrl = this.page.url();
-    const callback = `**/api/integrations/${provider}/**`;
+    const callback =
+      provider === "github"
+        ? (url: URL) => url.pathname.endsWith("/apps/paseo/installations/new/install")
+        : "**/api/integrations/discord/**";
     const name = provider === "github" ? "GitHub" : "Discord";
     let destination: string | undefined;
-    await this.page.route(callback, (route) => {
-      destination = route.request().url();
-      void route.abort();
+    await this.page.route(callback, async (route) => {
+      if (provider === "github") {
+        const installed = await route.fetch({ maxRedirects: 0 });
+        destination = installed.headers()["location"];
+      } else {
+        destination = route.request().url();
+      }
+      await route.abort();
     });
+    const github = new GitHubConnectFlow(this.page);
     await this.page.getByRole("button", { name: `Connect ${name}` }).click();
+    if (provider === "github") {
+      await github.toInstallPage();
+      await github.installOn(account);
+    }
     await expect.poll(() => destination).toBeDefined();
     await this.page.unroute(callback);
     await this.page.goto(connectionsUrl);
@@ -4712,6 +4862,7 @@ class HubUser {
     } finally {
       await pending.release();
     }
+    if (provider === "github") await new GitHubConnectFlow(this.page).connect("acme-inc");
     await expect(this.page).toHaveURL(/\/o\/[^/]+\/connections$/u);
     await expect(this.page.getByRole("status")).toHaveText(`${name} connected.`);
     await this.chooseOrganization(destinationOrganization);
@@ -4785,14 +4936,23 @@ class HubUser {
     await expect(alert).toContainText(message);
   }
 
+  /** GitHub accounts are never transferred: the chooser says where it is connected instead. */
   async expectGitHubConnectionConflict(): Promise<void> {
     await this.openOrganizationSection("Connections");
     const connectionsUrl = this.page.url();
+    const github = new GitHubConnectFlow(this.page);
     await this.page.getByRole("button", { name: "Connect GitHub" }).click();
+    await github.authorizeWhenAsked();
+    await github.expectChooser([
+      {
+        account: "acme-inc",
+        explanation:
+          "Connected to another organization on this Hub. Disconnect it there to connect it here.",
+        connectable: false,
+      },
+    ]);
+    await github.cancelChooser();
     await expect(this.page).toHaveURL(connectionsUrl);
-    await this.expectConnectionFailure(
-      "That account is already connected to another organization. Nothing was connected. Disconnect it there, or pick a different one.",
-    );
     await this.expectNoConnections();
     await this.expectNoProviderIdentity("acme-inc");
   }
@@ -4920,16 +5080,18 @@ class HubUser {
   }
 
   async disconnectProviders(): Promise<void> {
-    for (const provider of ["GitHub", "Discord"]) {
-      const row = this.connectionRow(provider);
-      await row.getByRole("button", { name: /^Actions for /u }).click();
-      await this.page.getByRole("menuitem", { name: "Revoke" }).click();
-      const dialog = this.page.getByRole("alertdialog");
-      await expect(dialog).toBeVisible();
-      await dialog.getByRole("button", { name: "Revoke connection" }).click();
-      await expect(row).toHaveCount(0);
-      await expect(this.page.getByRole("status")).toHaveText(`${provider} disconnected.`);
-    }
+    for (const provider of ["GitHub", "Discord"] as const) await this.disconnectProvider(provider);
+  }
+
+  private async disconnectProvider(provider: "GitHub" | "Discord"): Promise<void> {
+    const row = this.connectionRow(provider);
+    await row.getByRole("button", { name: /^Actions for /u }).click();
+    await this.page.getByRole("menuitem", { name: "Revoke" }).click();
+    const dialog = this.page.getByRole("alertdialog");
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Revoke connection" }).click();
+    await expect(row).toHaveCount(0);
+    await expect(this.page.getByRole("status")).toHaveText(`${provider} disconnected.`);
   }
 
   async proveConnectionDisconnectLocksOrganizationSwitch(
@@ -5062,13 +5224,13 @@ class HubUser {
     await this.expectNoConnections();
   }
 
+  /** A member who is not an owner can only ask an owner to install the App. */
   private async requestGitHubApproval(): Promise<void> {
     const connectionsUrl = this.page.url();
-    const returned = this.page.waitForResponse((response) =>
-      response.url().includes("/api/integrations/github/setup?"),
-    );
+    const github = new GitHubConnectFlow(this.page);
     await this.page.getByRole("button", { name: "Connect GitHub" }).click();
-    await returned;
+    await github.authorizeWhenAsked();
+    await github.requestFor("acme-inc");
     await expect(this.page).toHaveURL(connectionsUrl);
     await this.expectConnectionFailure(
       "A GitHub organization owner has to approve this installation. Nothing was connected. Ask an owner to approve the request, then install again.",
@@ -5303,7 +5465,7 @@ class HubUser {
   }
 
   /** No provider lists any connection, whatever the reason there is nothing to list. */
-  private async expectNoConnections(): Promise<void> {
+  async expectNoConnections(): Promise<void> {
     await expect(this.page.getByRole("list", { name: /^\w+ connections$/u })).toHaveCount(0);
   }
 

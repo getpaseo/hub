@@ -252,6 +252,7 @@ async function startAttempt(
   await database.startConnectionAttempt({
     provider,
     stateVerifier: initialState,
+    ...(provider === "github" ? { pkceVerifier: "pkce" } : {}),
     access: START_ACCESS,
     lifetimeMinutes: 10,
     configurationVersion,
@@ -261,17 +262,7 @@ async function startAttempt(
     expectedConfigurationVersion: null,
     activateConfiguration: false,
   });
-  if (provider !== "github") return initialState;
-  const callbackState = `${name}-callback`;
-  await database.advanceGitHubConnectionAttempt({
-    stateVerifier: initialState,
-    phase: "github_setup",
-    access: CALLBACK_ACCESS,
-    nextStateVerifier: callbackState,
-    installationId: 42,
-    pkceVerifier: "pkce",
-  });
-  return callbackState;
+  return initialState;
 }
 
 function bind(

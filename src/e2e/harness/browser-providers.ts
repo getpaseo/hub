@@ -1,11 +1,6 @@
 import type { Message } from "discord.js";
-import type { GitHubAuth } from "../../auth/github.js";
 import type { DiscordGuildIdentity } from "../../providers/discord/client.js";
 import type { DiscordConnectionClient } from "../../providers/discord/client.js";
-import type {
-  GitHubConnectionClient,
-  GitHubInstallationIdentity,
-} from "../../providers/github/client.js";
 import type {
   GitHubCreatedReaction,
   GitHubReactionClient,
@@ -14,23 +9,6 @@ import type { SlackBotClient } from "../../triggers/slack/client.js";
 import { MemoryDiscordBotClient } from "../../triggers/discord/memory-bot.js";
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import type { HubBundleFile } from "../../config/bundle.js";
-
-const GITHUB_INSTALLATIONS: readonly GitHubInstallationIdentity[] = [
-  {
-    installationId: 42,
-    accountId: "420",
-    accountLogin: "acme-inc",
-    accountType: "Organization",
-    status: "active",
-  },
-  {
-    installationId: 84,
-    accountId: "840",
-    accountLogin: "orbit-inc",
-    accountType: "Organization",
-    status: "active",
-  },
-];
 
 const DISCORD_GUILDS: readonly DiscordGuildIdentity[] = [
   { guildId: "100", guildName: "Acme Guild" },
@@ -43,7 +21,6 @@ const DISCORD_GUILDS: readonly DiscordGuildIdentity[] = [
  */
 export const BROWSER_PROVIDER_SCENARIOS = [
   "connected",
-  "approval",
   "conflict",
   "discord-verification-network",
   "discord-disallowed-intents",
@@ -60,108 +37,6 @@ export type BrowserProviderScenario = (typeof BROWSER_PROVIDER_SCENARIOS)[number
 
 export function isBrowserProviderScenario(value: string): value is BrowserProviderScenario {
   return (BROWSER_PROVIDER_SCENARIOS as readonly string[]).includes(value);
-}
-
-export class BrowserGitHubAuth implements GitHubAuth {
-  getInstallation() {
-    return Promise.resolve(undefined);
-  }
-
-  getInstallationToken(installationId: number) {
-    return Promise.resolve(`installation-token-${installationId}`);
-  }
-
-  mintInstallationToken(installationId: number) {
-    return Promise.resolve({
-      token: `installation-token-${installationId}`,
-      expiresAt: Date.now() + 3600_000,
-    });
-  }
-
-  mintInstallationAccessToken(input: {
-    installationId: number;
-    accountLogin: string;
-    repositories: readonly string[];
-    permissions: Readonly<Record<string, "read" | "write" | "admin">>;
-  }) {
-    return Promise.resolve({
-      token: `execution-token-${input.installationId}-${input.repositories.join(",")}`,
-      expiresAt: Date.now() + 60 * 60 * 1000,
-    });
-  }
-
-  getAppBotIdentity() {
-    return Promise.resolve({ id: 12345, login: "paseo[bot]" });
-  }
-
-  revokeInstallationToken() {
-    return Promise.resolve();
-  }
-
-  createInstallationOctokit() {
-    return Promise.reject(new Error("unused by the browser harness"));
-  }
-}
-
-export class BrowserGitHubConnections implements GitHubConnectionClient {
-  private pendingAuthorization: GitHubInstallationIdentity | undefined;
-  private nextInstallation = 0;
-
-  constructor(
-    private readonly publicBaseUrl: string,
-    private readonly scenario: BrowserProviderScenario,
-  ) {}
-
-  setupUrl(state: string): string {
-    const callback = new URL("/api/integrations/github/setup", this.publicBaseUrl);
-    callback.searchParams.set("state", state);
-    if (this.scenario === "approval") {
-      callback.searchParams.set("setup_action", "request");
-      return callback.toString();
-    }
-    const identity =
-      this.scenario === "conflict"
-        ? GITHUB_INSTALLATIONS[0]
-        : GITHUB_INSTALLATIONS[this.nextInstallation++];
-    if (identity === undefined) throw new Error("no deterministic GitHub installation remains");
-    this.pendingAuthorization = identity;
-    callback.searchParams.set("setup_action", "install");
-    callback.searchParams.set("installation_id", String(identity.installationId));
-    return callback.toString();
-  }
-
-  authorizationUrl(input: { state: string; challenge: string }): string {
-    const identity = this.pendingAuthorization;
-    if (identity === undefined) throw new Error("GitHub authorization has no verified setup");
-    this.pendingAuthorization = undefined;
-    const callback = new URL("/api/integrations/github/callback", this.publicBaseUrl);
-    callback.searchParams.set("state", input.state);
-    callback.searchParams.set("code", `github-${identity.installationId}`);
-    return callback.toString();
-  }
-
-  verifyUserInstallation(input: {
-    code: string;
-    installationId: number;
-  }): Promise<GitHubInstallationIdentity | undefined> {
-    const expectedCode = `github-${input.installationId}`;
-    return Promise.resolve(
-      input.code === expectedCode ? this.installation(input.installationId) : undefined,
-    );
-  }
-
-  getInstallation(installationId: number) {
-    const identity = this.installation(installationId);
-    return Promise.resolve(
-      identity === undefined
-        ? { status: "absent" as const }
-        : { status: "present" as const, identity },
-    );
-  }
-
-  private installation(installationId: number): GitHubInstallationIdentity | undefined {
-    return GITHUB_INSTALLATIONS.find((identity) => identity.installationId === installationId);
-  }
 }
 
 export class BrowserGitHubConfiguration implements GitHubConfigurationProvider {

@@ -866,6 +866,7 @@ export const organizationConnectionAttempts = pgTable(
       .$type<
         | "github_setup"
         | "github_user_authorization"
+        | "github_selection"
         | "discord_authorization"
         | "slack_authorization"
         | "linear_authorization"
@@ -884,6 +885,7 @@ export const organizationConnectionAttempts = pgTable(
       .references(() => sessions.id, { onDelete: "cascade" }),
     candidateExternalId: text("candidate_external_id"),
     pkceVerifier: text("pkce_verifier"),
+    installationChoices: jsonb("installation_choices"),
     configurationVersion: integer("configuration_version").notNull(),
     providerApplicationId: text("provider_application_id"),
     callbackOrigin: text("callback_origin").notNull(),
@@ -902,15 +904,16 @@ export const organizationConnectionAttempts = pgTable(
     ),
     check(
       "organization_connection_attempts_phase_check",
-      sql`${table.phase} in ('github_setup', 'github_user_authorization', 'discord_authorization', 'slack_authorization', 'linear_authorization')`,
+      sql`${table.phase} in ('github_setup', 'github_user_authorization', 'github_selection', 'discord_authorization', 'slack_authorization', 'linear_authorization')`,
     ),
     check(
       "organization_connection_attempts_shape_check",
-      sql`(${table.phase} = 'github_setup' and ${table.provider} = 'github' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null)
-        or (${table.phase} = 'github_user_authorization' and ${table.provider} = 'github' and ${table.candidateExternalId} is not null and (${table.pkceVerifier} is not null or ${table.consumedAt} is not null))
-        or (${table.phase} = 'discord_authorization' and ${table.provider} = 'discord' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null)
-        or (${table.phase} = 'slack_authorization' and ${table.provider} = 'slack' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null)
-        or (${table.phase} = 'linear_authorization' and ${table.provider} = 'linear' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null)`,
+      sql`(${table.phase} = 'github_setup' and ${table.provider} = 'github' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null and ${table.installationChoices} is null)
+        or (${table.phase} = 'github_user_authorization' and ${table.provider} = 'github' and (${table.pkceVerifier} is not null or ${table.consumedAt} is not null) and ${table.installationChoices} is null)
+        or (${table.phase} = 'github_selection' and ${table.provider} = 'github' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null and ${table.installationChoices} is not null)
+        or (${table.phase} = 'discord_authorization' and ${table.provider} = 'discord' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null and ${table.installationChoices} is null)
+        or (${table.phase} = 'slack_authorization' and ${table.provider} = 'slack' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null and ${table.installationChoices} is null)
+        or (${table.phase} = 'linear_authorization' and ${table.provider} = 'linear' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null and ${table.installationChoices} is null)`,
     ),
   ],
 );

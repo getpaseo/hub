@@ -104,7 +104,7 @@ test("Socket Mode connects locally while Webhooks preserves OAuth", () => {
   assert.equal(SLACK_WEBHOOK_GUIDE.savingContinues, true);
   assert.equal(SLACK_WEBHOOK_GUIDE.actions.save, "Save and continue to Slack");
   assert.equal(guideFor("github").actions.save, "Verify and save");
-  assert.equal(guideFor("github").actions.connect, "Install on GitHub");
+  assert.equal(guideFor("github").actions.connect, "Connect GitHub");
 });
 
 test("only non-secret identifiers can be echoed back into the form", () => {
@@ -208,7 +208,6 @@ test("GitHub renders permissions as a mapping and events as a list, never as pro
     { name: "Issues", access: "Read and write" },
     { name: "Pull requests", access: "Read and write" },
     { name: "Metadata", access: "Read-only" },
-    { name: "Members", access: "Read-only" },
   ]);
   assert.deepEqual(
     steps.flatMap((step) => step.events ?? []),

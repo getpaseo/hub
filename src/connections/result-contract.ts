@@ -27,6 +27,8 @@ export const connectionResultSchema = z.enum([
   "slack_cancelled",
   "linear_cancelled",
   "github_approval_required",
+  /** GitHub refused the authorization, or did not show the person as owning the account. */
+  "github_verification_rejected",
   "slack_bot_failed",
   "provider_not_configured",
   /** The state was forged, expired, already used, or belongs to a different session. */
@@ -145,7 +147,7 @@ const RETURN_COPY: Readonly<Record<ConnectionResult, (name: string) => Connectio
   discord_disconnected: disconnected,
   slack_disconnected: disconnected,
   linear_disconnected: disconnected,
-  github_cancelled: (name) => cancelled("Installation", name),
+  github_cancelled: (name) => cancelled("Authorization", name),
   slack_cancelled: (name) => cancelled("Installation", name),
   discord_cancelled: (name) => cancelled("Authorization", name),
   linear_cancelled: (name) => cancelled("Authorization", name),
@@ -153,6 +155,11 @@ const RETURN_COPY: Readonly<Record<ConnectionResult, (name: string) => Connectio
     failed(
       name,
       "A GitHub organization owner has to approve this installation. Nothing was connected. Ask an owner to approve the request, then install again.",
+    ),
+  github_verification_rejected: (name) =>
+    failed(
+      name,
+      "GitHub didn't confirm that you can connect that account. Nothing was connected. Connect GitHub again, and pick an account you own.",
     ),
   slack_bot_failed: (name) =>
     failed(
