@@ -876,7 +876,7 @@ class AccountBrowser {
     );
     assert.equal(callback.status, 303);
     const chooser = new URL(callback.headers.get("location")!);
-    assert.equal(chooser.pathname, "/connections/github");
+    assert.equal(chooser.pathname, "/integrations/github");
     return connection.actions["choose"]!(
       request(
         `/api/integrations/github/choose?state=${chooser.searchParams.get("state")}&installationId=${installationId}`,

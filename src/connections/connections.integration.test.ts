@@ -882,7 +882,7 @@ async function startAuthorized(connections: ProviderFixture): Promise<Response> 
 /** The chooser's state, after a start whose person can see an installation. */
 async function atChooser(connections: ProviderFixture): Promise<string> {
   const chooser = redirectLocation(await startAuthorized(connections));
-  assert.equal(`${chooser.origin}${chooser.pathname}`, `${HUB}/connections/github`);
+  assert.equal(`${chooser.origin}${chooser.pathname}`, `${HUB}/integrations/github`);
   return chooser.searchParams.get("state")!;
 }
 
@@ -916,7 +916,7 @@ async function connectGitHub(connections: ProviderFixture, account: string): Pro
   const answer = await startAuthorized(connections);
   const next = redirectLocation(answer);
   let connected: Response;
-  if (next.pathname === "/connections/github") {
+  if (next.pathname === "/integrations/github") {
     const state = next.searchParams.get("state")!;
     const choice = (await choicesOf(connections, state)).choices.find(
       (candidate) => candidate.accountLogin === account,

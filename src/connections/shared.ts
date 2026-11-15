@@ -13,13 +13,13 @@ import { logger } from "../logger.js";
 import { classifyFailure, reportFailure, type FailureKind } from "../failures/index.js";
 import { resolveRouteTenant } from "../projects/access.js";
 import {
-  CONNECTIONS_RETURN_ROUTE,
+  INTEGRATIONS_RETURN_ROUTE,
   connectionReturnUrl,
   type ConnectionProvider,
   type ConnectionResult,
 } from "./result-contract.js";
 
-export { CONNECTIONS_RETURN_ROUTE } from "./result-contract.js";
+export { INTEGRATIONS_RETURN_ROUTE } from "./result-contract.js";
 
 export const CONNECTION_ATTEMPT_LIFETIME_MINUTES = 10;
 
@@ -51,7 +51,7 @@ export async function manageConnectionAccess(
   const returnRoute =
     requested !== null && ALLOWED_RETURN_ROUTES.has(requested)
       ? requested
-      : `/o/${tenant.organization.slug}/connections`;
+      : `/o/${tenant.organization.slug}/integrations`;
   return { account, tenant, returnRoute };
 }
 
@@ -114,7 +114,7 @@ export async function cancelledConnectionResult(input: {
   applicationBaseUrl: string;
 }): Promise<Response> {
   let callbackOrigin = input.applicationBaseUrl;
-  let returnRoute: string = CONNECTIONS_RETURN_ROUTE;
+  let returnRoute: string = INTEGRATIONS_RETURN_ROUTE;
   try {
     const access = await callbackConnectionAccess(input.auth, input.request);
     const attempt = await input.database.readConnectionAttempt({

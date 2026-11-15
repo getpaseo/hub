@@ -30,7 +30,10 @@ export function Disclosure({
   media?: ReactNode;
   title: string;
   description?: string;
-  /** The single status indicator, rendered before the chevron. */
+  /**
+   * The single status indicator, rendered before the chevron: a `StatusPill` for state, or plain
+   * text for a count, which reads as muted context.
+   */
   status?: ReactNode;
   children: ReactNode;
 }) {
@@ -82,7 +85,10 @@ export function Disclosure({
         </span>
         <span className="contents sm:flex sm:shrink-0 sm:items-center sm:gap-2">
           <span
-            className={cn("row-start-3 justify-self-start sm:col-auto sm:row-auto", compact.full)}
+            className={cn(
+              "row-start-3 justify-self-start text-sm text-muted-foreground tabular-nums sm:col-auto sm:row-auto",
+              compact.full,
+            )}
           >
             {status}
           </span>

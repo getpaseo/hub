@@ -50,14 +50,14 @@ import {
   type ProjectSnapshot,
 } from "./panel-state.js";
 import { archiveProject, activityRunSnapshot, updateProjectSlug } from "./functions.js";
-const CONNECTIONS_DESCRIPTION = "Organization provider connections.";
+const INTEGRATIONS_DESCRIPTION = "Where this organization's events come from.";
 const CONNECTION_PROVIDERS = ["github", "discord", "slack", "linear"] as const;
 type ConnectionProviderName = (typeof CONNECTION_PROVIDERS)[number];
 
-function ConnectionsLoading() {
+function IntegrationsLoading() {
   return (
     <>
-      <PageHeader title="Connections" description={CONNECTIONS_DESCRIPTION} />
+      <PageHeader title="Integrations" description={INTEGRATIONS_DESCRIPTION} />
       <Section>
         {CONNECTION_PROVIDERS.map((provider) => (
           <CardSkeleton key={provider} lines={2} />
@@ -67,12 +67,12 @@ function ConnectionsLoading() {
   );
 }
 
-export function OrganizationConnectionsPanel() {
+export function OrganizationIntegrationsPanel() {
   const tenant = useRouteTenant();
   const { isInstanceOperator } = useActiveAccount();
   const queryClient = useQueryClient();
   const scope = { organizationSlug: tenant.organization.slug };
-  const snapshot = useOrganizationSnapshot(<ConnectionsLoading />);
+  const snapshot = useOrganizationSnapshot(<IntegrationsLoading />);
   const loadStatus = useServerFn(connectionStatus);
   const statusQuery = useSnapshotQuery({
     queryKey: ["connection-status", tenant.account.id, tenant.organization.id],
@@ -102,8 +102,8 @@ export function OrganizationConnectionsPanel() {
   if (!snapshot.ok) return snapshot.element;
   const status = queryState<ConnectionStatus>(
     statusQuery,
-    "Connections unavailable",
-    <ConnectionsLoading />,
+    "Integrations unavailable",
+    <IntegrationsLoading />,
   );
   if (!status.ok) return status.element;
   const data = snapshot.data;
@@ -173,14 +173,14 @@ export function OrganizationConnectionsPanel() {
     : "An organization owner connects the providers this organization can use.";
   return (
     <>
-      <PageHeader title="Connections" description={CONNECTIONS_DESCRIPTION} />
+      <PageHeader title="Integrations" description={INTEGRATIONS_DESCRIPTION} />
       {returned === undefined ? null : (
         <ConnectionReturnBanner copy={connectionReturnCopy(returned)} />
       )}
       <CommandError mutations={[connect, disconnect]} />
       <Section>
         {shown.length === 0 ? (
-          <EmptyState title="No connections" description={nothingToConnect} />
+          <EmptyState title="No integrations" description={nothingToConnect} />
         ) : (
           shown.map(({ provider, connections, action }) => (
             <ProviderConnections
@@ -311,7 +311,7 @@ export function ProjectOverviewPanel() {
           }
         />
         <SetupCard
-          label="Connections"
+          label="Integrations"
           ready={
             data.connections.github.length +
               data.connections.discord.length +

@@ -219,7 +219,7 @@ test("fails closed for forged, expired, and replayed connection state", async ({
   });
 });
 
-test("returns a callback without a session to Connections", async ({ hub }) => {
+test("returns a callback without a session to Integrations", async ({ hub }) => {
   await hub.proveSignedOutConnectionReturn({
     name: "Signed-out Alice",
     email: "signed-out-alice@example.com",

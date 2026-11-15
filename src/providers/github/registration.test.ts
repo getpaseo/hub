@@ -421,7 +421,7 @@ describe("GitHub registration", () => {
     );
   });
 
-  it("returns a setup callback that carries no session to the connections landing", async () => {
+  it("returns a setup callback that carries no session to the integrations landing", async () => {
     const registration = createGitHubRegistration({
       database: createMemoryDatabase(),
       auth: new SignedOutAuth(),
@@ -445,7 +445,7 @@ describe("GitHub registration", () => {
     assert.equal(response.status, 303);
     assert.equal(
       response.headers.get("location"),
-      "https://hub.test/connections?app=github&result=connection_unauthenticated",
+      "https://hub.test/integrations?app=github&result=connection_unauthenticated",
     );
   });
 

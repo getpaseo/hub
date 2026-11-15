@@ -128,7 +128,7 @@ describe("Slack registration", () => {
     assert.equal(activated, true);
     assert.equal(
       response.headers.get("location"),
-      "https://callback.test/o/org/connections?app=slack&result=slack_connected",
+      "https://callback.test/o/org/integrations?app=slack&result=slack_connected",
     );
     assert.equal(callback.boundInstallation?.teamName, "Acme");
   });
@@ -167,7 +167,7 @@ describe("Slack registration", () => {
     assert.equal(activated, false);
     assert.equal(
       response.headers.get("location"),
-      "https://callback.test/o/org/connections?app=slack&result=slack_bot_failed",
+      "https://callback.test/o/org/integrations?app=slack&result=slack_bot_failed",
     );
     assert.equal(callback.boundInstallation, undefined);
   });
@@ -206,7 +206,7 @@ describe("Slack registration", () => {
     assert.equal(callback.boundInstallation, undefined);
     assert.equal(
       response.headers.get("location"),
-      "https://callback.test/o/org/connections?app=slack&result=slack_bot_failed",
+      "https://callback.test/o/org/integrations?app=slack&result=slack_bot_failed",
     );
   });
 
@@ -268,7 +268,7 @@ describe("Slack registration", () => {
 
     assert.equal(
       response.headers.get("location"),
-      "https://callback.test/o/org/connections?app=slack&result=slack_cancelled",
+      "https://callback.test/o/org/integrations?app=slack&result=slack_cancelled",
     );
     assert.equal(callback.boundInstallation, undefined);
   });

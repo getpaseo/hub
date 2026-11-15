@@ -12,7 +12,7 @@ test("shows a bounded reason for a real signed unrouted event", async ({ hub, pa
   });
   await hub.createOrganization("owner", "Acme");
   await hub.deliverSignedUnroutedSlackEvent("owner");
-  await projectApp(page).navigation.openOrganizationSection("Connections");
+  await projectApp(page).navigation.openOrganizationSection("Integrations");
 
   const table = page.getByRole("table", { name: "Unrouted events" });
   await expect(table).toContainText("The event did not pass the configured trigger filters.");

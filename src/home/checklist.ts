@@ -27,7 +27,7 @@ export interface Checklist {
 
 export type ChecklistFacts = Pick<
   HomeSnapshot,
-  "appsConfigured" | "connections" | "daemons" | "triggers" | "runs"
+  "appsConfigured" | "connections" | "daemons" | "triggers" | "recentRuns"
 >;
 
 function appState(snapshot: ChecklistFacts): Extract<ChecklistStep, { key: "app" }>["state"] {
@@ -45,7 +45,7 @@ export function deriveChecklist(snapshot: ChecklistFacts): Checklist {
     { key: "app", state: appState(snapshot) },
     { key: "daemon", state: daemonState(snapshot) },
     { key: "trigger", state: snapshot.triggers.length > 0 ? "done" : "pending" },
-    { key: "run", state: snapshot.runs.length > 0 ? "done" : "pending" },
+    { key: "run", state: snapshot.recentRuns.length > 0 ? "done" : "pending" },
   ];
   const completed = steps.filter((step) => step.state === "done").length;
   return { steps, completed, complete: completed === steps.length };

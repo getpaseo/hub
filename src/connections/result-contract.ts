@@ -56,11 +56,11 @@ export type ConnectionReturnCopy =
 /**
  * Where a callback lands when the attempt that started it cannot be read, so neither the
  * organization nor the surface is known. The connections landing forwards to the active
- * organization's connections page; when no organization is active yet, the shell's own gates
+ * organization's integrations page; when no organization is active yet, the shell's own gates
  * render first and the return survives in the query until a connections surface reads it.
  * Never the dashboard landing: that is not a connections surface.
  */
-export const CONNECTIONS_RETURN_ROUTE = "/connections";
+export const INTEGRATIONS_RETURN_ROUTE = "/integrations";
 
 const RETURN_PARAMS = { provider: "app", result: "result", reference: "reference" } as const;
 

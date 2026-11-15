@@ -12,7 +12,7 @@ import type {
 } from "../../db/types.js";
 import {
   CONNECTION_ATTEMPT_LIFETIME_MINUTES,
-  CONNECTIONS_RETURN_ROUTE,
+  INTEGRATIONS_RETURN_ROUTE,
   callbackConnectionAccess,
   cancelledConnectionResult,
   connectionAccess,
@@ -65,7 +65,7 @@ export interface GitHubAccountChooser {
 }
 
 /** Where Hub's chooser lives. Its only input is the attempt's state. */
-export const GITHUB_CHOOSER_ROUTE = "/connections/github";
+export const GITHUB_CHOOSER_ROUTE = "/integrations/github";
 
 const availabilitySchema = z.enum([
   "available",
@@ -120,7 +120,7 @@ export function createGitHubConnection(
         provider: "github",
         phase,
         applicationBaseUrl: options.applicationBaseUrl,
-        returnRoute: CONNECTIONS_RETURN_ROUTE,
+        returnRoute: INTEGRATIONS_RETURN_ROUTE,
       }),
     );
   return {
@@ -315,7 +315,7 @@ class GitHubConnectionFlow {
     run: (step: AttemptStep) => Promise<Response>,
   ): Promise<Response> {
     const state = new URL(request.url).searchParams.get("state");
-    let returnRoute: string = CONNECTIONS_RETURN_ROUTE;
+    let returnRoute: string = INTEGRATIONS_RETURN_ROUTE;
     let callbackOrigin = this.options.applicationBaseUrl;
     try {
       if (state === null) throw new GitHubCallbackError("missing state");

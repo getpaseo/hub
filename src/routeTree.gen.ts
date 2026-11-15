@@ -16,14 +16,14 @@ import { Route as ShellIndexRouteImport } from './routes/_shell/index'
 import { Route as TestTriggerRouteImport } from './routes/test/trigger'
 import { Route as TestStripeCheckoutRouteImport } from './routes/test/stripe-checkout'
 import { Route as TestSmokeRouteImport } from './routes/test/smoke'
-import { Route as ConnectionsGithubRouteImport } from './routes/connections_.github'
+import { Route as IntegrationsGithubRouteImport } from './routes/integrations_.github'
 import { Route as AssetsSplatRouteImport } from './routes/assets/$'
 import { Route as ApiReferenceRouteImport } from './routes/api/reference'
 import { Route as ApiOpenapiDotjsonRouteImport } from './routes/api/openapi[.]json'
 import { Route as ApiSplatRouteImport } from './routes/api/$'
 import { Route as ShellTriggersRouteImport } from './routes/_shell/triggers'
 import { Route as ShellOperatorRouteImport } from './routes/_shell/operator'
-import { Route as ShellConnectionsRouteImport } from './routes/_shell/connections'
+import { Route as ShellIntegrationsRouteImport } from './routes/_shell/integrations'
 import { Route as ShellCliLoginRouteImport } from './routes/_shell/cli-login'
 import { Route as ShellAppsRouteImport } from './routes/_shell/apps'
 import { Route as ApiV1CliAuthorizationsRouteImport } from './routes/api/v1/cli-authorizations'
@@ -46,9 +46,9 @@ import { Route as ApiIntegrationsDiscordCallbackRouteImport } from './routes/api
 import { Route as AgentExecutionsExecutionIdAttachmentsAttachmentIdRouteImport } from './routes/agent-executions/$executionId/attachments/$attachmentId'
 import { Route as ShellOOrganizationSlugTriggersRouteImport } from './routes/_shell/o/$organizationSlug/triggers'
 import { Route as ShellOOrganizationSlugSettingsRouteImport } from './routes/_shell/o/$organizationSlug/settings'
+import { Route as ShellOOrganizationSlugIntegrationsRouteImport } from './routes/_shell/o/$organizationSlug/integrations'
 import { Route as ShellOOrganizationSlugHomeRouteImport } from './routes/_shell/o/$organizationSlug/home'
 import { Route as ShellOOrganizationSlugDaemonsRouteImport } from './routes/_shell/o/$organizationSlug/daemons'
-import { Route as ShellOOrganizationSlugConnectionsRouteImport } from './routes/_shell/o/$organizationSlug/connections'
 import { Route as ShellOOrganizationSlugActivityRouteImport } from './routes/_shell/o/$organizationSlug/activity'
 import { Route as ShellOOrganizationSlugTriggersIndexRouteImport } from './routes/_shell/o/$organizationSlug/triggers/index'
 import { Route as ShellOOrganizationSlugSettingsIndexRouteImport } from './routes/_shell/o/$organizationSlug/settings/index'
@@ -92,9 +92,9 @@ const TestSmokeRoute = TestSmokeRouteImport.update({
   path: '/test/smoke',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ConnectionsGithubRoute = ConnectionsGithubRouteImport.update({
-  id: '/connections_/github',
-  path: '/connections/github',
+const IntegrationsGithubRoute = IntegrationsGithubRouteImport.update({
+  id: '/integrations_/github',
+  path: '/integrations/github',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AssetsSplatRoute = AssetsSplatRouteImport.update({
@@ -127,9 +127,9 @@ const ShellOperatorRoute = ShellOperatorRouteImport.update({
   path: '/operator',
   getParentRoute: () => ShellRoute,
 } as any)
-const ShellConnectionsRoute = ShellConnectionsRouteImport.update({
-  id: '/connections',
-  path: '/connections',
+const ShellIntegrationsRoute = ShellIntegrationsRouteImport.update({
+  id: '/integrations',
+  path: '/integrations',
   getParentRoute: () => ShellRoute,
 } as any)
 const ShellCliLoginRoute = ShellCliLoginRouteImport.update({
@@ -255,6 +255,12 @@ const ShellOOrganizationSlugSettingsRoute =
     path: '/o/$organizationSlug/settings',
     getParentRoute: () => ShellRoute,
   } as any)
+const ShellOOrganizationSlugIntegrationsRoute =
+  ShellOOrganizationSlugIntegrationsRouteImport.update({
+    id: '/o/$organizationSlug/integrations',
+    path: '/o/$organizationSlug/integrations',
+    getParentRoute: () => ShellRoute,
+  } as any)
 const ShellOOrganizationSlugHomeRoute =
   ShellOOrganizationSlugHomeRouteImport.update({
     id: '/o/$organizationSlug/home',
@@ -265,12 +271,6 @@ const ShellOOrganizationSlugDaemonsRoute =
   ShellOOrganizationSlugDaemonsRouteImport.update({
     id: '/o/$organizationSlug/daemons',
     path: '/o/$organizationSlug/daemons',
-    getParentRoute: () => ShellRoute,
-  } as any)
-const ShellOOrganizationSlugConnectionsRoute =
-  ShellOOrganizationSlugConnectionsRouteImport.update({
-    id: '/o/$organizationSlug/connections',
-    path: '/o/$organizationSlug/connections',
     getParentRoute: () => ShellRoute,
   } as any)
 const ShellOOrganizationSlugActivityRoute =
@@ -328,14 +328,14 @@ export interface FileRoutesByFullPath {
   '/webhook': typeof WebhookRoute
   '/apps': typeof ShellAppsRoute
   '/cli-login': typeof ShellCliLoginRoute
-  '/connections': typeof ShellConnectionsRoute
+  '/integrations': typeof ShellIntegrationsRoute
   '/operator': typeof ShellOperatorRoute
   '/triggers': typeof ShellTriggersRoute
   '/api/$': typeof ApiSplatRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
-  '/connections/github': typeof ConnectionsGithubRoute
+  '/integrations/github': typeof IntegrationsGithubRoute
   '/test/smoke': typeof TestSmokeRoute
   '/test/stripe-checkout': typeof TestStripeCheckoutRoute
   '/test/trigger': typeof TestTriggerRoute
@@ -349,9 +349,9 @@ export interface FileRoutesByFullPath {
   '/api/v1/$': typeof ApiV1SplatRoute
   '/api/v1/cli-authorizations': typeof ApiV1CliAuthorizationsRouteWithChildren
   '/o/$organizationSlug/activity': typeof ShellOOrganizationSlugActivityRoute
-  '/o/$organizationSlug/connections': typeof ShellOOrganizationSlugConnectionsRoute
   '/o/$organizationSlug/daemons': typeof ShellOOrganizationSlugDaemonsRoute
   '/o/$organizationSlug/home': typeof ShellOOrganizationSlugHomeRoute
+  '/o/$organizationSlug/integrations': typeof ShellOOrganizationSlugIntegrationsRoute
   '/o/$organizationSlug/settings': typeof ShellOOrganizationSlugSettingsRouteWithChildren
   '/o/$organizationSlug/triggers': typeof ShellOOrganizationSlugTriggersRouteWithChildren
   '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
@@ -376,14 +376,14 @@ export interface FileRoutesByTo {
   '/webhook': typeof WebhookRoute
   '/apps': typeof ShellAppsRoute
   '/cli-login': typeof ShellCliLoginRoute
-  '/connections': typeof ShellConnectionsRoute
+  '/integrations': typeof ShellIntegrationsRoute
   '/operator': typeof ShellOperatorRoute
   '/triggers': typeof ShellTriggersRoute
   '/api/$': typeof ApiSplatRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
-  '/connections/github': typeof ConnectionsGithubRoute
+  '/integrations/github': typeof IntegrationsGithubRoute
   '/test/smoke': typeof TestSmokeRoute
   '/test/stripe-checkout': typeof TestStripeCheckoutRoute
   '/test/trigger': typeof TestTriggerRoute
@@ -398,9 +398,9 @@ export interface FileRoutesByTo {
   '/api/v1/$': typeof ApiV1SplatRoute
   '/api/v1/cli-authorizations': typeof ApiV1CliAuthorizationsRouteWithChildren
   '/o/$organizationSlug/activity': typeof ShellOOrganizationSlugActivityRoute
-  '/o/$organizationSlug/connections': typeof ShellOOrganizationSlugConnectionsRoute
   '/o/$organizationSlug/daemons': typeof ShellOOrganizationSlugDaemonsRoute
   '/o/$organizationSlug/home': typeof ShellOOrganizationSlugHomeRoute
+  '/o/$organizationSlug/integrations': typeof ShellOOrganizationSlugIntegrationsRoute
   '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
@@ -425,14 +425,14 @@ export interface FileRoutesById {
   '/webhook': typeof WebhookRoute
   '/_shell/apps': typeof ShellAppsRoute
   '/_shell/cli-login': typeof ShellCliLoginRoute
-  '/_shell/connections': typeof ShellConnectionsRoute
+  '/_shell/integrations': typeof ShellIntegrationsRoute
   '/_shell/operator': typeof ShellOperatorRoute
   '/_shell/triggers': typeof ShellTriggersRoute
   '/api/$': typeof ApiSplatRoute
   '/api/openapi.json': typeof ApiOpenapiDotjsonRoute
   '/api/reference': typeof ApiReferenceRoute
   '/assets/$': typeof AssetsSplatRoute
-  '/connections_/github': typeof ConnectionsGithubRoute
+  '/integrations_/github': typeof IntegrationsGithubRoute
   '/test/smoke': typeof TestSmokeRoute
   '/test/stripe-checkout': typeof TestStripeCheckoutRoute
   '/test/trigger': typeof TestTriggerRoute
@@ -447,9 +447,9 @@ export interface FileRoutesById {
   '/api/v1/$': typeof ApiV1SplatRoute
   '/api/v1/cli-authorizations': typeof ApiV1CliAuthorizationsRouteWithChildren
   '/_shell/o/$organizationSlug/activity': typeof ShellOOrganizationSlugActivityRoute
-  '/_shell/o/$organizationSlug/connections': typeof ShellOOrganizationSlugConnectionsRoute
   '/_shell/o/$organizationSlug/daemons': typeof ShellOOrganizationSlugDaemonsRoute
   '/_shell/o/$organizationSlug/home': typeof ShellOOrganizationSlugHomeRoute
+  '/_shell/o/$organizationSlug/integrations': typeof ShellOOrganizationSlugIntegrationsRoute
   '/_shell/o/$organizationSlug/settings': typeof ShellOOrganizationSlugSettingsRouteWithChildren
   '/_shell/o/$organizationSlug/triggers': typeof ShellOOrganizationSlugTriggersRouteWithChildren
   '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
@@ -477,14 +477,14 @@ export interface FileRouteTypes {
     | '/webhook'
     | '/apps'
     | '/cli-login'
-    | '/connections'
+    | '/integrations'
     | '/operator'
     | '/triggers'
     | '/api/$'
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
-    | '/connections/github'
+    | '/integrations/github'
     | '/test/smoke'
     | '/test/stripe-checkout'
     | '/test/trigger'
@@ -498,9 +498,9 @@ export interface FileRouteTypes {
     | '/api/v1/$'
     | '/api/v1/cli-authorizations'
     | '/o/$organizationSlug/activity'
-    | '/o/$organizationSlug/connections'
     | '/o/$organizationSlug/daemons'
     | '/o/$organizationSlug/home'
+    | '/o/$organizationSlug/integrations'
     | '/o/$organizationSlug/settings'
     | '/o/$organizationSlug/triggers'
     | '/agent-executions/$executionId/attachments/$attachmentId'
@@ -525,14 +525,14 @@ export interface FileRouteTypes {
     | '/webhook'
     | '/apps'
     | '/cli-login'
-    | '/connections'
+    | '/integrations'
     | '/operator'
     | '/triggers'
     | '/api/$'
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
-    | '/connections/github'
+    | '/integrations/github'
     | '/test/smoke'
     | '/test/stripe-checkout'
     | '/test/trigger'
@@ -547,9 +547,9 @@ export interface FileRouteTypes {
     | '/api/v1/$'
     | '/api/v1/cli-authorizations'
     | '/o/$organizationSlug/activity'
-    | '/o/$organizationSlug/connections'
     | '/o/$organizationSlug/daemons'
     | '/o/$organizationSlug/home'
+    | '/o/$organizationSlug/integrations'
     | '/agent-executions/$executionId/attachments/$attachmentId'
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
@@ -573,14 +573,14 @@ export interface FileRouteTypes {
     | '/webhook'
     | '/_shell/apps'
     | '/_shell/cli-login'
-    | '/_shell/connections'
+    | '/_shell/integrations'
     | '/_shell/operator'
     | '/_shell/triggers'
     | '/api/$'
     | '/api/openapi.json'
     | '/api/reference'
     | '/assets/$'
-    | '/connections_/github'
+    | '/integrations_/github'
     | '/test/smoke'
     | '/test/stripe-checkout'
     | '/test/trigger'
@@ -595,9 +595,9 @@ export interface FileRouteTypes {
     | '/api/v1/$'
     | '/api/v1/cli-authorizations'
     | '/_shell/o/$organizationSlug/activity'
-    | '/_shell/o/$organizationSlug/connections'
     | '/_shell/o/$organizationSlug/daemons'
     | '/_shell/o/$organizationSlug/home'
+    | '/_shell/o/$organizationSlug/integrations'
     | '/_shell/o/$organizationSlug/settings'
     | '/_shell/o/$organizationSlug/triggers'
     | '/agent-executions/$executionId/attachments/$attachmentId'
@@ -626,7 +626,7 @@ export interface RootRouteChildren {
   ApiOpenapiDotjsonRoute: typeof ApiOpenapiDotjsonRoute
   ApiReferenceRoute: typeof ApiReferenceRoute
   AssetsSplatRoute: typeof AssetsSplatRoute
-  ConnectionsGithubRoute: typeof ConnectionsGithubRoute
+  IntegrationsGithubRoute: typeof IntegrationsGithubRoute
   TestSmokeRoute: typeof TestSmokeRoute
   TestStripeCheckoutRoute: typeof TestStripeCheckoutRoute
   TestTriggerRoute: typeof TestTriggerRoute
@@ -700,11 +700,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TestSmokeRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/connections_/github': {
-      id: '/connections_/github'
-      path: '/connections/github'
-      fullPath: '/connections/github'
-      preLoaderRoute: typeof ConnectionsGithubRouteImport
+    '/integrations_/github': {
+      id: '/integrations_/github'
+      path: '/integrations/github'
+      fullPath: '/integrations/github'
+      preLoaderRoute: typeof IntegrationsGithubRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/assets/$': {
@@ -749,11 +749,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellOperatorRouteImport
       parentRoute: typeof ShellRoute
     }
-    '/_shell/connections': {
-      id: '/_shell/connections'
-      path: '/connections'
-      fullPath: '/connections'
-      preLoaderRoute: typeof ShellConnectionsRouteImport
+    '/_shell/integrations': {
+      id: '/_shell/integrations'
+      path: '/integrations'
+      fullPath: '/integrations'
+      preLoaderRoute: typeof ShellIntegrationsRouteImport
       parentRoute: typeof ShellRoute
     }
     '/_shell/cli-login': {
@@ -910,6 +910,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellOOrganizationSlugSettingsRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/_shell/o/$organizationSlug/integrations': {
+      id: '/_shell/o/$organizationSlug/integrations'
+      path: '/o/$organizationSlug/integrations'
+      fullPath: '/o/$organizationSlug/integrations'
+      preLoaderRoute: typeof ShellOOrganizationSlugIntegrationsRouteImport
+      parentRoute: typeof ShellRoute
+    }
     '/_shell/o/$organizationSlug/home': {
       id: '/_shell/o/$organizationSlug/home'
       path: '/o/$organizationSlug/home'
@@ -922,13 +929,6 @@ declare module '@tanstack/react-router' {
       path: '/o/$organizationSlug/daemons'
       fullPath: '/o/$organizationSlug/daemons'
       preLoaderRoute: typeof ShellOOrganizationSlugDaemonsRouteImport
-      parentRoute: typeof ShellRoute
-    }
-    '/_shell/o/$organizationSlug/connections': {
-      id: '/_shell/o/$organizationSlug/connections'
-      path: '/o/$organizationSlug/connections'
-      fullPath: '/o/$organizationSlug/connections'
-      preLoaderRoute: typeof ShellOOrganizationSlugConnectionsRouteImport
       parentRoute: typeof ShellRoute
     }
     '/_shell/o/$organizationSlug/activity': {
@@ -1038,14 +1038,14 @@ const ShellOOrganizationSlugTriggersRouteWithChildren =
 interface ShellRouteChildren {
   ShellAppsRoute: typeof ShellAppsRoute
   ShellCliLoginRoute: typeof ShellCliLoginRoute
-  ShellConnectionsRoute: typeof ShellConnectionsRoute
+  ShellIntegrationsRoute: typeof ShellIntegrationsRoute
   ShellOperatorRoute: typeof ShellOperatorRoute
   ShellTriggersRoute: typeof ShellTriggersRoute
   ShellIndexRoute: typeof ShellIndexRoute
   ShellOOrganizationSlugActivityRoute: typeof ShellOOrganizationSlugActivityRoute
-  ShellOOrganizationSlugConnectionsRoute: typeof ShellOOrganizationSlugConnectionsRoute
   ShellOOrganizationSlugDaemonsRoute: typeof ShellOOrganizationSlugDaemonsRoute
   ShellOOrganizationSlugHomeRoute: typeof ShellOOrganizationSlugHomeRoute
+  ShellOOrganizationSlugIntegrationsRoute: typeof ShellOOrganizationSlugIntegrationsRoute
   ShellOOrganizationSlugSettingsRoute: typeof ShellOOrganizationSlugSettingsRouteWithChildren
   ShellOOrganizationSlugTriggersRoute: typeof ShellOOrganizationSlugTriggersRouteWithChildren
 }
@@ -1053,15 +1053,15 @@ interface ShellRouteChildren {
 const ShellRouteChildren: ShellRouteChildren = {
   ShellAppsRoute: ShellAppsRoute,
   ShellCliLoginRoute: ShellCliLoginRoute,
-  ShellConnectionsRoute: ShellConnectionsRoute,
+  ShellIntegrationsRoute: ShellIntegrationsRoute,
   ShellOperatorRoute: ShellOperatorRoute,
   ShellTriggersRoute: ShellTriggersRoute,
   ShellIndexRoute: ShellIndexRoute,
   ShellOOrganizationSlugActivityRoute: ShellOOrganizationSlugActivityRoute,
-  ShellOOrganizationSlugConnectionsRoute:
-    ShellOOrganizationSlugConnectionsRoute,
   ShellOOrganizationSlugDaemonsRoute: ShellOOrganizationSlugDaemonsRoute,
   ShellOOrganizationSlugHomeRoute: ShellOOrganizationSlugHomeRoute,
+  ShellOOrganizationSlugIntegrationsRoute:
+    ShellOOrganizationSlugIntegrationsRoute,
   ShellOOrganizationSlugSettingsRoute:
     ShellOOrganizationSlugSettingsRouteWithChildren,
   ShellOOrganizationSlugTriggersRoute:
@@ -1092,7 +1092,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiOpenapiDotjsonRoute: ApiOpenapiDotjsonRoute,
   ApiReferenceRoute: ApiReferenceRoute,
   AssetsSplatRoute: AssetsSplatRoute,
-  ConnectionsGithubRoute: ConnectionsGithubRoute,
+  IntegrationsGithubRoute: IntegrationsGithubRoute,
   TestSmokeRoute: TestSmokeRoute,
   TestStripeCheckoutRoute: TestStripeCheckoutRoute,
   TestTriggerRoute: TestTriggerRoute,

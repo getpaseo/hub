@@ -1,4 +1,4 @@
-/* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop -- one screen binds one snapshot; a row's action and status are that row's own slots */
+/* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-new-array-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop -- one screen binds one snapshot; a row's action and status are that row's own slots */
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- generated routes cannot express server-resolved organization URLs */
 import { useSnapshotQuery } from "../queries/index.js";
 import { Link } from "@tanstack/react-router";
@@ -10,9 +10,9 @@ import { useActiveAccount } from "../auth/active-account.js";
 import { CardSkeleton } from "../components/app/card.js";
 import { CopyField } from "../components/app/copy-field.js";
 import { Disclosure } from "../components/app/disclosure.js";
-import { EmptyState } from "../components/app/empty-state.js";
 import { WarningAlert } from "../components/app/failure-alert.js";
 import { PageHeader, PageHeaderSkeleton } from "../components/app/page.js";
+import { ProgressSteps, type ProgressStep } from "../components/app/progress-steps.js";
 import { RecordList, RecordRow } from "../components/app/record-list.js";
 import { RelativeTime } from "../components/app/relative-time.js";
 import { Section } from "../components/app/section.js";
@@ -27,7 +27,6 @@ import { deriveChecklist, type Checklist, type ChecklistStep } from "./checklist
 import { homeSnapshot, type HomeSnapshot } from "./functions.js";
 
 const HOME_DESCRIPTION = "What to do next, and what has run.";
-const RECENT_RUNS_SHOWN = 5;
 
 export function HomePanel() {
   const tenant = useRouteTenant();
@@ -69,25 +68,57 @@ export function HomePanel() {
           <p>{unroutedSentence(data.unrouted, data.windowDays)}</p>
         </WarningAlert>
       )}
-      <Section title="Overview" description={`The last ${String(data.windowDays)} days.`}>
+      {/* Get started is the empty state for everything below: a section shows once it has
+          records, so a new organization reads one list instead of zeros and "nothing yet". */}
+      {data.recentRuns.length === 0 ? null : (
+        <Runs
+          runs={data.runs}
+          recentRuns={data.recentRuns}
+          daemons={data.daemons}
+          windowDays={data.windowDays}
+          base={base}
+        />
+      )}
+      {data.daemons.length === 0 ? null : <Daemons daemons={data.daemons} base={base} />}
+    </>
+  );
+}
+
+function Runs({
+  runs,
+  recentRuns,
+  daemons,
+  windowDays,
+  base,
+}: {
+  runs: HomeSnapshot["runs"];
+  recentRuns: HomeSnapshot["recentRuns"];
+  daemons: HomeSnapshot["daemons"];
+  windowDays: number;
+  base: string;
+}) {
+  const agents = agentsUsed(runs);
+  return (
+    <>
+      <Section title="Overview" description={`The last ${String(windowDays)} days.`}>
         <StatGrid>
           <StatTile
             label="Runs"
             icon={History}
-            value={String(data.runs.length)}
-            detail={runOutcomes(data.runs)}
+            value={String(runs.length)}
+            detail={runOutcomes(runs)}
           />
           <StatTile
             label="Daemons connected"
             icon={Cpu}
-            value={String(data.daemons.filter(({ presence }) => presence === "connected").length)}
-            detail={daemonDetail(data.daemons)}
+            value={String(daemons.filter(({ presence }) => presence === "connected").length)}
+            detail={daemonDetail(daemons)}
           />
           <StatTile
             label="Agents used"
             icon={Sparkles}
-            value={String(agentsUsed(data.runs).length)}
-            detail={agentDetail(agentsUsed(data.runs))}
+            value={String(agents.length)}
+            detail={agentDetail(agents)}
           />
         </StatGrid>
       </Section>
@@ -99,67 +130,56 @@ export function HomePanel() {
           </Button>
         }
       >
-        {data.runs.length === 0 ? (
-          <EmptyState
-            title="No runs yet"
-            description="Runs appear here as soon as a trigger launches an agent."
-          />
-        ) : (
-          <RecordList label="Recent runs">
-            {data.runs.slice(0, RECENT_RUNS_SHOWN).map((run) => (
-              <RecordRow
-                key={run.id}
-                status={
-                  <StatusPill tone={runTone(run.status)}>{statusLabel(run.status)}</StatusPill>
+        <RecordList label="Recent runs">
+          {recentRuns.map((run) => (
+            <RecordRow
+              key={run.id}
+              status={<StatusPill tone={runTone(run.status)}>{statusLabel(run.status)}</StatusPill>}
+            >
+              <TwoLine
+                primary={run.triggerName}
+                secondary={
+                  <>
+                    {run.source} · <RelativeTime value={run.receivedAt} />
+                  </>
                 }
-              >
-                <TwoLine
-                  primary={run.triggerName}
-                  secondary={
-                    <>
-                      {run.source} · <RelativeTime value={run.receivedAt} />
-                    </>
-                  }
-                />
-              </RecordRow>
-            ))}
-          </RecordList>
-        )}
-      </Section>
-      <Section
-        title="Daemons"
-        action={
-          <Button variant="link" asChild>
-            <Link to={`${base}/daemons` as never}>Manage</Link>
-          </Button>
-        }
-      >
-        {data.daemons.length === 0 ? (
-          <EmptyState
-            title="No daemons"
-            description="Hub runs your triggers on machines you own. The checklist above has the command."
-          />
-        ) : (
-          <RecordList label="Daemons">
-            {data.daemons.map((daemon) => (
-              <RecordRow
-                key={daemon.id}
-                status={
-                  <StatusPill tone={daemon.presence === "connected" ? "success" : "neutral"}>
-                    {daemon.presence === "connected" ? "Connected" : "Offline"}
-                  </StatusPill>
-                }
-              >
-                <TwoLine
-                  primary={daemon.slug}
-                  secondary={daemon.canExecute ? "Hub automations" : "Connected only"}
-                />
-              </RecordRow>
-            ))}
-          </RecordList>
-        )}
+              />
+            </RecordRow>
+          ))}
+        </RecordList>
       </Section>
     </>
+  );
+}
+
+function Daemons({ daemons, base }: { daemons: HomeSnapshot["daemons"]; base: string }) {
+  return (
+    <Section
+      title="Daemons"
+      action={
+        <Button variant="link" asChild>
+          <Link to={`${base}/daemons` as never}>Manage</Link>
+        </Button>
+      }
+    >
+      <RecordList label="Daemons">
+        {daemons.map((daemon) => (
+          <RecordRow
+            key={daemon.id}
+            status={
+              <StatusPill tone={daemon.presence === "connected" ? "success" : "neutral"}>
+                {daemon.presence === "connected" ? "Connected" : "Offline"}
+              </StatusPill>
+            }
+          >
+            <TwoLine
+              primary={daemon.slug}
+              secondary={daemon.canExecute ? "Hub automations" : "Connected only"}
+            />
+          </RecordRow>
+        ))}
+      </RecordList>
+    </Section>
   );
 }
 
@@ -176,9 +196,9 @@ function HomeLoading() {
 }
 
 /**
- * The four steps between an empty organization and its first run, each with the one thing to do
- * next. Open until the last step is done, collapsed after, and always the reader's to toggle;
- * nothing about it is stored, so revoking the daemon reopens it truthfully.
+ * The four steps between an empty organization and its first run, one open at a time. Open until
+ * the last step is done, collapsed after, and always the reader's to toggle; nothing about it is
+ * stored, so revoking the daemon reopens it truthfully.
  */
 function GetStarted({
   checklist,
@@ -192,11 +212,11 @@ function GetStarted({
   operator: boolean;
 }) {
   const [open, setOpen] = useState(!checklist.complete);
-  const progress = `${String(checklist.completed)} of ${String(checklist.steps.length)} done`;
   // The address the reader reached this Hub at is the address their daemon has to be told. Home
   // is a route, so it can be rendered on the server, where there is no window: the command is
   // simply absent from that render and arrives with the client.
   const origin = typeof window === "undefined" ? undefined : window.location.origin;
+  const context = { base, operator, origin };
   return (
     <Section>
       <Disclosure
@@ -204,50 +224,16 @@ function GetStarted({
         open={open}
         onOpenChange={setOpen}
         title="Get started"
-        description="Connect an app and a daemon, create a trigger, and run it."
-        status={
-          <StatusPill tone={checklist.complete ? "success" : "neutral"}>{progress}</StatusPill>
-        }
+        status={`${String(checklist.completed)} of ${String(checklist.steps.length)}`}
       >
-        <RecordList label="Get started">
-          {checklist.steps.map((step) => (
-            <StepRow
-              key={step.key}
-              {...stepPresentation(step, snapshot, { base, operator, origin })}
-            />
-          ))}
-        </RecordList>
+        <ProgressSteps
+          label="Get started"
+          steps={checklist.steps.map((step) => stepPresentation(step, snapshot, context))}
+        />
       </Disclosure>
     </Section>
   );
 }
-
-interface StepPresentation {
-  title: string;
-  hint: ReactNode;
-  status: { label: string; tone: StatusTone };
-  /** The one next action, when there is one the reader can press. */
-  action?: ReactNode;
-  /** A command to run somewhere else, when that is the next action. */
-  command?: { label: string; value: string };
-}
-
-function StepRow({ title, hint, status, action, command }: StepPresentation) {
-  return (
-    <RecordRow
-      status={<StatusPill tone={status.tone}>{status.label}</StatusPill>}
-      {...(action === undefined ? {} : { actions: action })}
-    >
-      <div className="grid min-w-0 gap-2">
-        <TwoLine primary={title} secondary={hint} />
-        {command === undefined ? null : <CopyField label={command.label} value={command.value} />}
-      </div>
-    </RecordRow>
-  );
-}
-
-const DONE = { label: "Done", tone: "success" } as const;
-const TO_DO = { label: "To do", tone: "neutral" } as const;
 
 /** What the page knows that the snapshot does not: where it is, who is reading, and from where. */
 interface StepContext {
@@ -261,54 +247,53 @@ function stepPresentation(
   step: ChecklistStep,
   snapshot: HomeSnapshot,
   context: StepContext,
-): StepPresentation {
-  if (step.key === "app") return appStep(step.state, snapshot, context.base, context.operator);
+): ProgressStep {
+  if (step.key === "app") return integrationStep(step.state, snapshot, context);
   if (step.key === "daemon") return daemonStep(step.state, snapshot, context.origin);
   if (step.key === "trigger") return triggerStep(step.state, snapshot, context.base);
-  return runStep(step.state, snapshot, context.base);
+  return runStep(step.state, snapshot);
 }
 
-function appStep(
+function stepAction(to: string, label: string): ReactNode {
+  return (
+    <Button asChild size="sm">
+      <Link to={to as never}>{label}</Link>
+    </Button>
+  );
+}
+
+function integrationStep(
   state: Extract<ChecklistStep, { key: "app" }>["state"],
   snapshot: HomeSnapshot,
-  base: string,
-  operator: boolean,
-): StepPresentation {
-  const title = "Connect an app";
+  { base, operator }: StepContext,
+): ProgressStep {
+  const step = { key: "app", title: "Connect an integration" };
   if (state === "done") {
     return {
-      title,
-      hint: snapshot.connections.map(({ label }) => label).join(", "),
-      status: DONE,
+      ...step,
+      state: "done",
+      result: snapshot.connections.map(({ label }) => label).join(", "),
     };
   }
   if (state === "setup") {
-    return {
-      title,
-      hint: operator
-        ? "This Hub has no GitHub, Slack, or Discord app yet. Set one up first."
-        : "This Hub has no GitHub, Slack, or Discord app yet. Ask whoever runs it to set one up.",
-      status: { label: "Needs setup", tone: "warning" },
-      ...(operator
-        ? {
-            action: (
-              <Button asChild variant="outline" size="sm">
-                <Link to={"/apps" as never}>Set up apps</Link>
-              </Button>
-            ),
-          }
-        : {}),
-    };
+    return operator
+      ? {
+          ...step,
+          state: "blocked",
+          hint: "Set up GitHub, Slack, Discord, or Linear on this Hub first.",
+          action: stepAction("/apps", "Set up apps"),
+        }
+      : {
+          ...step,
+          state: "blocked",
+          hint: "Ask whoever runs this Hub to set up GitHub, Slack, Discord, or Linear.",
+        };
   }
   return {
-    title,
-    hint: "GitHub, Slack, or Discord: the place events come from.",
-    status: TO_DO,
-    action: (
-      <Button asChild variant="outline" size="sm">
-        <Link to={`${base}/connections` as never}>Connect an app</Link>
-      </Button>
-    ),
+    ...step,
+    state: "todo",
+    hint: "Pick where events come from: GitHub, Slack, Discord, or Linear.",
+    action: stepAction(`${base}/integrations`, "Connect integration"),
   };
 }
 
@@ -316,32 +301,38 @@ function daemonStep(
   state: Extract<ChecklistStep, { key: "daemon" }>["state"],
   snapshot: HomeSnapshot,
   origin: string | undefined,
-): StepPresentation {
-  const title = "Connect a daemon";
+): ProgressStep {
+  const step = { key: "daemon", title: "Connect a daemon" };
   if (state === "done") {
-    const able = snapshot.daemons.filter(({ canExecute }) => canExecute);
-    const connected = able.filter(({ presence }) => presence === "connected").length;
     return {
-      title,
-      hint: `${able.map(({ slug }) => slug).join(", ")} · ${String(connected)} of ${String(able.length)} connected`,
-      status: DONE,
+      ...step,
+      state: "done",
+      result: snapshot.daemons
+        .filter(({ canExecute }) => canExecute)
+        .map(({ slug }) => slug)
+        .join(", "),
     };
   }
   if (state === "cannotRun") {
+    const daemons = snapshot.daemons.map(({ slug }) => slug).join(", ");
     return {
-      title,
-      hint: `${snapshot.daemons.map(({ slug }) => slug).join(", ")} is connected but was not allowed to run Hub automations. Run this on it:`,
-      status: { label: "Cannot run agents", tone: "warning" },
-      command: { label: "Grant command", value: GRANT_EXECUTE_COMMAND },
+      ...step,
+      state: "blocked",
+      hint: `${daemons} cannot run agents yet. Run this on it:`,
+      action: <CopyField label="Grant command" value={GRANT_EXECUTE_COMMAND} labelHidden />,
     };
   }
   return {
-    title,
-    hint: "Hub runs your triggers on a machine you own. Run this where your code lives, and answer yes to running Hub automations:",
-    status: TO_DO,
+    ...step,
+    state: "todo",
+    hint: "Run this where your code lives, and allow Hub automations when asked.",
     ...(origin === undefined
       ? {}
-      : { command: { label: "Login command", value: daemonLoginCommand(origin) } }),
+      : {
+          action: (
+            <CopyField label="Login command" value={daemonLoginCommand(origin)} labelHidden />
+          ),
+        }),
   };
 }
 
@@ -349,51 +340,37 @@ function triggerStep(
   state: Extract<ChecklistStep, { key: "trigger" }>["state"],
   snapshot: HomeSnapshot,
   base: string,
-): StepPresentation {
-  const title = "Create a trigger";
+): ProgressStep {
+  const step = { key: "trigger", title: "Create a trigger" };
   if (state === "done") {
-    return {
-      title,
-      hint: snapshot.triggers.map(({ name }) => name).join(", "),
-      status: DONE,
-    };
+    return { ...step, state: "done", result: snapshot.triggers.map(({ name }) => name).join(", ") };
   }
   return {
-    title,
-    hint: "Decide which event launches which agent, and where.",
-    status: TO_DO,
-    action: (
-      <Button asChild variant="outline" size="sm">
-        <Link to={`${base}/triggers/new` as never}>New trigger</Link>
-      </Button>
-    ),
+    ...step,
+    state: "todo",
+    hint: "Choose which event starts which agent.",
+    action: stepAction(`${base}/triggers/new`, "New trigger"),
   };
 }
 
 function runStep(
   state: Extract<ChecklistStep, { key: "run" }>["state"],
   snapshot: HomeSnapshot,
-  base: string,
-): StepPresentation {
-  const title = "Run it";
-  const latest = snapshot.runs[0];
+): ProgressStep {
+  const step = { key: "run", title: "Run it" };
+  const latest = snapshot.recentRuns[0];
   if (state === "done" && latest !== undefined) {
     return {
-      title,
-      hint: (
+      ...step,
+      state: "done",
+      result: (
         <>
           {latest.triggerName} ran <RelativeTime value={latest.receivedAt} />
         </>
       ),
-      status: DONE,
-      action: (
-        <Button asChild variant="outline" size="sm">
-          <Link to={`${base}/activity` as never}>View activity</Link>
-        </Button>
-      ),
     };
   }
-  return { title, hint: runHint(snapshot.triggers), status: TO_DO };
+  return { ...step, state: "todo", hint: runHint(snapshot.triggers) };
 }
 
 /** How to make a trigger fire, said for the events the organization actually listens to. */

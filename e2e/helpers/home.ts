@@ -1,14 +1,17 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
 export type ChecklistStepTitle =
-  | "Connect an app"
+  | "Connect an integration"
   | "Connect a daemon"
   | "Create a trigger"
   | "Run it";
 
+export type ChecklistStepState = "done" | "to do" | "needs attention";
+
 /**
- * The organization landing: the checklist and the overview under it. Rows are addressed by the
- * step's title, and a step's state is the pill beside it, so the DSL reads like the page does.
+ * The organization landing: the checklist and the overview under it. Steps are addressed by
+ * their title. Only the current step shows its hint and action, so the DSL asks which step is
+ * current before it reads what that step says.
  */
 export class OrganizationHome {
   constructor(private readonly page: Page) {}
@@ -35,8 +38,49 @@ export class OrganizationHome {
       .filter({ hasText: title });
   }
 
-  async expectStep(title: ChecklistStepTitle, state: string) {
-    await expect(this.step(title)).toContainText(state);
+  /** A step's state is announced after its title, the way a screen reader hears it. */
+  async expectStep(title: ChecklistStepTitle, state: ChecklistStepState) {
+    await expect(this.step(title)).toContainText(`${title}, ${state}`);
+  }
+
+  /** The one open step: its hint and its action are the only ones on screen. */
+  async expectCurrentStep(title: ChecklistStepTitle) {
+    await expect(
+      this.page.getByRole("list", { name: "Get started" }).locator('[aria-current="step"]'),
+    ).toContainText(title);
+  }
+
+  /** What a step says: a done step's result, or the current step's hint. */
+  async expectStepText(title: ChecklistStepTitle, text: string) {
+    await expect(this.step(title)).toContainText(text);
+  }
+
+  /** A new organization reads the checklist alone: nothing below it until a run exists. */
+  async expectNoOverview() {
+    await expect(this.page.getByRole("heading", { name: "Overview" })).toHaveCount(0);
+    await expect(this.page.getByRole("list", { name: "Recent runs" })).toHaveCount(0);
+  }
+
+  /**
+   * On a phone a done step's title stays whole and inside its row; its result is what gives way.
+   * The title and the result used to share the row's shrink, so a 375px screen read
+   * "Connect an integr…" beside a cut-off result.
+   */
+  async expectWholeTitlesAtPhoneWidth(titles: readonly ChecklistStepTitle[]) {
+    const viewport = this.page.viewportSize();
+    await this.page.setViewportSize({ width: 375, height: 800 });
+    for (const title of titles) {
+      const step = this.step(title);
+      const fit = await step.getByText(title).evaluate((element: HTMLElement) => {
+        const row = element.closest("li")?.getBoundingClientRect();
+        return {
+          clipped: element.scrollWidth > element.clientWidth,
+          inside: row !== undefined && element.getBoundingClientRect().right <= row.right,
+        };
+      });
+      expect(fit, title).toEqual({ clipped: false, inside: true });
+    }
+    if (viewport !== null) await this.page.setViewportSize(viewport);
   }
 
   async expectProgress(progress: string) {

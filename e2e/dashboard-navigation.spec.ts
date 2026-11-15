@@ -22,7 +22,7 @@ test("keeps every daily surface at organization scope", async ({ hub, page }) =>
     "Triggers",
     "Activity",
     "Daemons",
-    "Connections",
+    "Integrations",
     "Settings",
   ]);
   await expect(page.getByRole("navigation", { name: "Project", exact: true })).toHaveCount(0);
