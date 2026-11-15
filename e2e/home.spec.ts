@@ -113,6 +113,12 @@ test("walks a hosted organization from sign-in to its first run", async ({ hub, 
     await home.toggle();
     await home.expectExpanded();
     await home.expectStep("Run it", "done");
+    await home.expectWholeTitlesAtPhoneWidth([
+      "Connect an integration",
+      "Connect a daemon",
+      "Create a trigger",
+      "Run it",
+    ]);
     await home.reload();
     await home.expectCollapsed();
   });

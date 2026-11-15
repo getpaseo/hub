@@ -61,6 +61,28 @@ export class OrganizationHome {
     await expect(this.page.getByRole("list", { name: "Recent runs" })).toHaveCount(0);
   }
 
+  /**
+   * On a phone a done step's title stays whole and inside its row; its result is what gives way.
+   * The title and the result used to share the row's shrink, so a 375px screen read
+   * "Connect an integr…" beside a cut-off result.
+   */
+  async expectWholeTitlesAtPhoneWidth(titles: readonly ChecklistStepTitle[]) {
+    const viewport = this.page.viewportSize();
+    await this.page.setViewportSize({ width: 375, height: 800 });
+    for (const title of titles) {
+      const step = this.step(title);
+      const fit = await step.getByText(title).evaluate((element: HTMLElement) => {
+        const row = element.closest("li")?.getBoundingClientRect();
+        return {
+          clipped: element.scrollWidth > element.clientWidth,
+          inside: row !== undefined && element.getBoundingClientRect().right <= row.right,
+        };
+      });
+      expect(fit, title).toEqual({ clipped: false, inside: true });
+    }
+    if (viewport !== null) await this.page.setViewportSize(viewport);
+  }
+
   async expectProgress(progress: string) {
     await expect(this.page.getByRole("button", { name: /Get started/u })).toContainText(progress);
   }

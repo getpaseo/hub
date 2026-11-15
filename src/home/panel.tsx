@@ -311,7 +311,6 @@ function daemonStep(
     return {
       ...step,
       state: "blocked",
-      result: daemons,
       hint: `${daemons} cannot run agents yet. Run this on it:`,
       action: <CopyField label="Grant command" value={GRANT_EXECUTE_COMMAND} labelHidden />,
     };

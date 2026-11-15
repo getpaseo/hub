@@ -55,8 +55,9 @@ export function ProgressSteps({ label, steps }: { label: string; steps: readonly
             </span>
             <div className={cn("grid min-w-0 gap-3 group-last:pb-0", isOpen ? "pb-6" : "pb-4")}>
               <div className="flex min-h-6 min-w-0 items-center justify-between gap-3">
+                {/* The title never gives way: on a phone the result truncates, not the step's name. */}
                 <span
-                  className={cn("truncate", isOpen ? "text-foreground" : "text-muted-foreground")}
+                  className={cn("shrink-0", isOpen ? "text-foreground" : "text-muted-foreground")}
                 >
                   {step.title}
                   <span className="sr-only">{STATE_LABEL[step.state]}</span>
