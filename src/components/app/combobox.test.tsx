@@ -7,8 +7,7 @@ const NOOP = (): void => {};
 import {
   Combobox,
   comboboxLabel,
-  comboboxMatches,
-  comboboxSearchTerms,
+  comboboxFilter,
   comboboxSelection,
   type ComboboxOption,
 } from "./combobox.js";
@@ -48,47 +47,38 @@ describe("what a combobox selection means", () => {
   });
 });
 
-describe("what a combobox search matches", () => {
-  it("finds an option by what it shows, even when its value is an opaque key", () => {
-    assert.deepEqual(
-      comboboxSearchTerms({
-        value: "acme-2",
-        label: "Acme",
-        detail: "org_123",
-        keywords: ["acme"],
-      }),
-      ["Acme", "org_123", "acme"],
-    );
-  });
-});
-
 describe("which options a search keeps", () => {
-  // Opaque IDs make scattered letters match: "ac" is in "a-1-c" if letters may be far apart.
-  const acme = comboboxSearchTerms({ value: "acme", label: "Acme", detail: "7f3a-91c2" });
-  const globex = comboboxSearchTerms({ value: "globex", label: "Globex", detail: "a-1-c-9f" });
-
-  it("keeps an option whose name, slug or ID contains what was typed", () => {
-    assert.equal(comboboxMatches("acme", "ac", acme), 1);
-    assert.equal(comboboxMatches("acme", "91c2", acme), 1);
-    assert.equal(comboboxMatches("globex", "glo", globex), 1);
-  });
-
-  it("drops an option that only contains the typed letters spread apart", () => {
-    assert.equal(comboboxMatches("globex", "ac", globex), 0);
-  });
-
-  it("reads several words as all of them being present, in any order", () => {
-    const event = comboboxSearchTerms({
+  // Random IDs contain nearly every pair of letters in order: "ac" is in "a-1-c-9f" if the
+  // letters may be far apart.
+  const organizations: readonly ComboboxOption[] = [
+    { value: "acme", label: "Acme", keywords: ["Acme"], identifier: "7f3a-91c2" },
+    { value: "globex", label: "Globex", keywords: ["Globex"], identifier: "a-1-c-9f" },
+  ];
+  const events: readonly ComboboxOption[] = [
+    {
       value: "github.pull_request_created",
       label: "GitHub pull request created",
-    });
-    assert.equal(comboboxMatches("github.pull_request_created", "created pull", event), 1);
-    assert.equal(comboboxMatches("github.pull_request_created", "pull merged", event), 0);
+      keywords: ["GitHub pull request created", "github.pull_request_created"],
+    },
+  ];
+  const keeps = (options: readonly ComboboxOption[], value: string, search: string): boolean =>
+    comboboxFilter(options)(value, search, [
+      ...(options.find((o) => o.value === value)?.keywords ?? []),
+    ]) > 0;
+
+  it("keeps an option whose name or identifier contains what was typed", () => {
+    assert.equal(keeps(organizations, "acme", "acm"), true);
+    assert.equal(keeps(organizations, "acme", "91c2"), true);
+    assert.equal(keeps(organizations, "globex", "A-1-C"), true);
   });
 
-  it("keeps everything while nothing is typed", () => {
-    assert.equal(comboboxMatches("acme", "", acme), 1);
-    assert.equal(comboboxMatches("acme", "   ", acme), 1);
+  it("does not match an identifier by scattered letters", () => {
+    assert.equal(keeps(organizations, "globex", "ac"), false);
+  });
+
+  it("still reads shorthand as letters in order everywhere else", () => {
+    assert.equal(keeps(events, "github.pull_request_created", "gh pr"), true);
+    assert.equal(keeps(events, "github.pull_request_created", "slack"), false);
   });
 });
 

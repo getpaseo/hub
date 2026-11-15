@@ -164,14 +164,25 @@ export interface CurrentSubscriptionView {
   manageable: boolean;
 }
 
-/** What an instance operator needs to find an organization's billing during support: the plan
- * view the organization itself sees, plus the Stripe customer to look up. */
-export interface OperatorBillingView extends Omit<
-  CurrentSubscriptionView,
-  "planSlug" | "manageable"
-> {
+/** What an instance operator needs to find an organization's billing during support: its plan,
+ * the Stripe customer to look up, and the live subscription. */
+export interface OperatorBillingView {
+  planName: string | null;
   stripeCustomerId: string | null;
+  subscription: OperatorSubscriptionView;
 }
+
+/** The live Stripe subscription. Plan and customer come from Hub's own records, so a Stripe
+ * outage marks only this part unavailable. */
+export type OperatorSubscriptionView =
+  | { kind: "unavailable" }
+  | {
+      kind: "loaded";
+      /** Stripe's status, or null when there is no live subscription. */
+      status: string | null;
+      cancelAtPeriodEnd: boolean;
+      currentPeriodEnd: string | null;
+    };
 
 /** Thrown when a checkout is requested for a plan/interval that is not in the mirror. */
 export class BillingRequestError extends Error {
@@ -356,11 +367,8 @@ export class BillingRuntime {
       this.database.getOrganizationEntitlements(organizationId),
     ]);
     const stamped = plans.find((plan) => plan.id === entitlements?.planId);
-    const subscriptions =
-      customer === undefined ? [] : await this.customerSubscriptions(customer.stripeCustomerId);
-    const subscription = subscriptions.find(
-      (candidate) => !TERMINAL_SUBSCRIPTION_STATUSES.has(candidate.status),
-    );
+    const subscription =
+      customer === undefined ? undefined : await this.liveSubscription(customer.stripeCustomerId);
     const live = subscription !== undefined;
     return {
       planSlug: stamped?.slug ?? null,
@@ -372,18 +380,50 @@ export class BillingRuntime {
     };
   }
 
+  /**
+   * What an instance operator sees beside an organization. Stripe being unreachable must not take
+   * the operator console down with it — entitlements are the reason the operator is there, and an
+   * override that already committed must not read as failed — so a failed subscription read is
+   * reported and comes back as `unavailable`, next to the plan and customer Hub stores itself.
+   */
   async operatorBilling(organizationId: string): Promise<OperatorBillingView> {
-    const [subscription, customer] = await Promise.all([
-      this.subscriptionSnapshot(organizationId),
+    const [customer, plans, entitlements] = await Promise.all([
       this.database.getOrganizationBillingCustomer(organizationId),
+      this.database.listBillingPlans(),
+      this.database.getOrganizationEntitlements(organizationId),
     ]);
     return {
-      planName: subscription.planName,
-      status: subscription.status,
-      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
-      currentPeriodEnd: subscription.currentPeriodEnd,
+      planName: plans.find((plan) => plan.id === entitlements?.planId)?.name ?? null,
       stripeCustomerId: customer?.stripeCustomerId ?? null,
+      subscription: await this.operatorSubscription(customer?.stripeCustomerId),
     };
+  }
+
+  private async operatorSubscription(
+    customerId: string | undefined,
+  ): Promise<OperatorSubscriptionView> {
+    try {
+      const live = customerId === undefined ? undefined : await this.liveSubscription(customerId);
+      return {
+        kind: "loaded",
+        status: live?.status ?? null,
+        cancelAtPeriodEnd: live?.cancelAtPeriodEnd ?? false,
+        currentPeriodEnd: live?.currentPeriodEnd?.toISOString() ?? null,
+      };
+    } catch (error) {
+      reportFailure(error, {
+        operation: "billing.operator.subscription",
+        component: "billing",
+        provider: "stripe",
+      });
+      return { kind: "unavailable" };
+    }
+  }
+
+  private async liveSubscription(customerId: string): Promise<StripeSubscriptionState | undefined> {
+    return (await this.customerSubscriptions(customerId)).find(
+      (candidate) => !TERMINAL_SUBSCRIPTION_STATUSES.has(candidate.status),
+    );
   }
 
   async handleWebhook(request: Request): Promise<Response> {

@@ -12,7 +12,12 @@ import {
   testDatabaseRuntime,
 } from "../db/test-utils/runtime.js";
 import type { Database } from "../db/types.js";
-import { OperatorConsole, OperatorForbiddenError, type OperatorBillingReader } from "./console.js";
+import {
+  OperatorConsole,
+  OperatorForbiddenError,
+  type OperatorBilling,
+  type OperatorBillingReader,
+} from "./console.js";
 
 // The operator guard is the real authorization: hiding the nav is presentation, this refuses
 // server-side. These tests build a real Better Auth server over real Postgres so the
@@ -114,39 +119,11 @@ describe("OperatorConsole authorization", () => {
     assert.equal(reread.history[0]?.reason, "Pilot seat cap");
   });
 
-  it("keeps the organization readable and an override reported as saved when billing is down", async () => {
-    // Stripe being unreachable is billing's failure, not the console's: the entitlements an
-    // operator came to change must still load, and a committed override must not read as failed
-    // (a retry would write a second override and a second audit entry).
-    const billingDown: OperatorBillingReader = {
-      operatorBilling: () => Promise.reject(new Error("stripe unreachable")),
-    };
-    const hub = await startHarness(postgres, billingDown);
-    const operator = await hub.signUp("Ada", "ada-billing-down@example.com");
-    const slug = await operator.createOrganization("Ada Co");
-    await hub.grantOperator(operator.email);
-
-    const before = await hub.console.snapshot(operator.request(), { organizationSlug: slug });
-    assert.deepEqual(before.billing, { kind: "unavailable" });
-    assert.equal(before.members.length, 1);
-
-    const after = await hub.console.override(
-      operator.request(),
-      { organizationSlug: slug },
-      { patch: { seats: { max: 3 } }, reason: "Pilot seat cap" },
-    );
-    assert.equal(after.entitlements.effective.seats.max, 3);
-    assert.deepEqual(after.billing, { kind: "unavailable" });
-    assert.equal(after.history.filter((entry) => entry.source === "override").length, 1);
-  });
-
   it("carries the billing facts when billing answers", async () => {
-    const facts = {
+    const facts: OperatorBilling = {
       planName: "Pro",
-      status: "active",
-      cancelAtPeriodEnd: false,
-      currentPeriodEnd: null,
       stripeCustomerId: "cus_123",
+      subscription: { kind: "unavailable" },
     };
     const hub = await startHarness(postgres, { operatorBilling: () => Promise.resolve(facts) });
     const operator = await hub.signUp("Bo", "bo-billing-up@example.com");
@@ -154,7 +131,7 @@ describe("OperatorConsole authorization", () => {
     await hub.grantOperator(operator.email);
 
     const snapshot = await hub.console.snapshot(operator.request(), { organizationSlug: slug });
-    assert.deepEqual(snapshot.billing, { kind: "loaded", facts });
+    assert.deepEqual(snapshot.billing, facts);
   });
 });
 

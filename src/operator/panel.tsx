@@ -30,7 +30,7 @@ import {
 import { Skeleton } from "../components/ui/skeleton.js";
 import type { EntitlementChangeSource } from "../db/types.js";
 import type { EntitlementPatch, OverrideKey } from "../entitlements/catalog.js";
-import type { OperatorBilling, OperatorConsole } from "./console.js";
+import type { OperatorConsole, OperatorSubscription } from "./console.js";
 import {
   operatorClearOverride,
   operatorOrganizations,
@@ -122,8 +122,8 @@ function OrganizationPicker({
       (query.data ?? []).map((organization) => ({
         value: organization.slug,
         label: organization.name,
-        detail: organization.id,
-        keywords: [organization.slug],
+        identifier: organization.id,
+        keywords: [organization.name],
       })),
     [query.data],
   );
@@ -490,26 +490,25 @@ function detailRows(snapshot: Snapshot): SummaryRow[] {
     { label: "Created", value: <RelativeTime value={organization.createdAt} /> },
   ];
   if (billing === null) return rows;
-  if (billing.kind === "unavailable") return [...rows, { label: "Billing", value: "Unavailable" }];
-  const { facts } = billing;
   return [
     ...rows,
-    { label: "Plan", value: facts.planName ?? "No plan" },
-    { label: "Subscription", value: <Subscription billing={facts} /> },
-    facts.stripeCustomerId === null
+    { label: "Plan", value: billing.planName ?? "No plan" },
+    { label: "Subscription", value: <Subscription subscription={billing.subscription} /> },
+    billing.stripeCustomerId === null
       ? { label: "Stripe customer", value: "None" }
-      : { label: "Stripe customer", identifier: facts.stripeCustomerId },
+      : { label: "Stripe customer", identifier: billing.stripeCustomerId },
   ];
 }
 
-function Subscription({ billing }: { billing: OperatorBilling }) {
-  if (billing.status === null) return "None";
-  const status = statusLabel(billing.status);
-  if (billing.currentPeriodEnd === null) return status;
+function Subscription({ subscription }: { subscription: OperatorSubscription }) {
+  if (subscription.kind === "unavailable") return "Unavailable";
+  if (subscription.status === null) return "None";
+  const status = statusLabel(subscription.status);
+  if (subscription.currentPeriodEnd === null) return status;
   return (
     <>
-      {`${status} · ${billing.cancelAtPeriodEnd ? "cancels" : "renews"} `}
-      <RelativeTime value={billing.currentPeriodEnd} />
+      {`${status} · ${subscription.cancelAtPeriodEnd ? "cancels" : "renews"} `}
+      <RelativeTime value={subscription.currentPeriodEnd} />
     </>
   );
 }

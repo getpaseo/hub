@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Command as CommandPrimitive } from "cmdk";
+import { Command as CommandPrimitive, defaultFilter } from "cmdk";
 import { SearchIcon } from "lucide-react";
 
 import { cn } from "../../lib/utils.js";
@@ -71,4 +71,4 @@ function CommandItem({ className, ...props }: React.ComponentProps<typeof Comman
   );
 }
 
-export { Command, CommandInput, CommandList, CommandEmpty, CommandItem };
+export { Command, CommandInput, CommandList, CommandEmpty, CommandItem, defaultFilter };

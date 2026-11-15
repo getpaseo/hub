@@ -1,10 +1,17 @@
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop -- each item's select handler is scoped to the option rendered beside it */
 import { CheckIcon, ChevronsUpDownIcon } from "lucide-react";
-import { useCallback, useId, useState, type ReactNode } from "react";
+import { useCallback, useId, useMemo, useState, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils.js";
 import { Button } from "../ui/button.js";
-import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "../ui/command.js";
+import {
+  Command,
+  CommandEmpty,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  defaultFilter,
+} from "../ui/command.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover.js";
 import { LoadingLine, Spinner } from "./loading.js";
 
@@ -12,10 +19,17 @@ export interface ComboboxOption {
   /** The stored value. May be empty for an explicit "no choice" option. */
   value: string;
   label: string;
-  /** Words the search should match beyond the label and detail, e.g. an alias. */
+  /** Extra words the search should match, e.g. a provider name or an alias. */
   keywords?: readonly string[];
   /** The quiet second line under the label. */
   detail?: string;
+  /**
+   * An opaque ID, shown as the second line when there is no `detail`. Typing part of it finds the
+   * option, but only as a run of consecutive characters: the search's usual leniency, letters in
+   * order however far apart, would match nearly every option through the scattered characters of
+   * a random ID.
+   */
+  identifier?: string;
   icon?: ReactNode;
   disabled?: boolean;
 }
@@ -76,6 +90,7 @@ export function Combobox<T extends ComboboxOption>({
 }) {
   const [open, setOpen] = useState(false);
   const listId = useId();
+  const filter = useMemo(() => comboboxFilter(options), [options]);
   const choose = useCallback(
     (option: T) => {
       onChange(option);
@@ -121,7 +136,7 @@ export function Combobox<T extends ComboboxOption>({
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-(--radix-popper-anchor-width) p-0" align="start">
-        <Command filter={comboboxMatches}>
+        <Command filter={filter}>
           <CommandInput placeholder={searchPlaceholder ?? `${placeholder}…`} />
           <CommandList id={listId}>
             {loading ? (
@@ -137,8 +152,8 @@ export function Combobox<T extends ComboboxOption>({
                     // cmdk keys its search on `value`, and an empty string makes it fall back to
                     // the rendered text. Naming the label keeps an explicit "no choice" option
                     // searchable while the real value still travels back through `onChange`.
-                    value={option.value === "" ? option.label : option.value}
-                    keywords={comboboxSearchTerms(option)}
+                    value={itemValue(option)}
+                    {...(option.keywords === undefined ? {} : { keywords: [...option.keywords] })}
                     {...(option.disabled === undefined ? {} : { disabled: option.disabled })}
                     data-value={option.value}
                     onSelect={() => choose(option)}
@@ -151,9 +166,9 @@ export function Combobox<T extends ComboboxOption>({
                     {renderOption === undefined ? (
                       <span className="grid min-w-0 gap-0.5">
                         <span className="truncate">{option.label}</span>
-                        {option.detail === undefined ? null : (
+                        {(option.detail ?? option.identifier) === undefined ? null : (
                           <span className="truncate text-xs text-muted-foreground">
-                            {option.detail}
+                            {option.detail ?? option.identifier}
                           </span>
                         )}
                       </span>
@@ -171,36 +186,32 @@ export function Combobox<T extends ComboboxOption>({
   );
 }
 
-/** Everything an option is found by: what it shows, plus its own keywords. */
-export function comboboxSearchTerms(option: ComboboxOption): string[] {
-  return [
-    option.label,
-    ...(option.detail === undefined ? [] : [option.detail]),
-    ...(option.keywords ?? []),
-  ];
+/** The value cmdk keys an option by. An empty stored value is keyed by its label. */
+function itemValue(option: ComboboxOption): string {
+  // cmdk falls back to the rendered text for an empty value. Naming the label keeps an explicit
+  // "no choice" option searchable while the real value still travels back through `onChange`.
+  return option.value === "" ? option.label : option.value;
 }
 
 /**
- * Whether an option answers a search: every word typed appears as written inside something the
- * option shows. cmdk's own filter accepts the letters in order however far apart, and once an
- * opaque ID is part of what an option shows, "ac" matches nearly every organization by letters
- * scattered through its ID. Reading a search as words people recognise keeps the list to the
- * options they are looking at.
- *
- * `value` and `terms` are what cmdk hands its filter: the item's value and its `keywords`, which
- * `comboboxSearchTerms` fills with everything the option displays.
+ * How a search scores each option: cmdk's own scoring, so shorthand like "pr" or "ny" keeps
+ * working, plus a consecutive-characters match on an option's `identifier`.
  */
-export function comboboxMatches(
-  value: string,
-  search: string,
-  terms: readonly string[] = [],
-): number {
-  const haystack = [value, ...terms].join(" ").toLowerCase();
-  const words = search
-    .toLowerCase()
-    .split(/\s+/u)
-    .filter((word) => word !== "");
-  return words.every((word) => haystack.includes(word)) ? 1 : 0;
+export function comboboxFilter(
+  options: readonly ComboboxOption[],
+): (value: string, search: string, keywords?: string[]) => number {
+  const identifiers = new Map<string, string>();
+  for (const option of options) {
+    if (option.identifier !== undefined) {
+      identifiers.set(itemValue(option), option.identifier.toLowerCase());
+    }
+  }
+  return (value, search, keywords) => {
+    const score = defaultFilter(value, search, keywords);
+    const typed = search.trim().toLowerCase();
+    if (typed === "" || !identifiers.get(value)?.includes(typed)) return score;
+    return Math.max(score, 1);
+  };
 }
 
 /** The option a stored value refers to, or `undefined` when it refers to nothing on offer. */

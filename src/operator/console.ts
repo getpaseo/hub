@@ -1,5 +1,4 @@
 import type { AccountAccessValue } from "../auth/organization-access.js";
-import { reportFailure } from "../failures/index.js";
 import type {
   Database,
   EntitlementChangeSource,
@@ -43,21 +42,24 @@ export interface OperatorBillingReader {
 export interface OperatorBilling {
   /** Null when the catalog cannot name the stamped plan. */
   planName: string | null;
-  /** Stripe's subscription status, or null when there is no live subscription. */
-  status: string | null;
-  cancelAtPeriodEnd: boolean;
-  currentPeriodEnd: string | null;
   stripeCustomerId: string | null;
+  subscription: OperatorSubscription;
 }
 
 /**
- * Billing is a side fact of the snapshot, never a dependency of it: Stripe being unreachable must
- * not take down entitlements or make a committed override look failed. A failed read is reported
- * and surfaces as `unavailable` so the Details panel can say so.
+ * The live Stripe subscription. Stripe being unreachable must not fail the snapshot — entitlements
+ * are why the operator is here, and an override that already committed must not read as failed —
+ * so an `OperatorBillingReader` reports that as `unavailable` instead of rejecting.
  */
-export type OperatorBillingState =
+export type OperatorSubscription =
   | { kind: "unavailable" }
-  | { kind: "loaded"; facts: OperatorBilling };
+  | {
+      kind: "loaded";
+      /** Stripe's status, or null when there is no live subscription. */
+      status: string | null;
+      cancelAtPeriodEnd: boolean;
+      currentPeriodEnd: string | null;
+    };
 
 export interface OperatorOrganization {
   id: string;
@@ -128,7 +130,7 @@ export interface OperatorMember {
 export interface OperatorSnapshot {
   organization: OperatorOrganization;
   /** Null on an instance without billing. */
-  billing: OperatorBillingState | null;
+  billing: OperatorBilling | null;
   members: OperatorMember[];
   entitlements: OperatorEntitlementsView;
   seatsInUse: number;
@@ -202,23 +204,9 @@ export class OperatorConsole {
     return organization;
   }
 
-  private async readBilling(organizationId: string): Promise<OperatorBillingState | null> {
-    if (this.billing === null) return null;
-    try {
-      return { kind: "loaded", facts: await this.billing.operatorBilling(organizationId) };
-    } catch (error) {
-      reportFailure(error, {
-        operation: "operator.billing",
-        component: "operator",
-        provider: "stripe",
-      });
-      return { kind: "unavailable" };
-    }
-  }
-
   private async buildSnapshot(organization: OperatorOrganizationRecord): Promise<OperatorSnapshot> {
     const [billing, members, record, seats, usage, overages, history] = await Promise.all([
-      this.readBilling(organization.id),
+      this.billing === null ? null : this.billing.operatorBilling(organization.id),
       this.database.listOrganizationMembersForOperator(organization.id),
       this.entitlements.read(organization.id),
       this.entitlements.capUsage(organization.id, "seats"),
