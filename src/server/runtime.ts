@@ -206,6 +206,9 @@ export async function handleConnections(
     | "githubDisconnect"
     | "githubSetup"
     | "githubCallback"
+    | "githubChoices"
+    | "githubChoose"
+    | "githubAddAccount"
     | "discordStart"
     | "discordDisconnect"
     | "discordCallback"
@@ -227,6 +230,9 @@ const CONNECTION_ACTIONS = {
   githubDisconnect: { provider: "github", name: "disconnect" },
   githubSetup: { provider: "github", name: "setup" },
   githubCallback: { provider: "github", name: "callback" },
+  githubChoices: { provider: "github", name: "choices" },
+  githubChoose: { provider: "github", name: "choose" },
+  githubAddAccount: { provider: "github", name: "addAccount" },
   discordStart: { provider: "discord", name: "start" },
   discordDisconnect: { provider: "discord", name: "disconnect" },
   discordCallback: { provider: "discord", name: "callback" },

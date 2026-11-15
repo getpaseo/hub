@@ -10,21 +10,24 @@ import type { AuthServer } from "../auth/server.js";
 import type { OrganizationAccessValue } from "../auth/organization-access.js";
 import { ProductRequestError } from "../auth/organization-access.js";
 import type { DiscordConnectionClient, DiscordGuildIdentity } from "../providers/discord/client.js";
-import type {
-  GitHubConnectionClient,
-  GitHubInstallationIdentity,
-} from "../providers/github/client.js";
+import type { GitHubConnectionClient } from "../providers/github/client.js";
 import { BrowserGitHubConfiguration } from "../e2e/harness/browser-providers.js";
 import { createGitHubRegistration } from "../providers/github/index.js";
 import { createDiscordRegistration } from "../providers/discord/index.js";
 import type { ProviderRegistration } from "../providers/registration.js";
 import { MemoryDiscordBotClient } from "../triggers/discord/memory-bot.js";
+import { FakeGitHub, fakeGitHubConnectionClient } from "../test-utils/fake-github.js";
+import { z } from "zod";
 
 const TEST_WEBHOOK_SECRET = "provider-registration-test-secret";
+const HUB = "https://hub.example.test";
+const INSTALLATION_IDS: Readonly<Record<string, number>> = { "acme-inc": 42, "orbit-inc": 84 };
+
 interface ProviderFixture {
   database: Database;
   registrations: readonly ProviderRegistration[];
   organizationSlug: string;
+  github?: TestGitHub;
   discordBot?: MemoryDiscordBotClient;
 }
 
@@ -49,7 +52,7 @@ describe("provider connection facades PostgreSQL authority", () => {
        values ('github', '42', 0), ('discord', '900', 0)`,
     );
     auth = new ConnectionAuth(accessFor("acme", "owner"));
-    github = new TestGitHub();
+    github = new TestGitHub(newFakeGitHub());
     discord = new TestDiscord();
     githubRepositories = new TestGitHubRepositories();
     connections = createConnections({
@@ -70,17 +73,12 @@ describe("provider connection facades PostgreSQL authority", () => {
   it("binds verified providers once and disconnects only the active organization", async () => {
     const githubStart = await start(connections, "github");
     assert.equal(githubStart.state.includes("acme"), false);
-    const userState = await completeSetup(connections, githubStart.state, 42);
-    const [connected, replay] = await Promise.all([
-      githubCallback(connections, userState, "github-code"),
-      githubCallback(connections, userState, "github-code"),
-    ]);
-    const callbackResults = [result(connected), result(replay)];
-    assert(callbackResults.every((value): value is string => value !== null));
-    assert.deepEqual(
-      callbackResults.sort((left, right) => left.localeCompare(right)),
-      ["connection_invalid", "github_connected"],
+    const installPage = expectInstallPage(
+      await githubCallback(connections, github.fake.authorize(githubStart.url)),
     );
+    const authorized = await installOn(connections, installPage, "acme-inc");
+    assert.equal(result(await githubCallback(connections, authorized)), "github_connected");
+    assert.equal(result(await githubCallback(connections, authorized)), "connection_invalid");
 
     const discordStart = await start(connections, "discord");
     assert.equal(
@@ -128,12 +126,137 @@ describe("provider connection facades PostgreSQL authority", () => {
     assert.deepEqual(discord.leftGuilds, ["9001"]);
   });
 
+  it("connects an account that already has the App from the chooser exactly once", async () => {
+    github.fake.command({ op: "install", account: "acme-inc" });
+
+    const state = await atChooser(connections);
+    assert.deepEqual(await offered(connections, state), [
+      { account: "acme-inc", availability: "available" },
+    ]);
+    const outcomes = await Promise.all([
+      choose(connections, state, 42),
+      choose(connections, state, 42),
+    ]);
+    assert.deepEqual(
+      outcomes.map(result).sort((left, right) => String(left).localeCompare(String(right))),
+      ["connection_invalid", "github_connected"],
+    );
+    assert.deepEqual(await resolution(connections, "github", "42"), {
+      status: "active",
+      organizationId: "acme",
+    });
+
+    assert.deepEqual(await offered(connections, await atChooser(connections)), [
+      { account: "acme-inc", availability: "connected" },
+    ]);
+  });
+
+  it("adds the App to another account from the chooser", async () => {
+    github.fake.command({ op: "install", account: "octo" });
+
+    const state = await atChooser(connections);
+    assert.deepEqual(await offered(connections, state), [
+      { account: "octo", availability: "available" },
+    ]);
+    const installPage = expectInstallPage(await addAccount(connections, state));
+    const authorized = await installOn(connections, installPage, "acme-inc");
+
+    assert.equal(result(await githubCallback(connections, authorized)), "github_connected");
+    assert.deepEqual(await resolution(connections, "github", "42"), {
+      status: "active",
+      organizationId: "acme",
+    });
+    assert.equal(await database.findGitHubConnection(77), undefined);
+  });
+
+  it("binds nothing for an account the person does not own or the chooser did not offer", async () => {
+    github.fake.command({ op: "install", account: "acme-inc" });
+    github.fake.command({ op: "install", account: "orbit-inc" });
+    github.fake.command({ op: "signIn", login: "mona" });
+
+    const notOwner = await atChooser(connections);
+    assert.deepEqual(await offered(connections, notOwner), [
+      { account: "acme-inc", availability: "notOwner" },
+    ]);
+    assert.equal(result(await choose(connections, notOwner, 42)), "github_verification_rejected");
+
+    const forged = await atChooser(connections);
+    assert.equal(result(await choose(connections, forged, 84)), "github_verification_rejected");
+
+    github.fake.command({ op: "uninstall", account: "acme-inc" });
+    github.fake.command({ op: "uninstall", account: "orbit-inc" });
+    const requested = await setup(
+      connections,
+      github.fake.installFrom(await atInstallPage(connections), "acme-inc"),
+    );
+    assert.equal(result(requested), "github_approval_required");
+
+    github.fake.command({ op: "install", account: "orbit-inc" });
+    const forgedSetup = new URL(await atInstallPage(connections));
+    const setupUrl = new URL("/api/integrations/github/setup", HUB);
+    setupUrl.searchParams.set("state", forgedSetup.searchParams.get("state")!);
+    setupUrl.searchParams.set("installation_id", "84");
+    setupUrl.searchParams.set("setup_action", "install");
+    const authorized = github.fake.authorize(
+      redirectLocation(await setup(connections, setupUrl)).toString(),
+    );
+    assert.equal(
+      result(await githubCallback(connections, authorized)),
+      "github_verification_rejected",
+    );
+
+    assert.equal(
+      (
+        await pool.query<{ count: number }>(
+          `select count(*)::integer as count from github_connections`,
+        )
+      ).rows[0]?.count,
+      0,
+    );
+  });
+
+  it("refuses a setup return naming an installation the person can see but does not own", async () => {
+    github.fake.command({ op: "install", account: "acme-inc" });
+    github.fake.command({ op: "signIn", login: "mona" });
+
+    const forged = new URL(
+      expectInstallPage(await addAccount(connections, await atChooser(connections))),
+    );
+    const setupUrl = new URL("/api/integrations/github/setup", HUB);
+    setupUrl.searchParams.set("state", forged.searchParams.get("state")!);
+    setupUrl.searchParams.set("installation_id", "42");
+    setupUrl.searchParams.set("setup_action", "install");
+    const authorized = github.fake.authorize(
+      redirectLocation(await setup(connections, setupUrl)).toString(),
+    );
+
+    assert.equal(
+      result(await githubCallback(connections, authorized)),
+      "github_verification_rejected",
+    );
+    assert.equal(await database.findGitHubConnection(42), undefined);
+  });
+
+  it("says Hub couldn't finish when GitHub cannot say who owns an organization", async () => {
+    github.fake.command({ op: "install", account: "acme-inc" });
+    github.fake.command({ op: "graphqlOutage", down: true });
+
+    assert.equal(result(await startAuthorized(connections)), "connection_unavailable");
+    assert.equal(await database.findGitHubConnection(42), undefined);
+
+    github.fake.command({ op: "graphqlOutage", down: false });
+    const state = await atChooser(connections);
+    assert.deepEqual(await offered(connections, state), [
+      { account: "acme-inc", availability: "available" },
+    ]);
+    assert.equal(result(await choose(connections, state, 42)), "github_connected");
+  });
+
   it("returns provider-specific cancellation results from the attempt's trusted origin", async () => {
     const githubStart = await start(connections, "github");
-    const githubState = await completeSetup(connections, githubStart.state, 42);
     const githubCancelled = await connectionAction(
       connections,
-      request(`/api/integrations/github/callback?state=${githubState}&error=access_denied`),
+      request(`/api/integrations/github/callback?state=${githubStart.state}&error=access_denied`),
       "github",
       "callback",
     );
@@ -158,12 +281,15 @@ describe("provider connection facades PostgreSQL authority", () => {
     await pool.query(
       `update organization_connection_attempts set expires_at = now() - interval '1 second'`,
     );
-    assert.equal(result(await setupCallback(connections, expired.state, 42)), "connection_invalid");
+    assert.equal(
+      result(await githubCallback(connections, github.fake.authorize(expired.url))),
+      "connection_invalid",
+    );
 
     const downgraded = await start(connections, "github");
     await pool.query(`update member set role = 'member' where organization_id = 'acme'`);
     assert.equal(
-      result(await setupCallback(connections, downgraded.state, 42)),
+      result(await githubCallback(connections, github.fake.authorize(downgraded.url))),
       "connection_invalid",
     );
     assert.equal(
@@ -172,23 +298,16 @@ describe("provider connection facades PostgreSQL authority", () => {
     );
 
     await pool.query(`update member set role = 'owner' where organization_id = 'acme'`);
-    const acme = await start(connections, "github");
-    const acmeUserState = await completeSetup(connections, acme.state, 42);
-    assert.equal(
-      result(await githubCallback(connections, acmeUserState, "code")),
-      "github_connected",
-    );
+    await connectGitHub(connections, "acme-inc");
 
     await seedAccount(pool, "orbit", "owner");
     auth.access = accessFor("orbit", "owner");
     connections.organizationSlug = "orbit";
-    github.identity = { ...github.identity!, installationId: 42 };
-    const orbit = await start(connections, "github");
-    const orbitUserState = await completeSetup(connections, orbit.state, 42);
-    assert.equal(
-      result(await githubCallback(connections, orbitUserState, "code")),
-      "connection_conflict",
-    );
+    const orbit = await atChooser(connections);
+    assert.deepEqual(await offered(connections, orbit), [
+      { account: "acme-inc", availability: "connectedElsewhere" },
+    ]);
+    assert.equal(result(await choose(connections, orbit, 42)), "github_verification_rejected");
     assert.deepEqual(await resolution(connections, "github", "42"), {
       status: "active",
       organizationId: "acme",
@@ -230,8 +349,8 @@ describe("provider connection facades PostgreSQL authority", () => {
   });
 
   it("rejects setup callbacks whose fixed attempt or session expiry passes while the row is locked", async () => {
-    const attemptSetup = await start(connections, "github");
-    const attemptId = await attemptIdForState(pool, attemptSetup.state);
+    const attemptSetup = new URL(await atInstallPage(connections)).searchParams.get("state")!;
+    const attemptId = await attemptIdForState(pool, attemptSetup);
 
     assert.equal(
       await rejectCallbackAfterExpiryWhileLocked(
@@ -247,7 +366,7 @@ describe("provider connection facades PostgreSQL authority", () => {
           text: `select id from organization_connection_attempts where id = $1 for update`,
           values: [attemptId],
         },
-        () => setupCallback(connections, attemptSetup.state, 42),
+        () => setupCallback(connections, attemptSetup, 42),
       ),
       "connection_invalid",
     );
@@ -257,8 +376,8 @@ describe("provider connection facades PostgreSQL authority", () => {
       connections: 0,
     });
 
-    const sessionSetup = await start(connections, "github");
-    const sessionAttemptId = await attemptIdForState(pool, sessionSetup.state);
+    const sessionSetup = new URL(await atInstallPage(connections)).searchParams.get("state")!;
+    const sessionAttemptId = await attemptIdForState(pool, sessionSetup);
     assert.equal(
       await rejectCallbackAfterExpiryWhileLocked(
         postgres.getConnectionUri(),
@@ -273,7 +392,7 @@ describe("provider connection facades PostgreSQL authority", () => {
           text: `select id from session where id = $1 for update`,
           values: ["session-acme"],
         },
-        () => setupCallback(connections, sessionSetup.state, 42),
+        () => setupCallback(connections, sessionSetup, 42),
       ),
       "connection_invalid",
     );
@@ -285,7 +404,7 @@ describe("provider connection facades PostgreSQL authority", () => {
   });
 
   it("stores only hashed state and clears the PKCE secret on terminal consumption", async () => {
-    const setup = await start(connections, "github");
+    const started = await start(connections, "github");
     const setupRow = await pool.query<{
       state_verifier: string;
       organization_id: string;
@@ -293,63 +412,63 @@ describe("provider connection facades PostgreSQL authority", () => {
     }>(
       `select state_verifier, organization_id, pkce_verifier from organization_connection_attempts`,
     );
-    assert.equal(setupRow.rows[0]?.state_verifier, setup.stateHash);
+    assert.equal(setupRow.rows[0]?.state_verifier, started.stateHash);
     assert.equal(setupRow.rows[0]?.organization_id, "acme");
-    assert.equal(setupRow.rows[0]?.pkce_verifier, null);
+    assert.equal(typeof setupRow.rows[0]?.pkce_verifier, "string");
 
-    const userState = await completeSetup(connections, setup.state, 42);
-    await githubCallback(connections, userState, "one-time-code");
+    const installPage = expectInstallPage(
+      await githubCallback(connections, github.fake.authorize(started.url)),
+    );
+    const authorized = await installOn(connections, installPage, "acme-inc");
+    assert.equal(result(await githubCallback(connections, authorized)), "github_connected");
     const terminal = await pool.query<{ consumed_at: Date | null; pkce_verifier: string | null }>(
       `select consumed_at, pkce_verifier from organization_connection_attempts`,
     );
     assert.notEqual(terminal.rows[0]?.consumed_at, null);
     assert.equal(terminal.rows[0]?.pkce_verifier, null);
     const serialized = JSON.stringify(terminal.rows);
-    assert.equal(serialized.includes("one-time-code"), false);
-    assert.equal(serialized.includes(setup.state), false);
+    assert.equal(serialized.includes(authorized.searchParams.get("code")!), false);
+    assert.equal(serialized.includes(started.state), false);
   });
 
   it("publishes a complete connection only after its repositories have been fetched", async () => {
-    const setup = await start(connections, "github");
-    const state = await completeSetup(connections, setup.state, 42);
+    github.fake.command({ op: "install", account: "acme-inc" });
+    const state = await atChooser(connections);
     const gate = new ProviderBarrier();
 
     githubRepositories.wait = async () => {
       await gate.wait();
     };
-    const callback = githubCallback(connections, state, "code");
+    const chosen = choose(connections, state, 42);
     try {
       await gate.entered;
       assert.equal(await database.findGitHubConnection(42), undefined);
     } finally {
       gate.release();
     }
-    assert.equal(result(await callback), "github_connected");
+    assert.equal(result(await chosen), "github_connected");
     assert.deepEqual(
       (await database.listGitHubRepositories("acme")).map((item) => item.fullName).sort(),
       ["acme-inc/app", "acme-inc/docs"],
     );
   });
 
-  it("leaves a failed repository fetch unconnected and permits retrying the connection attempt", async () => {
-    const setup = await start(connections, "github");
-    const state = await completeSetup(connections, setup.state, 42);
+  it("leaves a failed repository fetch unconnected and permits choosing again", async () => {
+    github.fake.command({ op: "install", account: "acme-inc" });
+    const state = await atChooser(connections);
     githubRepositories.wait = async () => {
       throw new Error("repository fetch failed");
     };
-    assert.notEqual(result(await githubCallback(connections, state, "code")), "github_connected");
+    assert.notEqual(result(await choose(connections, state, 42)), "github_connected");
     assert.equal(await database.findGitHubConnection(42), undefined);
     githubRepositories.wait = async () => undefined;
-    assert.equal(
-      result(await githubCallback(connections, state, "retry-code")),
-      "github_connected",
-    );
+    assert.equal(result(await choose(connections, state, 42)), "github_connected");
     assert.equal((await database.listGitHubRepositories("acme")).length, 2);
   });
 
-  it("retains repository changes received while the first callback is fetching its snapshot", async () => {
-    const setup = await start(connections, "github");
-    const state = await completeSetup(connections, setup.state, 42);
+  it("retains repository changes received while the first connection is fetching its snapshot", async () => {
+    github.fake.command({ op: "install", account: "acme-inc" });
+    const state = await atChooser(connections);
     const gate = new ProviderBarrier();
     let first = true;
     githubRepositories.wait = async () => {
@@ -357,7 +476,7 @@ describe("provider connection facades PostgreSQL authority", () => {
       first = false;
       await gate.wait();
     };
-    const callback = githubCallback(connections, state, "first-code");
+    const chosen = choose(connections, state, 42);
     await gate.entered;
     githubRepositories.selection = [
       { repositoryId: 9003, fullName: "acme-inc/new", defaultBranch: "next" },
@@ -383,7 +502,7 @@ describe("provider connection facades PostgreSQL authority", () => {
     } finally {
       gate.release();
     }
-    assert.equal(result(await callback), "github_connected");
+    assert.equal(result(await chosen), "github_connected");
     const source = connections.registrations.find(
       (candidate) => candidate.connection.name === "github",
     )!.sources[0]!;
@@ -395,75 +514,28 @@ describe("provider connection facades PostgreSQL authority", () => {
     );
   });
 
-  it("serializes reconnect and repository webhooks without overwriting the latest GitHub selection", async () => {
-    await connectGitHub(connections, 42);
-    const setup = await start(connections, "github");
-    const state = await completeSetup(connections, setup.state, 42);
-    const gate = new ProviderBarrier();
-
-    let first = true;
-    githubRepositories.wait = async () => {
-      if (!first) return;
-      first = false;
-      await gate.wait();
-    };
-    const callback = githubCallback(connections, state, "reconnect-code");
-    await gate.entered;
-    const webhook = deliverGitHubLifecycle(connections, "during-reconnect", 42);
-    githubRepositories.selection = [
-      { repositoryId: 9003, fullName: "acme-inc/new", defaultBranch: "next" },
-    ];
-    gate.release();
-    await Promise.all([callback, webhook]);
-    assert.deepEqual(
-      (await database.listGitHubRepositories("acme")).map((item) => item.fullName),
-      ["acme-inc/new"],
-    );
-    assert.equal(
-      (await pool.query(`select * from github_installation_syncs where retry_at is not null`)).rows
-        .length,
-      0,
-    );
-  });
-
   it("applies only current GitHub lifecycle evidence to the matching binding", async () => {
-    const setup = await start(connections, "github");
-    const userState = await completeSetup(connections, setup.state, 42);
-    await githubCallback(connections, userState, "code");
+    await connectGitHub(connections, "acme-inc");
 
-    github.identity = { ...github.identity!, status: "suspended" };
+    github.fake.command({ op: "suspend", account: "acme-inc", suspended: true });
     await deliverGitHubLifecycle(connections, "suspend", 42);
     assert.deepEqual(await resolution(connections, "github", "42"), { status: "suspended" });
 
-    github.identity = { ...github.identity, status: "active" };
-    const reconnect = await start(connections, "github");
-    const reconnectState = await completeSetup(connections, reconnect.state, 42);
-    assert.equal(
-      result(await githubCallback(connections, reconnectState, "reconnect-code")),
-      "github_connected",
-    );
-    assert.deepEqual(await resolution(connections, "github", "42"), {
-      status: "active",
-      organizationId: "acme",
-    });
-
-    github.identity = { ...github.identity, status: "suspended" };
-    await deliverGitHubLifecycle(connections, "suspend-again", 42);
-    github.identity = { ...github.identity, status: "active" };
+    github.fake.command({ op: "suspend", account: "acme-inc", suspended: false });
     await deliverGitHubLifecycle(connections, "restore", 42);
     assert.deepEqual(await resolution(connections, "github", "42"), {
       status: "active",
       organizationId: "acme",
     });
 
-    github.identity = undefined;
+    github.fake.command({ op: "uninstall", account: "acme-inc" });
     await deliverGitHubLifecycle(connections, "removed", 42);
     assert.deepEqual(await resolution(connections, "github", "42"), { status: "unbound" });
   });
 
   it("retries failed GitHub lifecycle application and durably ignores applied duplicates", async () => {
-    await connectGitHub(connections, 42);
-    github.identity = { ...github.identity!, status: "suspended" };
+    await connectGitHub(connections, "acme-inc");
+    github.fake.command({ op: "suspend", account: "acme-inc", suspended: true });
     github.failInstallationReads = 1;
 
     await deliverGitHubLifecycle(connections, "lifecycle-retry", 42);
@@ -502,8 +574,8 @@ describe("provider connection facades PostgreSQL authority", () => {
 
   it("serializes cross-tenant binding races after exact lookup", async () => {
     await seedAccount(pool, "orbit", "owner");
-    const orbitGitHub = new TestGitHub();
-    orbitGitHub.identity = { ...orbitGitHub.identity!, installationId: 42 };
+    github.fake.command({ op: "install", account: "acme-inc" });
+    const orbitGitHub = new TestGitHub(github.fake);
     const orbitConnections = createConnections({
       database,
       auth: new ConnectionAuth(accessFor("orbit", "owner")),
@@ -511,13 +583,11 @@ describe("provider connection facades PostgreSQL authority", () => {
       github: orbitGitHub,
       discord: new TestDiscord(),
     });
-    const acmeSetup = await start(connections, "github");
-    const orbitSetup = await start(orbitConnections, "github");
-    const acmeAuthorization = await completeSetup(connections, acmeSetup.state, 42);
-    const orbitAuthorization = await completeSetup(orbitConnections, orbitSetup.state, 42);
+    const acmeChooser = await atChooser(connections);
+    const orbitChooser = await atChooser(orbitConnections);
     const outcomes = await Promise.all([
-      githubCallback(connections, acmeAuthorization, "acme-code"),
-      githubCallback(orbitConnections, orbitAuthorization, "orbit-code"),
+      choose(connections, acmeChooser, 42),
+      choose(orbitConnections, orbitChooser, 42),
     ]);
     assert.deepEqual(
       outcomes.map(result).sort((left, right) => String(left).localeCompare(String(right))),
@@ -533,10 +603,8 @@ describe("provider connection facades PostgreSQL authority", () => {
     );
 
     await pool.query(`delete from github_connections`);
-    github.identity = { ...github.identity!, installationId: 42 };
-    orbitGitHub.identity = { ...orbitGitHub.identity, installationId: 84 };
-    await connectGitHub(connections, 42);
-    await connectGitHub(orbitConnections, 84);
+    await connectGitHub(connections, "acme-inc");
+    await connectGitHub(orbitConnections, "orbit-inc");
     discord.identity = { guildId: "9001", guildName: "Acme builders" };
     const orbitDiscord = new TestDiscord();
     orbitDiscord.identity = { guildId: "9002", guildName: "Orbit builders" };
@@ -663,28 +731,28 @@ class TestGitHubRepositories extends BrowserGitHubConfiguration {
   }
 }
 
+/**
+ * Hub's production GitHub client pointed at the fake, with the two things these tests need to
+ * control: holding the user verification at a known point, and failing installation reads.
+ */
 class TestGitHub implements GitHubConnectionClient {
   installationReads = 0;
   failInstallationReads = 0;
   private verificationBarrier: ProviderBarrier | undefined;
-  identity: GitHubInstallationIdentity | undefined = {
-    installationId: 42,
-    accountId: "101",
-    accountLogin: "acme-inc",
-    accountType: "Organization",
-    status: "active",
-  };
-  setupUrl(state: string): string {
-    return `https://github.test/install?state=${state}`;
+  private readonly client: GitHubConnectionClient;
+
+  constructor(readonly fake: FakeGitHub) {
+    this.client = fakeGitHubConnectionClient(fake, HUB);
+  }
+  installationUrl(state: string): string {
+    return this.client.installationUrl(state);
   }
   authorizationUrl(input: { state: string; challenge: string }): string {
-    return `https://github.test/authorize?state=${input.state}&code_challenge=${input.challenge}`;
+    return this.client.authorizationUrl(input);
   }
-  async verifyUserInstallation(input: {
-    installationId: number;
-  }): Promise<GitHubInstallationIdentity | undefined> {
+  async userInstallations(input: { code: string; verifier: string }) {
     await this.verificationBarrier?.wait();
-    return input.installationId === this.identity?.installationId ? this.identity : undefined;
+    return this.client.userInstallations(input);
   }
   holdVerification(): void {
     this.verificationBarrier = new ProviderBarrier();
@@ -704,15 +772,13 @@ class TestGitHub implements GitHubConnectionClient {
       this.failInstallationReads -= 1;
       return Promise.reject(new Error("provider unavailable"));
     }
-    const identity = installationId === this.identity?.installationId ? this.identity : undefined;
-    return Promise.resolve(
-      identity === undefined
-        ? { status: "absent" as const }
-        : { status: "present" as const, identity },
-    );
+    return this.client.getInstallation(installationId);
   }
 }
 
+function newFakeGitHub(): FakeGitHub {
+  return new FakeGitHub({ webBaseUrl: "https://github.test", hubOrigin: () => HUB });
+}
 class ProviderBarrier {
   private markEntered: () => void = () => undefined;
   private unblock: () => void = () => undefined;
@@ -777,10 +843,182 @@ function connectionsWithAuth(database: Database, auth: AuthServer): ProviderFixt
   return createConnections({
     database,
     auth,
-    github: new TestGitHub(),
+    github: new TestGitHub(newFakeGitHub()),
   });
 }
 
+async function start(connections: ProviderFixture, provider: "github" | "discord") {
+  const response = await connectionAction(
+    connections,
+    request(`/start/${provider}`, "POST"),
+    provider,
+    "start",
+  );
+  assert.equal(response.status, 200);
+  const body: unknown = await response.json();
+  assert(isUrlBody(body));
+  const state = new URL(body.url).searchParams.get("state");
+  assert.notEqual(state, null);
+  return { url: body.url, state: state!, stateHash: createHashForTest(state!) };
+}
+
+function isUrlBody(value: unknown): value is { url: string } {
+  return (
+    typeof value === "object" && value !== null && typeof Reflect.get(value, "url") === "string"
+  );
+}
+
+function fakeGitHubOf(connections: ProviderFixture): FakeGitHub {
+  assert(connections.github !== undefined);
+  return connections.github.fake;
+}
+
+/** Starts a GitHub connection, authorizes it on GitHub, and returns Hub's answer to the callback. */
+async function startAuthorized(connections: ProviderFixture): Promise<Response> {
+  const started = await start(connections, "github");
+  return githubCallback(connections, fakeGitHubOf(connections).authorize(started.url));
+}
+
+/** The chooser's state, after a start whose person can see an installation. */
+async function atChooser(connections: ProviderFixture): Promise<string> {
+  const chooser = redirectLocation(await startAuthorized(connections));
+  assert.equal(`${chooser.origin}${chooser.pathname}`, `${HUB}/connections/github`);
+  return chooser.searchParams.get("state")!;
+}
+
+/** GitHub's install page URL, after a start whose person can see no installation. */
+async function atInstallPage(connections: ProviderFixture): Promise<string> {
+  return expectInstallPage(await startAuthorized(connections));
+}
+
+function expectInstallPage(response: Response): string {
+  const installPage = redirectLocation(response);
+  assert.equal(
+    `${installPage.origin}${installPage.pathname}`,
+    "https://github.test/apps/paseo/installations/new",
+  );
+  return installPage.toString();
+}
+
+/** Installs on an account from GitHub's install page and authorizes; returns GitHub's callback. */
+async function installOn(
+  connections: ProviderFixture,
+  installPage: string,
+  account: string,
+): Promise<URL> {
+  const github = fakeGitHubOf(connections);
+  const response = await setup(connections, github.installFrom(installPage, account));
+  return github.authorize(redirectLocation(response).toString());
+}
+
+/** Connects an account through whichever path GitHub's state leads to. */
+async function connectGitHub(connections: ProviderFixture, account: string): Promise<void> {
+  const answer = await startAuthorized(connections);
+  const next = redirectLocation(answer);
+  let connected: Response;
+  if (next.pathname === "/connections/github") {
+    const state = next.searchParams.get("state")!;
+    const choice = (await choicesOf(connections, state)).choices.find(
+      (candidate) => candidate.accountLogin === account,
+    );
+    connected =
+      choice?.availability === "available"
+        ? await choose(connections, state, choice.installationId)
+        : await githubCallback(
+            connections,
+            await installOn(
+              connections,
+              expectInstallPage(await addAccount(connections, state)),
+              account,
+            ),
+          );
+  } else {
+    connected = await githubCallback(
+      connections,
+      await installOn(connections, expectInstallPage(answer), account),
+    );
+  }
+  assert.equal(result(connected), "github_connected");
+  assert.notEqual(
+    await connections.database.findGitHubConnection(INSTALLATION_IDS[account]!),
+    undefined,
+  );
+}
+
+function setup(connections: ProviderFixture, url: URL): Promise<Response> {
+  return connectionAction(connections, new Request(url), "github", "setup");
+}
+
+function setupCallback(connections: ProviderFixture, state: string, installationId: number) {
+  return connectionAction(
+    connections,
+    request(
+      `/api/integrations/github/setup?state=${state}&setup_action=install&installation_id=${installationId}`,
+    ),
+    "github",
+    "setup",
+  );
+}
+
+function githubCallback(connections: ProviderFixture, url: URL): Promise<Response> {
+  return connectionAction(connections, new Request(url), "github", "callback");
+}
+
+/** What the chooser receives, as far as these tests read it. */
+const chooserSchema = z.object({
+  returnRoute: z.string(),
+  choices: z.array(
+    z.object({
+      installationId: z.number(),
+      accountLogin: z.string(),
+      availability: z.string(),
+    }),
+  ),
+});
+
+async function choicesOf(
+  connections: ProviderFixture,
+  state: string,
+): Promise<z.infer<typeof chooserSchema>> {
+  const response = await connectionAction(
+    connections,
+    request(`/connections/github/choices?state=${state}`),
+    "github",
+    "choices",
+  );
+  assert.equal(response.status, 200);
+  return chooserSchema.parse(await response.json());
+}
+
+async function offered(connections: ProviderFixture, state: string) {
+  return (await choicesOf(connections, state)).choices.map((choice) => ({
+    account: choice.accountLogin,
+    availability: choice.availability,
+  }));
+}
+
+function choose(connections: ProviderFixture, state: string, installationId: number) {
+  return connectionAction(
+    connections,
+    request(`/connections/github?state=${state}&installationId=${installationId}`, "POST"),
+    "github",
+    "choose",
+  );
+}
+
+function addAccount(connections: ProviderFixture, state: string) {
+  return connectionAction(
+    connections,
+    request(`/connections/github?state=${state}`, "POST"),
+    "github",
+    "addAccount",
+  );
+}
+
+function redirectLocation(response: Response): URL {
+  assert.equal(response.status, 303);
+  return new URL(response.headers.get("location")!);
+}
 async function seedAccount(pool: QueryHandle, organizationId: string, role: string): Promise<void> {
   const userId = `user-${organizationId}`;
   await pool.query(`insert into organization (id, name, slug) values ($1,$1,$1)`, [organizationId]);
@@ -806,70 +1044,12 @@ function request(path: string, method = "GET"): Request {
   return new Request(`https://hub.example.test${path}`, { method });
 }
 
-async function start(connections: ProviderFixture, provider: "github" | "discord") {
-  const response = await connectionAction(
-    connections,
-    request(`/start/${provider}`, "POST"),
-    provider,
-    "start",
-  );
-  assert.equal(response.status, 200);
-  const body: unknown = await response.json();
-  assert(isUrlBody(body));
-  const state = new URL(body.url).searchParams.get("state");
-  assert.notEqual(state, null);
-  return { state: state!, stateHash: createHashForTest(state!) };
-}
-
-function isUrlBody(value: unknown): value is { url: string } {
-  return (
-    typeof value === "object" && value !== null && typeof Reflect.get(value, "url") === "string"
-  );
-}
-
-async function completeSetup(connections: ProviderFixture, state: string, installationId: number) {
-  const response = await setupCallback(connections, state, installationId);
-  assert.equal(response.status, 303);
-  const next = new URL(response.headers.get("location")!).searchParams.get("state");
-  assert.notEqual(next, null);
-  return next!;
-}
-
-function setupCallback(connections: ProviderFixture, state: string, installationId: number) {
-  return connectionAction(
-    connections,
-    request(
-      `/api/integrations/github/setup?state=${state}&setup_action=install&installation_id=${installationId}`,
-    ),
-    "github",
-    "setup",
-  );
-}
-
-function githubCallback(connections: ProviderFixture, state: string, code: string) {
-  return connectionAction(
-    connections,
-    request(`/api/integrations/github/callback?state=${state}&code=${code}`),
-    "github",
-    "callback",
-  );
-}
-
 function discordCallback(connections: ProviderFixture, state: string, code: string) {
   return connectionAction(
     connections,
     request(`/api/integrations/discord/callback?state=${state}&code=${code}`),
     "discord",
     "callback",
-  );
-}
-
-async function connectGitHub(connections: ProviderFixture, installationId: number): Promise<void> {
-  const setup = await start(connections, "github");
-  const authorization = await completeSetup(connections, setup.state, installationId);
-  assert.equal(
-    result(await githubCallback(connections, authorization, "code")),
-    "github_connected",
   );
 }
 
@@ -888,17 +1068,16 @@ async function rejectGitHubCallbackAfter(
   mutateAuthority: () => Promise<void>,
 ): Promise<string | null> {
   await seedAccount(pool, organizationId, "owner");
-  const github = new TestGitHub();
+  const github = new TestGitHub(newFakeGitHub());
   const connections = createConnections({
     database,
     auth: new ConnectionAuth(accessFor(organizationId, "owner")),
     organizationSlug: organizationId,
     github,
   });
-  const setup = await start(connections, "github");
-  const authorization = await completeSetup(connections, setup.state, 42);
+  const authorized = await installOn(connections, await atInstallPage(connections), "acme-inc");
   github.holdVerification();
-  const callback = githubCallback(connections, authorization, "code");
+  const callback = githubCallback(connections, authorized);
   await github.verificationBegins();
   await mutateAuthority();
   github.releaseVerification();
@@ -993,7 +1172,7 @@ async function deliverGitHubLifecycle(
     test_delivery: deliveryId,
     installation: {
       id: installationId,
-      account: { id: 101, login: "acme-inc", type: "Organization" },
+      account: { id: 420, login: "acme-inc", type: "Organization" },
     },
   });
   const signature = `sha256=${createHmac("sha256", TEST_WEBHOOK_SECRET).update(body).digest("hex")}`;
@@ -1098,7 +1277,7 @@ interface CreateConnectionsOptions {
   database: Database;
   auth: AuthServer;
   organizationSlug?: string;
-  github?: GitHubConnectionClient;
+  github?: TestGitHub;
   githubRepositories?: TestGitHubRepositories;
   discord?: DiscordConnectionClient;
 }
@@ -1148,6 +1327,7 @@ function createConnections(options: CreateConnectionsOptions): ProviderFixture {
     database: options.database,
     registrations,
     organizationSlug: options.organizationSlug ?? "acme",
+    ...(options.github === undefined ? {} : { github: options.github }),
     ...(discordBot === undefined ? {} : { discordBot }),
   };
 }

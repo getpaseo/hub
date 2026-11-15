@@ -1,83 +1,127 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { describe, it } from "vitest";
-import { GitHubProviderPort, githubInstallation } from "../../test-utils/github-connection.js";
-import { createGitHubConnectionClient } from "./client.js";
+import { FakeGitHub, fakeGitHubConnectionClient } from "../../test-utils/fake-github.js";
+import { createGitHubConnectionClient, type GitHubConnectionClient } from "./client.js";
+
+const HUB = "https://hub.example.test";
+
+function github(options: { extraOrganizations?: number } = {}) {
+  const fake = new FakeGitHub({
+    webBaseUrl: "https://github.test",
+    hubOrigin: () => HUB,
+    ...options,
+  });
+  return { fake, client: fakeGitHubConnectionClient(fake, HUB) };
+}
+
+/** Authorizes the signed-in person and lists what Hub's client sees through their token. */
+async function userInstallations(fake: FakeGitHub, client: GitHubConnectionClient) {
+  const verifier = "verifier-".padEnd(48, "x");
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
+  const back = fake.authorize(client.authorizationUrl({ state: "state", challenge }));
+  const code = back.searchParams.get("code");
+  assert.ok(code);
+  return client.userInstallations({ code, verifier });
+}
+
+function summary(installations: Awaited<ReturnType<typeof userInstallations>>) {
+  return installations?.map(({ identity, ownership }) => ({
+    account: identity.accountLogin,
+    installationId: identity.installationId,
+    ownership: ownership.status,
+  }));
+}
 
 describe("GitHub connection client", () => {
-  it("finds an accessible installation after the first full page", async () => {
-    const github = new GitHubProviderPort({ installation: githubInstallation(142) });
-    const provider = createGitHubConnectionClient(github.options());
+  it("lists the installations a person can see with whether they own each account", async () => {
+    const { fake, client } = github();
+    fake.command({ op: "install", account: "acme-inc" });
+    fake.command({ op: "install", account: "octo" });
+    fake.command({ op: "install", account: "mona" });
 
-    const identity = await provider.verifyUserInstallation({
-      code: "code",
-      verifier: "verifier",
-      installationId: 142,
-    });
+    assert.deepEqual(summary(await userInstallations(fake, client)), [
+      { account: "acme-inc", installationId: 42, ownership: "owner" },
+      { account: "octo", installationId: 77, ownership: "owner" },
+    ]);
 
-    assert.deepEqual(identity, {
-      installationId: 142,
-      accountId: "501",
-      accountLogin: "acme",
-      accountType: "Organization",
-      status: "active",
-    });
-    assert.deepEqual(github.userInstallationPages, [1, 2]);
+    fake.command({ op: "signIn", login: "mona" });
+    assert.deepEqual(summary(await userInstallations(fake, client)), [
+      { account: "acme-inc", installationId: 42, ownership: "notOwner" },
+      { account: "mona", installationId: 78, ownership: "owner" },
+    ]);
   });
 
-  for (const membership of [
-    { role: "member", state: "active" },
-    { role: "admin", state: "pending" },
-    { role: "admin", state: "active", status: 404 },
-    { role: "admin", state: "active", status: 403 },
-  ]) {
-    it(`rejects installation access without active organization admin authority: ${JSON.stringify(membership)}`, async () => {
-      const github = new GitHubProviderPort({ installation: githubInstallation(142), membership });
-      assert.equal(
-        await createGitHubConnectionClient(github.options()).verifyUserInstallation({
-          code: "code",
-          verifier: "verifier",
-          installationId: 142,
-        }),
-        undefined,
-      );
-    });
-  }
+  it("asks GitHub whether the person administers an organization, with no organization permission", async () => {
+    const { fake, client } = github();
+    fake.command({ op: "install", account: "acme-inc" });
 
-  it("requires the authenticated user to own a user-account installation", async () => {
-    const installation = {
-      ...githubInstallation(142),
-      account: { id: 501, login: "owner", type: "User" },
-    };
-    for (const userId of [501, 999]) {
-      const github = new GitHubProviderPort({ installation, userId });
-      const result = await createGitHubConnectionClient(github.options()).verifyUserInstallation({
-        code: "code",
-        verifier: "verifier",
-        installationId: 142,
-      });
-      assert.equal(result?.accountId, userId === 501 ? "501" : undefined);
-    }
+    assert.deepEqual(summary(await userInstallations(fake, client)), [
+      { account: "acme-inc", installationId: 42, ownership: "owner" },
+    ]);
+    fake.command({ op: "signIn", login: "mona" });
+    assert.deepEqual(summary(await userInstallations(fake, client)), [
+      { account: "acme-inc", installationId: 42, ownership: "notOwner" },
+    ]);
+    assert.ok(fake.apiRequests.includes("/graphql"));
+    assert.ok(!fake.apiRequests.some((path) => path.startsWith("/user/memberships")));
+  });
+
+  it("fails instead of answering not-owner when GitHub cannot say", async () => {
+    const { fake, client } = github();
+    fake.command({ op: "install", account: "acme-inc" });
+    fake.command({ op: "graphqlOutage", down: true });
+
+    await assert.rejects(userInstallations(fake, client), /github organization administration/u);
+  });
+
+  it("lists every page of installations", async () => {
+    const { fake, client } = github({ extraOrganizations: 101 });
+    fake.command({ op: "install", account: "acme-inc" });
+
+    const installations = (await userInstallations(fake, client)) ?? [];
+
+    assert.equal(installations.length, 102);
+    assert.ok(installations.every(({ ownership }) => ownership.status === "owner"));
+    assert.deepEqual(fake.apiRequests.filter((path) => path === "/user/installations").length, 2);
+  });
+
+  it("answers undefined when GitHub refuses the authorization code", async () => {
+    const { client } = github();
+
+    assert.equal(
+      await client.userInstallations({ code: "never-issued", verifier: "verifier" }),
+      undefined,
+    );
   });
 
   it("returns exact App absence without converting transient failure to absence", async () => {
-    const absent = new GitHubProviderPort({ installation: undefined });
-    const unavailable = new GitHubProviderPort({ appFailure: new Error("provider unavailable") });
+    const { fake, client } = github();
+    assert.deepEqual(await client.getInstallation(42), { status: "absent" });
+    fake.command({ op: "install", account: "acme-inc" });
+    assert.deepEqual(await client.getInstallation(42), {
+      status: "present",
+      identity: {
+        installationId: 42,
+        accountId: "420",
+        accountLogin: "acme-inc",
+        accountType: "Organization",
+        status: "active",
+      },
+    });
 
-    assert.equal(
-      await createGitHubConnectionClient(absent.options()).verifyUserInstallation({
-        code: "code",
-        verifier: "verifier",
-        installationId: 142,
-      }),
-      undefined,
-    );
-    await assert.rejects(
-      createGitHubConnectionClient(unavailable.options()).verifyUserInstallation({
-        code: "code",
-        verifier: "verifier",
-        installationId: 142,
-      }),
-      /provider unavailable/u,
-    );
+    const failing = createGitHubConnectionClient({
+      publicBaseUrl: HUB,
+      appSlug: "paseo",
+      clientId: "client",
+      clientSecret: "secret",
+      appAuth: {
+        ...fake.appAuth,
+        getInstallation: () => Promise.reject(new Error("provider unavailable")),
+      },
+      fetch: fake.fetch,
+      ...fake.clientUrls(),
+    });
+    await assert.rejects(failing.getInstallation(42), /provider unavailable/u);
   });
 });

@@ -19,8 +19,6 @@ import { createLinearRegistration } from "../../providers/linear/index.js";
 import {
   BrowserDiscordBot,
   BrowserDiscordConnections,
-  BrowserGitHubAuth,
-  BrowserGitHubConnections,
   BrowserGitHubConfiguration,
   BrowserGitHubReactions,
   BrowserSlackBot,
@@ -55,6 +53,11 @@ import { compileHubConfig, compiledConfigurationHash } from "../../config/compil
 import { ProjectConfigurationStore } from "../../configuration/store.js";
 import type { HubBundleFile } from "../../config/bundle.js";
 import { BrowserAccountEmails, type BrowserAccountEmailKind } from "./browser-account-emails.js";
+import {
+  FakeGitHub,
+  fakeGitHubConnectionClient,
+  type FakeGitHubCommand,
+} from "../../test-utils/fake-github.js";
 
 interface DiscordCommand {
   id: string;
@@ -204,6 +207,10 @@ async function main(): Promise<void> {
   const slackSocket = new BrowserSlackSocketFixture(scenario);
   await slackSocket.start();
   const githubConfiguration = new BrowserGitHubConfiguration();
+  const github = new FakeGitHub({
+    webBaseUrl: `${publicBaseUrl}/e2e/github`,
+    hubOrigin: (request) => request.headers.get(TRUSTED_REQUEST_ORIGIN_HEADER) ?? publicBaseUrl,
+  });
   const githubConfigured = hasBrowserGitHub(scenario);
   const slackConfigured = scenario === "slack-only";
   const registrations =
@@ -227,8 +234,8 @@ async function main(): Promise<void> {
               : null,
             ...(githubConfigured
               ? {
-                  appAuth: new BrowserGitHubAuth(),
-                  connectionClient: new BrowserGitHubConnections(publicBaseUrl, scenario),
+                  appAuth: github.appAuth,
+                  connectionClient: fakeGitHubConnectionClient(github, publicBaseUrl),
                   configurationProvider: githubConfiguration,
                   reactionClient: new BrowserGitHubReactions(),
                 }
@@ -286,6 +293,7 @@ async function main(): Promise<void> {
     slackBot,
     slackSocket,
     githubConfiguration,
+    github,
   });
   const runtime = await createApplicationRuntime({
     database,
@@ -317,7 +325,10 @@ async function main(): Promise<void> {
   const start = await loadBuiltStartServer();
   await start.startApplication(() => runtime);
   const server = createFetchServer(
-    (request) => browserProviderPage(request, publicBaseUrl) ?? start.default.fetch(request),
+    (request) =>
+      github.page(request) ??
+      browserProviderPage(request, publicBaseUrl) ??
+      start.default.fetch(request),
     await testServerOptions(),
   );
   server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
@@ -336,6 +347,7 @@ async function main(): Promise<void> {
       database,
       databaseRuntime,
       githubConfiguration,
+      github,
       billingCatalog,
       billingClient: billingFixtureClient,
       accountSetupFaults,
@@ -511,6 +523,7 @@ async function seedMachineAuthTargetIfRequired(
 }
 
 interface CommandFixtures {
+  github: FakeGitHub;
   bot: BrowserDiscordBot;
   slackSocket: BrowserSlackSocketFixture;
   database: Database;
@@ -527,6 +540,11 @@ async function acceptCommand(message: unknown, fixtures: CommandFixtures): Promi
   const { bot, githubConfiguration, billingCatalog, billingClient } = fixtures;
   if (isGitHubConfigurationCommand(message)) {
     githubConfiguration.setRevision(message);
+    process.send?.({ id: message.id, ok: true });
+    return;
+  }
+  if (isFakeGitHubCommand(message)) {
+    fixtures.github.command(message.command);
     process.send?.({ id: message.id, ok: true });
     return;
   }
@@ -865,6 +883,18 @@ function acceptBillingCommand(
   return false;
 }
 
+function isFakeGitHubCommand(
+  value: unknown,
+): value is { id: string; type: "fake-github"; command: FakeGitHubCommand } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Reflect.get(value, "type") === "fake-github" &&
+    typeof Reflect.get(value, "id") === "string" &&
+    typeof Reflect.get(value, "command") === "object"
+  );
+}
+
 function isGitHubConfigurationCommand(value: unknown): value is GitHubConfigurationCommand {
   return (
     typeof value === "object" &&
@@ -1168,6 +1198,7 @@ async function composeProviderApplications(input: {
   slackBot: BrowserSlackBot;
   slackSocket: BrowserSlackSocketFixture;
   githubConfiguration: BrowserGitHubConfiguration;
+  github: FakeGitHub;
 }): Promise<{
   capability: ProviderApplications;
   registrations: readonly ProviderRegistration[];
@@ -1190,6 +1221,7 @@ async function composeProviderApplications(input: {
       slackBot: input.slackBot,
       slackSocket: input.slackSocket,
       githubConfiguration: input.githubConfiguration,
+      github: input.github,
     }),
   });
   const failures = await activateProviderApplicationsAtStartup({

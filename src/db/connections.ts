@@ -54,6 +54,7 @@ export class ConnectionRepository {
         provider: input.provider,
         phase: initialConnectionAttemptPhase(input.provider),
         stateVerifier: input.stateVerifier,
+        pkceVerifier: input.pkceVerifier ?? null,
         organizationId: input.access.organizationId,
         returnRoute: input.access.returnRoute,
         userId: input.access.userId,
@@ -129,13 +130,18 @@ export class ConnectionRepository {
       await lockStoredAuthority(transaction, attempt);
       await lockProviderApplication(this.locks, runtimeTransaction, attempt.provider);
       await requireCurrentAttempt(transaction, attempt);
+      const { next } = input;
       await transaction
         .update(schema.organizationConnectionAttempts)
         .set({
-          phase: "github_user_authorization",
+          phase: next.phase,
           stateVerifier: input.nextStateVerifier,
-          candidateExternalId: String(input.installationId),
-          pkceVerifier: input.pkceVerifier,
+          candidateExternalId:
+            next.phase === "github_user_authorization" && next.installationId !== null
+              ? String(next.installationId)
+              : null,
+          pkceVerifier: next.phase === "github_user_authorization" ? next.pkceVerifier : null,
+          installationChoices: next.phase === "github_selection" ? next.installationChoices : null,
         })
         .where(eq(schema.organizationConnectionAttempts.id, attempt.id));
     });
@@ -1059,7 +1065,7 @@ async function consumeLockedAttempt(transaction: HubTransaction, attemptId: stri
 }
 
 function initialConnectionAttemptPhase(provider: ConnectionProvider): ConnectionAttemptPhase {
-  if (provider === "github") return "github_setup";
+  if (provider === "github") return "github_user_authorization";
   if (provider === "discord") return "discord_authorization";
   return provider === "slack" ? "slack_authorization" : "linear_authorization";
 }
@@ -1075,6 +1081,7 @@ function toAttempt(row: AttemptRow): ConnectionAttemptRecord {
     sessionId: row.sessionId,
     candidateExternalId: row.candidateExternalId,
     pkceVerifier: row.pkceVerifier,
+    installationChoices: row.installationChoices,
     configurationVersion: row.configurationVersion,
     providerApplicationId: row.providerApplicationId,
     callbackOrigin: row.callbackOrigin,
