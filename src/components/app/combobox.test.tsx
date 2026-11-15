@@ -76,6 +76,29 @@ describe("which options a search keeps", () => {
     assert.equal(keeps(organizations, "globex", "ac"), false);
   });
 
+  it("ranks a named match above an identifier-only hit, whatever the stored value embeds", () => {
+    // The picker stores `<name>-<first 8 ID characters>` as the value.
+    const acme: ComboboxOption = {
+      value: "acme-q1w2e3r4",
+      label: "Acme",
+      keywords: ["Acme"],
+      identifier: "q1w2e3r4t5y6",
+    };
+    const zeta: ComboboxOption = {
+      value: "zeta-a9c8d7e6",
+      label: "Zeta",
+      keywords: ["Zeta"],
+      identifier: "xxac12345678",
+    };
+    const filter = comboboxFilter([acme, zeta]);
+    const named = filter(acme.value, "ac", ["Acme"]);
+    const identifierOnly = filter(zeta.value, "ac", ["Zeta"]);
+
+    assert.ok(identifierOnly > 0, "the identifier-only hit stays findable");
+    assert.ok(named > identifierOnly);
+    assert.equal(filter("zeta-a9c8d7e6", "zq", ["Zeta"]), 0);
+  });
+
   it("still reads shorthand as letters in order everywhere else", () => {
     assert.equal(keeps(events, "github.pull_request_created", "gh pr"), true);
     assert.equal(keeps(events, "github.pull_request_created", "slack"), false);

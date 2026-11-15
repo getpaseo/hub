@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
 import { composeBilling, type BillingRuntime } from "./index.js";
 import type { StripeCatalogSource } from "./stripe-catalog-source.js";
@@ -55,6 +55,22 @@ describe("BillingRuntime.operatorBilling", () => {
 
     assert.equal(view.stripeCustomerId, CUSTOMER);
     assert.deepEqual(view.subscription, { kind: "unavailable" });
+  });
+
+  it("marks the subscription unavailable when Stripe does not answer in time", async () => {
+    vi.useFakeTimers();
+    try {
+      const billing = await billingWithCustomer(clientListing(() => new Promise(() => undefined)));
+
+      const pending = billing.operatorBilling(ORGANIZATION);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const view = await pending;
+
+      assert.equal(view.stripeCustomerId, CUSTOMER);
+      assert.deepEqual(view.subscription, { kind: "unavailable" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reads the live subscription from Stripe when it answers", async () => {

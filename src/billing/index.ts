@@ -403,7 +403,10 @@ export class BillingRuntime {
     customerId: string | undefined,
   ): Promise<OperatorSubscriptionView> {
     try {
-      const live = customerId === undefined ? undefined : await this.liveSubscription(customerId);
+      const live =
+        customerId === undefined
+          ? undefined
+          : await withTimeout(this.liveSubscription(customerId), OPERATOR_SUBSCRIPTION_TIMEOUT_MS);
       return {
         kind: "loaded",
         status: live?.status ?? null,
@@ -675,4 +678,21 @@ export function composeBilling(options: ComposeBillingOptions): BillingRuntime {
     options.seatUsage,
     options.presentations ?? HUB_PLAN_PRESENTATIONS,
   );
+}
+
+/**
+ * The operator page and the response to a saved override both wait on the subscription read, and
+ * Stripe's own timeout is 80 seconds with retries. A slow Stripe reads as unavailable instead.
+ */
+const OPERATOR_SUBSCRIPTION_TIMEOUT_MS = 5_000;
+
+function withTimeout<T>(work: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(Object.assign(new Error("Stripe did not answer in time"), { code: "timeout" })),
+      milliseconds,
+    );
+  });
+  return Promise.race([work, expired]).finally(() => clearTimeout(timer));
 }

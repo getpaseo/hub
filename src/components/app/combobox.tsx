@@ -195,24 +195,33 @@ function itemValue(option: ComboboxOption): string {
 
 /**
  * How a search scores each option: cmdk's own scoring, so shorthand like "pr" or "ny" keeps
- * working, plus a consecutive-characters match on an option's `identifier`.
+ * working. An option with an `identifier` is scored on its label and keywords alone, never on its
+ * stored value, which can embed the ID; a consecutive-characters match on the identifier only
+ * keeps the option in the list, below every option the typed words matched.
  */
 export function comboboxFilter(
   options: readonly ComboboxOption[],
 ): (value: string, search: string, keywords?: string[]) => number {
-  const identifiers = new Map<string, string>();
+  const byIdentifier = new Map<string, ComboboxOption & { identifier: string }>();
   for (const option of options) {
     if (option.identifier !== undefined) {
-      identifiers.set(itemValue(option), option.identifier.toLowerCase());
+      byIdentifier.set(itemValue(option), { ...option, identifier: option.identifier });
     }
   }
   return (value, search, keywords) => {
-    const score = defaultFilter(value, search, keywords);
+    const option = byIdentifier.get(value);
+    if (option === undefined) return defaultFilter(value, search, keywords);
+    const score = defaultFilter(option.label, search, keywords);
     const typed = search.trim().toLowerCase();
-    if (typed === "" || !identifiers.get(value)?.includes(typed)) return score;
-    return Math.max(score, 1);
+    if (score > 0 || typed === "" || !option.identifier.toLowerCase().includes(typed)) {
+      return score;
+    }
+    return IDENTIFIER_ONLY_SCORE;
   };
 }
+
+/** Below any score cmdk gives a word match, so an ID-only hit never outranks a named one. */
+const IDENTIFIER_ONLY_SCORE = 1e-6;
 
 /** The option a stored value refers to, or `undefined` when it refers to nothing on offer. */
 export function comboboxSelection<T extends ComboboxOption>(
