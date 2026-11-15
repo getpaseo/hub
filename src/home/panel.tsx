@@ -27,7 +27,6 @@ import { deriveChecklist, type Checklist, type ChecklistStep } from "./checklist
 import { homeSnapshot, type HomeSnapshot } from "./functions.js";
 
 const HOME_DESCRIPTION = "What to do next, and what has run.";
-const RECENT_RUNS_SHOWN = 5;
 
 export function HomePanel() {
   const tenant = useRouteTenant();
@@ -71,8 +70,14 @@ export function HomePanel() {
       )}
       {/* Get started is the empty state for everything below: a section shows once it has
           records, so a new organization reads one list instead of zeros and "nothing yet". */}
-      {data.runs.length === 0 ? null : (
-        <Runs runs={data.runs} daemons={data.daemons} windowDays={data.windowDays} base={base} />
+      {data.recentRuns.length === 0 ? null : (
+        <Runs
+          runs={data.runs}
+          recentRuns={data.recentRuns}
+          daemons={data.daemons}
+          windowDays={data.windowDays}
+          base={base}
+        />
       )}
       {data.daemons.length === 0 ? null : <Daemons daemons={data.daemons} base={base} />}
     </>
@@ -81,11 +86,13 @@ export function HomePanel() {
 
 function Runs({
   runs,
+  recentRuns,
   daemons,
   windowDays,
   base,
 }: {
   runs: HomeSnapshot["runs"];
+  recentRuns: HomeSnapshot["recentRuns"];
   daemons: HomeSnapshot["daemons"];
   windowDays: number;
   base: string;
@@ -124,7 +131,7 @@ function Runs({
         }
       >
         <RecordList label="Recent runs">
-          {runs.slice(0, RECENT_RUNS_SHOWN).map((run) => (
+          {recentRuns.map((run) => (
             <RecordRow
               key={run.id}
               status={<StatusPill tone={runTone(run.status)}>{statusLabel(run.status)}</StatusPill>}
@@ -351,7 +358,7 @@ function runStep(
   snapshot: HomeSnapshot,
 ): ProgressStep {
   const step = { key: "run", title: "Run it" };
-  const latest = snapshot.runs[0];
+  const latest = snapshot.recentRuns[0];
   if (state === "done" && latest !== undefined) {
     return {
       ...step,

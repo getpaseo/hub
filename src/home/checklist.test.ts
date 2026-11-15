@@ -7,7 +7,7 @@ const nothing: ChecklistFacts = {
   connections: [],
   daemons: [],
   triggers: [],
-  runs: [],
+  recentRuns: [],
 };
 
 function states(facts: ChecklistFacts) {
@@ -45,13 +45,13 @@ describe("the onboarding checklist", () => {
     assert.equal(states({ ...nothing, daemons: [laptop, devbox] })[1], "done");
   });
 
-  it("completes and counts once a trigger exists and has run", () => {
+  it("completes and counts once a trigger exists and has run, however long ago", () => {
     const checklist = deriveChecklist({
       appsConfigured: true,
       connections: [{ provider: "slack", slug: "acme", label: "Acme" }],
       daemons: [{ id: "2", slug: "devbox", presence: "connected", canExecute: true }],
       triggers: [{ id: "t", name: "slack-help", event: "slack.mention", enabled: true }],
-      runs: [
+      recentRuns: [
         {
           id: "r",
           triggerName: "slack-help",

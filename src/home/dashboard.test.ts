@@ -94,6 +94,31 @@ describe("home read model", () => {
     );
   });
 
+  it("keeps the latest runs of an organization whose last run is older than the window", async () => {
+    const database = memberDatabase();
+    await enrollTestDaemon(database, "org-1");
+    const trigger = await new OrganizationTriggerStore(
+      database,
+      "org-1",
+      acceptingAgentValidator(),
+    ).save({ yaml: triggerYaml, userId: "user-1" });
+    const threeWeeks = 21 * 86_400_000;
+    await recordRun(database, trigger.runtimeProjectId, "old", "succeeded", threeWeeks);
+
+    const snapshot = await new HomeDashboard(
+      database,
+      accountAuth(),
+      APPS_CONFIGURED,
+      () => NOW,
+    ).snapshot(request, "acme");
+
+    assert.deepEqual(snapshot.runs, []);
+    assert.deepEqual(
+      snapshot.recentRuns.map(({ triggerName, status }) => ({ triggerName, status })),
+      [{ triggerName: "manual-task", status: "succeeded" }],
+    );
+  });
+
   it("names a run after its trigger, not after the event within the trigger that started it", async () => {
     const database = memberDatabase();
     await enrollTestDaemon(database, "org-1");
