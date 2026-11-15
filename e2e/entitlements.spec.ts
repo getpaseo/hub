@@ -106,6 +106,7 @@ test.describe("metered usage", () => {
 
     await test.step("install a manual deploy trigger against the registered daemon", async () => {
       await app.navigation.leaveInstance();
+      await triggers.open();
       await triggers.startNew();
       await triggers.configureManual({
         name: "deploy",

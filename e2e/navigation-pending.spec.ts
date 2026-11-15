@@ -104,7 +104,9 @@ test("removes the previous page's header actions when its replacement is present
   page,
 }) => {
   await openOrganization(hub, page);
-  await new OrganizationTriggers(page).startNew();
+  const triggers = new OrganizationTriggers(page);
+  await triggers.open();
+  await triggers.startNew();
   const download = await holdPageScripts(page);
   try {
     await projectApp(page).navigation.openOrganizationSection("Daemons");
