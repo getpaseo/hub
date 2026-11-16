@@ -272,13 +272,7 @@ export type CompiledSteps = readonly CompiledStep[];
 export type CompiledTriggerFilter = Readonly<
   Omit<
     AuthoredTriggerFilter,
-    | "channels"
-    | "from_users"
-    | "from_teams"
-    | "states"
-    | "labels"
-    | "exclude_labels"
-    | "assignees"
+    "channels" | "from_users" | "from_teams" | "states" | "labels" | "exclude_labels" | "assignees"
   > & {
     channels?: readonly string[] | undefined;
     from_users?: readonly string[] | undefined;

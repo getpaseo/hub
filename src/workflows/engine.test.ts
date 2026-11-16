@@ -370,6 +370,7 @@ describe("durable multi-step workflow engine", () => {
           throw new Error("not used for terminal delivery");
         },
         reactions: createGitHubReactionClient(auth),
+        teamMemberships: { isActiveMember: async () => false },
       });
       const context: GitHubTriggerContext = {
         provider: "github",
