@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { migrateLegacyBundle } from "./index.js";
+import { compileHubBundle } from "../../config/bundle.js";
+import { migrateLegacyBundle, parseTriggerDocument } from "./index.js";
 
 const hub = `
 environments:
@@ -15,6 +16,45 @@ agents:
 `;
 
 describe("legacy project bundle migration", () => {
+  it.each([undefined, ["maintainer"]])(
+    "preserves GitHub team filters with from_users %j in an active single-step revision",
+    (fromUsers) => {
+      const files = [
+        { path: ".paseo/hub.yml", content: hub },
+        {
+          path: ".paseo/workflows/github.yml",
+          content: `
+name: github-help
+on: github.issue_comment_created
+max_runtime: 2h
+filters:
+  connection: getpaseo-github
+  from_teams: [getpaseo/maintainers]
+${fromUsers === undefined ? "" : "  from_users: [maintainer]\n"}  contains: "@paseo-bot"
+steps:
+  - id: work
+    environment: runner
+    max_runtime: 90m
+    idle_timeout: 10m
+    agent: codex
+    prompt: [{ text: "Handle the request." }]
+`,
+        },
+      ];
+      const before = compileHubBundle(files).configuration;
+      const migrated = migrateLegacyBundle({ files, normalizedConfiguration: before });
+      assert.equal(migrated.length, 1);
+      const result = migrated[0];
+      assert.equal(result?.format, "single_run");
+      if (result?.format !== "single_run") throw new Error("expected a converted trigger");
+
+      const filters = parseTriggerDocument(result.yaml).on["github.issue_comment_created"]?.filters;
+      assert.deepEqual(filters?.from_teams, ["getpaseo/maintainers"]);
+      assert.deepEqual(filters?.from_users, fromUsers);
+      assert.deepEqual(result.compiled.events[0]?.filters, before.triggers[0]?.filters);
+    },
+  );
+
   it("inlines a one-step workflow and its prompt partial into one trigger document", () => {
     const migrated = migrateLegacyBundle({
       files: [

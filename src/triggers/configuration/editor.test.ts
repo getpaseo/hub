@@ -151,6 +151,25 @@ describe("trigger form YAML bridge", () => {
     ).toBe("yaml_only");
   });
 
+  test.each([false, true])(
+    "keeps team filters in YAML-only mode with an explicit user allowlist %s",
+    (withUsers) => {
+      const yaml = ADVANCED.replace("slack.mention", "github.issue_comment_created").replace(
+        'from_users: ["*"]',
+        `from_teams: [getpaseo/maintainers]${withUsers ? "\n      from_users: [boudra]" : ""}`,
+      );
+      expect(projectTriggerForm(yaml)).toEqual({
+        status: "yaml_only",
+        reason: "GitHub team allowlists can only be edited in YAML.",
+      });
+      const projection = projectTriggerForm(ADVANCED);
+      if (projection.status !== "editable") throw new Error(projection.reason);
+      expect(() => patchTriggerYaml(yaml, { ...projection.value, prompt: "Changed." })).toThrow(
+        "GitHub team allowlists can only be edited in YAML.",
+      );
+    },
+  );
+
   test("creates a deliberately minimal new trigger", () => {
     const yaml = createTriggerYaml({
       name: "answer",
