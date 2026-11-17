@@ -6,7 +6,7 @@ import {
   type LaunchMachineIntent,
 } from "../dispatcher/launch-machine-intent.js";
 import type { DaemonCreateAgentOptions } from "../daemons/protocol.js";
-import type { AgentConnection, AgentEvent } from "../daemons/agents/index.js";
+import type { AgentConnection, AgentEvent, AgentSnapshot } from "../daemons/agents/index.js";
 import {
   executionToolDefinitions,
   type OutputExecutorRegistry,
@@ -151,7 +151,7 @@ export class AgentSessions {
         session.agentId,
       );
       const agent = await input.connection.get(session.agentId);
-      if (!agent.archivedAt && (agent.status === "closed" || agent.status === "error")) {
+      if (isInterrupted(agent, action === "created", incoming)) {
         throw new AgentSessionError("agent_interrupted");
       }
       if (agent.archivedAt) {
@@ -266,6 +266,20 @@ function fingerprint(value: unknown): string {
       ),
     )
     .digest("hex");
+}
+
+/**
+ * The daemon closes an idle agent it unloads, and a new execution's message resumes it. Closed
+ * during this execution, at creation or before a recovery, means the agent was interrupted.
+ */
+function isInterrupted(
+  agent: AgentSnapshot,
+  created: boolean,
+  execution: AgentExecutionRecord,
+): boolean {
+  if (agent.archivedAt) return false;
+  if (agent.status === "error") return true;
+  return agent.status === "closed" && (created || execution.daemonAgentId !== null);
 }
 
 function isActive(execution: AgentExecutionRecord): boolean {

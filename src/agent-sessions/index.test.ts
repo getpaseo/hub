@@ -184,6 +184,24 @@ test("same-key arrivals share an agent; an earlier completion cannot archive new
   expect(f.connection.restorations).toBe(1);
 });
 
+test("a follow-up continues an agent the daemon closed while idle; an errored agent still fails", async () => {
+  const f = await fixture();
+  const first = await f.arrival();
+  const a = await first.dispatch();
+  await f.database.transitionAgentExecution(first.executionId, "succeeded");
+  f.connection.agents.set(a.agentId, { ...(await f.connection.get(a.agentId)), status: "closed" });
+
+  const followUp = await f.arrival("conversation", "daemon", {}, "follow-up");
+  expect(await followUp.dispatch()).toMatchObject({ agentId: a.agentId, action: "continued" });
+  expect(f.connection.creates).toHaveLength(1);
+  expect(f.connection.deliveries.at(-1)).toMatchObject({ agentId: a.agentId });
+  expect(f.connection.deliveries.at(-1)?.text).toContain("follow-up");
+
+  await f.database.transitionAgentExecution(followUp.executionId, "succeeded");
+  f.connection.agents.set(a.agentId, { ...(await f.connection.get(a.agentId)), status: "error" });
+  await expect((await f.arrival()).dispatch()).rejects.toThrow("agent_interrupted");
+});
+
 test("session tools keep each arrival's destination and reject stale or foreign execution IDs", async () => {
   const f = await fixture();
   const first = await f.arrival();
