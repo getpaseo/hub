@@ -131,6 +131,7 @@ describe("Linear registration", () => {
         sessionId: attempt.access.sessionId,
         candidateExternalId: null,
         pkceVerifier: null,
+        installationChoices: null,
         configurationVersion: attempt.configurationVersion,
         providerApplicationId: attempt.providerApplicationId,
         callbackOrigin: attempt.callbackOrigin,
