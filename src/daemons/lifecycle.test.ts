@@ -1337,6 +1337,10 @@ class DispatchConnection implements DaemonConnection {
     throw new Error("not used");
   }
 
+  async listProjects(): Promise<never> {
+    throw new Error("not used");
+  }
+
   async validateAgentConfiguration(): Promise<never> {
     throw new Error("not used");
   }
