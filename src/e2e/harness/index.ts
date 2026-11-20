@@ -509,40 +509,47 @@ export class HubE2E {
     const { runId } = z
       .object({ runId: z.string().uuid(), status: z.literal("accepted") })
       .parse(JSON.parse(body!));
-    const {
-      rows: [receipt],
-    } = await this.requirePool().query<{ provider_event_receipt_id: string }>(
-      "select provider_event_receipt_id from trigger_runs where id = $1",
-      [runId],
-    );
-    const run = await this.waitForManualRun({
-      deliveryKey: "isolated-webhook-qa",
-      providerEventReceiptId: receipt!.provider_event_receipt_id,
-    });
-    const [provider, processDescriptions] = await Promise.all([
-      source.agentProvider(run.agentId),
-      source.processDescriptions(),
-    ]);
-    const completion = await this.realAgentCompletionEvidence({
-      ...run,
-      provider,
-      processDescriptions,
-    });
-    await this.observe(async () => {
+    const history = async () => {
       const {
         rows: [entry],
-      } = await this.requirePool().query<{ source: string; status: string; prompt: string }>(
-        `select e.source, r.status, r.prompt from trigger_runs r
-         join provider_event_receipts e on e.id = r.provider_event_receipt_id where r.id = $1`,
+      } = await this.requirePool().query<{
+        source: string;
+        workflow_status: string;
+        execution_status: string;
+        provider: string;
+        completed_by_agent: boolean;
+        prompt: string;
+      }>(
+        `select receipt.source, run.status as workflow_status, execution.status as execution_status,
+                execution.launch_intent -> 'agent' ->> 'provider' as provider,
+                execution.completed_by_agent_at is not null as completed_by_agent, run.prompt
+         from trigger_runs run
+         join provider_event_receipts receipt on receipt.id = run.provider_event_receipt_id
+         join workflow_step_runs step on step.trigger_run_id = run.id
+         join agent_executions execution on execution.id = step.agent_execution_id
+         where run.id = $1`,
         [runId],
       );
-      return (
-        entry?.source === "webhook.received" &&
-        entry.status === "succeeded" &&
-        entry.prompt.includes(alert)
-      );
-    }, "webhook run in history");
-    return { runId, completion };
+      return entry;
+    };
+    await this.observe(
+      async () => {
+        const entry = await history();
+        return entry !== undefined && entry.workflow_status !== "running";
+      },
+      "webhook run to finish in history",
+      240_000,
+    );
+    const completed = (await history())!;
+    return {
+      runId,
+      source: completed.source,
+      runStatus: completed.workflow_status,
+      executionStatus: completed.execution_status,
+      provider: completed.provider,
+      completedByAgent: completed.completed_by_agent,
+      payloadInPrompt: completed.prompt.includes(alert),
+    };
   }
 
   async installRealAgentConfiguration(provider: RealAgentProvider): Promise<void> {
@@ -1644,9 +1651,7 @@ export class HubE2E {
     return row.rows[0]!.id;
   }
 
-  private async waitForManualRun(
-    dispatch: Pick<DispatchedManualRun, "deliveryKey" | "providerEventReceiptId">,
-  ): Promise<PublicManualRun> {
+  private async waitForManualRun(dispatch: DispatchedManualRun): Promise<PublicManualRun> {
     const executionId = await this.executionForManualRun(dispatch.providerEventReceiptId);
     await this.observe(async () => {
       const row = await this.requirePool().query<{

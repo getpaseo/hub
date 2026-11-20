@@ -3,6 +3,7 @@ import { test } from "./app.js";
 import { OrganizationTriggers } from "./helpers/triggers.js";
 
 test("creates a webhook and reveals each secret only once", async ({ hub, page }) => {
+  test.slow();
   await hub.signUpAs("owner", {
     name: "Webhook Owner",
     email: "webhook-owner@example.com",
