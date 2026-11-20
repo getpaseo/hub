@@ -203,15 +203,11 @@ export async function startFakeChat() {
     ) {
       return new Response(null, { status: 400 });
     }
-    return Response.json(
-      message(id, "995", body.content, {
-        ...("message_reference" in body
-          ? {
-              referenced_message: message(discord.thread, discord.reply, "Thread reply"),
-            }
-          : {}),
-      }),
-    );
+    const reference =
+      "message_reference" in body
+        ? { referenced_message: message(discord.thread, discord.reply, "Thread reply") }
+        : {};
+    return Response.json(message(id, "995", body.content, reference));
   }
 
   function discordMessages(id: string, messageId: string | undefined) {
