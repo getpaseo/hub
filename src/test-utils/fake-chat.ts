@@ -57,7 +57,12 @@ export function localChatFetch(origin: string): typeof fetch {
   };
 }
 
-export async function startFakeChat() {
+export async function startFakeChat(
+  options: {
+    deletedThreadDuringScan?: boolean;
+    threadCreationRace?: boolean;
+  } = {},
+) {
   const calls: { method: string; path: string; body?: unknown }[] = [];
   let contextualThread = false;
   const { slack, discord } = chat;
@@ -164,7 +169,13 @@ export async function startFakeChat() {
       return Response.json({ threads: [channels[discord.thread], channels[discord.otherThread]] });
     }
     if (path === `/api/v10/channels/${discord.forum}/threads/archived/public`) {
-      return Response.json({ threads: [channels[discord.archived]], has_more: false });
+      return Response.json({
+        threads: [
+          channels[discord.archived],
+          ...(options.deletedThreadDuringScan ? [channel("125", 11, discord.forum)] : []),
+        ],
+        has_more: false,
+      });
     }
     if (path.startsWith(`/api/v10/channels/${discord.text}/`) && path.includes("/archived/")) {
       return Response.json({ threads: [], has_more: false });
@@ -193,6 +204,7 @@ export async function startFakeChat() {
       contextualThread = true;
       const created = channel(discord.starter, 11, discord.text);
       channels[created.id] = created;
+      if (options.threadCreationRace) return Response.json({ code: 160004 }, { status: 400 });
       return Response.json(created);
     }
     if (

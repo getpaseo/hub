@@ -115,6 +115,25 @@ describe("self-contained trigger documents", () => {
     );
   });
 
+  it("compiles channel IDs and actions as sets while keeping the authored YAML order", () => {
+    const yaml = trigger.replace(
+      "run:",
+      `run:
+  tools:
+    discord:
+      connection: community
+      actions: [post, read]
+      channels: ["456", "123", "456"]`,
+    );
+    const compiled = compileTriggerDocument(yaml);
+    assert.deepEqual(compiled.authored.run.tools?.discord?.channels, ["456", "123", "456"]);
+    assert.deepEqual(compiled.events[0]?.steps[0]?.tools?.discord, {
+      connection: "community",
+      actions: ["read", "post"],
+      channels: ["123", "456"],
+    });
+  });
+
   it.each(["[]", '["*"]', "[123456789012345678]"])(
     "rejects invalid Discord allowlist %s",
     (channels) => {

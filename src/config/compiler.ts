@@ -3,7 +3,9 @@ import { ContinuationSchema } from "../triggers/continuation.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
+  CompiledIntegrationToolGrantsSchema,
   IntegrationToolGrantsSchema,
+  normalizeIntegrationToolGrants,
   type IntegrationToolGrants,
 } from "../integration-tools/grants.js";
 import {
@@ -413,7 +415,7 @@ const CompiledStepSchema: z.ZodType<CompiledStep> = z
     prompt: z.array(CompiledPromptBlockSchema).min(1),
     env: z.record(z.string(), z.string()).optional(),
     github: CompiledGitHubAuthoritySchema.optional(),
-    tools: IntegrationToolGrantsSchema.optional(),
+    tools: CompiledIntegrationToolGrantsSchema.optional(),
     condition: z.custom<Expression>(isExpression).optional(),
     output: z.object({ schema: CompiledJsonSchemaSchema }).strict().optional(),
     allowOutputs: z.array(
@@ -626,7 +628,7 @@ function compileStep(
     prompt: compilePromptBlocks(trigger.name, step.id, step.prompt, resolvedPromptPartials),
     ...(env === undefined ? {} : { env }),
     ...(github === undefined ? {} : { github }),
-    ...(step.tools === undefined ? {} : { tools: step.tools }),
+    ...(step.tools === undefined ? {} : { tools: normalizeIntegrationToolGrants(step.tools) }),
     ...(condition === undefined ? {} : { condition }),
     ...(outputDeclaration === undefined ? {} : { output: outputDeclaration }),
     allowOutputs: (step.allow_outputs ?? []).map((allowOutput) => ({

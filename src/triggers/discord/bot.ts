@@ -9,6 +9,7 @@ import {
 } from "discord.js";
 import { Routes } from "discord-api-types/v10";
 import { reportFailure } from "../../failures/index.js";
+import { resolveDiscordMessageThread } from "../../discord/message-thread.js";
 import { DiscordSnowflakeSchema } from "../../discord/snowflake.js";
 import { NormalizedDiscordContextMessageSchema } from "./events.js";
 import type { NormalizedDiscordContextMessage } from "./events.js";
@@ -295,9 +296,11 @@ async function resolveReplyDestination(
 
   const resolution = (async () => {
     const message = await fetchMessage(client, channelId, messageId);
-    const thread = message.hasThread
-      ? await fetchSendableChannel(client, messageId)
-      : await message.startThread({ name: createThreadName(message.content) });
+    const thread = await resolveDiscordMessageThread({
+      hasThread: message.hasThread,
+      readThread: () => fetchSendableChannel(client, messageId),
+      createThread: () => message.startThread({ name: createThreadName(message.content) }),
+    });
     if (!isSendableChannel(thread)) throw new Error(`discord channel not sendable: ${thread.id}`);
     return thread;
   })();

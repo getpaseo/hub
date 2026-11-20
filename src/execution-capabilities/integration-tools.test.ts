@@ -69,7 +69,7 @@ describe("Scoped integration tools through Hub MCP", () => {
     const directory = await mkdtemp(".artifacts/integration-db-");
     const { runtime, locks } = await embeddedDatabaseRuntime(directory);
     const database = createDatabase(runtime, locks);
-    const fake = await startFakeChat();
+    const fake = await startFakeChat({ deletedThreadDuringScan: true, threadCreationRace: true });
     try {
       await runtime.migrate();
       await runtime.query(
@@ -318,6 +318,7 @@ describe("Scoped integration tools through Hub MCP", () => {
       const latest = await call("discord_latest", { channel: chat.discord.forum });
       assert.match(latest.output, /Archived report/u);
       assert.match(latest.output, /Thread reply/u);
+      assert.match(latest.output, /"skippedThreads":1/u);
       assert.equal((await call("discord_read", { target: chat.discord.otherThread })).ok, false);
       assert.equal(
         (await call("discord_read", { target: chat.discord.otherGuildChannel })).ok,

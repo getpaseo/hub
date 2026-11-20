@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { resolveDiscordMessageThread } from "../discord/message-thread.js";
 import type { Database } from "../db/types.js";
 import { discordLatest, discordPost, discordRead } from "./contracts.js";
 import { discordId, type IntegrationToolGrant } from "./grants.js";
@@ -37,6 +38,10 @@ const FORUM = 15;
 const MEDIA = 16;
 const HAS_THREAD = 1 << 5;
 const ARCHIVED_THREADS_PER_CHANNEL = 10;
+
+function hasThread(message: Message) {
+  return ((message.flags ?? 0) & HAS_THREAD) !== 0;
+}
 
 function isThread(channel: Channel) {
   return [10, 11, PRIVATE_THREAD].includes(channel.type);
@@ -202,7 +207,7 @@ function scopedDiscord(
   }
 
   async function threadOnMessage(parent: Channel, message: Message) {
-    if (((message.flags ?? 0) & HAS_THREAD) === 0) return undefined;
+    if (!hasThread(message)) return undefined;
     const thread = await getChannel(message.id);
     if (!belongsTo(thread, parent))
       throw new IntegrationToolError("The message thread is outside the requested channel.");
@@ -277,16 +282,26 @@ function scopedDiscord(
       const active = await activeThreads();
       const messages: Message[] = [];
       let moreArchivedThreads = false;
+      let skippedThreads = 0;
       for (const parent of parents) {
         if (isText(parent)) messages.push(...(await history(parent.id, limit)));
         const recent = await recentThreads(parent, active);
         moreArchivedThreads ||= recent.moreArchivedThreads;
         for (const thread of recent.threads) {
-          messages.push(...(await history(thread.id, limit)));
+          try {
+            messages.push(...(await history(thread.id, limit)));
+          } catch (error) {
+            if (!(error instanceof IntegrationHttpError) || error.status !== 404) throw error;
+            skippedThreads++;
+          }
         }
       }
       messages.sort((a, b) => Number(BigInt(b.id) - BigInt(a.id)));
-      return { messages: messages.slice(0, limit).map(describeMessage), moreArchivedThreads };
+      return {
+        messages: messages.slice(0, limit).map(describeMessage),
+        moreArchivedThreads,
+        skippedThreads,
+      };
     },
     async post({ target, message, content, threadName }: z.infer<typeof discordPost>) {
       const ids = targetIds(guild, target, message);
@@ -302,11 +317,14 @@ function scopedDiscord(
       } else if (ids.message !== undefined) {
         const exact = await getMessage(channel.id, ids.message);
         if (isText(channel)) {
-          destination =
-            (await threadOnMessage(channel, exact)) ??
-            (await api(`/channels/${channel.id}/messages/${exact.id}/threads`, Channel, {
-              name: threadName ?? `Reply to ${exact.id}`,
-            }));
+          destination = await resolveDiscordMessageThread({
+            hasThread: hasThread(exact),
+            readThread: () => getChannel(exact.id),
+            createThread: () =>
+              api(`/channels/${channel.id}/messages/${exact.id}/threads`, Channel, {
+                name: threadName ?? `Reply to ${exact.id}`,
+              }),
+          });
           if (destination.id !== exact.id || !belongsTo(destination, channel)) {
             throw new IntegrationToolError("The message thread is outside the requested channel.");
           }
