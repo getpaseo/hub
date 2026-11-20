@@ -1,5 +1,6 @@
 import { parseDocument } from "yaml";
 import { expect, type Page } from "@playwright/test";
+import { allowClipboard } from "./apps.js";
 import type { BuiltApplication } from "./hub.js";
 
 export class OrganizationTriggers {
@@ -187,6 +188,18 @@ export class OrganizationTriggers {
     await expect(url).toBeVisible();
     await expect(this.page.getByRole("button", { name: "Copy curl example" })).toBeVisible();
     return url.innerText();
+  }
+
+  async copyWebhookConnectionDetails(endpoint: string) {
+    await allowClipboard(this.page, new URL(this.page.url()).origin);
+    await this.page.getByRole("button", { name: "Copy Webhook URL" }).click();
+    await expect
+      .poll(() => this.page.evaluate(() => navigator.clipboard.readText()))
+      .toBe(endpoint);
+    await this.page.getByRole("button", { name: "Copy curl example" }).click();
+    await expect
+      .poll(() => this.page.evaluate(() => navigator.clipboard.readText()))
+      .toContain(`curl -X POST '${endpoint}'`);
   }
 
   async issueWebhookSecret(action: "Create secret" | "Rotate secret") {

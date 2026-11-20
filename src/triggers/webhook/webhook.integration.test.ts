@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { z } from "zod";
-import { expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "vitest";
 import { createHubApplication } from "../../app.js";
 import { createPostgresTestRuntime } from "../../db/test-utils/runtime.js";
 import { UNLIMITED_TEMPLATE } from "../../entitlements/catalog.js";
@@ -10,8 +10,17 @@ import { acceptingAgentValidator } from "../../test-utils/agent-validator.js";
 import { OrganizationTriggerStore } from "../store.js";
 import { webhookYaml } from "./test-fixture.js";
 
+let fixture: Awaited<ReturnType<typeof setup>>;
+
+beforeAll(async () => {
+  fixture = await setup();
+}, 120_000);
+
+afterAll(async () => {
+  await fixture?.close();
+}, 120_000);
+
 it("authorizes, deduplicates, meters and queues durable webhook work across redeploys and rotation", async () => {
-  await using fixture = await setup();
   const { app, database, store, entitlements, runtime } = fixture;
   const trigger = await store.save({ yaml: webhookYaml, userId: null });
   const [endpoint] = await database.webhooks.list("webhook-org");
@@ -107,15 +116,15 @@ it("authorizes, deduplicates, meters and queues durable webhook work across rede
   expect(await (await post(rotated.secret, payload, "alert-1")).json()).toEqual(receipt);
   await store.save({ triggerId: trigger.id, yaml: `enabled: false\n${webhookYaml}`, userId: null });
   expect((await post(rotated.secret)).status).toBe(409);
-}, 45_000);
+});
 
 async function setup() {
   const postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
   let runtime: Awaited<ReturnType<typeof createPostgresTestRuntime>>["runtime"] | undefined;
   try {
-    const fixture = await createPostgresTestRuntime(postgres.getConnectionUri());
-    runtime = fixture.runtime;
-    const { database } = fixture;
+    const storage = await createPostgresTestRuntime(postgres.getConnectionUri());
+    runtime = storage.runtime;
+    const { database } = storage;
     await runtime.query(
       "insert into organization (id, name, slug) values ('webhook-org', 'Webhook', 'webhook')",
     );
@@ -154,10 +163,13 @@ async function setup() {
       runtime,
       database,
       entitlements,
-      async [Symbol.asyncDispose]() {
-        await app.hub.stop();
-        await fixture.runtime.close();
-        await postgres.stop();
+      async close() {
+        try {
+          await app.hub.stop();
+          await storage.runtime.close();
+        } finally {
+          await postgres.stop();
+        }
       },
     };
   } catch (error) {

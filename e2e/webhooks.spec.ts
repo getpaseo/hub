@@ -20,6 +20,7 @@ test("creates a webhook and reveals each secret only once", async ({ hub, page }
     await triggers.openTrigger("webhook-alert");
     return triggers.expectWebhookEndpoint();
   });
+  await triggers.copyWebhookConnectionDetails(endpoint);
   const first = await triggers.issueWebhookSecret("Create secret");
   await triggers.reloadWebhookSettings();
   const rotated = await triggers.issueWebhookSecret("Rotate secret");
