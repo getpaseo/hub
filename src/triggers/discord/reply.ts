@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { withExecutionLink } from "../../agent-executions/link.js";
+import { withExecutionLink } from "../../agent-executions/reply-link.js";
 import { DiscordSnowflakeSchema } from "../../discord/snowflake.js";
 import type { OutputExecutor } from "../../execution-capabilities/outputs.js";
 import type { DiscordBotClient } from "./bot.js";

@@ -17,22 +17,3 @@ export function executionLinkUrl(
   const url = new URL(executionLinkPath(execution.id), publicBaseUrl);
   return url.protocol === "https:" ? url.href : undefined;
 }
-
-export function withExecutionLink(
-  content: string,
-  url: string | undefined,
-  syntax: "markdown" | "slack" = "markdown",
-): string {
-  if (url === undefined || containsClickableUrl(content, url)) return content;
-  const footer = syntax === "slack" ? `<${url}|Open in Paseo>` : `[Open in Paseo](${url})`;
-  return `${content.trimEnd()}\n\n${footer}`;
-}
-
-function containsClickableUrl(content: string, url: string): boolean {
-  const text = content.replace(/(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/gu, "");
-  return (
-    text
-      .match(/https?:\/\/[^\s<>"|`\])]+/gu)
-      ?.some((candidate) => candidate.replace(/[.,;!:?]+$/u, "") === url) ?? false
-  );
-}

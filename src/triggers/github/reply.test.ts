@@ -7,7 +7,16 @@ import {
 } from "./reply.js";
 
 describe("GitHub reply output", () => {
-  it.each(["missing", "linked", "quoted"] as const)(
+  it.each([
+    "missing",
+    "linked",
+    "bare",
+    "reference",
+    "quoted",
+    "indented",
+    "image",
+    "label",
+  ] as const)(
     "posts a comment to the originating issue or pull request (%s URL)",
     async (urlForm) => {
       const url = "https://hub.example/open/executions/00000000-0000-4000-8000-000000000001";
@@ -16,6 +25,11 @@ describe("GitHub reply output", () => {
         missing: "Shipped.",
         linked: "Existing: " + link,
         quoted: "Log: `" + url + "`",
+        bare: "Session: " + url,
+        indented: "Log excerpt:\n\n    " + url,
+        image: "!" + link,
+        reference: `[Run][launch]\n\n[launch]: <${url}>`,
+        label: `[${url}](https://paseo.sh)`,
       }[urlForm];
       const comments: Parameters<GitHubReplyClient["createIssueComment"]>[0][] = [];
       const client: GitHubReplyClient = {
@@ -44,7 +58,9 @@ describe("GitHub reply output", () => {
           owner: "getpaseo",
           repo: "hub",
           issueNumber: 92,
-          body: urlForm === "linked" ? content : `${content}\n\n${link}`,
+          body: ["linked", "bare", "reference"].includes(urlForm)
+            ? content
+            : `${content}\n\n${link}`,
         },
       ]);
     },
