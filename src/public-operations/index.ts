@@ -25,6 +25,19 @@ export function createPublicOperations(
   clock: DaemonClock = { nowDate: () => new Date() },
 ): PublicOperations {
   return {
+    async rotateWebhookSecret(authorization, triggerId) {
+      try {
+        const result = await triggerCapability(
+          capabilities,
+          authorization.organizationId,
+        ).rotateWebhookSecret(triggerId);
+        return result === undefined
+          ? { status: "webhook_not_found" }
+          : { status: "rotated", path: `/webhooks/${result.endpointId}`, secret: result.secret };
+      } catch (error) {
+        return storageUnavailableOrThrow(error);
+      }
+    },
     async listTriggers(authorization) {
       try {
         return {

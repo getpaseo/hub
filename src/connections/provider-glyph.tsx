@@ -1,4 +1,4 @@
-import { TerminalIcon, ClockIcon } from "lucide-react";
+import { TerminalIcon, ClockIcon, WebhookIcon } from "lucide-react";
 
 /**
  * Brand marks for the connection providers. Lucide dropped brand icons, and a generic
@@ -9,8 +9,9 @@ import { TerminalIcon, ClockIcon } from "lucide-react";
 export function ProviderGlyph({
   provider,
 }: {
-  provider: "github" | "discord" | "slack" | "linear" | "manual" | "schedule";
+  provider: "github" | "discord" | "slack" | "linear" | "manual" | "schedule" | "webhook";
 }) {
+  if (provider === "webhook") return <WebhookIcon className="size-4.5" aria-hidden="true" />;
   if (provider === "schedule") return <ClockIcon className="size-4.5" aria-hidden="true" />;
   if (provider === "github") return <GitHubMark />;
   if (provider === "discord") return <DiscordMark />;

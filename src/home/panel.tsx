@@ -375,9 +375,10 @@ function runStep(
 
 /** How to make a trigger fire, said for the events the organization actually listens to. */
 function runHint(triggers: HomeSnapshot["triggers"]): string {
-  if (triggers.length === 0) return "Once a trigger exists, fire its event.";
+  const events = triggers.filter(({ enabled }) => enabled).flatMap((trigger) => trigger.events);
+  if (events.length === 0) return "Enable a trigger and fire one of its events.";
   const hints = new Set<string>();
-  for (const { event } of triggers) {
+  for (const event of events) {
     const provider = event.split(".")[0];
     if (provider === "slack" || provider === "discord") {
       hints.add("Mention the bot in a channel it can see.");
@@ -387,6 +388,8 @@ function runHint(triggers: HomeSnapshot["triggers"]): string {
       hints.add("Update an issue in the connected Linear workspace.");
     } else if (provider === "schedule") {
       hints.add("It runs on its schedule.");
+    } else if (provider === "webhook") {
+      hints.add("Send a POST to the webhook URL with the secret from the trigger editor.");
     } else {
       hints.add("Dispatch it with an API key: POST /api/v1/manual-runs.");
     }

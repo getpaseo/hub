@@ -83,6 +83,13 @@ function hasBundleIssue(error: unknown, path: string, message: RegExp): boolean 
 }
 
 describe("Hub configuration bundle", () => {
+  it("directs webhook events to self-contained trigger deployment", () => {
+    assert.throws(
+      () => compileHubBundle(filesWithWorkflow(workflow.replace("manual.run", "webhook.received"))),
+      (error) => hasBundleIssue(error, ".paseo/workflows/route.yml.on", /\.paseo\/triggers/u),
+    );
+  });
+
   it("accepts an optional project name as slug-validated deployment metadata", () => {
     const bundle = compileHubBundle(filesWithHub(`name: agent-tools\n${hub}`));
 

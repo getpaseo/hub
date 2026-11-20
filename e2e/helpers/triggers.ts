@@ -1,5 +1,6 @@
 import { parseDocument } from "yaml";
 import { expect, type Page } from "@playwright/test";
+import { allowClipboard } from "./apps.js";
 import type { BuiltApplication } from "./hub.js";
 
 export class OrganizationTriggers {
@@ -186,6 +187,66 @@ export class OrganizationTriggers {
       await this.page.getByLabel("Provider options (JSON)").fill(input.providerOptions);
     }
     await this.page.getByLabel("Instructions", { exact: true }).fill(input.prompt);
+  }
+
+  async configureWebhook(daemon: string) {
+    await this.configureManual({
+      name: "webhook-alert",
+      daemon,
+      cwd: "/workspace/acme",
+      agent: "opencode/gateway/vendor/model-v1",
+      mode: "full-access",
+      thinking: "low",
+      prompt: "Summarize the alert.",
+    });
+    await this.selectOption("When this happens", "webhook.received");
+  }
+
+  async addScheduleBeforeWebhook() {
+    await this.switchToYaml();
+    const document = parseDocument(await this.yamlEditor().innerText(), { compat: ["timestamp"] });
+    document.set("on", {
+      "schedule.tick": {
+        recurrence: { start: "2099-01-01T09:00:00", rule: "FREQ=DAILY", timezone: "UTC" },
+      },
+      "webhook.received": {},
+    });
+    await this.replaceYaml(document.toString({ lineWidth: 0 }));
+  }
+
+  async expectWebhookEndpoint() {
+    await expect(this.page.getByRole("heading", { name: "Webhook endpoint" })).toBeVisible();
+    const url = this.page.getByText(/https?:\/\/[^ ]+\/webhooks\/wh_[\w-]{32}$/u);
+    await expect(url).toBeVisible();
+    await expect(this.page.getByRole("button", { name: "Copy curl example" })).toBeVisible();
+    return url.innerText();
+  }
+
+  async copyWebhookConnectionDetails(endpoint: string) {
+    await allowClipboard(this.page, new URL(this.page.url()).origin);
+    await this.page.getByRole("button", { name: "Copy Webhook URL" }).click();
+    await expect
+      .poll(() => this.page.evaluate(() => navigator.clipboard.readText()))
+      .toBe(endpoint);
+    await this.page.getByRole("button", { name: "Copy curl example" }).click();
+    await expect
+      .poll(() => this.page.evaluate(() => navigator.clipboard.readText()))
+      .toContain(`curl -X POST '${endpoint}'`);
+  }
+
+  async issueWebhookSecret(action: "Create secret" | "Rotate secret") {
+    await this.page.getByRole("button", { name: action, exact: true }).click();
+    const secret = this.page.getByRole("textbox", { name: "Webhook secret" });
+    await expect(secret).toHaveValue(/^whsec_[\w-]{43}$/u);
+    return secret.inputValue();
+  }
+
+  async reloadWebhookSettings() {
+    await this.page.reload();
+    await expect(
+      this.page.getByRole("button", { name: "Rotate secret", exact: true }),
+    ).toBeVisible();
+    await expect(this.page.getByRole("textbox", { name: "Webhook secret" })).toBeHidden();
   }
 
   async configureSchedule(daemon: string) {

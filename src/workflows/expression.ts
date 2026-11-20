@@ -274,16 +274,36 @@ export function validateExecutionTemplate(template: string): void {
 
 export function expressionPathsInTemplate(template: string): ExpressionPath[] {
   const paths: ExpressionPath[] = [];
+  for (const expression of templateExpressions(template)) {
+    paths.push(...expressionPaths(expression));
+  }
+  return paths;
+}
+
+/** A standalone interpolation renders the prompt itself. Other expressions can inspect it. */
+export function templateInsertsPrompt(template: string): boolean {
+  for (const expression of templateExpressions(template)) {
+    if (
+      expression.kind === "path" &&
+      expression.value.namespace === "paseo" &&
+      expression.value.path === "prompt"
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function* templateExpressions(template: string): Generator<Expression> {
   let cursor = 0;
   while (cursor < template.length) {
     const start = template.indexOf("${{", cursor);
     if (start < 0) break;
     const end = template.indexOf("}}", start + 3);
     if (end < 0) throw new ExpressionSyntaxError("unterminated interpolation");
-    paths.push(...expressionPaths(parseExpression(template.slice(start + 3, end))));
+    yield parseExpression(template.slice(start + 3, end));
     cursor = end + 2;
   }
-  return paths;
 }
 
 function tokenize(source: string): Token[] {

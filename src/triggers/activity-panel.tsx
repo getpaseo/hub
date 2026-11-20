@@ -63,7 +63,12 @@ export function TriggerActivityPanel() {
               />
             </DataCell>
             <DataCell>{run.provider}</DataCell>
-            <DataCell>{run.source}</DataCell>
+            <DataCell>
+              <TwoLine
+                primary={run.source}
+                {...(run.webhookDeliveryId === null ? {} : { secondary: run.webhookDeliveryId })}
+              />
+            </DataCell>
             <DataCell>
               <StatusPill tone={tone(run.status)}>{statusLabel(run.status)}</StatusPill>
             </DataCell>

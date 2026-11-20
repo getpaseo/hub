@@ -13,7 +13,7 @@ export interface QualifierDefinition {
 }
 
 interface EventDefinition {
-  provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule";
+  provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule" | "webhook";
   label: string;
   origin: "hub" | "provider";
   qualifiers: readonly QualifierDefinition[];
@@ -37,7 +37,10 @@ function event(
     provider,
     label,
     qualifiers,
-    origin: provider === "manual" || provider === "schedule" ? "hub" : "provider",
+    origin:
+      provider === "manual" || provider === "schedule" || provider === "webhook"
+        ? "hub"
+        : "provider",
   };
 }
 
@@ -67,6 +70,7 @@ const EVENTS = {
   "linear.issue_assigned": event("linear", "Linear issue assigned"),
   "linear.comment_created": event("linear", "Linear comment created"),
   "schedule.tick": event("schedule", "Schedule"),
+  "webhook.received": event("webhook", "Webhook received"),
   "manual.run": event("manual", "Manual run"),
 };
 

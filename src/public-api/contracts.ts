@@ -229,6 +229,12 @@ export const TriggerExportSchema = z
   .strict()
   .openapi("TriggerExport");
 
+export const WebhookSecretRequestSchema = z.object({ triggerId: z.string().uuid() }).strict();
+export const WebhookSecretSchema = z
+  .object({ path: z.string(), secret: z.string() })
+  .strict()
+  .openapi("WebhookSecret");
+
 export const TriggerListSchema = z
   .object({ triggers: z.array(TriggerExportSchema) })
   .strict()
