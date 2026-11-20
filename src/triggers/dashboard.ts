@@ -2,6 +2,7 @@ import type { AuthServer } from "../auth/server.js";
 import { capabilitiesFor } from "../auth/organization-policy.js";
 import type { Database, OrganizationTriggerRecord } from "../db/types.js";
 import { resolveRouteTenant } from "../projects/access.js";
+import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 import { ProjectCommandError } from "../projects/command-error.js";
 import { parseCompiledHubConfig } from "../config/compiler.js";
 import type { DaemonAgentConfigurationValidator } from "../configuration/store.js";
@@ -13,6 +14,7 @@ export class TriggerDashboard {
     private readonly database: Database,
     private readonly auth: AuthServer,
     private readonly agentValidator: DaemonAgentConfigurationValidator,
+    private readonly publicBaseUrl?: string,
   ) {}
 
   async snapshot(request: Request, organizationSlug: string) {
@@ -24,10 +26,11 @@ export class TriggerDashboard {
       tenant.organization.id,
       this.agentValidator,
     );
-    const [triggers, daemons, connections] = await Promise.all([
+    const [triggers, daemons, connections, webhooks] = await Promise.all([
       store.list(),
       this.database.listDaemonsForOrganization(tenant.organization.id),
       this.database.organizationConnectionUsage(tenant.organization.id),
+      this.database.webhooks.list(tenant.organization.id),
     ]);
     const activity = (
       await Promise.all(triggers.map((trigger) => this.activityForTrigger(trigger)))
@@ -48,6 +51,10 @@ export class TriggerDashboard {
         ),
       ),
       activity,
+      webhooks,
+      webhookOrigin: new URL(
+        this.publicBaseUrl ?? request.headers.get(TRUSTED_REQUEST_ORIGIN_HEADER) ?? request.url,
+      ).origin,
       // Only a daemon that can run agents is a target; one enrolled without `hub.execute` would
       // be refused at save, and Home says how to grant it.
       daemons: daemons
@@ -113,9 +120,20 @@ export class TriggerDashboard {
         provider: receipt.provider,
         source: receipt.source,
         repo: receipt.repo,
+        webhookDeliveryId: receipt.provider === "webhook" ? receipt.id : null,
         status: run.status,
         receivedAt: receipt.receivedAt.toISOString(),
       }));
+  }
+
+  async rotateWebhookSecret(request: Request, organizationSlug: string, triggerId: string) {
+    const { tenant } = await resolveRouteTenant(this.auth, this.database, request, {
+      organizationSlug,
+    });
+    if (!capabilitiesFor(tenant.membership.role).manageResources) {
+      throw new ProjectCommandError("forbidden");
+    }
+    return this.database.webhooks.rotate(tenant.organization.id, triggerId);
   }
 
   async save(
@@ -199,10 +217,11 @@ function triggerEvent(yaml: string, fallback: string | undefined): string {
 function triggerProvider(
   event: string,
   fallback: string | undefined,
-): "github" | "discord" | "slack" | "linear" | "manual" | "schedule" {
+): "github" | "discord" | "slack" | "linear" | "manual" | "schedule" | "webhook" {
   const provider = event.split(".")[0] ?? fallback;
   if (
     provider === "schedule" ||
+    provider === "webhook" ||
     provider === "github" ||
     provider === "discord" ||
     provider === "slack" ||

@@ -76,7 +76,7 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
             : { startup_timeout: authored.run.startup_timeout }),
           agent,
           ...(authored.run.title === undefined ? {} : { title: authored.run.title }),
-          prompt: [{ text: authored.run.prompt }],
+          prompt: promptForEvent(authored.run.prompt, event),
           ...(authored.run.env === undefined ? {} : { env: authored.run.env }),
           ...(authored.run.github === undefined ? {} : { github: authored.run.github }),
           ...(authored.run.output === undefined ? {} : { output: authored.run.output }),
@@ -118,6 +118,10 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
     ),
     authoredHash: createHash("sha256").update(yaml).digest("hex"),
   };
+}
+
+function promptForEvent(text: string, event: string): AuthoredStep["prompt"] {
+  return event === "webhook.received" ? [{ text }, { text: "${{ paseo.prompt }}" }] : [{ text }];
 }
 
 function withAutomaticReply(trigger: CompiledTrigger): CompiledTrigger {

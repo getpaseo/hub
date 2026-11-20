@@ -8,6 +8,7 @@ import type {
   ListSetupResourcesResult,
   ListProjectsResult,
   ListTriggersResult,
+  RotateWebhookSecretResult,
   PublicOperations,
   ValidateConfigurationResult,
   ValidateTriggerResult,
@@ -26,9 +27,12 @@ import {
   ValidatedConfigurationSchema,
   TriggerYamlRequestSchema,
   ValidatedTriggerSchema,
+  WebhookSecretRequestSchema,
+  WebhookSecretSchema,
 } from "./contracts.js";
 
 export type PublicOperationId =
+  | "rotateWebhookSecret"
   | "listTriggers"
   | "validateTrigger"
   | "installTrigger"
@@ -48,7 +52,8 @@ export interface PublicOperationDefinition {
   requestSchema?:
     | typeof InstallConfigurationRequestSchema
     | typeof DispatchManualRunRequestSchema
-    | typeof TriggerYamlRequestSchema;
+    | typeof TriggerYamlRequestSchema
+    | typeof WebhookSecretRequestSchema;
   successSchema:
     | typeof InstalledTriggerSchema
     | typeof ValidatedTriggerSchema
@@ -59,9 +64,11 @@ export interface PublicOperationDefinition {
     | typeof ConfigurationResourcesSchema
     | typeof SetupResourcesSchema
     | typeof DispatchedManualRunSchema
-    | typeof EnrollmentTokenSchema;
+    | typeof EnrollmentTokenSchema
+    | typeof WebhookSecretSchema;
   successStatus: 200 | 201;
   resultMapping:
+    | "webhook-secret"
     | "trigger-validation"
     | "triggers"
     | "trigger-installation"
@@ -81,6 +88,7 @@ export interface PublicOperationDefinition {
     authorization: Parameters<PublicOperations["issueEnrollmentToken"]>[0],
     input: unknown,
   ): Promise<
+    | RotateWebhookSecretResult
     | ListProjectsResult
     | ListTriggersResult
     | ValidateTriggerResult
@@ -95,6 +103,34 @@ export interface PublicOperationDefinition {
 }
 
 export const publicOperationManifest: readonly PublicOperationDefinition[] = [
+  {
+    id: "rotateWebhookSecret",
+    method: "post",
+    path: "/api/v1/triggers/webhook-secret",
+    scope: "configuration:install",
+    requestSchema: WebhookSecretRequestSchema,
+    successSchema: WebhookSecretSchema,
+    successStatus: 200,
+    resultMapping: "webhook-secret",
+    summary: "Create or rotate a webhook secret",
+    description: "Replaces the Bearer secret and returns it once, along with the webhook path.",
+    tag: "Triggers",
+    responses: {
+      200: "The webhook path and its new secret.",
+      400: "The JSON request is malformed.",
+      401: "The bearer credential is missing, malformed, or revoked.",
+      403: "The bearer credential lacks configuration:install.",
+      404: "No webhook trigger with this ID belongs to the organization.",
+      422: "The trigger ID is invalid.",
+      500: "The operation failed unexpectedly.",
+      503: "Hub authentication or storage is unavailable.",
+    },
+    invoke: (operations, authorization, input) =>
+      operations.rotateWebhookSecret(
+        authorization,
+        WebhookSecretRequestSchema.parse(input).triggerId,
+      ),
+  },
   {
     id: "listTriggers",
     method: "get",

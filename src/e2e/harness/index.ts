@@ -441,6 +441,110 @@ export class HubE2E {
     }
   }
 
+  async runRealAgentWebhook() {
+    const {
+      rows: [daemon],
+    } = await this.requirePool().query<{ slug: string }>(
+      "select slug from daemons where presence = 'connected' order by connected_at desc limit 1",
+    );
+    const triggers = join(this.workspace, ".paseo", "triggers");
+    await mkdir(triggers, { recursive: true });
+    const path = join(triggers, "webhook-alert.yml");
+    const yaml = [
+      "name: webhook-alert",
+      "on:",
+      "  webhook.received: {}",
+      "run:",
+      `  target: { daemon: ${daemon!.slug}, cwd: ${JSON.stringify(this.workspace)} }`,
+      "  agent:",
+      "    provider: codex",
+      "    mode: full-access",
+      "    options: { approval_policy: never, sandbox_mode: read-only, web_search: disabled }",
+      '  prompt: "Read the alert and call the finish_execution MCP tool. Include the exact alert string in your summary."',
+    ].join("\n");
+    const origin = this.requireProxy().origin;
+    const source = this.requireSource();
+    const deploy = () =>
+      source.runFrom(
+        ["hub", "deploy", "--hub", origin, "--api-key", MACHINE_KEY, "--json"],
+        this.workspace,
+      );
+    await writeFile(path, yaml);
+    const installed = await deploy();
+    const triggerId = requiredString(installed, "triggerId");
+    const rotated = await fetch(`${origin}/api/v1/triggers/webhook-secret`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${MACHINE_KEY}`, "content-type": "application/json" },
+      body: JSON.stringify({ triggerId }),
+    });
+    assertStatus(rotated, 200, "issue webhook secret");
+    const endpoint = z.object({ path: z.string(), secret: z.string() }).parse(await rotated.json());
+    await writeFile(path, yaml.replace("Read the alert", "Summarize the alert"));
+    const redeployed = await deploy();
+    if (redeployed["triggerId"] !== triggerId) throw new Error("Redeploy changed trigger identity");
+    const alert = "local webhook smoke: disk usage 97 percent";
+    const { stdout } = await exec("curl", [
+      "--silent",
+      "--show-error",
+      "--max-time",
+      "20",
+      "-X",
+      "POST",
+      `${origin}${endpoint.path}`,
+      "-H",
+      `Authorization: Bearer ${endpoint.secret}`,
+      "-H",
+      "Content-Type: application/json",
+      "-H",
+      "Idempotency-Key: isolated-webhook-qa",
+      "-d",
+      JSON.stringify({ alert }),
+      "--write-out",
+      "\n%{http_code}",
+    ]).catch(() => {
+      throw new Error("Local webhook curl failed");
+    });
+    const [body, status] = stdout.split("\n");
+    if (status !== "202") throw new Error(`Webhook curl returned ${status}: ${body}`);
+    const { runId } = z
+      .object({ runId: z.string().uuid(), status: z.literal("accepted") })
+      .parse(JSON.parse(body!));
+    const {
+      rows: [receipt],
+    } = await this.requirePool().query<{ provider_event_receipt_id: string }>(
+      "select provider_event_receipt_id from trigger_runs where id = $1",
+      [runId],
+    );
+    const run = await this.waitForManualRun({
+      deliveryKey: "isolated-webhook-qa",
+      providerEventReceiptId: receipt!.provider_event_receipt_id,
+    });
+    const [provider, processDescriptions] = await Promise.all([
+      source.agentProvider(run.agentId),
+      source.processDescriptions(),
+    ]);
+    const completion = await this.realAgentCompletionEvidence({
+      ...run,
+      provider,
+      processDescriptions,
+    });
+    await this.observe(async () => {
+      const {
+        rows: [entry],
+      } = await this.requirePool().query<{ source: string; status: string; prompt: string }>(
+        `select e.source, r.status, r.prompt from trigger_runs r
+         join provider_event_receipts e on e.id = r.provider_event_receipt_id where r.id = $1`,
+        [runId],
+      );
+      return (
+        entry?.source === "webhook.received" &&
+        entry.status === "succeeded" &&
+        entry.prompt.includes(alert)
+      );
+    }, "webhook run in history");
+    return { runId, completion };
+  }
+
   async installRealAgentConfiguration(provider: RealAgentProvider): Promise<void> {
     const daemon = await this.requirePool().query<{ slug: string }>(
       "select slug from daemons where presence = 'connected' order by connected_at desc limit 1",
@@ -1540,7 +1644,9 @@ export class HubE2E {
     return row.rows[0]!.id;
   }
 
-  private async waitForManualRun(dispatch: DispatchedManualRun): Promise<PublicManualRun> {
+  private async waitForManualRun(
+    dispatch: Pick<DispatchedManualRun, "deliveryKey" | "providerEventReceiptId">,
+  ): Promise<PublicManualRun> {
     const executionId = await this.executionForManualRun(dispatch.providerEventReceiptId);
     await this.observe(async () => {
       const row = await this.requirePool().query<{

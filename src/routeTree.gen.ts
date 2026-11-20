@@ -14,6 +14,7 @@ import { Route as HealthRouteImport } from './routes/health'
 import { Route as FaviconDotsvgRouteImport } from './routes/favicon[.]svg'
 import { Route as ShellRouteImport } from './routes/_shell'
 import { Route as ShellIndexRouteImport } from './routes/_shell/index'
+import { Route as WebhooksEndpointIdRouteImport } from './routes/webhooks/$endpointId'
 import { Route as TestTriggerRouteImport } from './routes/test/trigger'
 import { Route as TestStripeCheckoutRouteImport } from './routes/test/stripe-checkout'
 import { Route as TestSmokeRouteImport } from './routes/test/smoke'
@@ -82,6 +83,11 @@ const ShellIndexRoute = ShellIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => ShellRoute,
+} as any)
+const WebhooksEndpointIdRoute = WebhooksEndpointIdRouteImport.update({
+  id: '/webhooks/$endpointId',
+  path: '/webhooks/$endpointId',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const TestTriggerRoute = TestTriggerRouteImport.update({
   id: '/test/trigger',
@@ -346,6 +352,7 @@ export interface FileRoutesByFullPath {
   '/test/smoke': typeof TestSmokeRoute
   '/test/stripe-checkout': typeof TestStripeCheckoutRoute
   '/test/trigger': typeof TestTriggerRoute
+  '/webhooks/$endpointId': typeof WebhooksEndpointIdRoute
   '/agent-executions/$executionId/mcp': typeof AgentExecutionsExecutionIdMcpRoute
   '/agent-sessions/$sessionId/mcp': typeof AgentSessionsSessionIdMcpRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -395,6 +402,7 @@ export interface FileRoutesByTo {
   '/test/smoke': typeof TestSmokeRoute
   '/test/stripe-checkout': typeof TestStripeCheckoutRoute
   '/test/trigger': typeof TestTriggerRoute
+  '/webhooks/$endpointId': typeof WebhooksEndpointIdRoute
   '/': typeof ShellIndexRoute
   '/agent-executions/$executionId/mcp': typeof AgentExecutionsExecutionIdMcpRoute
   '/agent-sessions/$sessionId/mcp': typeof AgentSessionsSessionIdMcpRoute
@@ -445,6 +453,7 @@ export interface FileRoutesById {
   '/test/smoke': typeof TestSmokeRoute
   '/test/stripe-checkout': typeof TestStripeCheckoutRoute
   '/test/trigger': typeof TestTriggerRoute
+  '/webhooks/$endpointId': typeof WebhooksEndpointIdRoute
   '/_shell/': typeof ShellIndexRoute
   '/agent-executions/$executionId/mcp': typeof AgentExecutionsExecutionIdMcpRoute
   '/agent-sessions/$sessionId/mcp': typeof AgentSessionsSessionIdMcpRoute
@@ -498,6 +507,7 @@ export interface FileRouteTypes {
     | '/test/smoke'
     | '/test/stripe-checkout'
     | '/test/trigger'
+    | '/webhooks/$endpointId'
     | '/agent-executions/$executionId/mcp'
     | '/agent-sessions/$sessionId/mcp'
     | '/api/auth/$'
@@ -547,6 +557,7 @@ export interface FileRouteTypes {
     | '/test/smoke'
     | '/test/stripe-checkout'
     | '/test/trigger'
+    | '/webhooks/$endpointId'
     | '/'
     | '/agent-executions/$executionId/mcp'
     | '/agent-sessions/$sessionId/mcp'
@@ -596,6 +607,7 @@ export interface FileRouteTypes {
     | '/test/smoke'
     | '/test/stripe-checkout'
     | '/test/trigger'
+    | '/webhooks/$endpointId'
     | '/_shell/'
     | '/agent-executions/$executionId/mcp'
     | '/agent-sessions/$sessionId/mcp'
@@ -643,6 +655,7 @@ export interface RootRouteChildren {
   TestSmokeRoute: typeof TestSmokeRoute
   TestStripeCheckoutRoute: typeof TestStripeCheckoutRoute
   TestTriggerRoute: typeof TestTriggerRoute
+  WebhooksEndpointIdRoute: typeof WebhooksEndpointIdRoute
   AgentExecutionsExecutionIdMcpRoute: typeof AgentExecutionsExecutionIdMcpRoute
   AgentSessionsSessionIdMcpRoute: typeof AgentSessionsSessionIdMcpRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
@@ -698,6 +711,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof ShellIndexRouteImport
       parentRoute: typeof ShellRoute
+    }
+    '/webhooks/$endpointId': {
+      id: '/webhooks/$endpointId'
+      path: '/webhooks/$endpointId'
+      fullPath: '/webhooks/$endpointId'
+      preLoaderRoute: typeof WebhooksEndpointIdRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/test/trigger': {
       id: '/test/trigger'
@@ -1117,6 +1137,7 @@ const rootRouteChildren: RootRouteChildren = {
   TestSmokeRoute: TestSmokeRoute,
   TestStripeCheckoutRoute: TestStripeCheckoutRoute,
   TestTriggerRoute: TestTriggerRoute,
+  WebhooksEndpointIdRoute: WebhooksEndpointIdRoute,
   AgentExecutionsExecutionIdMcpRoute: AgentExecutionsExecutionIdMcpRoute,
   AgentSessionsSessionIdMcpRoute: AgentSessionsSessionIdMcpRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,

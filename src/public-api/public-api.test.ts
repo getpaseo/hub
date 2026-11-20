@@ -303,6 +303,7 @@ describe("generated public OpenAPI", () => {
       "/api/v1/triggers",
       "/api/v1/triggers/install",
       "/api/v1/triggers/validate",
+      "/api/v1/triggers/webhook-secret",
     ]);
     const expectations = {
       "/api/v1/configurations/install": [
@@ -422,6 +423,7 @@ function authenticator(
 
 function successfulOperations(): PublicOperations {
   return {
+    rotateWebhookSecret: () => Promise.resolve({ status: "webhook_not_found" }),
     listTriggers: () =>
       Promise.resolve({
         status: "listed",

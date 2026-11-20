@@ -46,6 +46,16 @@ describeRealAgent("Hub execution MCP real-agent smoke", () => {
     assert.equal(evidence.completionHelperLaunched, false);
   }, 300_000);
 
+  it("deploys a webhook, accepts curl and completes a real Codex run", async () => {
+    await hub.connect();
+    await hub.daemonIsConnected();
+    const { completion } = await hub.runRealAgentWebhook();
+    assert.equal(completion.status, "succeeded");
+    assert.equal(completion.completedByAgent, true);
+    assert.equal(completion.completedToolCall, true);
+    assert.equal(completion.completionHelperLaunched, false);
+  }, 300_000);
+
   it("lets a real Claude agent finalize a production manual run through MCP", async () => {
     await hub.connect();
     await hub.daemonIsConnected();

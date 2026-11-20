@@ -168,6 +168,42 @@ export class OrganizationTriggers {
     await this.page.getByLabel("Instructions", { exact: true }).fill(input.prompt);
   }
 
+  async configureWebhook(daemon: string) {
+    await this.configureManual({
+      name: "webhook-alert",
+      daemon,
+      cwd: "/workspace/acme",
+      agent: "opencode/gateway/vendor/model-v1",
+      mode: "full-access",
+      thinking: "low",
+      prompt: "Summarize the alert.",
+    });
+    await this.selectOption("When this happens", "webhook.received");
+  }
+
+  async expectWebhookEndpoint() {
+    await expect(this.page.getByRole("heading", { name: "Webhook endpoint" })).toBeVisible();
+    const url = this.page.getByText(/https?:\/\/[^ ]+\/webhooks\/wh_[\w-]{32}$/u);
+    await expect(url).toBeVisible();
+    await expect(this.page.getByRole("button", { name: "Copy curl example" })).toBeVisible();
+    return url.innerText();
+  }
+
+  async issueWebhookSecret(action: "Create secret" | "Rotate secret") {
+    await this.page.getByRole("button", { name: action, exact: true }).click();
+    const secret = this.page.getByRole("textbox", { name: "Webhook secret" });
+    await expect(secret).toHaveValue(/^whsec_[\w-]{43}$/u);
+    return secret.inputValue();
+  }
+
+  async reloadWebhookSettings() {
+    await this.page.reload();
+    await expect(
+      this.page.getByRole("button", { name: "Rotate secret", exact: true }),
+    ).toBeVisible();
+    await expect(this.page.getByRole("textbox", { name: "Webhook secret" })).toBeHidden();
+  }
+
   async configureSchedule(daemon: string) {
     await this.configureManual({
       name: "periodic-scan",

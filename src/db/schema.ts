@@ -49,7 +49,7 @@ export const providerEventReceipts = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
     provider: text()
-      .$type<(typeof CONNECTION_PROVIDERS)[number] | "manual" | "schedule">()
+      .$type<(typeof CONNECTION_PROVIDERS)[number] | "manual" | "schedule" | "webhook">()
       .notNull(),
     connectionId: uuid("connection_id"),
     resourceId: text("resource_id"),
@@ -88,7 +88,7 @@ export const providerEventReceipts = pgTable(
     ),
     check(
       "provider_event_receipts_provider_check",
-      sql`${table.provider} in ('github', 'slack', 'discord', 'linear', 'manual', 'schedule')`,
+      sql`${table.provider} in ('github', 'slack', 'discord', 'linear', 'manual', 'schedule', 'webhook')`,
     ),
   ],
 );
@@ -1472,6 +1472,16 @@ export const triggerSchedules = pgTable(
   },
   (table) => [index("trigger_schedules_due_idx").on(table.nextAt)],
 );
+
+export const triggerWebhooks = pgTable("trigger_webhooks", {
+  triggerId: uuid("trigger_id")
+    .primaryKey()
+    .references(() => organizationTriggers.id, { onDelete: "cascade" }),
+  endpointId: text("endpoint_id").notNull().unique(),
+  secretHash: text("secret_hash"),
+  windowStartedAt: timestamp("window_started_at", { withTimezone: true }),
+  windowCount: integer("window_count").notNull().default(0),
+});
 
 export const executionAuthorities = pgTable("execution_authorities", {
   executionId: uuid("execution_id")

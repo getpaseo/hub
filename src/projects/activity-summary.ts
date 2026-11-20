@@ -18,7 +18,7 @@ import {
 } from "../triggers/github/classification.js";
 
 export interface TriggerSummary {
-  provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule";
+  provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule" | "webhook";
   headline: string;
   actor: string | null;
   externalUrl: string | null;
@@ -41,6 +41,9 @@ export function summarizeTrigger(source: string, payload: unknown): TriggerSumma
   if (provider === "linear") return summarizeLinear(payload);
   if (provider === "schedule") {
     return { provider, headline: "Scheduled run", actor: null, externalUrl: null };
+  }
+  if (provider === "webhook") {
+    return { provider, headline: "Webhook delivery", actor: null, externalUrl: null };
   }
   return summarizeManual(payload);
 }

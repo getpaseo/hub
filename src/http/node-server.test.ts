@@ -9,9 +9,35 @@ import { createLogger } from "../logger.js";
 import { createPublicApi } from "../public-api/index.js";
 import type { PublicOperations } from "../public-operations/index.js";
 import { createSlackWebhookSource } from "../triggers/slack/webhook.js";
+import { readBoundedRequestBody } from "./request-body.js";
 import { createFetchServer } from "./node-server.js";
 import { registerResponseFinishCleanup } from "./response-lifecycle.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "./request-origin.js";
+
+it.each(["declared", "streamed"] as const)(
+  "returns 413 over HTTP for oversized %s bodies",
+  async (kind) => {
+    const server = createFetchServer(async (request) => {
+      const body = await readBoundedRequestBody(request, 8);
+      return body instanceof Response ? body : new Response("accepted");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address !== null && typeof address !== "string");
+    try {
+      const init: RequestInit & { duplex: "half" } = {
+        method: "POST",
+        duplex: "half",
+        body: kind === "declared" ? "0123456789" : new Blob(["0123456789"]).stream(),
+      };
+      const response = await fetch(`http://127.0.0.1:${address.port}/`, init);
+      assert.equal(response.status, 413);
+      assert.equal(await response.text(), "Payload Too Large");
+    } finally {
+      await closeServer(server);
+    }
+  },
+);
 
 describe("trusted request origin metadata", () => {
   it("overwrites a caller-supplied internal header with direct HTTP metadata", async () => {
@@ -228,6 +254,7 @@ describe("HTTP failure ownership", () => {
     const failure = new Error("storage exploded with formatless-secret-f09e");
     const failOperation = () => Promise.reject(failure);
     const operations: PublicOperations = {
+      rotateWebhookSecret: failOperation,
       listTriggers: failOperation,
       validateTrigger: failOperation,
       installTrigger: failOperation,
