@@ -87,6 +87,9 @@ async function readDelivery(request: Request): Promise<WebhookDelivery | Respons
     return Response.json({ error: "invalid_payload" }, { status: 400 });
   }
 
+  if (body.includes("\u0000")) {
+    return Response.json({ error: "invalid_payload" }, { status: 400 });
+  }
   return { body, contentType, receivedAt: new Date().toISOString() };
 }
 

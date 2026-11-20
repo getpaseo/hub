@@ -38,12 +38,17 @@ it("authorizes, deduplicates, meters and queues durable webhook work across rede
   expect(stored!.secret_hash).toBe(createHash("sha256").update(first.secret).digest("hex"));
 
   const payload = '{"alert":"disk full","note":"${{ paseo.prompt }}"}';
-  const post = (token?: string, body = payload, key?: string, id = endpointId) =>
+  const post = (
+    token?: string,
+    body = payload,
+    key?: string,
+    { id = endpointId, contentType = "application/json" } = {},
+  ) =>
     app.operations.handleWebhookDelivery(
       new Request(`http://localhost/webhooks/${id}`, {
         method: "POST",
         headers: {
-          "content-type": "application/json",
+          "content-type": contentType,
           ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
           ...(key === undefined ? {} : { "idempotency-key": key }),
         },
@@ -54,11 +59,15 @@ it("authorizes, deduplicates, meters and queues durable webhook work across rede
 
   const missing = await post();
   const wrong = await post(`whsec_${"x".repeat(43)}`);
-  const unknown = await post(first.secret, payload, undefined, `wh_${"x".repeat(32)}`);
+  const unknown = await post(first.secret, payload, undefined, { id: `wh_${"x".repeat(32)}` });
   expect([missing.status, wrong.status, unknown.status]).toEqual([401, 401, 401]);
   expect(await wrong.text()).toBe(await unknown.text());
   expect((await post(first.secret, "x".repeat(32 * 1024 + 1))).status).toBe(413);
   expect((await post(first.secret, "{broken")).status).toBe(400);
+  const nul = await post(first.secret, "before\u0000after", undefined, {
+    contentType: "text/plain",
+  });
+  expect(nul.status).toBe(400);
 
   const [delivery, retry] = await Promise.all([
     post(first.secret, payload, "alert-1"),
@@ -91,7 +100,9 @@ it("authorizes, deduplicates, meters and queues durable webhook work across rede
     userId: null,
   });
   expect(await database.webhooks.list("webhook-org")).toEqual([{ ...endpoint, hasSecret: true }]);
-  expect((await post(first.secret)).status).toBe(202);
+  expect(
+    (await post(first.secret, "plain text alert", undefined, { contentType: "text/plain" })).status,
+  ).toBe(202);
 
   const rotated = (await database.webhooks.rotate("webhook-org", trigger.id))!;
   expect(rotated.endpointId).toBe(endpointId);

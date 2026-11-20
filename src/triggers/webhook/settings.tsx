@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
+import { Card } from "../../components/app/card.js";
 import { Button } from "../../components/ui/button.js";
 import { CopyField, CopyBlock } from "../../components/app/copy-field.js";
 import { FailureAlert } from "../../components/app/failure-alert.js";
@@ -35,13 +36,7 @@ export function WebhookSettings({
   const url = `${origin}/webhooks/${endpoint.endpointId}`;
   const curlUrl = url.replaceAll("'", "'\\''");
   return (
-    <section
-      aria-labelledby="webhook-settings"
-      className="mt-6 grid gap-4 rounded-xl border bg-card p-4"
-    >
-      <h2 id="webhook-settings" className="font-semibold">
-        Webhook endpoint
-      </h2>
+    <Card title="Webhook endpoint" className="mt-6">
       <CopyField label="Webhook URL" value={url} />
       <CopyBlock
         label="curl example"
@@ -73,6 +68,6 @@ export function WebhookSettings({
           </Button>
         </div>
       ) : null}
-    </section>
+    </Card>
   );
 }

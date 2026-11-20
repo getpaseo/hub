@@ -47,7 +47,7 @@ curl -X POST "$WEBHOOK_URL" \
   -d '{"alert":"Disk usage over 95%"}'
 ```
 
-Hub accepts UTF-8 bodies up to 32 KiB and validates JSON media types. A successful delivery returns HTTP 202 with `{ "runId": "...", "status": "accepted" }` after saving the receipt and queuing the run. Reuse the same optional `Idempotency-Key` on delivery retries to get the original run ID. Keys are scoped to the endpoint and accept up to 200 printable ASCII characters without spaces. The run appears in Activity as `webhook.received`.
+Hub accepts UTF-8 bodies up to 32 KiB and validates JSON media types. A literal NUL character returns HTTP 400. A successful delivery returns HTTP 202 with `{ "runId": "...", "status": "accepted" }` after saving the receipt and queuing the run. Reuse the same optional `Idempotency-Key` on delivery retries to get the original run ID. Keys are scoped to the endpoint and accept up to 200 printable ASCII characters without spaces. The run appears in Activity as `webhook.received`.
 
 | Status | Meaning                                                                          |
 | ------ | -------------------------------------------------------------------------------- |
