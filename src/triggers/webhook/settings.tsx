@@ -11,7 +11,7 @@ import { StatusPill } from "../../components/app/status-pill.js";
 import { Button } from "../../components/ui/button.js";
 import { ProviderGlyph } from "../../connections/provider-glyph.js";
 import { rotateWebhookSecret } from "../functions.js";
-import type { WebhookEndpoint } from "./index.js";
+import type { WebhookEndpoint, WebhookSecretAction } from "./index.js";
 
 const WEBHOOK_ICON = <ProviderGlyph provider="webhook" />;
 const SECRET_ACTIVE_PILL = <StatusPill tone="success">Secret active</StatusPill>;
@@ -31,16 +31,16 @@ export function WebhookSettings({
   const rotate = useServerFn(rotateWebhookSecret);
   const queryClient = useQueryClient();
   const secret = useMutation({
-    mutationFn: () => rotate({ data: { organizationSlug, triggerId: endpoint.triggerId } }),
+    mutationFn: (action: WebhookSecretAction) =>
+      rotate({ data: { organizationSlug, triggerId: endpoint.triggerId, action } }),
     gcTime: 0,
-    onSuccess: async (result) => {
-      if (result.status === "ok") {
-        await queryClient.invalidateQueries({ queryKey: ["triggers", organizationSlug] });
-      }
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["triggers", organizationSlug] });
     },
   });
   const { mutate } = secret;
-  const issueSecret = useCallback(() => mutate(), [mutate]);
+  const createSecret = useCallback(() => mutate("create"), [mutate]);
+  const rotateSecret = useCallback(() => mutate("rotate"), [mutate]);
   const shown = secret.data?.status === "ok" ? secret.data.data.secret : undefined;
   const url = `${origin}/webhooks/${endpoint.endpointId}`;
   const curlUrl = url.replaceAll("'", "'\\''");
@@ -74,7 +74,7 @@ export function WebhookSettings({
                   cancelLabel="Cancel"
                   destructive
                   busy={secret.isPending}
-                  onConfirm={issueSecret}
+                  onConfirm={rotateSecret}
                 />
               ) : (
                 <Button
@@ -83,7 +83,7 @@ export function WebhookSettings({
                   size="sm"
                   disabled={secret.isPending}
                   aria-busy={secret.isPending}
-                  onClick={issueSecret}
+                  onClick={createSecret}
                 >
                   {secret.isPending ? <Spinner /> : null}
                   Create secret

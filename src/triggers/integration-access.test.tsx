@@ -4,6 +4,7 @@ import { describe, expect, test } from "vitest";
 import type { TriggerFieldErrors, TriggerFormValue } from "./configuration/editor.js";
 import type { TriggerSnapshot } from "./functions.js";
 import {
+  activeIntegrationProviders,
   addIntegrationAccess,
   configuredIntegrationProviders,
   hasIntegrationAccessError,
@@ -100,6 +101,18 @@ describe("integration access model", () => {
     ];
     const ambiguous = addIntegrationAccess(BASE_FORM, "slack", multipleSlack);
     expect(ambiguous.tools.slack?.connection).toBe("");
+    expect(activeIntegrationProviders(ambiguous)).toEqual(["slack"]);
+    expect(configuredIntegrationProviders(ambiguous)).toEqual([]);
+
+    const multipleGitHub: TriggerSnapshot["connections"] = [
+      ...CONNECTIONS,
+      { id: "gh-2", provider: "github", slug: "ops-github", label: "Ops GitHub" },
+    ];
+    const ambiguousGitHub = addIntegrationAccess(BASE_FORM, "github", multipleGitHub);
+    expect(ambiguousGitHub.githubEnabled).toBe(true);
+    expect(ambiguousGitHub.githubConnection).toBe("");
+    expect(activeIntegrationProviders(ambiguousGitHub)).toEqual(["github"]);
+    expect(configuredIntegrationProviders(ambiguousGitHub)).toEqual([]);
   });
 
   test("removes an integration grant and resets only its fields", () => {
@@ -131,6 +144,9 @@ describe("integration access model", () => {
   test("detects errors across GitHub and integration tool fields", () => {
     expect(hasIntegrationAccessError({})).toBe(false);
     expect(hasIntegrationAccessError({ prompt: "Instructions are required." })).toBe(false);
+    expect(hasIntegrationAccessError({ githubConnection: "Choose a GitHub connection." })).toBe(
+      true,
+    );
     expect(hasIntegrationAccessError({ githubPermissions: "Invalid JSON." })).toBe(true);
     expect(hasIntegrationAccessError({ "tools.slack.channels": "Use a Slack channel ID." })).toBe(
       true,

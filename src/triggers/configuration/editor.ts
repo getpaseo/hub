@@ -48,6 +48,7 @@ export interface TriggerFormValue {
   continuationKey: string;
   maxRuntime: string;
   idleTimeout: string;
+  githubEnabled?: boolean;
   githubConnection: string;
   githubRepositories: string;
   githubPermissions: string;
@@ -323,7 +324,7 @@ function authoredIntegrationToolGrants(value: TriggerFormValue) {
       provider,
     ): [IntegrationProvider, NonNullable<IntegrationToolGrants[IntegrationProvider]>][] => {
       const grant = value.tools[provider];
-      return grant === undefined || grant.connection === ""
+      return grant === undefined
         ? []
         : [[provider, { ...grant, channels: commaSeparated(grant.channels) }]];
     },
@@ -379,6 +380,11 @@ function integrationToolsUseYamlReferences(document: Document): boolean {
   return usesReferences;
 }
 
+const INTEGRATION_TOOL_LABELS: Record<IntegrationProvider, string> = {
+  slack: "Slack",
+  discord: "Discord",
+};
+
 function integrationToolErrors(value: TriggerFormValue): TriggerFieldErrors {
   const grants = IntegrationToolGrantsSchema.optional().safeParse(
     authoredIntegrationToolGrants(value),
@@ -386,7 +392,15 @@ function integrationToolErrors(value: TriggerFormValue): TriggerFieldErrors {
   if (grants.success) return {};
   return Object.fromEntries(
     grants.error.issues.map(({ path, message }) => {
+      const [provider, field] = path;
       const key = "tools." + path.slice(0, 2).join(".");
+      if (
+        field === "connection" &&
+        (provider === "slack" || provider === "discord") &&
+        (value.tools[provider]?.connection ?? "").trim() === ""
+      ) {
+        return [key, `Choose a ${INTEGRATION_TOOL_LABELS[provider]} connection.`];
+      }
       return [key, message];
     }),
   );
@@ -438,7 +452,11 @@ function triggerFormDocumentErrors(value: TriggerFormValue): TriggerFieldErrors 
   if (agent !== undefined) errors.agent = agent;
   const options = refused(() => parseProviderOptions(value.providerOptions));
   if (options !== undefined) errors.providerOptions = options;
-  if (value.githubConnection.trim().length !== 0) {
+  const githubActive = value.githubEnabled ?? value.githubConnection.trim().length !== 0;
+  if (githubActive) {
+    if (value.githubConnection.trim().length === 0) {
+      errors.githubConnection = "Choose a GitHub connection.";
+    }
     const permissions = refused(() => parsePermissions(value.githubPermissions));
     if (permissions !== undefined) errors.githubPermissions = permissions;
   }

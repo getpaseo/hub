@@ -28,7 +28,8 @@ it("authorizes, deduplicates, meters and queues durable webhook work across rede
   expect(endpoint!.endpointId).toMatch(/^wh_[\w-]{32}$/u);
   const endpointId = endpoint!.endpointId;
   expect(await database.webhooks.rotate("different-org", trigger.id)).toBeUndefined();
-  const first = (await database.webhooks.rotate("webhook-org", trigger.id))!;
+  const first = (await database.webhooks.rotate("webhook-org", trigger.id, "create"))!;
+  expect(await database.webhooks.rotate("webhook-org", trigger.id, "create")).toBeUndefined();
   const {
     rows: [stored],
   } = await runtime.query<{ secret_hash: string }>(

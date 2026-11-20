@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest, setResponseHeader } from "@tanstack/react-start/server";
 import { z } from "zod";
-import { respondOk, type Result } from "../contract/respond.js";
+import { respondError, respondOk, type Result } from "../contract/respond.js";
 import { respondWithFailure } from "../failures/index.js";
 import { getApplication } from "../server/runtime.js";
 import type { TriggerDashboard } from "./dashboard.js";
@@ -48,7 +48,9 @@ export const saveTrigger = createServerFn({ method: "POST" })
   });
 
 export const rotateWebhookSecret = createServerFn({ method: "POST" })
-  .validator(scopeSchema.extend({ triggerId: z.string().uuid() }))
+  .validator(
+    scopeSchema.extend({ triggerId: z.string().uuid(), action: z.enum(["create", "rotate"]) }),
+  )
   .handler(async ({ data }): Promise<Result<{ endpointId: string; secret: string }>> => {
     setResponseHeader("cache-control", "no-store");
     try {
@@ -58,7 +60,13 @@ export const rotateWebhookSecret = createServerFn({ method: "POST" })
         getRequest(),
         data.organizationSlug,
         data.triggerId,
+        data.action,
       );
+      if (result === undefined && data.action === "create") {
+        return respondError({
+          message: "The webhook changed. Check its secret status and try again.",
+        });
+      }
       if (result === undefined) throw new Error("Webhook trigger not found.");
       return respondOk(result);
     } catch (error) {

@@ -10,6 +10,8 @@ export interface WebhookEndpoint {
   hasSecret: boolean;
 }
 
+export type WebhookSecretAction = "create" | "rotate";
+
 export interface WebhookMetadata {
   contentType: string;
   receivedAt: string;
@@ -28,6 +30,7 @@ export interface WebhookStore {
   rotate(
     organizationId: string,
     triggerId: string,
+    action?: WebhookSecretAction,
   ): Promise<{ endpointId: string; secret: string } | undefined>;
   authenticate(endpointId: string, token: string): Promise<string | undefined>;
   accept(input: {

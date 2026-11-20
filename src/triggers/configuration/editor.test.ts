@@ -371,6 +371,32 @@ describe("what the form still needs", () => {
     ).toBe('GitHub permissions map a scope to "read", "write", or "admin".');
   });
 
+  test("refuses an added integration grant whose connection is still blank instead of dropping it", () => {
+    const withBlankSlack = {
+      ...editable(),
+      tools: { slack: { connection: "", actions: ["post" as const], channels: "C12345" } },
+    };
+    expect(triggerFormErrors(withBlankSlack)["tools.slack.connection"]).toBe(
+      "Choose a Slack connection.",
+    );
+    expect(mergeTriggerForm("", withBlankSlack)).toEqual({
+      status: "incomplete",
+      reason: "Choose a Slack connection.",
+    });
+
+    const withBlankGitHub = {
+      ...editable(),
+      githubEnabled: true,
+      githubConnection: "",
+      githubRepositories: "acme/hub",
+    };
+    expect(triggerFormErrors(withBlankGitHub).githubConnection).toBe("Choose a GitHub connection.");
+    expect(mergeTriggerForm("", withBlankGitHub)).toEqual({
+      status: "incomplete",
+      reason: "Choose a GitHub connection.",
+    });
+  });
+
   test("reports the topmost problem when the document cannot be written at all", () => {
     expect(mergeTriggerForm("", { ...editable(), name: "", daemon: "" })).toEqual({
       status: "incomplete",

@@ -244,6 +244,23 @@ export class OrganizationTriggers {
     return secret.inputValue();
   }
 
+  async expectStaleWebhookCreationRefused() {
+    await this.page.getByRole("button", { name: "Create secret", exact: true }).click();
+    await expect(this.page.getByText("Webhook secret unavailable", { exact: true })).toBeVisible();
+    await expect(this.page.getByText("Secret active", { exact: true })).toBeVisible();
+    await expect(
+      this.page.getByRole("button", { name: "Rotate secret", exact: true }),
+    ).toBeVisible();
+    await expect(this.page.getByRole("textbox", { name: "Webhook secret" })).toBeHidden();
+  }
+
+  async openWebhookInAnotherTab() {
+    const tab = await this.page.context().newPage();
+    await tab.goto(this.page.url());
+    await expect(tab.getByRole("button", { name: "Create secret", exact: true })).toBeVisible();
+    return new OrganizationTriggers(tab);
+  }
+
   async rotateWebhookSecret() {
     await this.page.getByRole("button", { name: "Rotate secret", exact: true }).click();
     const dialog = this.page.getByRole("alertdialog", { name: "Rotate webhook secret?" });

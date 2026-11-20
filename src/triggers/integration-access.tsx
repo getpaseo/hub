@@ -68,6 +68,16 @@ const TOOL_ACTION_LABELS: Record<IntegrationAction, string> = {
   post: "Post messages",
 };
 
+/** Integration providers currently added to the trigger form. */
+export function activeIntegrationProviders(form: TriggerFormValue): IntegrationAccessProvider[] {
+  return INTEGRATION_ACCESS_PROVIDERS.flatMap(({ provider }) => {
+    if (provider === "github") {
+      return (form.githubEnabled ?? form.githubConnection.trim() !== "") ? ["github"] : [];
+    }
+    return form.tools[provider] === undefined ? [] : [provider];
+  });
+}
+
 /** Integration providers with a selected connection in the current form value. */
 export function configuredIntegrationProviders(
   form: TriggerFormValue,
@@ -82,7 +92,7 @@ export function configuredIntegrationProviders(
 
 /** Whether any validation error belongs to an integration access field. */
 export function hasIntegrationAccessError(errors: TriggerFieldErrors): boolean {
-  if (errors.githubPermissions !== undefined) return true;
+  if (errors.githubConnection !== undefined || errors.githubPermissions !== undefined) return true;
   return integrationProviders.some(
     (provider) =>
       errors[`tools.${provider}.connection`] !== undefined ||
@@ -102,6 +112,7 @@ export function addIntegrationAccess(
   if (provider === "github") {
     return {
       ...form,
+      githubEnabled: true,
       githubConnection: form.githubConnection || autoConnection,
       githubDuration: form.githubDuration || DEFAULT_GITHUB_DURATION,
     };
@@ -127,6 +138,7 @@ export function removeIntegrationAccess(
   if (provider === "github") {
     return {
       ...form,
+      githubEnabled: false,
       githubConnection: "",
       githubRepositories: "",
       githubPermissions: "",
@@ -156,11 +168,9 @@ export function IntegrationAccess({
   onChange: (value: TriggerFormValue) => void;
 }) {
   const configured = configuredIntegrationProviders(form);
-  const [open, setOpen] = useState(() => configured.length > 0);
-  const [draftProviders, setDraftProviders] = useState<IntegrationAccessProvider[]>(
-    () => configured,
-  );
-  const activeSet = new Set<IntegrationAccessProvider>([...draftProviders, ...configured]);
+  const active = activeIntegrationProviders(form);
+  const [open, setOpen] = useState(() => active.length > 0);
+  const activeSet = new Set<IntegrationAccessProvider>(active);
   const activeProviders = INTEGRATION_ACCESS_PROVIDERS.filter(({ provider }) =>
     activeSet.has(provider),
   );
@@ -172,15 +182,11 @@ export function IntegrationAccess({
   const status = configured.length === 0 ? undefined : `${String(configured.length)} configured`;
 
   const handleAdd = (provider: IntegrationAccessProvider) => {
-    setDraftProviders((previous) =>
-      previous.includes(provider) ? previous : [...previous, provider],
-    );
     setOpen(true);
     onChange(addIntegrationAccess(form, provider, connections));
   };
 
   const handleRemove = (provider: IntegrationAccessProvider) => {
-    setDraftProviders((previous) => previous.filter((item) => item !== provider));
     onChange(removeIntegrationAccess(form, provider));
   };
 
@@ -373,6 +379,7 @@ function GitHubAccessFields({
           label="Connection"
           required
           {...(connectionDescription === undefined ? {} : { description: connectionDescription })}
+          {...(errors.githubConnection === undefined ? {} : { error: errors.githubConnection })}
         >
           {(control) => (
             <Combobox
@@ -459,6 +466,7 @@ function ChannelToolAccessFields({
   }));
   const update = (patch: Partial<IntegrationToolFormValue>) =>
     onChange({ ...form, tools: { ...form.tools, [provider]: { ...value, ...patch } } });
+  const connectionError = errors[`tools.${provider}.connection`];
   const channelsError = errors[`tools.${provider}.channels`];
   const actionsError = errors[`tools.${provider}.actions`];
   const connectionDescription = connectionFieldDescription(
@@ -474,6 +482,7 @@ function ChannelToolAccessFields({
           label="Connection"
           required
           {...(connectionDescription === undefined ? {} : { description: connectionDescription })}
+          {...(connectionError === undefined ? {} : { error: connectionError })}
         >
           {(control) => (
             <Combobox

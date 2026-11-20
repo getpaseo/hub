@@ -31,7 +31,9 @@ test("creates a webhook and reveals each secret only once", async ({ hub, page }
     return triggers.expectWebhookEndpoint();
   });
   await triggers.copyWebhookConnectionDetails(endpoint);
+  const secondTab = await triggers.openWebhookInAnotherTab();
   const first = await triggers.createWebhookSecret();
+  await secondTab.expectStaleWebhookCreationRefused();
   await triggers.reloadWebhookSettings();
   const rotated = await triggers.rotateWebhookSecret();
   expect(rotated).not.toEqual(first);
