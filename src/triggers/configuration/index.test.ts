@@ -83,6 +83,50 @@ run:
 `;
 
 describe("self-contained trigger documents", () => {
+  it.each([undefined, ["boudra"]])(
+    "compiles and round-trips GitHub team filters with from_users %j",
+    (fromUsers) => {
+      const yaml = trigger.replace(
+        "      from_users: [boudra]",
+        `      from_teams: [getpaseo/maintainers]${fromUsers === undefined ? "" : "\n      from_users: [boudra]"}`,
+      );
+      const compiled = compileTriggerDocument(yaml);
+      const roundTripped = compileTriggerDocument(serializeTriggerDocument(compiled.authored));
+
+      for (const document of [compiled, roundTripped]) {
+        assert.deepEqual(document.authored.on["github.issue_comment"]?.filters?.from_teams, [
+          "getpaseo/maintainers",
+        ]);
+        assert.deepEqual(document.events[1]?.filters?.from_teams, ["getpaseo/maintainers"]);
+        assert.deepEqual(document.events[1]?.filters?.from_users, fromUsers);
+        assert.equal(document.events[1]?.filters?.connection, "getpaseo-github");
+      }
+    },
+  );
+
+  it.each(["maintainers", "getpaseo/", "/maintainers", "getpaseo/core team", "a/b/c"])(
+    "rejects invalid team reference %s at the document boundary",
+    (reference) => {
+      assert.throws(
+        () =>
+          compileTriggerDocument(
+            trigger.replace("from_users: [boudra]", `from_teams: [${reference}]`),
+          ),
+        /organization\/team-slug/u,
+      );
+    },
+  );
+
+  it("rejects team filters for non-GitHub events", () => {
+    assert.throws(
+      () =>
+        compileTriggerDocument(
+          trigger.replace("from_users: [U0BNGPZEXT2]", "from_teams: [getpaseo/maintainers]"),
+        ),
+      /filters\.from_teams only for GitHub events/u,
+    );
+  });
+
   it.each([undefined, false, true])("compiles and round-trips background %s", (background) => {
     const yaml =
       background === undefined

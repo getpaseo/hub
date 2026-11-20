@@ -243,6 +243,7 @@ function authoredFilters(
     assignees: rest.assignees === undefined ? undefined : [...rest.assignees],
     channels: rest.channels === undefined ? undefined : [...rest.channels],
     from_users: rest.from_users === undefined ? undefined : [...rest.from_users],
+    from_teams: rest.from_teams === undefined ? undefined : [...rest.from_teams],
     inputs: rest.inputs === undefined ? undefined : { ...rest.inputs },
   };
 }
