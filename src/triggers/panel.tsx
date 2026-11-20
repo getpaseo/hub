@@ -976,7 +976,6 @@ function TriggerForm({
               </Disclosure>
               <IntegrationToolFields
                 tools={form.tools}
-                editReason={form.toolGrantEditReason}
                 connections={snapshot.connections}
                 errors={errors}
                 onChange={(tools) => update("tools", tools)}

@@ -17,13 +17,11 @@ const providerNames = { slack: "Slack", discord: "Discord" };
 
 export function IntegrationToolFields({
   tools,
-  editReason,
   connections,
   errors,
   onChange,
 }: {
   tools: TriggerFormValue["tools"];
-  editReason: string | undefined;
   connections: TriggerSnapshot["connections"];
   errors: TriggerFieldErrors;
   onChange: (tools: TriggerFormValue["tools"]) => void;
@@ -36,10 +34,7 @@ export function IntegrationToolFields({
       open={open}
       onOpenChange={setOpen}
     >
-      {editReason === undefined ? null : (
-        <p className="mb-4 text-sm text-muted-foreground">{editReason}</p>
-      )}
-      <fieldset disabled={editReason !== undefined} className="grid gap-6 sm:grid-cols-2">
+      <div className="grid gap-6 sm:grid-cols-2">
         {integrationProviders.map((provider) => {
           const label = providerNames[provider];
           const value = tools[provider] ?? emptyGrant;
@@ -111,7 +106,7 @@ export function IntegrationToolFields({
             </div>
           );
         })}
-      </fieldset>
+      </div>
     </Disclosure>
   );
 }

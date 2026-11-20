@@ -74,45 +74,52 @@ describe("trigger form YAML bridge", () => {
     }
   });
 
-  test("keeps shared tool grant settings in YAML and preserves them during form edits", () => {
-    const original = ADVANCED.replace(
-      "run:",
-      `run:
+  const CHAT_GRANT = ADVANCED.replace(
+    "run:",
+    `run:
   tools:
     slack:
-      channels: &digestChannels [CDIGEST] # keep the channel comment
-      connection: &digestConnection engineering-slack
+      channels: [CDIGEST] # keep the channel comment
+      connection: engineering-slack
       actions: [post]`,
-    )
-      .replace("TEAM: core", "TEAM: core\n    DIGEST_CONNECTION: *digestConnection")
-      .replace("      type: object", "      type: object\n      examples: *digestChannels");
-    const projection = projectTriggerForm(original);
-    if (projection.status !== "editable") throw new Error(projection.reason);
-    expect(projection.value.toolGrantEditReason).toMatch(/edit .* in YAML/i);
-    const instructions = { ...projection.value, prompt: "Send a scheduled digest." };
-    const saved = patchTriggerYaml(original, instructions);
-    expect(saved).toMatch(/channels: &digestChannels \[\s*CDIGEST\s*\] # keep the channel comment/);
-    expect(saved).toContain("connection: &digestConnection engineering-slack");
-    expect(saved).toContain("DIGEST_CONNECTION: *digestConnection");
-    expect(saved).toContain("examples: *digestChannels");
-    expect(projectTriggerForm(saved).status).toBe("editable");
+  );
 
-    expect(() =>
-      patchTriggerYaml(saved, {
-        ...instructions,
-        tools: {
-          slack: { ...instructions.tools.slack!, connection: "different-slack" },
-        },
-      }),
-    ).toThrow(/edit .* in YAML/i);
-    expect(() =>
-      patchTriggerYaml(saved, {
-        ...instructions,
-        tools: {
-          slack: { ...instructions.tools.slack!, channels: "COTHER" },
-        },
-      }),
-    ).toThrow(/edit .* in YAML/i);
+  test.each([
+    [
+      "into the grant",
+      CHAT_GRANT.replace("connection: company", "connection: &workspace company").replace(
+        "connection: engineering-slack",
+        "connection: *workspace",
+      ),
+    ],
+    [
+      "out of the grant",
+      CHAT_GRANT.replace(
+        "connection: engineering-slack",
+        "connection: &workspace engineering-slack",
+      ).replace("TEAM: core", "TEAM: core\n    DIGEST_CONNECTION: *workspace"),
+    ],
+  ])("keeps a trigger in YAML when anchors link %s", (_, yaml) => {
+    expect(TriggerDocumentSchema.safeParse(parseDocument(yaml).toJS()).success).toBe(true);
+    expect(projectTriggerForm(yaml)).toMatchObject({
+      status: "yaml_only",
+      reason: expect.stringMatching(/integration tool grants.*anchors or aliases/i),
+    });
+  });
+
+  test("preserves channel comments when changing unrelated grant fields", () => {
+    const projection = projectTriggerForm(CHAT_GRANT);
+    if (projection.status !== "editable") throw new Error(projection.reason);
+    const saved = patchTriggerYaml(CHAT_GRANT, {
+      ...projection.value,
+      tools: {
+        slack: { ...projection.value.tools.slack!, actions: ["read", "post"] },
+      },
+    });
+    expect(saved).toMatch(/channels: \[\s*CDIGEST\s*\] # keep the channel comment/);
+    const amended = projectTriggerForm(saved);
+    if (amended.status !== "editable") throw new Error(amended.reason);
+    expect(amended.value.tools.slack?.actions).toEqual(["read", "post"]);
   });
 
   test("patches owned nodes while preserving comments and advanced configuration", () => {

@@ -5,7 +5,7 @@ import {
   type Recurrence,
 } from "../schedule/recurrence.js";
 import { ContinuationSchema } from "../continuation.js";
-import { isNode, parseDocument, stringify, visit, type Document } from "yaml";
+import { isAlias, isNode, parseDocument, stringify, visit, type Document } from "yaml";
 import { z } from "zod";
 import {
   integrationProviders,
@@ -53,7 +53,6 @@ export interface TriggerFormValue {
   githubPermissions: string;
   githubDuration: string;
   tools: Partial<Record<IntegrationProvider, IntegrationToolFormValue>>;
-  toolGrantEditReason?: string;
   prompt: string;
 }
 
@@ -79,11 +78,16 @@ export function projectTriggerForm(yaml: string): TriggerFormProjection {
   if ("choices" in trigger.run.agent) {
     return { status: "yaml_only", reason: "Agent choices can only be edited in YAML." };
   }
-  const value = toFormValue(trigger, event, definition, trigger.run.agent);
-  const toolGrantEditReason = integrationToolEditReason(parsed.document);
+  if (trigger.run.tools !== undefined && integrationToolsUseYamlReferences(parsed.document)) {
+    return {
+      status: "yaml_only",
+      reason:
+        "Edit this trigger in YAML because its integration tool grants use anchors or aliases.",
+    };
+  }
   return {
     status: "editable",
-    value: toolGrantEditReason === undefined ? value : { ...value, toolGrantEditReason },
+    value: toFormValue(trigger, event, definition, trigger.run.agent),
   };
 }
 
@@ -337,12 +341,6 @@ function patchIntegrationToolGrants(
 ): void {
   const before = integrationToolGrants(previous);
   const after = integrationToolGrants(value);
-  if (previous.toolGrantEditReason !== undefined) {
-    if (JSON.stringify(before) !== JSON.stringify(after)) {
-      throw new Error(previous.toolGrantEditReason);
-    }
-    return;
-  }
   if (after === undefined) {
     deleteIfPresent(document, ["run", "tools"]);
     return;
@@ -363,9 +361,11 @@ function patchIntegrationToolGrants(
   }
 }
 
-function integrationToolEditReason(document: Document): string | undefined {
+function integrationToolsUseYamlReferences(document: Document): boolean {
+  const run = document.get("run", true);
+  if (isNode(run) && (isAlias(run) || run.anchor !== undefined)) return true;
   const tools = document.getIn(["run", "tools"], true);
-  if (!isNode(tools)) return undefined;
+  if (!isNode(tools)) return false;
   let usesReferences = false;
   const found = () => {
     usesReferences = true;
@@ -375,9 +375,7 @@ function integrationToolEditReason(document: Document): string | undefined {
     Alias: found,
     Value: (_, node) => (node.anchor === undefined ? undefined : found()),
   });
-  return usesReferences
-    ? "Edit integration tools in YAML because these grants use anchors or aliases."
-    : undefined;
+  return usesReferences;
 }
 
 function integrationToolErrors(value: TriggerFormValue): TriggerFieldErrors {

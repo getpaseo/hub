@@ -159,7 +159,8 @@ run:
       channels: ["123456789012345678"]
 ```
 
-Use the integration slug and channel IDs. Discord thread and forum post access follows the
+Use the integration slug and channel IDs. Edit triggers whose grants use anchors or aliases in
+YAML. Discord thread and forum post access follows the
 allowlist for their parent channel. Use a message URL or provide its channel and message IDs.
 To load older messages, pass the tool's returned pagination value to the next read. When a grant
 changes, use **New agent** or a new continuation
