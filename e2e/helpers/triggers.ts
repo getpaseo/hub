@@ -325,6 +325,7 @@ export class OrganizationTriggers {
 
     await this.addIntegrationAccess("Slack");
     const slack = this.page.getByRole("region", { name: "Slack", exact: true });
+    await expect(slack.getByRole("combobox", { name: "Connection", exact: true })).toBeFocused();
     await expect(slack.getByRole("combobox", { name: "Connection", exact: true })).toHaveAttribute(
       "data-value",
       "company-slack",
@@ -334,6 +335,7 @@ export class OrganizationTriggers {
 
     await this.addIntegrationAccess("Discord");
     const discord = this.page.getByRole("region", { name: "Discord", exact: true });
+    await expect(discord.getByRole("combobox", { name: "Connection", exact: true })).toBeFocused();
     await expect(
       discord.getByRole("combobox", { name: "Connection", exact: true }),
     ).toHaveAttribute("data-value", "company-discord");

@@ -1,7 +1,12 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
 
-import type { TriggerFieldErrors, TriggerFormValue } from "./configuration/editor.js";
+import {
+  mergeTriggerForm,
+  projectTriggerForm,
+  type TriggerFieldErrors,
+  type TriggerFormValue,
+} from "./configuration/editor.js";
 import type { TriggerSnapshot } from "./functions.js";
 import {
   activeIntegrationProviders,
@@ -129,16 +134,44 @@ describe("integration access model", () => {
     };
 
     const withoutGitHub = removeIntegrationAccess(configured, "github");
+    expect(withoutGitHub.githubEnabled).toBeUndefined();
     expect(withoutGitHub.githubConnection).toBe("");
     expect(withoutGitHub.githubRepositories).toBe("");
     expect(withoutGitHub.githubPermissions).toBe("");
-    expect(withoutGitHub.githubDuration).toBe("1h");
+    expect(withoutGitHub.githubDuration).toBe("");
     expect(withoutGitHub.tools).toEqual(configured.tools);
 
     const withoutSlack = removeIntegrationAccess(configured, "slack");
     expect(withoutSlack.tools.slack).toBeUndefined();
     expect(withoutSlack.tools.discord).toEqual(configured.tools.discord);
     expect(withoutSlack.githubConnection).toBe("acme-github");
+  });
+
+  test("adding and removing a draft GitHub grant restores the exact projected form and YAML", () => {
+    const anchoredYaml = `name: anchored-run
+enabled: true
+on:
+  manual.run: {}
+run:
+  target:
+    daemon: office
+    cwd: /workspace/acme
+  agent:
+    provider: codex
+    model: gpt-5.4
+    mode: full-access
+  continuation:
+    key: &shared daily
+    mode: key
+  title: *shared
+  prompt: Run daily check.
+`;
+    const projected = projectTriggerForm(anchoredYaml);
+    expect(projected.status).toBe("editable");
+    if (projected.status !== "editable") throw new Error(projected.reason);
+    const added = addIntegrationAccess(projected.value, "github", []);
+    const canceled = removeIntegrationAccess(added, "github");
+    expect(mergeTriggerForm(anchoredYaml, canceled)).toEqual({ status: "ok", yaml: anchoredYaml });
   });
 
   test("detects errors across GitHub and integration tool fields", () => {

@@ -136,13 +136,13 @@ export function removeIntegrationAccess(
   provider: IntegrationAccessProvider,
 ): TriggerFormValue {
   if (provider === "github") {
+    const { githubEnabled: _removed, ...rest } = form;
     return {
-      ...form,
-      githubEnabled: false,
+      ...rest,
       githubConnection: "",
       githubRepositories: "",
       githubPermissions: "",
-      githubDuration: DEFAULT_GITHUB_DURATION,
+      githubDuration: "",
     };
   }
   const nextTools: TriggerFormValue["tools"] = {};
@@ -187,6 +187,7 @@ export function IntegrationAccess({
   const status = configured.length === 0 ? undefined : `${String(configured.length)} configured`;
 
   useEffect(() => {
+    if (remainingProviders.length > 0) return undefined;
     const targetId = pendingFocusId.current;
     if (targetId === null) return undefined;
     const element = document.getElementById(targetId);
@@ -196,7 +197,7 @@ export function IntegrationAccess({
       element.focus();
     });
     return () => cancelAnimationFrame(frame);
-  }, [active]);
+  }, [active, remainingProviders.length]);
 
   const handleAdd = (provider: IntegrationAccessProvider) => {
     pendingFocusId.current = connectionControlId(provider);
@@ -209,7 +210,11 @@ export function IntegrationAccess({
   };
 
   const handleCloseAutoFocus = (event: Event) => {
-    if (pendingFocusId.current !== null) event.preventDefault();
+    const targetId = pendingFocusId.current;
+    if (targetId === null) return;
+    event.preventDefault();
+    pendingFocusId.current = null;
+    document.getElementById(targetId)?.focus();
   };
 
   return (
@@ -221,18 +226,16 @@ export function IntegrationAccess({
       open={isOpen}
       onOpenChange={setOpen}
     >
-      {activeProviders.length === 0 ? (
-        <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div
+        className={
+          activeProviders.length === 0
+            ? "flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between"
+            : "grid gap-4"
+        }
+      >
+        {activeProviders.length === 0 ? (
           <p className="text-sm text-muted-foreground">No integrations granted for this run.</p>
-          <AddIntegrationMenu
-            providers={remainingProviders}
-            disabled={disabled}
-            onAdd={handleAdd}
-            onCloseAutoFocus={handleCloseAutoFocus}
-          />
-        </div>
-      ) : (
-        <div className="grid gap-4">
+        ) : (
           <div className="grid divide-y divide-border">
             {activeProviders.map((definition) => (
               <IntegrationGrantItem
@@ -247,18 +250,18 @@ export function IntegrationAccess({
               />
             ))}
           </div>
-          {remainingProviders.length === 0 ? null : (
-            <div className="flex border-t pt-4">
-              <AddIntegrationMenu
-                providers={remainingProviders}
-                disabled={disabled}
-                onAdd={handleAdd}
-                onCloseAutoFocus={handleCloseAutoFocus}
-              />
-            </div>
-          )}
-        </div>
-      )}
+        )}
+        {remainingProviders.length === 0 ? null : (
+          <div className={activeProviders.length === 0 ? "flex shrink-0" : "flex border-t pt-4"}>
+            <AddIntegrationMenu
+              providers={remainingProviders}
+              disabled={disabled}
+              onAdd={handleAdd}
+              onCloseAutoFocus={handleCloseAutoFocus}
+            />
+          </div>
+        )}
+      </div>
     </Disclosure>
   );
 }
