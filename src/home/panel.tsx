@@ -387,6 +387,8 @@ function runHint(triggers: HomeSnapshot["triggers"]): string {
       hints.add("Update an issue in the connected Linear workspace.");
     } else if (provider === "schedule") {
       hints.add("It runs on its schedule.");
+    } else if (provider === "webhook") {
+      hints.add("Send a POST to the webhook URL with the secret from the trigger editor.");
     } else {
       hints.add("Dispatch it with an API key: POST /api/v1/manual-runs.");
     }

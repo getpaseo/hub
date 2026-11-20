@@ -1,5 +1,6 @@
 import { expect } from "@playwright/test";
 import { test } from "./app.js";
+import { OrganizationHome } from "./helpers/home.js";
 import { OrganizationTriggers } from "./helpers/triggers.js";
 
 test("creates a webhook and reveals each secret only once", async ({ hub, page }) => {
@@ -10,7 +11,9 @@ test("creates a webhook and reveals each secret only once", async ({ hub, page }
     password: "webhook-owner-password",
   });
   await hub.createOrganization("owner", "Acme");
+  await hub.connectGitHub("owner");
   const daemon = await hub.connectProviderDaemon("owner", "Acme");
+  const home = new OrganizationHome(page);
   const triggers = new OrganizationTriggers(page);
 
   const endpoint = await test.step("create the webhook trigger and open its settings", async () => {
@@ -18,6 +21,13 @@ test("creates a webhook and reveals each secret only once", async ({ hub, page }
     await triggers.startNew();
     await triggers.configureWebhook(daemon);
     await triggers.save("webhook-alert");
+    await home.open();
+    await home.expectCurrentStep("Run it");
+    await home.expectStepText(
+      "Run it",
+      "Send a POST to the webhook URL with the secret from the trigger editor.",
+    );
+    await triggers.open();
     await triggers.openTrigger("webhook-alert");
     return triggers.expectWebhookEndpoint();
   });

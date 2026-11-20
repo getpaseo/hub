@@ -53,7 +53,7 @@ export class TriggerDashboard {
       activity,
       webhooks,
       webhookOrigin: new URL(
-        this.publicBaseUrl ?? request.headers.get(TRUSTED_REQUEST_ORIGIN_HEADER) ?? request.url,
+        request.headers.get(TRUSTED_REQUEST_ORIGIN_HEADER) ?? this.publicBaseUrl ?? request.url,
       ).origin,
       // Only a daemon that can run agents is a target; one enrolled without `hub.execute` would
       // be refused at save, and Home says how to grant it.

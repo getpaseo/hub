@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../auth/server.js";
+import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import { acceptingAgentValidator } from "../test-utils/agent-validator.js";
 import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
@@ -30,10 +31,18 @@ describe("trigger dashboard read model", () => {
       yaml: triggerYaml,
       userId: "user-1",
     });
-    const dashboard = new TriggerDashboard(database, accountAuth(), acceptingAgentValidator());
-    const request = new Request("https://hub.test/o/acme/triggers");
+    const dashboard = new TriggerDashboard(
+      database,
+      accountAuth(),
+      acceptingAgentValidator(),
+      "http://localhost:3000",
+    );
+    const request = new Request("http://localhost:3000/o/acme/triggers", {
+      headers: { [TRUSTED_REQUEST_ORIGIN_HEADER]: "https://hub.test" },
+    });
 
     const before = await dashboard.snapshot(request, "acme");
+    assert.equal(before.webhookOrigin, "https://hub.test");
     assert.equal(before.triggers[0]?.provider, "manual");
     assert.equal(before.triggers[0]?.event, "manual.run");
     assert.equal(before.triggers[0]?.lastTriggered, null);
