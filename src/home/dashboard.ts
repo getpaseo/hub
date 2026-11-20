@@ -1,12 +1,13 @@
+import { parseCompiledHubConfig } from "../config/compiler.js";
 import type { AuthServer } from "../auth/server.js";
 import type {
   Database,
   OrganizationConnectionUsage,
   OrganizationRunRecord,
+  OrganizationTriggerRevisionRecord,
   UnroutedProviderEventCount,
 } from "../db/types.js";
 import { resolveRouteTenant } from "../projects/access.js";
-import { projectTriggerForm } from "../triggers/configuration/editor.js";
 
 /** How far back the overview looks. One week is long enough to hold a first run and short enough that a nudge fades once a trigger listens. */
 export const HOME_WINDOW_DAYS = 7;
@@ -117,7 +118,7 @@ export class HomeDashboard {
       triggers: triggers.map((trigger, index) => ({
         id: trigger.id,
         name: trigger.name,
-        event: triggerEvent(revisions[index]?.yaml),
+        event: triggerEvent(revisions[index]),
         enabled: trigger.enabled,
       })),
       runs: runs.map(toHomeRun),
@@ -128,11 +129,9 @@ export class HomeDashboard {
   }
 }
 
-/** The one event a self-contained trigger listens for; a legacy document has none to name. */
-function triggerEvent(yaml: string | undefined): string {
-  if (yaml === undefined) return "manual.run";
-  const projection = projectTriggerForm(yaml);
-  return projection.status === "editable" ? projection.value.event : "manual.run";
+function triggerEvent(revision: OrganizationTriggerRevisionRecord | undefined): string {
+  if (revision === undefined) return "manual.run";
+  return parseCompiledHubConfig(revision.normalizedConfiguration).triggers[0]?.on ?? "manual.run";
 }
 
 function toHomeRun(run: OrganizationRunRecord): HomeRun {

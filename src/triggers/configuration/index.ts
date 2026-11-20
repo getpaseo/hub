@@ -7,6 +7,7 @@ import {
   type CompiledEnvironment,
   type CompiledTrigger,
 } from "../../config/compiler.js";
+import { expressionPathsInTemplate } from "../../workflows/expression.js";
 import { TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
 
 export { TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
@@ -76,7 +77,7 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
             : { startup_timeout: authored.run.startup_timeout }),
           agent,
           ...(authored.run.title === undefined ? {} : { title: authored.run.title }),
-          prompt: promptForEvent(authored.run.prompt, event),
+          prompt: [{ text: authored.run.prompt }],
           ...(authored.run.env === undefined ? {} : { env: authored.run.env }),
           ...(authored.run.github === undefined ? {} : { github: authored.run.github }),
           ...(authored.run.output === undefined ? {} : { output: authored.run.output }),
@@ -111,20 +112,35 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
     authored,
     environment: compiledEnvironment,
     events: compiled.triggers.map((trigger) =>
-      withAutomaticReply({
-        ...trigger,
-        steps: trigger.steps.map((step) => ({ ...step, continuation: authored.run.continuation })),
-      }),
+      withEventDefaults(
+        {
+          ...trigger,
+          steps: trigger.steps.map((step) => ({
+            ...step,
+            continuation: authored.run.continuation,
+          })),
+        },
+        authored.run.prompt,
+      ),
     ),
     authoredHash: createHash("sha256").update(yaml).digest("hex"),
   };
 }
 
-function promptForEvent(text: string, event: string): AuthoredStep["prompt"] {
-  return event === "webhook.received" ? [{ text }, { text: "${{ paseo.prompt }}" }] : [{ text }];
-}
-
-function withAutomaticReply(trigger: CompiledTrigger): CompiledTrigger {
+function withEventDefaults(trigger: CompiledTrigger, instructions: string): CompiledTrigger {
+  if (trigger.on === "webhook.received") {
+    const includesDelivery = expressionPathsInTemplate(instructions).some(
+      (reference) => reference.namespace === "paseo" && reference.path === "prompt",
+    );
+    if (includesDelivery) return trigger;
+    return {
+      ...trigger,
+      steps: trigger.steps.map((step) => ({
+        ...step,
+        prompt: [...step.prompt, { kind: "text", value: "${{ paseo.prompt }}" }],
+      })),
+    };
+  }
   const replyType = automaticReplyType(trigger.on);
   if (replyType === undefined) return trigger;
   return {

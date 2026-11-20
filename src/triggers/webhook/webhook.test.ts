@@ -9,6 +9,14 @@ it("compiles a webhook without a connection or actor and appends the delivery pr
   expect(JSON.stringify(events[0]?.steps[0]?.prompt)).toContain("paseo.prompt");
 });
 
+it("renders the delivery where the instructions reference it", () => {
+  const instructions = "Read the delivery: ${{paseo.prompt}}";
+  const { events } = compileTriggerDocument(
+    webhookYaml.replace("Summarize the alert.", JSON.stringify(instructions)),
+  );
+  expect(events[0]?.steps[0]?.prompt).toEqual([{ kind: "text", value: instructions }]);
+});
+
 it("refuses webhook connection filters instead of silently ignoring them", () => {
   expect(() =>
     compileTriggerDocument(webhookYaml.replace("{}", "{filters: {from_users: ['*']}}")),

@@ -58,7 +58,7 @@ Hub accepts UTF-8 bodies up to 32 KiB and validates JSON media types. A literal 
 | 413    | The body exceeds 32 KiB                                                          |
 | 429    | The endpoint has already accepted 60 new deliveries in its current minute window |
 
-Hub appends the body and limited delivery metadata to the agent prompt as untrusted external data. Execution uses the same monthly meter as other Hub runs. If another run consumes the remaining allowance after a delivery is accepted, the execution meter records the denial in run history.
+Hub appends the body and limited delivery metadata to the agent prompt as untrusted external data. To choose where it appears, place `${{ paseo.prompt }}` in the instructions. Execution uses the same monthly meter as other Hub runs. If another run consumes the remaining allowance after a delivery is accepted, the execution meter records the denial in run history.
 
 ## Workflow MCP tools
 

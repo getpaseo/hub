@@ -94,6 +94,26 @@ describe("home read model", () => {
     );
   });
 
+  it("reads the webhook event of a YAML-only trigger with agent choices", async () => {
+    const database = memberDatabase();
+    await enrollTestDaemon(database, "org-1");
+    const yaml = triggerYaml
+      .replace("manual.run", "webhook.received")
+      .replace(
+        "agent: { provider: codex, model: gpt-5.4, mode: full-access }",
+        "agent: { select: coding, choices: { coding: { provider: codex, mode: full-access } } }",
+      );
+    await new OrganizationTriggerStore(database, "org-1", acceptingAgentValidator()).save({
+      yaml,
+      userId: "user-1",
+    });
+    const snapshot = await new HomeDashboard(database, accountAuth(), APPS_CONFIGURED).snapshot(
+      request,
+      "acme",
+    );
+    assert.equal(snapshot.triggers[0]?.event, "webhook.received");
+  });
+
   it("keeps the latest runs of an organization whose last run is older than the window", async () => {
     const database = memberDatabase();
     await enrollTestDaemon(database, "org-1");
