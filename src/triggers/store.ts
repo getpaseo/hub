@@ -29,17 +29,18 @@ export interface SaveTriggerInput {
 type AuthoredAgent = Extract<TriggerDocument["run"]["agent"], { provider: string }>;
 
 /** Legacy records retain their source YAML even when they have no compiled run. */
-export function configuredTriggerEvent(
+export function configuredTriggerEvents(
   format: OrganizationTriggerRecord["format"],
   revision: OrganizationTriggerRevisionRecord | undefined,
-): string | undefined {
-  if (revision === undefined) return undefined;
+): readonly string[] {
+  if (revision === undefined) return [];
   if (format === "legacy_multistep") {
     const inline = /^on:\s+([a-z]+(?:\.[a-z_]+)+)\s*$/mu.exec(revision.yaml)?.[1];
     const nested = /^on:\s*$[\s\S]*?^\s{2}([a-z]+(?:\.[a-z_]+)+):\s*$/mu.exec(revision.yaml)?.[1];
-    return inline ?? nested;
+    const event = inline ?? nested;
+    return event === undefined ? [] : [event];
   }
-  return parseCompiledHubConfig(revision.normalizedConfiguration).triggers[0]?.on;
+  return parseCompiledHubConfig(revision.normalizedConfiguration).triggers.map(({ on }) => on);
 }
 
 export class OrganizationTriggerStore {

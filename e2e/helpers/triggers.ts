@@ -202,6 +202,18 @@ export class OrganizationTriggers {
     await this.selectOption("When this happens", "webhook.received");
   }
 
+  async addScheduleBeforeWebhook() {
+    await this.switchToYaml();
+    const document = parseDocument(await this.yamlEditor().innerText(), { compat: ["timestamp"] });
+    document.set("on", {
+      "schedule.tick": {
+        recurrence: { start: "2099-01-01T09:00:00", rule: "FREQ=DAILY", timezone: "UTC" },
+      },
+      "webhook.received": {},
+    });
+    await this.replaceYaml(document.toString({ lineWidth: 0 }));
+  }
+
   async expectWebhookEndpoint() {
     await expect(this.page.getByRole("heading", { name: "Webhook endpoint" })).toBeVisible();
     const url = this.page.getByText(/https?:\/\/[^ ]+\/webhooks\/wh_[\w-]{32}$/u);

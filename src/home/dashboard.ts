@@ -6,7 +6,7 @@ import type {
   UnroutedProviderEventCount,
 } from "../db/types.js";
 import { resolveRouteTenant } from "../projects/access.js";
-import { configuredTriggerEvent } from "../triggers/store.js";
+import { configuredTriggerEvents } from "../triggers/store.js";
 
 /** How far back the overview looks. One week is long enough to hold a first run and short enough that a nudge fades once a trigger listens. */
 export const HOME_WINDOW_DAYS = 7;
@@ -32,7 +32,7 @@ export interface HomeSnapshot {
     /** Enrolled with `hub.execute`; without it Hub can see the daemon but launch nothing on it. */
     canExecute: boolean;
   }[];
-  triggers: readonly { id: string; name: string; event: string; enabled: boolean }[];
+  triggers: readonly { id: string; name: string; events: readonly string[]; enabled: boolean }[];
   /** The overview's window: every run in the last `windowDays`, newest first. */
   runs: readonly HomeRun[];
   /**
@@ -117,7 +117,7 @@ export class HomeDashboard {
       triggers: triggers.map((trigger, index) => ({
         id: trigger.id,
         name: trigger.name,
-        event: configuredTriggerEvent(trigger.format, revisions[index]) ?? "manual.run",
+        events: configuredTriggerEvents(trigger.format, revisions[index]),
         enabled: trigger.enabled,
       })),
       runs: runs.map(toHomeRun),

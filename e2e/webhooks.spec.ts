@@ -37,4 +37,12 @@ test("creates a webhook and reveals each secret only once", async ({ hub, page }
   expect(rotated).not.toEqual(first);
   await triggers.reloadWebhookSettings();
   expect(await triggers.expectWebhookEndpoint()).toEqual(endpoint);
+
+  await test.step("show both ways to start a trigger after editing its YAML", async () => {
+    await triggers.addScheduleBeforeWebhook();
+    await triggers.save("webhook-alert");
+    await home.open();
+    await home.expectStepText("Run it", "It runs on its schedule.");
+    await home.expectStepText("Run it", "Send a POST to the webhook URL");
+  });
 });

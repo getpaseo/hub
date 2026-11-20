@@ -49,8 +49,9 @@ export function deriveChecklist(snapshot: ChecklistFacts): Checklist {
   ];
   const integration = appState(snapshot);
   const canRunWithoutIntegration = snapshot.triggers.some(
-    ({ enabled, event }) =>
-      enabled && isEditorEvent(event) && eventDefinition(event).origin === "hub",
+    ({ enabled, events }) =>
+      enabled &&
+      events.some((event) => isEditorEvent(event) && eventDefinition(event).origin === "hub"),
   );
   if (integration === "done" || !canRunWithoutIntegration) {
     steps.unshift({ key: "app", state: integration });

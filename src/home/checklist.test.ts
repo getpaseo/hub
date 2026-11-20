@@ -39,7 +39,12 @@ describe("the onboarding checklist", () => {
   });
 
   it("opens the first-run step without an integration for an enabled webhook trigger", () => {
-    const webhook = { id: "t", name: "alert", event: "webhook.received", enabled: true };
+    const webhook = {
+      id: "t",
+      name: "alert",
+      events: ["schedule.tick", "webhook.received"],
+      enabled: true,
+    };
     const snapshot: ChecklistFacts = {
       ...nothing,
       daemons: [{ id: "2", slug: "devbox", presence: "connected", canExecute: true }],
@@ -65,7 +70,7 @@ describe("the onboarding checklist", () => {
       appsConfigured: true,
       connections: [{ provider: "slack", slug: "acme", label: "Acme" }],
       daemons: [{ id: "2", slug: "devbox", presence: "connected", canExecute: true }],
-      triggers: [{ id: "t", name: "slack-help", event: "slack.mention", enabled: true }],
+      triggers: [{ id: "t", name: "slack-help", events: ["slack.mention"], enabled: true }],
       recentRuns: [
         {
           id: "r",
