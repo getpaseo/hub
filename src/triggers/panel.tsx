@@ -5,7 +5,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { ArrowLeft, Braces, FileText, LockKeyhole, Plus } from "lucide-react";
-import { useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 
 import { Card } from "../components/app/card.js";
 import { Combobox, type ComboboxOption } from "../components/app/combobox.js";
@@ -43,7 +43,7 @@ import { WebhookSettings } from "./webhook/settings.js";
 import { saveTrigger, triggerSnapshot, type TriggerSnapshot } from "./functions.js";
 import { daemonProviderSnapshot } from "../daemons/functions.js";
 import type { HubProviderSnapshotEntry } from "../hub/protocol.js";
-import { IntegrationToolFields } from "./integration-tool-fields.js";
+import { IntegrationAccess } from "./integration-access.js";
 import { EventFields } from "./event-fields.js";
 import { EDITOR_EVENTS, eventDefinition, parseEditorEvent } from "./configuration/events.js";
 import { changeTriggerModel, selectedProviderModel } from "./provider-catalog.js";
@@ -243,34 +243,36 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
     void navigate({ to: `/o/${organizationSlug}/triggers` as never });
   };
   return (
-    <>
-      <TriggerEditor
-        key={trigger?.id ?? "new"}
-        trigger={trigger}
-        snapshot={data}
-        saving={save.isPending}
-        saveError={save.data?.status === "error" ? save.data.error.message : undefined}
-        onCancel={returnToList}
-        onSave={(yaml) =>
-          save.mutate({
-            data: {
-              organizationSlug,
-              ...(trigger?.id === undefined ? {} : { triggerId: trigger.id }),
-              yaml,
-            },
-          })
-        }
-      />
-      {webhook === undefined ? null : (
-        <WebhookSettings
-          key={webhook.endpointId}
-          organizationSlug={organizationSlug}
-          origin={data.webhookOrigin}
-          endpoint={webhook}
-          canManage={data.canManage}
-        />
-      )}
-    </>
+    <TriggerEditor
+      key={trigger?.id ?? "new"}
+      trigger={trigger}
+      snapshot={data}
+      saving={save.isPending}
+      saveError={save.data?.status === "error" ? save.data.error.message : undefined}
+      onCancel={returnToList}
+      onSave={(yaml) =>
+        save.mutate({
+          data: {
+            organizationSlug,
+            ...(trigger?.id === undefined ? {} : { triggerId: trigger.id }),
+            yaml,
+          },
+        })
+      }
+      {...(webhook === undefined
+        ? {}
+        : {
+            footer: (
+              <WebhookSettings
+                key={webhook.endpointId}
+                organizationSlug={organizationSlug}
+                origin={data.webhookOrigin}
+                endpoint={webhook}
+                canManage={data.canManage}
+              />
+            ),
+          })}
+    />
   );
 }
 
@@ -299,6 +301,7 @@ function TriggerEditor({
   saveError,
   onCancel,
   onSave,
+  footer,
 }: {
   trigger: BrowserTrigger | null;
   snapshot: TriggerSnapshot;
@@ -306,6 +309,7 @@ function TriggerEditor({
   saveError: string | undefined;
   onCancel: () => void;
   onSave: (yaml: string) => void;
+  footer?: ReactNode;
 }) {
   const legacy = trigger?.format === "legacy_multistep";
   const editor = useTriggerEditorState(trigger, snapshot, legacy, onSave);
@@ -417,6 +421,7 @@ function TriggerEditor({
             </Button>
           </FormActions>
         </form>
+        {footer}
       </div>
     </>
   );
@@ -609,9 +614,6 @@ function TriggerForm({
 }) {
   const { provider } = eventDefinition(form.event);
   const connections = snapshot.connections.filter((connection) => connection.provider === provider);
-  const githubConnections = snapshot.connections.filter(
-    (connection) => connection.provider === "github",
-  );
   const connectionOptions = connections.map((connection) => ({
     value: connection.slug,
     label: connection.label,
@@ -621,15 +623,6 @@ function TriggerForm({
     label: daemon.slug,
     detail: daemon.presence,
   }));
-  const githubConnectionOptions = [
-    { value: "", label: "Do not inject a GitHub token" },
-    ...githubConnections.map((connection) => ({
-      value: connection.slug,
-      label: connection.label,
-    })),
-  ];
-  const githubEnabled = form.githubConnection !== "";
-  const [githubExpanded, setGithubExpanded] = useState(githubEnabled);
   const [optionsExpanded, setOptionsExpanded] = useState(false);
   const everyone = form.allowedUsers.trim() === "*";
   const update = <Key extends keyof TriggerFormValue>(key: Key, value: TriggerFormValue[Key]) =>
@@ -907,6 +900,13 @@ function TriggerForm({
                 {...fieldError(errors, "prompt")}
                 onChange={(prompt) => update("prompt", prompt)}
               />
+              <IntegrationAccess
+                form={form}
+                connections={snapshot.connections}
+                errors={errors}
+                disabled={!snapshot.canManage}
+                onChange={onChange}
+              />
               <Disclosure
                 id="trigger-provider-options"
                 open={optionsExpanded}
@@ -926,73 +926,6 @@ function TriggerForm({
                   {...fieldError(errors, "providerOptions")}
                 />
               </Disclosure>
-              <Disclosure
-                id="trigger-github"
-                open={githubExpanded}
-                onOpenChange={setGithubExpanded}
-                title="GitHub access"
-                description="Give the run a short-lived token scoped to the repositories you name."
-              >
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <FormField
-                    id="trigger-github-connection"
-                    label="GitHub connection"
-                    description="Mints a short-lived, restricted GH_TOKEN for this run."
-                  >
-                    {(control) => (
-                      <Combobox
-                        {...control}
-                        value={form.githubConnection}
-                        options={githubConnectionOptions}
-                        placeholder="Select a GitHub connection"
-                        empty="No GitHub connections found."
-                        onChange={(option) => update("githubConnection", option.value)}
-                      />
-                    )}
-                  </FormField>
-                  {githubEnabled ? (
-                    <>
-                      <FormField
-                        id="trigger-github-repositories"
-                        label="GitHub repositories"
-                        description="Comma-separated owner/repository names."
-                        kind="text"
-                        name="githubRepositories"
-                        value={form.githubRepositories}
-                        onChange={text("githubRepositories")}
-                        required
-                      />
-                      <FormField
-                        id="trigger-github-duration"
-                        label="GitHub token lifetime"
-                        description="At most 1h."
-                        kind="text"
-                        name="githubDuration"
-                        value={form.githubDuration}
-                        onChange={text("githubDuration")}
-                        required
-                      />
-                      <FormField
-                        id="trigger-github-permissions"
-                        label="GitHub permissions (JSON)"
-                        description="Defaults to read-only repository contents when empty."
-                        kind="multiline"
-                        name="githubPermissions"
-                        value={form.githubPermissions}
-                        onChange={text("githubPermissions")}
-                        placeholder={'{"contents":"write","pull_requests":"write"}'}
-                        {...fieldError(errors, "githubPermissions")}
-                      />
-                    </>
-                  ) : null}
-                </div>
-              </Disclosure>
-              <IntegrationToolFields
-                tools={form.tools}
-                connections={snapshot.connections}
-                errors={errors}
-                onChange={(tools) => update("tools", tools)}
-              />
             </>
           )}
         </Card>

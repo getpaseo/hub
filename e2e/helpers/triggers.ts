@@ -204,7 +204,7 @@ export class OrganizationTriggers {
 
   async addScheduleBeforeWebhook() {
     await this.switchToYaml();
-    const document = parseDocument(await this.yamlEditor().innerText(), { compat: ["timestamp"] });
+    const document = parseDocument(await this.readYaml(), { compat: ["timestamp"] });
     document.set("on", {
       "schedule.tick": {
         recurrence: { start: "2099-01-01T09:00:00", rule: "FREQ=DAILY", timezone: "UTC" },
@@ -234,8 +234,21 @@ export class OrganizationTriggers {
       .toContain(`curl -X POST '${endpoint}'`);
   }
 
-  async issueWebhookSecret(action: "Create secret" | "Rotate secret") {
-    await this.page.getByRole("button", { name: action, exact: true }).click();
+  async createWebhookSecret() {
+    await expect(this.page.getByText("No secret", { exact: true })).toBeVisible();
+    await this.page.getByRole("button", { name: "Create secret", exact: true }).click();
+    await expect(this.page.getByText("Save this secret now", { exact: true })).toBeVisible();
+    const secret = this.page.getByRole("textbox", { name: "Webhook secret" });
+    await expect(secret).toHaveValue(/^whsec_[\w-]{43}$/u);
+    await expect(this.page.getByText("Secret active", { exact: true })).toBeVisible();
+    return secret.inputValue();
+  }
+
+  async rotateWebhookSecret() {
+    await this.page.getByRole("button", { name: "Rotate secret", exact: true }).click();
+    const dialog = this.page.getByRole("alertdialog", { name: "Rotate webhook secret?" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Rotate secret", exact: true }).click();
     const secret = this.page.getByRole("textbox", { name: "Webhook secret" });
     await expect(secret).toHaveValue(/^whsec_[\w-]{43}$/u);
     return secret.inputValue();
@@ -243,6 +256,7 @@ export class OrganizationTriggers {
 
   async reloadWebhookSettings() {
     await this.page.reload();
+    await expect(this.page.getByText("Secret active", { exact: true })).toBeVisible();
     await expect(
       this.page.getByRole("button", { name: "Rotate secret", exact: true }),
     ).toBeVisible();
@@ -277,26 +291,78 @@ export class OrganizationTriggers {
   }
 
   async grantScheduledIntegrationTools() {
-    await this.page.getByRole("button", { name: "Integration tools", exact: true }).click();
-    await this.selectOption("Slack integration", "company-slack");
-    await this.page.getByRole("textbox", { name: "Slack channel IDs" }).fill("CALLOWED");
-    await this.page.getByRole("checkbox", { name: "Post to Slack" }).check();
-    await this.selectOption("Discord integration", "company-discord");
-    await this.page
-      .getByRole("textbox", { name: "Discord channel IDs" })
+    await this.page.getByRole("button", { name: "Integration access" }).click();
+    await expect(this.page.getByText("No integrations granted for this run.")).toBeVisible();
+
+    await this.addIntegrationAccess("GitHub");
+    const github = this.page.getByRole("region", { name: "GitHub", exact: true });
+    await expect(github.getByRole("combobox", { name: "Connection", exact: true })).toHaveAttribute(
+      "data-value",
+      "acme-inc-github",
+    );
+    await github.getByRole("textbox", { name: "Repositories", exact: true }).fill("acme-inc/hub");
+    await github
+      .getByRole("textbox", { name: "Permissions (JSON)", exact: true })
+      .fill('{"contents":"write","pull_requests":"write"}');
+
+    await this.addIntegrationAccess("Slack");
+    const slack = this.page.getByRole("region", { name: "Slack", exact: true });
+    await expect(slack.getByRole("combobox", { name: "Connection", exact: true })).toHaveAttribute(
+      "data-value",
+      "company-slack",
+    );
+    await slack.getByRole("textbox", { name: "Channel IDs", exact: true }).fill("CALLOWED");
+    await slack.getByRole("checkbox", { name: "Post messages", exact: true }).check();
+
+    await this.addIntegrationAccess("Discord");
+    const discord = this.page.getByRole("region", { name: "Discord", exact: true });
+    await expect(
+      discord.getByRole("combobox", { name: "Connection", exact: true }),
+    ).toHaveAttribute("data-value", "company-discord");
+    await discord
+      .getByRole("textbox", { name: "Channel IDs", exact: true })
       .fill("123456789012345678");
-    await this.page.getByRole("checkbox", { name: "Read from Discord" }).check();
+    await discord.getByRole("checkbox", { name: "Read messages", exact: true }).check();
+
+    await expect(
+      this.page.getByRole("button", { name: "Add integration", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      this.page.getByRole("button", { name: /Integration access.*3 configured/u }),
+    ).toBeVisible();
+  }
+
+  async addIntegrationAccess(provider: "GitHub" | "Slack" | "Discord") {
+    await this.page.getByRole("button", { name: "Add integration", exact: true }).click();
+    await this.page.getByRole("menuitem", { name: provider, exact: true }).click();
   }
 
   async expectScheduledIntegrationTools() {
-    await expect(this.page.getByRole("textbox", { name: "Slack channel IDs" })).toHaveValue(
+    const github = this.page.getByRole("region", { name: "GitHub", exact: true });
+    await expect(github.getByRole("combobox", { name: "Connection", exact: true })).toHaveAttribute(
+      "data-value",
+      "acme-inc-github",
+    );
+    await expect(github.getByRole("textbox", { name: "Repositories", exact: true })).toHaveValue(
+      "acme-inc/hub",
+    );
+    await expect(
+      github.getByRole("textbox", { name: "Permissions (JSON)", exact: true }),
+    ).toHaveValue('{\n  "contents": "write",\n  "pull_requests": "write"\n}');
+
+    const slack = this.page.getByRole("region", { name: "Slack", exact: true });
+    await expect(slack.getByRole("textbox", { name: "Channel IDs", exact: true })).toHaveValue(
       "CALLOWED",
     );
-    await expect(this.page.getByRole("checkbox", { name: "Post to Slack" })).toBeChecked();
-    await expect(this.page.getByRole("textbox", { name: "Discord channel IDs" })).toHaveValue(
+    await expect(slack.getByRole("checkbox", { name: "Post messages", exact: true })).toBeChecked();
+
+    const discord = this.page.getByRole("region", { name: "Discord", exact: true });
+    await expect(discord.getByRole("textbox", { name: "Channel IDs", exact: true })).toHaveValue(
       "123456789012345678",
     );
-    await expect(this.page.getByRole("checkbox", { name: "Read from Discord" })).toBeChecked();
+    await expect(
+      discord.getByRole("checkbox", { name: "Read messages", exact: true }),
+    ).toBeChecked();
   }
 
   async editScheduleToWeekdays() {
@@ -359,7 +425,7 @@ export class OrganizationTriggers {
 
   async useAdvancedScheduleRule(rule: string) {
     await this.switchToYaml();
-    const document = parseDocument(await this.yamlEditor().innerText(), { compat: ["timestamp"] });
+    const document = parseDocument(await this.readYaml(), { compat: ["timestamp"] });
     document.setIn(["on", "schedule.tick", "recurrence", "rule"], rule);
     await this.replaceYaml(document.toString({ lineWidth: 0 }));
     await this.switchToForm();
@@ -434,6 +500,7 @@ export class OrganizationTriggers {
       .toEqual([{ status: "running", failure_reason: null }]);
     await this.page.setViewportSize({ width: 1280, height: 900 });
     await this.page.getByRole("link", { name: "Activity", exact: true }).click();
+    await expect(this.page).toHaveURL(/\/activity$/u);
     await this.page.reload();
     const row = this.page.getByRole("row").filter({ hasText: name });
     await expect(row.getByRole("cell", { name: "schedule", exact: true })).toBeVisible();
@@ -484,7 +551,7 @@ export class OrganizationTriggers {
     );
     await expect(this.page.getByLabel("Added label", { exact: true })).toHaveValue(label);
     await this.switchToYaml();
-    expect(parseDocument(await this.yamlEditor().innerText()).toJS()).toMatchObject({
+    expect(parseDocument(await this.readYaml()).toJS()).toMatchObject({
       on: { [event]: { filters: { label } } },
     });
     await this.switchToForm();
@@ -600,7 +667,8 @@ export class OrganizationTriggers {
   }
 
   async expectYamlContains(...fragments: string[]) {
-    for (const fragment of fragments) await expect(this.yamlEditor()).toContainText(fragment);
+    const yaml = await this.readYaml();
+    for (const fragment of fragments) expect(yaml).toContain(fragment);
   }
 
   async expectLegacyReadOnly() {
@@ -626,7 +694,7 @@ export class OrganizationTriggers {
   async expectDisclosureRailsAtPhoneWidth() {
     const viewport = this.page.viewportSize();
     await this.page.setViewportSize({ width: 420, height: 900 });
-    for (const name of ["Advanced provider options", "GitHub access"]) {
+    for (const name of ["Integration access", "Advanced provider options"]) {
       const header = this.page.getByRole("button", { name, exact: false }).first();
       await header.scrollIntoViewIfNeeded();
       const rails = await header.evaluate((element: HTMLElement) =>
@@ -665,6 +733,12 @@ export class OrganizationTriggers {
   private async selectOption(label: string, value: string) {
     await this.page.getByRole("combobox", { name: label, exact: true }).click();
     await this.page.locator(`[role="option"][data-value=${JSON.stringify(value)}]`).click();
+  }
+
+  private async readYaml() {
+    await allowClipboard(this.page, new URL(this.page.url()).origin);
+    await this.page.getByRole("button", { name: "Copy Trigger YAML", exact: true }).click();
+    return this.page.evaluate(() => navigator.clipboard.readText());
   }
 
   private yamlEditor() {

@@ -12,6 +12,7 @@ test("creates a twice-daily schedule, edits weekly recurrence, and preserves it 
   });
   await hub.createOrganization("owner", "Acme");
   const daemon = await hub.connectProviderDaemon("owner", "Acme");
+  await hub.connectGitHub("owner");
   await hub.seedSlackConnection("owner", "company-slack", "Acme Slack");
   await hub.seedDiscordConnection("Acme", "company-discord");
   const triggers = new OrganizationTriggers(page);
@@ -27,6 +28,8 @@ test("creates a twice-daily schedule, edits weekly recurrence, and preserves it 
       "FREQ=DAILY",
       "Europe/Berlin",
       "thinkingOptionId: low",
+      "connection: acme-inc-github",
+      "acme-inc/hub",
       "connection: company-slack",
       "connection: company-discord",
       "CALLOWED",
