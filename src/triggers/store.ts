@@ -1,3 +1,4 @@
+import { parseCompiledHubConfig } from "../config/compiler.js";
 import type {
   Database,
   OrganizationTriggerRecord,
@@ -26,6 +27,20 @@ export interface SaveTriggerInput {
 }
 
 type AuthoredAgent = Extract<TriggerDocument["run"]["agent"], { provider: string }>;
+
+/** Legacy records retain their source YAML even when they have no compiled run. */
+export function configuredTriggerEvent(
+  format: OrganizationTriggerRecord["format"],
+  revision: OrganizationTriggerRevisionRecord | undefined,
+): string | undefined {
+  if (revision === undefined) return undefined;
+  if (format === "legacy_multistep") {
+    const inline = /^on:\s+([a-z]+(?:\.[a-z_]+)+)\s*$/mu.exec(revision.yaml)?.[1];
+    const nested = /^on:\s*$[\s\S]*?^\s{2}([a-z]+(?:\.[a-z_]+)+):\s*$/mu.exec(revision.yaml)?.[1];
+    return inline ?? nested;
+  }
+  return parseCompiledHubConfig(revision.normalizedConfiguration).triggers[0]?.on;
+}
 
 export class OrganizationTriggerStore {
   constructor(

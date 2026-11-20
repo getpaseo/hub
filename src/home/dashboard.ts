@@ -1,13 +1,12 @@
-import { parseCompiledHubConfig } from "../config/compiler.js";
 import type { AuthServer } from "../auth/server.js";
 import type {
   Database,
   OrganizationConnectionUsage,
   OrganizationRunRecord,
-  OrganizationTriggerRevisionRecord,
   UnroutedProviderEventCount,
 } from "../db/types.js";
 import { resolveRouteTenant } from "../projects/access.js";
+import { configuredTriggerEvent } from "../triggers/store.js";
 
 /** How far back the overview looks. One week is long enough to hold a first run and short enough that a nudge fades once a trigger listens. */
 export const HOME_WINDOW_DAYS = 7;
@@ -118,7 +117,7 @@ export class HomeDashboard {
       triggers: triggers.map((trigger, index) => ({
         id: trigger.id,
         name: trigger.name,
-        event: triggerEvent(revisions[index]),
+        event: configuredTriggerEvent(trigger.format, revisions[index]) ?? "manual.run",
         enabled: trigger.enabled,
       })),
       runs: runs.map(toHomeRun),
@@ -127,11 +126,6 @@ export class HomeDashboard {
       windowDays: HOME_WINDOW_DAYS,
     };
   }
-}
-
-function triggerEvent(revision: OrganizationTriggerRevisionRecord | undefined): string {
-  if (revision === undefined) return "manual.run";
-  return parseCompiledHubConfig(revision.normalizedConfiguration).triggers[0]?.on ?? "manual.run";
 }
 
 function toHomeRun(run: OrganizationRunRecord): HomeRun {

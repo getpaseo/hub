@@ -7,7 +7,7 @@ import { ProjectCommandError } from "../projects/command-error.js";
 import { parseCompiledHubConfig } from "../config/compiler.js";
 import type { DaemonAgentConfigurationValidator } from "../configuration/store.js";
 import { projectTriggerForm } from "./configuration/editor.js";
-import { OrganizationTriggerStore } from "./store.js";
+import { configuredTriggerEvent, OrganizationTriggerStore } from "./store.js";
 
 export class TriggerDashboard {
   constructor(
@@ -167,9 +167,7 @@ async function triggerView(
   const revision = await store.activeRevision(trigger);
   const evidence = record(revision.sourceEvidence);
   const event =
-    parseCompiledHubConfig(revision.normalizedConfiguration).triggers[0]?.on ??
-    lastTriggered?.source ??
-    "manual.run";
+    configuredTriggerEvent(trigger.format, revision) ?? lastTriggered?.source ?? "manual.run";
   const provider = triggerProvider(event);
   const operational =
     lastTriggered === undefined
