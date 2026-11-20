@@ -110,7 +110,7 @@ export const integrationTools = [
     "discord_latest",
     "discord",
     "read",
-    "Scan recent messages from granted Discord channels and forums, including active and recently archived threads. scannedChannels identifies channels that were fully scanned and unavailableChannels identifies missing channels. timedOut indicates an incomplete scan.",
+    "Scan recent messages from granted Discord channels and forums, including active and recently archived threads. scannedChannels identifies channels that were fully scanned and unavailableChannels identifies channels the bot cannot access. timedOut indicates an incomplete scan.",
     discordLatest,
   ),
   tool(

@@ -324,7 +324,7 @@ describe("Scoped integration tools through Hub MCP", () => {
         discord: {
           connection: "test-discord",
           actions: ["read"],
-          channels: [chat.discord.forum, "101", chat.discord.text],
+          channels: [chat.discord.forum, "101", "102", chat.discord.text],
         },
       });
       const latest = await call("discord_latest", {}, false, scanId);
@@ -333,7 +333,7 @@ describe("Scoped integration tools through Hub MCP", () => {
       assert.match(latest.output, /"skippedThreads":1/u);
       assert.match(latest.output, /Standalone question/u);
       assert.match(latest.output, /"scannedChannels":\["100","300"\]/u);
-      assert.match(latest.output, /"unavailableChannels":\["101"\]/u);
+      assert.match(latest.output, /"unavailableChannels":\["101","102"\]/u);
       assert.match(latest.output, /"timedOut":false/u);
       assert.equal(
         fake.calls.filter(({ path }) => path === "/api/v10/guilds/900/threads/active").length,

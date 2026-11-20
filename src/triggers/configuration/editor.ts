@@ -186,11 +186,7 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   setIfChanged(document, ["run", "max_runtime"], value.maxRuntime.trim());
   setIfChanged(document, ["run", "idle_timeout"], value.idleTimeout.trim());
   setOptional(document, ["run", "github"], githubAuthority(value));
-  const tools = integrationToolGrants(value);
-  for (const provider of integrationProviders) {
-    setOptional(document, ["run", "tools", provider], tools?.[provider]);
-  }
-  if (tools === undefined) deleteIfPresent(document, ["run", "tools"]);
+  patchIntegrationToolGrants(document, projection.value, value);
   setIfChanged(document, ["run", "prompt"], value.prompt);
   return document.toString({ lineWidth: 0 });
 }
@@ -330,6 +326,33 @@ function authoredIntegrationToolGrants(value: TriggerFormValue) {
 
 function integrationToolGrants(value: TriggerFormValue): IntegrationToolGrants | undefined {
   return IntegrationToolGrantsSchema.optional().parse(authoredIntegrationToolGrants(value));
+}
+
+function patchIntegrationToolGrants(
+  document: Document,
+  previous: TriggerFormValue,
+  value: TriggerFormValue,
+): void {
+  const before = integrationToolGrants(previous);
+  const after = integrationToolGrants(value);
+  if (after === undefined) {
+    deleteIfPresent(document, ["run", "tools"]);
+    return;
+  }
+  for (const provider of integrationProviders) {
+    const path = ["run", "tools", provider];
+    const existing = before?.[provider];
+    const updated = after[provider];
+    if (updated === undefined || existing === undefined) {
+      setOptional(document, path, updated);
+      continue;
+    }
+    for (const field of ["connection", "actions", "channels"] as const) {
+      if (JSON.stringify(existing[field]) !== JSON.stringify(updated[field])) {
+        document.setIn([...path, field], updated[field]);
+      }
+    }
+  }
 }
 
 function integrationToolErrors(value: TriggerFormValue): TriggerFieldErrors {

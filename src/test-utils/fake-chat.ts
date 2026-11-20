@@ -201,6 +201,8 @@ export async function startFakeChat(
     const [, id, messageId, createThread] = channelRoute;
     assert(id !== undefined);
     if (!path.includes("/messages")) {
+      if (id === "102")
+        return Response.json({ code: 50001, message: "Missing Access" }, { status: 403 });
       const found = channels[id];
       return found === undefined ? undefined : Response.json(found);
     }

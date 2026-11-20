@@ -42,11 +42,14 @@ const HAS_THREAD = 1 << 5;
 const ARCHIVED_THREADS_PER_CHANNEL = 10;
 const DISCORD_TOOL_TIMEOUT_MS = 25_000;
 
-async function unlessNotFound<T>(operation: Promise<T>): Promise<T | undefined> {
+async function ignoreHttpStatus<T>(
+  operation: Promise<T>,
+  ...statuses: number[]
+): Promise<T | undefined> {
   try {
     return await operation;
   } catch (error) {
-    if (error instanceof IntegrationHttpError && error.status === 404) return undefined;
+    if (error instanceof IntegrationHttpError && statuses.includes(error.status)) return undefined;
     throw error;
   }
 }
@@ -232,8 +235,9 @@ function scopedDiscord(
   }
 
   async function readThread(channel: Channel, parent: Channel, limit: number, before?: string) {
-    const starter = await unlessNotFound(
+    const starter = await ignoreHttpStatus(
       getMessage(isForum(parent) ? channel.id : parent.id, channel.id),
+      404,
     );
     const page = await history(channel.id, limit, before);
     const messages = page
@@ -304,7 +308,7 @@ function scopedDiscord(
         const recent = await recentThreads(parent, active);
         moreArchivedThreads ||= recent.moreArchivedThreads;
         for (const thread of recent.threads) {
-          const page = await unlessNotFound(history(thread.id, limit));
+          const page = await ignoreHttpStatus(history(thread.id, limit), 403, 404);
           if (page === undefined) skippedThreads++;
           else messages.push(...page);
         }
@@ -314,7 +318,7 @@ function scopedDiscord(
       try {
         const active = await activeThreads();
         for (const id of channels) {
-          const scanned = await unlessNotFound(scanChannel(id, active));
+          const scanned = await ignoreHttpStatus(scanChannel(id, active), 403, 404);
           if (scanned === undefined) unavailableChannels.push(id);
           else scannedChannels.push(scanned);
         }
