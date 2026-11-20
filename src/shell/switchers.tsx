@@ -70,6 +70,7 @@ export function OrganizationSwitcher({
     <>
       <SidebarSwitcher
         label="Organization"
+        tone="plain"
         media={ORGANIZATION_MARK}
         primary={organization.name}
         secondary={ROLE_LABELS[role] ?? role}

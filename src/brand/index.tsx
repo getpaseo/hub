@@ -6,12 +6,12 @@ import {
 } from "./paths.js";
 
 /**
- * The standalone Paseo Hub flower mark. Sized to `size-5` by default so its 527-unit ink
- * footprint matches a 16px Lucide icon inside a `size-8` sidebar tile.
+ * The standalone Paseo Hub flower mark. Sized to `size-7` by default so its 527-unit ink
+ * footprint (~21px) sits cleanly on the sidebar background in both expanded and collapsed states.
  */
 export function PaseoHubMark({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 700 700" className={cn("size-5", className)} fill="none" aria-hidden="true">
+    <svg viewBox="0 0 700 700" className={cn("size-7", className)} fill="none" aria-hidden="true">
       <path
         d={PASEO_HUB_MARK_PATH}
         stroke="currentColor"
