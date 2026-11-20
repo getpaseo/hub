@@ -2,9 +2,9 @@
 
 Paseo Hub is the self-hosted open-source automation layer for existing Paseo (`getpaseo/paseo`) daemons.
 
-This repository contains the open-source Hub codebase. Its Fly files contain only the minimal,
-non-secret deployment wiring. Credentials, private workflow configuration, and operational
-runbooks for privately operated instances must not live here.
+Use `fly.example.toml` as the starting point for self-hosting on Fly. Keep production deployment
+configuration, credentials, and operational runbooks for privately operated instances outside
+this repository.
 
 The optional billing integration in `src/billing/` is inert without `STRIPE_SECRET_KEY`; instances without billing configuration expose no billing surface. See `docs/entitlements.md` and `docs/billing.md`.
 
