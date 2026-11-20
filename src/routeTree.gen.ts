@@ -27,6 +27,7 @@ import { Route as ShellOperatorRouteImport } from './routes/_shell/operator'
 import { Route as ShellIntegrationsRouteImport } from './routes/_shell/integrations'
 import { Route as ShellCliLoginRouteImport } from './routes/_shell/cli-login'
 import { Route as ShellAppsRouteImport } from './routes/_shell/apps'
+import { Route as DotwellKnownSplatRouteImport } from './routes/[.]well-known/$'
 import { Route as ApiV1CliAuthorizationsRouteImport } from './routes/api/v1/cli-authorizations'
 import { Route as ApiV1SplatRouteImport } from './routes/api/v1/$'
 import { Route as ApiDaemonsEnrollRouteImport } from './routes/api/daemons/enroll'
@@ -147,6 +148,11 @@ const ShellAppsRoute = ShellAppsRouteImport.update({
   id: '/apps',
   path: '/apps',
   getParentRoute: () => ShellRoute,
+} as any)
+const DotwellKnownSplatRoute = DotwellKnownSplatRouteImport.update({
+  id: '/.well-known/$',
+  path: '/.well-known/$',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const ApiV1CliAuthorizationsRoute = ApiV1CliAuthorizationsRouteImport.update({
   id: '/api/v1/cli-authorizations',
@@ -333,6 +339,7 @@ export interface FileRoutesByFullPath {
   '/favicon.svg': typeof FaviconDotsvgRoute
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
+  '/.well-known/$': typeof DotwellKnownSplatRoute
   '/apps': typeof ShellAppsRoute
   '/cli-login': typeof ShellCliLoginRoute
   '/integrations': typeof ShellIntegrationsRoute
@@ -382,6 +389,7 @@ export interface FileRoutesByTo {
   '/favicon.svg': typeof FaviconDotsvgRoute
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
+  '/.well-known/$': typeof DotwellKnownSplatRoute
   '/apps': typeof ShellAppsRoute
   '/cli-login': typeof ShellCliLoginRoute
   '/integrations': typeof ShellIntegrationsRoute
@@ -432,6 +440,7 @@ export interface FileRoutesById {
   '/favicon.svg': typeof FaviconDotsvgRoute
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
+  '/.well-known/$': typeof DotwellKnownSplatRoute
   '/_shell/apps': typeof ShellAppsRoute
   '/_shell/cli-login': typeof ShellCliLoginRoute
   '/_shell/integrations': typeof ShellIntegrationsRoute
@@ -485,6 +494,7 @@ export interface FileRouteTypes {
     | '/favicon.svg'
     | '/health'
     | '/webhook'
+    | '/.well-known/$'
     | '/apps'
     | '/cli-login'
     | '/integrations'
@@ -534,6 +544,7 @@ export interface FileRouteTypes {
     | '/favicon.svg'
     | '/health'
     | '/webhook'
+    | '/.well-known/$'
     | '/apps'
     | '/cli-login'
     | '/integrations'
@@ -583,6 +594,7 @@ export interface FileRouteTypes {
     | '/favicon.svg'
     | '/health'
     | '/webhook'
+    | '/.well-known/$'
     | '/_shell/apps'
     | '/_shell/cli-login'
     | '/_shell/integrations'
@@ -635,6 +647,7 @@ export interface RootRouteChildren {
   FaviconDotsvgRoute: typeof FaviconDotsvgRoute
   HealthRoute: typeof HealthRoute
   WebhookRoute: typeof WebhookRoute
+  DotwellKnownSplatRoute: typeof DotwellKnownSplatRoute
   ApiSplatRoute: typeof ApiSplatRoute
   ApiOpenapiDotjsonRoute: typeof ApiOpenapiDotjsonRoute
   ApiReferenceRoute: typeof ApiReferenceRoute
@@ -789,6 +802,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/apps'
       preLoaderRoute: typeof ShellAppsRouteImport
       parentRoute: typeof ShellRoute
+    }
+    '/.well-known/$': {
+      id: '/.well-known/$'
+      path: '/.well-known/$'
+      fullPath: '/.well-known/$'
+      preLoaderRoute: typeof DotwellKnownSplatRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/v1/cli-authorizations': {
       id: '/api/v1/cli-authorizations'
@@ -1109,6 +1129,7 @@ const rootRouteChildren: RootRouteChildren = {
   FaviconDotsvgRoute: FaviconDotsvgRoute,
   HealthRoute: HealthRoute,
   WebhookRoute: WebhookRoute,
+  DotwellKnownSplatRoute: DotwellKnownSplatRoute,
   ApiSplatRoute: ApiSplatRoute,
   ApiOpenapiDotjsonRoute: ApiOpenapiDotjsonRoute,
   ApiReferenceRoute: ApiReferenceRoute,

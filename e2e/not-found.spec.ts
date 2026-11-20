@@ -22,6 +22,16 @@ test("unknown pages, APIs, and browser probes have intentional 404s without rout
     expect(response.status()).toBe(404);
   }
 
+  for (const path of [
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/oauth-protected-resource/mcp",
+  ]) {
+    const response = await page.request.get(`${hub.primaryApplication().origin}${path}`, {
+      headers: { Accept: "application/json" },
+    });
+    expect(response.status()).toBe(404);
+  }
+
   expect(hub.primaryApplication().logs()).not.toContain("notFoundError was encountered");
   expect(hub.primaryApplication().logs()).not.toContain(
     "notFoundComponent option was not configured",
