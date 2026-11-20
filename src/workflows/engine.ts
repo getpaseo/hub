@@ -970,6 +970,7 @@ function buildStepIntent(
       },
       ...(step.env === undefined ? {} : { env: step.env }),
       ...(step.github === undefined ? {} : { github: step.github }),
+      ...(step.tools === undefined ? {} : { tools: step.tools }),
       ...(step.title === undefined
         ? {}
         : { title: renderExecutionTemplate(step.title, executionId) }),

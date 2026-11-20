@@ -79,8 +79,13 @@ export class AgentSessions {
       const tools = executionToolDefinitions(
         input.intent.outputSchema,
         this.outputs.materialize(input.intent.allowOutputs, input.intent.outputContext),
+        input.intent.tools,
       );
-      const compatibility = fingerprint({ settings: policy?.compatibility, tools });
+      const compatibility = fingerprint({
+        settings: policy?.compatibility,
+        tools,
+        grants: input.intent.tools,
+      });
       let session = await findSession();
       if (session && (await isFinishedCredentialedSession(session))) {
         // Completion may have raced credential preparation. Retry outside the lock.

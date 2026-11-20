@@ -55,6 +55,7 @@ import type { EntitlementsService } from "./entitlements/service.js";
 import type { ExecutionAuthority } from "./execution-authority/index.js";
 
 export interface HubRuntimeOptions {
+  integrationTools?: import("./integration-tools/index.js").IntegrationToolHandlers;
   database: Database | null;
   /** Required end to end so the executions meter can never be silently skipped. */
   entitlements: EntitlementsService | null;
@@ -436,6 +437,9 @@ function createAppExecutionCapabilityServer(
       : { completionTokenSecret: options.completionTokenSecret }),
     database: options.database,
     outputs: outputRegistry,
+    ...(options.integrationTools === undefined
+      ? {}
+      : { integrationTools: options.integrationTools }),
     completeExecution: (input) =>
       daemonModule.lifecycle.completeAgentExecutionFromCallback(input, { deferHubAction: true }),
   });

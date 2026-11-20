@@ -168,6 +168,40 @@ describe("execution capability MCP boundary", () => {
     }
   });
 
+  it("advertises only granted integration actions beside existing Hub tools", async () => {
+    const fixture = await capabilityFixture(
+      undefined,
+      "succeeded",
+      1,
+      undefined,
+      false,
+      [],
+      replyOutputTool,
+      [],
+      {
+        slack: { connection: "workspace-slack", actions: ["post"], channels: ["CALLOWED"] },
+        discord: { connection: "community-discord", actions: ["read"], channels: ["123"] },
+      },
+    );
+    const response = await fixture.call("tools/list");
+    assert.deepEqual(
+      ToolsListSchema.parse(response.result).tools.map(({ name }) => name),
+      [
+        "finish_execution",
+        "reply",
+        "slack_post",
+        "discord_list_channels",
+        "discord_read",
+        "discord_latest",
+      ],
+    );
+    const denied = await fixture.call("tools/call", {
+      name: "discord_post",
+      arguments: { target: "123", content: "hello" },
+    });
+    assert.equal(ToolResultSchema.parse(denied.result).isError, true);
+  });
+
   it("allows an event-native reply to be sent repeatedly without a synthetic cap", async () => {
     const fixture = await capabilityFixture(undefined, "succeeded", null);
 
@@ -736,11 +770,15 @@ async function capabilityFixture(
   requiredOutputTypes: readonly string[] = [],
   outputTool = replyOutputTool,
   additionalCapabilities: readonly OutputCapability[] = [],
+  tools?: LaunchMachineIntent["tools"],
 ) {
   const database = createMemoryDatabase();
   const executionId = randomUUID();
   const token = "token";
-  const intent = launchIntent(maxReplies, outputSchema, autoArchive, requiredOutputTypes);
+  const intent = {
+    ...launchIntent(maxReplies, outputSchema, autoArchive, requiredOutputTypes),
+    ...(tools === undefined ? {} : { tools }),
+  };
   await database.insertAgentExecution({
     id: executionId,
     organizationId: "org-1",

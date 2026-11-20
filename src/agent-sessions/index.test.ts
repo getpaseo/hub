@@ -164,6 +164,22 @@ async function fixture(now = Date.now) {
   return { database, connection, sessions, replies, arrival, execution, call };
 }
 
+test("continuations reuse matching integration grants and reject a different scope", async () => {
+  const f = await fixture();
+  const arrival = (channel: string) =>
+    f.arrival("conversation", "daemon", {}, "reply", {
+      tools: { slack: { connection: "workspace-slack", actions: ["post"], channels: [channel] } },
+    });
+  const first = await arrival("CALLOWED");
+  const followUp = await arrival("CALLOWED");
+  const differentChannel = await arrival("COTHER");
+
+  const agent = await first.dispatch();
+  expect((await followUp.dispatch()).agentId).toBe(agent.agentId);
+  await expect(differentChannel.dispatch()).rejects.toThrow("Continuation settings differ");
+  expect(f.connection.deliveries).toHaveLength(2);
+});
+
 test("same-key arrivals share an agent; an earlier completion cannot archive newer work", async () => {
   const f = await fixture();
   const first = await f.arrival();

@@ -1,5 +1,6 @@
 import { RecurrenceSchema } from "../schedule/recurrence.js";
 import { z } from "zod";
+import { IntegrationToolGrantsSchema } from "../../integration-tools/grants.js";
 import { ContinuationSchema } from "../continuation.js";
 import { eventDefinition, isEditorEvent } from "./events.js";
 import { AuthoredGitHubAuthoritySchema } from "../../config/github-authority.js";
@@ -109,6 +110,7 @@ export const TriggerRunSchema = z
     startup_timeout: z.string().min(1).optional(),
     env: z.record(z.string().min(1), z.string()).optional(),
     github: AuthoredGitHubAuthoritySchema.optional(),
+    tools: IntegrationToolGrantsSchema.optional(),
     output: z
       .object({ schema: z.record(z.string(), z.unknown()) })
       .strict()

@@ -3,6 +3,12 @@ import { ContinuationSchema } from "../triggers/continuation.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
+  CompiledIntegrationToolGrantsSchema,
+  IntegrationToolGrantsSchema,
+  normalizeIntegrationToolGrants,
+  type IntegrationToolGrants,
+} from "../integration-tools/grants.js";
+import {
   expressionPaths,
   parseExpression,
   expressionPathsInTemplate,
@@ -177,6 +183,7 @@ const StepSchema = z
     prompt: z.array(PromptBlockSchema).min(1),
     env: z.record(z.string().min(1), z.string()).optional(),
     github: AuthoredGitHubAuthoritySchema.optional(),
+    tools: IntegrationToolGrantsSchema.optional(),
     if: z.string().min(1).optional(),
     output: z.object({ schema: JsonSchemaSchema }).strict().optional(),
     allow_outputs: z.array(AllowOutputSchema).optional(),
@@ -256,6 +263,7 @@ export interface CompiledStep {
   prompt: readonly CompiledPromptBlock[];
   env?: Readonly<Record<string, string>> | undefined;
   github?: CompiledGitHubAuthority | undefined;
+  tools?: IntegrationToolGrants | undefined;
   condition?: Expression | undefined;
   output?: { schema: JsonValue } | undefined;
   allowOutputs: readonly { type: string; max?: number | undefined; required: boolean }[];
@@ -407,6 +415,7 @@ const CompiledStepSchema: z.ZodType<CompiledStep> = z
     prompt: z.array(CompiledPromptBlockSchema).min(1),
     env: z.record(z.string(), z.string()).optional(),
     github: CompiledGitHubAuthoritySchema.optional(),
+    tools: CompiledIntegrationToolGrantsSchema.optional(),
     condition: z.custom<Expression>(isExpression).optional(),
     output: z.object({ schema: CompiledJsonSchemaSchema }).strict().optional(),
     allowOutputs: z.array(
@@ -619,6 +628,7 @@ function compileStep(
     prompt: compilePromptBlocks(trigger.name, step.id, step.prompt, resolvedPromptPartials),
     ...(env === undefined ? {} : { env }),
     ...(github === undefined ? {} : { github }),
+    ...(step.tools === undefined ? {} : { tools: normalizeIntegrationToolGrants(step.tools) }),
     ...(condition === undefined ? {} : { condition }),
     ...(outputDeclaration === undefined ? {} : { output: outputDeclaration }),
     allowOutputs: (step.allow_outputs ?? []).map((allowOutput) => ({

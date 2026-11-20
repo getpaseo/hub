@@ -1,3 +1,5 @@
+import { dump } from "js-yaml";
+import type { IntegrationToolGrants } from "../../integration-tools/grants.js";
 import { parseCompiledHubConfig } from "../../config/compiler.js";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
@@ -109,6 +111,7 @@ interface ManagedChild {
 
 interface HubE2EOptions {
   realAgent?: boolean;
+  fakeChatOrigin?: string;
   daemonProviders?: Record<string, unknown>;
 }
 
@@ -448,6 +451,94 @@ export class HubE2E {
     if (response.status !== 201) {
       throw new Error(
         `install production configuration returned HTTP ${response.status}: ${await response.text()}`,
+      );
+    }
+  }
+
+  async runScheduledIntegrationTools(input: {
+    name: string;
+    scenario: RealAgentScenario;
+    tools: IntegrationToolGrants;
+    prompt: string;
+    continueSession?: boolean;
+  }) {
+    const pool = this.requirePool();
+    const daemon = await pool.query<{ slug: string }>(
+      "select slug from daemons where presence = 'connected' order by connected_at desc limit 1",
+    );
+    const slug = daemon.rows[0]?.slug;
+    if (!slug) throw new Error("Connected daemon has no daemon slug");
+    const yaml = dump({
+      name: input.name,
+      on: {
+        "schedule.tick": {
+          recurrence: {
+            timezone: "UTC",
+            start: "1970-01-01T00:00:00",
+            rule: "FREQ=DAILY;BYHOUR=12;BYMINUTE=0",
+          },
+        },
+      },
+      run: {
+        target: { daemon: slug, cwd: this.workspace },
+        agent: realAgentSelection(input.scenario),
+        continuation: input.continueSession ? { mode: "key", key: input.name } : { mode: "new" },
+        max_runtime: "10m",
+        idle_timeout: "4m",
+        prompt: input.prompt,
+        tools: input.tools,
+      },
+    });
+    const source = this.requireSource();
+    const triggers = join(this.workspace, ".paseo", "triggers");
+    await mkdir(triggers, { recursive: true });
+    await writeFile(join(triggers, `${input.name}.yml`), yaml);
+    const deployed = await source.runFrom(
+      ["hub", "deploy", "--hub", this.requireProxy().origin, "--api-key", MACHINE_KEY, "--json"],
+      this.workspace,
+    );
+    const { triggerId } = z.object({ triggerId: z.uuid() }).parse(deployed);
+    await pool.query(
+      "update trigger_schedules set next_at = clock_timestamp() - interval '1 minute' where trigger_id = $1",
+      [triggerId],
+    );
+    let run: ManualRun | undefined;
+    try {
+      await this.observe(async () => {
+        const executions = await pool.query<{
+          id: string;
+          daemon_agent_id: string | null;
+          status: string;
+        }>(
+          `select ae.id, ae.daemon_agent_id, ae.status from agent_executions ae
+           join workflow_step_runs steps on steps.agent_execution_id = ae.id
+           join trigger_runs runs on runs.id = steps.trigger_run_id
+           join provider_event_receipts receipts on receipts.id = runs.provider_event_receipt_id
+           where receipts.delivery_id like $1 and receipts.source = 'schedule.tick'`,
+          [`schedule:${triggerId}:%`],
+        );
+        const execution = executions.rows[0];
+        if (execution?.status === "failed") throw new Error("The scheduled agent execution failed");
+        if (!execution?.daemon_agent_id) return false;
+        run = { executionId: execution.id, agentId: execution.daemon_agent_id };
+        return true;
+      }, "real schedule to launch an agent");
+      if (run === undefined) throw new Error("Missing scheduled execution");
+      const [provider, processDescriptions] = await Promise.all([
+        source.agentProvider(run.agentId),
+        source.processDescriptions(),
+      ]);
+      const evidence = await this.realAgentCompletionEvidence(
+        { ...run, provider, processDescriptions },
+        input.scenario,
+      );
+      const timeline = await source.canonicalAgentTimeline(run.agentId);
+      return { evidence, timeline };
+    } catch (error) {
+      throw new Error(
+        `Scheduled integration run failed
+${this.failureArtifacts()}`,
+        { cause: error },
       );
     }
   }
@@ -1546,6 +1637,8 @@ export class HubE2E {
         PASEO_BOOTSTRAP_OWNER_EMAIL: "",
         PASEO_BOOTSTRAP_OWNER_PASSWORD: "",
         HUB_E2E_OUTPUT_FILE: this.outputFile,
+        HUB_E2E_FAKE_CHAT_ORIGIN: this.options.fakeChatOrigin,
+        DISCORD_BOT_TOKEN: undefined,
       },
     });
   }
@@ -1812,7 +1905,17 @@ export class HubE2E {
 }
 
 function realAgentConfigurationYaml(scenario: RealAgentScenario): string {
-  return `        agent: ${JSON.stringify({ provider: scenario.provider, model: scenario.model, mode: scenario.mode, thinkingOptionId: scenario.thinkingOptionId, options: scenario.providerOptions })}`;
+  return `        agent: ${JSON.stringify(realAgentSelection(scenario))}`;
+}
+
+function realAgentSelection(scenario: RealAgentScenario) {
+  return {
+    provider: scenario.provider,
+    model: scenario.model,
+    mode: scenario.mode,
+    thinkingOptionId: scenario.thinkingOptionId,
+    options: scenario.providerOptions,
+  };
 }
 
 async function initializeGitWorkspace(workspace: string): Promise<void> {

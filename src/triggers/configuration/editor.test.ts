@@ -74,6 +74,53 @@ describe("trigger form YAML bridge", () => {
     }
   });
 
+  const CHAT_GRANT = ADVANCED.replace(
+    "run:",
+    `run:
+  tools:
+    slack:
+      channels: [CDIGEST] # keep the channel comment
+      connection: engineering-slack
+      actions: [post]`,
+  );
+
+  test.each([
+    [
+      "into the grant",
+      CHAT_GRANT.replace("connection: company", "connection: &workspace company").replace(
+        "connection: engineering-slack",
+        "connection: *workspace",
+      ),
+    ],
+    [
+      "out of the grant",
+      CHAT_GRANT.replace(
+        "connection: engineering-slack",
+        "connection: &workspace engineering-slack",
+      ).replace("TEAM: core", "TEAM: core\n    DIGEST_CONNECTION: *workspace"),
+    ],
+  ])("keeps a trigger in YAML when anchors link %s", (_, yaml) => {
+    expect(TriggerDocumentSchema.safeParse(parseDocument(yaml).toJS()).success).toBe(true);
+    const projection = projectTriggerForm(yaml);
+    if (projection.status !== "yaml_only") throw new Error("Expected the form to be unavailable.");
+    expect(projection.reason).toMatch(/integration tool grants.*anchors or aliases/i);
+  });
+
+  test("preserves channel comments when changing unrelated grant fields", () => {
+    const projection = projectTriggerForm(CHAT_GRANT);
+    if (projection.status !== "editable") throw new Error(projection.reason);
+    const saved = patchTriggerYaml(CHAT_GRANT, {
+      ...projection.value,
+      tools: {
+        slack: { ...projection.value.tools.slack!, actions: ["read", "post"] },
+      },
+    });
+    expect(saved).toMatch(/channels: \[\s*CDIGEST\s*\] # keep the channel comment/);
+    const amended = projectTriggerForm(saved);
+    if (amended.status !== "editable") throw new Error(amended.reason);
+    expect(amended.value.tools.slack?.actions).toEqual(["read", "post"]);
+  });
+
   test("patches owned nodes while preserving comments and advanced configuration", () => {
     const projection = projectTriggerForm(ADVANCED);
     if (projection.status !== "editable") throw new Error(projection.reason);
@@ -173,6 +220,7 @@ describe("trigger form YAML bridge", () => {
       githubRepositories: "",
       githubPermissions: "",
       githubDuration: "1h",
+      tools: {},
       prompt: "Handle it.",
     });
     expect(parseDocument(yaml).toJS()).toEqual({
@@ -212,6 +260,7 @@ describe("trigger form YAML bridge", () => {
       githubRepositories: "",
       githubPermissions: "",
       githubDuration: "1h",
+      tools: {},
       prompt: "${{ paseo.prompt }}",
     });
     const projection = projectTriggerForm(initial);

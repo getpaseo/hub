@@ -5,8 +5,15 @@ import {
   type Recurrence,
 } from "../schedule/recurrence.js";
 import { ContinuationSchema } from "../continuation.js";
-import { parseDocument, stringify, type Document } from "yaml";
+import { isAlias, isNode, parseDocument, stringify, visit, type Document } from "yaml";
 import { z } from "zod";
+import {
+  integrationProviders,
+  IntegrationToolGrantsSchema,
+  type IntegrationAction,
+  type IntegrationProvider,
+  type IntegrationToolGrants,
+} from "../../integration-tools/grants.js";
 import { IDENTIFIER, TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
 
 import {
@@ -16,6 +23,12 @@ import {
   type QualifierValues,
   type QualifierKey,
 } from "./events.js";
+
+export interface IntegrationToolFormValue {
+  connection: string;
+  actions: IntegrationAction[];
+  channels: string;
+}
 
 export interface TriggerFormValue {
   name: string;
@@ -39,6 +52,7 @@ export interface TriggerFormValue {
   githubRepositories: string;
   githubPermissions: string;
   githubDuration: string;
+  tools: Partial<Record<IntegrationProvider, IntegrationToolFormValue>>;
   prompt: string;
 }
 
@@ -64,10 +78,16 @@ export function projectTriggerForm(yaml: string): TriggerFormProjection {
   if ("choices" in trigger.run.agent) {
     return { status: "yaml_only", reason: "Agent choices can only be edited in YAML." };
   }
-  const agent = trigger.run.agent;
+  if (trigger.run.tools !== undefined && integrationToolsUseYamlReferences(parsed.document)) {
+    return {
+      status: "yaml_only",
+      reason:
+        "Edit this trigger in YAML because its integration tool grants use anchors or aliases.",
+    };
+  }
   return {
     status: "editable",
-    value: toFormValue(trigger, event, definition, agent),
+    value: toFormValue(trigger, event, definition, trigger.run.agent),
   };
 }
 
@@ -102,6 +122,14 @@ function toFormValue(
         ? ""
         : JSON.stringify(trigger.run.github.permissions, null, 2),
     githubDuration: trigger.run.github?.duration ?? "",
+    tools: Object.fromEntries(
+      integrationProviders.flatMap((provider) => {
+        const grant = trigger.run.tools?.[provider];
+        return grant === undefined
+          ? []
+          : [[provider, { ...grant, channels: grant.channels.join(", ") }]];
+      }),
+    ),
     prompt: trigger.run.prompt,
   };
 }
@@ -165,6 +193,7 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   setIfChanged(document, ["run", "max_runtime"], value.maxRuntime.trim());
   setIfChanged(document, ["run", "idle_timeout"], value.idleTimeout.trim());
   setOptional(document, ["run", "github"], githubAuthority(value));
+  patchIntegrationToolGrants(document, projection.value, value);
   setIfChanged(document, ["run", "prompt"], value.prompt);
   return document.toString({ lineWidth: 0 });
 }
@@ -207,6 +236,7 @@ export function createTriggerYaml(value: TriggerFormValue): string {
   const agent = splitAgentId(value.agent);
   const providerOptions = parseProviderOptions(value.providerOptions);
   const github = githubAuthority(value);
+  const tools = integrationToolGrants(value);
   const definition = formEventDefinition(value);
   return stringify(
     {
@@ -228,6 +258,7 @@ export function createTriggerYaml(value: TriggerFormValue): string {
         max_runtime: value.maxRuntime.trim(),
         idle_timeout: value.idleTimeout.trim(),
         ...(github === undefined ? {} : { github }),
+        ...(tools === undefined ? {} : { tools }),
         prompt: value.prompt,
       },
     },
@@ -286,9 +317,89 @@ function parsePermissions(value: string): Record<string, "read" | "write" | "adm
   return permissions.data;
 }
 
+function authoredIntegrationToolGrants(value: TriggerFormValue) {
+  const entries = integrationProviders.flatMap(
+    (
+      provider,
+    ): [IntegrationProvider, NonNullable<IntegrationToolGrants[IntegrationProvider]>][] => {
+      const grant = value.tools[provider];
+      return grant === undefined || grant.connection === ""
+        ? []
+        : [[provider, { ...grant, channels: commaSeparated(grant.channels) }]];
+    },
+  );
+  return entries.length === 0 ? undefined : Object.fromEntries(entries);
+}
+
+function integrationToolGrants(value: TriggerFormValue): IntegrationToolGrants | undefined {
+  return IntegrationToolGrantsSchema.optional().parse(authoredIntegrationToolGrants(value));
+}
+
+function patchIntegrationToolGrants(
+  document: Document,
+  previous: TriggerFormValue,
+  value: TriggerFormValue,
+): void {
+  const before = integrationToolGrants(previous);
+  const after = integrationToolGrants(value);
+  if (after === undefined) {
+    deleteIfPresent(document, ["run", "tools"]);
+    return;
+  }
+  for (const provider of integrationProviders) {
+    const path = ["run", "tools", provider];
+    const existing = before?.[provider];
+    const updated = after[provider];
+    if (updated === undefined || existing === undefined) {
+      setOptional(document, path, updated);
+      continue;
+    }
+    for (const field of ["connection", "actions", "channels"] as const) {
+      if (JSON.stringify(existing[field]) !== JSON.stringify(updated[field])) {
+        document.setIn([...path, field], updated[field]);
+      }
+    }
+  }
+}
+
+function integrationToolsUseYamlReferences(document: Document): boolean {
+  const run = document.get("run", true);
+  if (isNode(run) && (isAlias(run) || run.anchor !== undefined)) return true;
+  const tools = document.getIn(["run", "tools"], true);
+  if (!isNode(tools)) return false;
+  let usesReferences = false;
+  const found = () => {
+    usesReferences = true;
+    return visit.BREAK;
+  };
+  visit(tools, {
+    Alias: found,
+    Value: (_, node) => (node.anchor === undefined ? undefined : found()),
+  });
+  return usesReferences;
+}
+
+function integrationToolErrors(value: TriggerFormValue): TriggerFieldErrors {
+  const grants = IntegrationToolGrantsSchema.optional().safeParse(
+    authoredIntegrationToolGrants(value),
+  );
+  if (grants.success) return {};
+  return Object.fromEntries(
+    grants.error.issues.map(({ path, message }) => {
+      const key = "tools." + path.slice(0, 2).join(".");
+      return [key, message];
+    }),
+  );
+}
+
 /** What is wrong with each field, keyed by the field that has to change. */
 export type TriggerFieldErrors = Partial<
-  Record<keyof TriggerFormValue | `qualifiers.${QualifierKey}`, string>
+  Record<
+    | keyof TriggerFormValue
+    | `qualifiers.${QualifierKey}`
+    | `tools.${IntegrationProvider}.${keyof IntegrationToolFormValue}`,
+    string
+  >
 >;
 
 /**
@@ -331,7 +442,7 @@ function triggerFormDocumentErrors(value: TriggerFormValue): TriggerFieldErrors 
     const permissions = refused(() => parsePermissions(value.githubPermissions));
     if (permissions !== undefined) errors.githubPermissions = permissions;
   }
-  Object.assign(errors, continuationErrors(value));
+  Object.assign(errors, integrationToolErrors(value), continuationErrors(value));
   if (value.prompt.trim().length === 0) errors.prompt = "Instructions are required.";
   return errors;
 }
@@ -405,7 +516,9 @@ export function splitAgentId(value: string): { provider: string; model?: string 
 
 function parseEditorDocument(
   yaml: string,
-): { success: true; data: TriggerDocument } | { success: false; error: string } {
+):
+  | { success: true; data: TriggerDocument; document: Document }
+  | { success: false; error: string } {
   const document = parseDocument(yaml, { compat: ["timestamp"] });
   if (document.errors.length > 0) return { success: false, error: document.errors[0]!.message };
   const parsed = TriggerDocumentSchema.safeParse(document.toJS());
@@ -413,7 +526,7 @@ function parseEditorDocument(
     const issue = parsed.error.issues[0]!;
     return { success: false, error: `${issue.path.join(".") || "YAML"}: ${issue.message}` };
   }
-  return { success: true, data: parsed.data };
+  return { success: true, data: parsed.data, document };
 }
 
 function assertDocument(document: Document): void {
