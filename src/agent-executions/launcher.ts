@@ -109,7 +109,7 @@ function document(title: string, body: string): Response {
     h1 { font-size: 1.5rem; }
     a { color: #d4e3ff; }
     .primary { display: inline-block; padding: .6rem 1rem; border-radius: .5rem;
-      background: #e4ecfc; color: #131b2a; text-decoration: none; font-weight: 600; }
+      background: #e4ecfc; color: #131b2a; text-decoration: none; }
     nav { display: flex; flex-wrap: wrap; gap: .75rem 1rem; }
     dd { margin: 0 0 .5rem; }
   </style>
