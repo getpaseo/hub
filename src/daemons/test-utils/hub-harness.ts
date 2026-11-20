@@ -272,12 +272,14 @@ export class HubHarness {
   async connectDaemon(
     token?: string,
     permissions: readonly string[] = ["hub.execute"],
+    features?: { optionalMcpSupport: boolean },
   ): Promise<string> {
     const issued =
       token === undefined ? await this.issueEnrollment() : { status: 201 as const, token };
     if (issued.status !== 201 || !("token" in issued))
       throw new Error("Enrollment token was not issued");
     this.connectedDaemon = TestDaemon.create(this.origin);
+    this.connectedDaemon.optionalMcpSupport = features?.optionalMcpSupport;
     const daemon = await this.connectedDaemon.enroll(issued.token, undefined, permissions);
     await this.connectedDaemon.connect(daemon);
     await this.observeConnectedPresence(daemon.daemonId);
@@ -2187,6 +2189,7 @@ class TestDaemon {
   private holdControlAck = false;
   private materializeSpawn = true;
   private omitSnapshotOnReconnect = false;
+  optionalMcpSupport: boolean | undefined;
   private nextCreateError: string | undefined;
   private resolveSpawn!: () => void;
   private readonly spawnObserved = new Promise<void>((resolve) => {
@@ -2612,6 +2615,7 @@ class TestDaemon {
             hubAgentRpc: true,
             agentRequestReceipts: true,
             backgroundWorkspaces: true,
+            optionalMcpSupport: this.optionalMcpSupport,
           },
         },
       });

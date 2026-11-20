@@ -31,6 +31,7 @@ import { reportFailure } from "../failures/index.js";
 import type { TriggerProvider } from "../triggers/index.js";
 import type { ExecutionAuthority } from "../execution-authority/index.js";
 import { OutputExecutorRegistry } from "../execution-capabilities/outputs.js";
+import { executionToolPolicy } from "../execution-capabilities/tool-policy.js";
 import {
   notifyAgentExecutionCompleted,
   notifyAgentExecutionFailed,
@@ -598,7 +599,12 @@ export class DaemonDispatchLifecycle {
       provider,
       hubExecutionEnv.executionId,
     );
-    return buildCreateAgentOptions(materialized.intent, hubExecutionEnv, materialized.env);
+    return buildCreateAgentOptions(
+      materialized.intent,
+      hubExecutionEnv,
+      materialized.env,
+      this.executionCapabilities,
+    );
   }
 
   async handleAgentStreamEvent(
@@ -1939,6 +1945,7 @@ async function buildCreateAgentOptions(
     publicBaseUrl: string;
   },
   materializedEnv: Readonly<Record<string, string>>,
+  capabilities: OutputExecutorRegistry,
 ): Promise<DaemonCreateAgentOptions> {
   return {
     provider: intent.agent.provider,
@@ -1958,6 +1965,12 @@ async function buildCreateAgentOptions(
     mcpServers: {
       hub: buildExecutionCapabilityMcpServer(hubExecutionEnv),
     },
+    toolPolicy: executionToolPolicy({
+      allowOutputs: intent.allowOutputs,
+      outputContext: intent.outputContext,
+      outputSchema: intent.outputSchema,
+      capabilities,
+    }),
     ...(intent.environment.worktree === undefined
       ? {}
       : {

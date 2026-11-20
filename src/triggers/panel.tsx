@@ -389,6 +389,7 @@ function TriggerEditor({
               errors={editor.errors}
               triggerId={trigger?.id}
               snapshot={snapshot}
+              providerCatalog={editor.providerCatalog}
               onChange={editor.setForm}
             />
           )}
@@ -434,7 +435,7 @@ function useTriggerEditorState(
       (initialProjection.status === "editable" &&
         !legacy &&
         initialErrors.agent === undefined &&
-        initialErrors.mode === undefined)
+        initialProjection.value.mode.trim().length > 0)
       ? "form"
       : "yaml",
   );
@@ -453,7 +454,14 @@ function useTriggerEditorState(
   // new trigger is not a page of errors, it is a page nobody has filled in. Once they have asked,
   // the marks stay and follow what they type.
   const [refused, setRefused] = useState(false);
-  const errors = useMemo(() => triggerFormErrors(form), [form]);
+  const selectedDaemon = snapshot.daemons.find((daemon) => daemon.slug === form.daemon);
+  const providerCatalog = useDaemonProviderCatalog(
+    snapshot.organization.slug,
+    mode === "form" ? selectedDaemon?.id : undefined,
+    form.cwd,
+  );
+  const { entry } = selectedProviderModel(providerCatalog.entries, form.agent);
+  const errors = triggerFormErrors(form, entry?.modes);
   const refuse = () => setRefused(true);
   const switchMode = (next: EditorMode) => {
     if (next === mode) return;
@@ -477,6 +485,7 @@ function useTriggerEditorState(
     yaml,
     form,
     errors: refused ? errors : NO_FIELD_ERRORS,
+    providerCatalog,
     // Legacy workflows are explained by their own alert; repeating the schema error underneath it
     // would say the same thing twice in less useful words.
     blocked: legacy ? undefined : blocked,
@@ -573,6 +582,7 @@ function TriggerForm({
   errors,
   triggerId,
   snapshot,
+  providerCatalog,
   onChange,
 }: {
   form: TriggerFormValue;
@@ -580,6 +590,7 @@ function TriggerForm({
   errors: TriggerFieldErrors;
   triggerId: string | undefined;
   snapshot: TriggerSnapshot;
+  providerCatalog: ReturnType<typeof useDaemonProviderCatalog>;
   onChange: (value: TriggerFormValue) => void;
 }) {
   const { provider } = eventDefinition(form.event);
@@ -612,11 +623,6 @@ function TriggerForm({
   const text = (key: TriggerTextField) => (value: string) => update(key, value);
   const selectedDaemon = snapshot.daemons.find((daemon) => daemon.slug === form.daemon);
   const noDaemons = snapshot.daemons.length === 0;
-  const providerCatalog = useDaemonProviderCatalog(
-    snapshot.organization.slug,
-    selectedDaemon?.id,
-    form.cwd,
-  );
   return (
     <div className="grid gap-6">
       <Card>
@@ -1179,7 +1185,7 @@ function ProviderCatalogFields({
           />
         )}
       </FormField>
-      {selected.entry === undefined ? null : (
+      {modeOptions.length === 0 ? null : (
         <FormField
           id="trigger-mode"
           label="Execution mode"

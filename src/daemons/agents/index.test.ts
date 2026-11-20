@@ -354,3 +354,41 @@ test("launches arbitrary daemon providers with MCP servers and no Hub tool polic
   expect(requests[0]).not.toHaveProperty("config.toolPolicy");
   expect(requests[0]).not.toHaveProperty("config.mcpServerRequirements");
 });
+
+test.each([true, false, undefined])(
+  "passes a Hub policy only when the daemon advertises optional MCP support (%s)",
+  async (optionalMcpSupport) => {
+    const requests: Record<string, unknown>[] = [];
+    const agents = connect(requests);
+    agents.receive({
+      type: "session",
+      message: {
+        type: "server_info",
+        payload: {
+          features: { hubAgentRpc: true, agentRequestReceipts: true, optionalMcpSupport },
+        },
+      },
+    });
+    const grants = {
+      preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
+    } as const;
+    const launch = {
+      ...options,
+      provider: "provider-from-daemon",
+      toolPolicy: grants,
+      mcpServers: { hub: { type: "http", url: "https://hub.test/mcp" } } as const,
+    };
+    await agents.create("key", launch);
+    expect(requests[0]).toMatchObject({
+      config: { provider: launch.provider, mcpServers: launch.mcpServers },
+    });
+    if (optionalMcpSupport) {
+      expect(requests[0]).toHaveProperty("config.toolPolicy", {
+        ...grants,
+        enforcement: "if-supported",
+      });
+    } else {
+      expect(requests[0]).not.toHaveProperty("config.toolPolicy");
+    }
+  },
+);

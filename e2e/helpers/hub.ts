@@ -5736,6 +5736,9 @@ class ContractDaemon {
 
   async expectCreatedConfiguration(expected: Record<string, unknown>): Promise<void> {
     await expect.poll(() => this.createdConfigurations.at(-1)).toMatchObject(expected);
+    if (!Object.hasOwn(expected, "modeId")) {
+      expect(this.createdConfigurations.at(-1)).not.toHaveProperty("modeId");
+    }
     expect(this.createdConfigurations.at(-1)).not.toHaveProperty("toolPolicy");
   }
 

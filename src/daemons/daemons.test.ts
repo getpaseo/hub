@@ -192,6 +192,29 @@ describe("daemon enrollment and execution", () => {
     });
   });
 
+  it("sends exact grants for the tools exposed by each execution when optional preapproval is supported", async () => {
+    await hub.connectDaemon(undefined, undefined, { optionalMcpSupport: true });
+
+    await hub.dispatch({
+      outputContext: { provider: "discord", channelId: "channel-1" },
+    });
+    assert.deepEqual(hub.createdAgentLaunch().toolPolicy, {
+      enforcement: "if-supported",
+      preapproved: [
+        { kind: "mcp", server: "hub", tool: "finish_execution" },
+        { kind: "mcp", server: "hub", tool: "reply" },
+      ],
+    });
+
+    await hub.dispatch({
+      outputContext: { provider: "manual", channelId: "channel-1" },
+    });
+    assert.deepEqual(hub.createdAgentLaunch().toolPolicy, {
+      enforcement: "if-supported",
+      preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
+    });
+  });
+
   it("names the workspace after an authored title while the agent title stays static", async () => {
     await hub.connectDaemon();
     await hub.dispatch({ title: "Intake · custom" });

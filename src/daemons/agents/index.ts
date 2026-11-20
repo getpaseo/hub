@@ -46,6 +46,7 @@ export class DaemonAgentError extends Error {}
 /** The ordinary daemon protocol. This channel knows nothing about Hub executions or triggers. */
 export class DaemonAgents implements AgentConnection {
   private supported = false;
+  private optionalMcpSupport = false;
   private readonly pending = new Map<
     string,
     { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void }
@@ -64,9 +65,14 @@ export class DaemonAgents implements AgentConnection {
     const { type, payload } = envelope.data.message;
     if (type === "server_info" || (type === "status" && payload["status"] === "server_info")) {
       const features = z
-        .object({ hubAgentRpc: z.literal(true), agentRequestReceipts: z.literal(true) })
+        .object({
+          hubAgentRpc: z.literal(true),
+          agentRequestReceipts: z.literal(true),
+          optionalMcpSupport: z.boolean().optional(),
+        })
         .safeParse(payload["features"]);
       this.supported = features.success;
+      this.optionalMcpSupport = features.data?.optionalMcpSupport === true;
       return false;
     }
     const requestId = payload["requestId"];
@@ -128,6 +134,10 @@ export class DaemonAgents implements AgentConnection {
           thinkingOptionId: options.thinkingOptionId,
           providerOptions: options.providerOptions,
           mcpServers: options.mcpServers,
+          toolPolicy:
+            this.optionalMcpSupport && options.toolPolicy !== undefined
+              ? { ...options.toolPolicy, enforcement: "if-supported" }
+              : undefined,
         },
         env: options.env,
         worktree: options.worktree,

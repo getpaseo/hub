@@ -146,8 +146,11 @@ export class OrganizationTriggers {
     await expect(this.page.getByRole("option")).toHaveCount(labels.length);
     for (const label of labels)
       await expect(this.page.getByRole("option").filter({ hasText: label })).toBeVisible();
-    await this.page.screenshot({ path: "/tmp/hub-provider-qa/concrete-model-picker.png" });
     await this.page.keyboard.press("Escape");
+  }
+
+  async expectNoExecutionModes() {
+    await expect(this.page.getByRole("combobox", { name: "Execution mode" })).toHaveCount(0);
   }
 
   async expectMaterializedSelections(mode: string, thinking: string) {
@@ -570,7 +573,7 @@ export class OrganizationTriggers {
     await this.page.screenshot({ path });
   }
 
-  private async selectAgent(agentId: string) {
+  async selectAgent(agentId: string) {
     await this.page.getByRole("combobox", { name: "Agent" }).click();
     await this.page.locator(`[role="option"][data-value=${JSON.stringify(agentId)}]`).click();
   }

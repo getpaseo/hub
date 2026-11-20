@@ -273,14 +273,18 @@ test("round-trips unknown daemon providers and advertised settings through form,
       label: "Modeless agent",
       status: "ready",
       enabled: true,
-      models: [],
+      models: [{ provider: "modeless-agent", id: "vendor/modeless", label: "vendor/modeless" }],
       modes: [],
     },
   ]);
   const triggers = new OrganizationTriggers(page);
   await triggers.open();
   await triggers.startNew();
-  await triggers.expectReportedModelChoices("/workspace/acme", ["vendor/first", "vendor/second"]);
+  await triggers.expectReportedModelChoices("/workspace/acme", [
+    "vendor/first",
+    "vendor/second",
+    "vendor/modeless",
+  ]);
   await triggers.configureManual({
     name: "unknown-run",
     daemon,
@@ -326,6 +330,17 @@ run:
     modeId: "evaluate",
     thinkingOptionId: "rapid",
     providerOptions: { custom_setting: { limit: 9 } },
+  });
+  await test.step("the form saves and launches a selected model with no execution modes", async () => {
+    await triggers.openTrigger("unknown-run");
+    await triggers.selectAgent("modeless-agent/vendor/modeless");
+    await triggers.expectNoExecutionModes();
+    await triggers.save("unknown-run");
+    await hub.launchSavedTrigger("unknown-run", apiKey);
+    await hub.expectProviderLaunch(daemon, {
+      provider: "modeless-agent",
+      model: "vendor/modeless",
+    });
   });
   await triggers.openTrigger("unknown-run");
   await triggers.switchToYaml();
