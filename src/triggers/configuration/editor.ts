@@ -5,7 +5,7 @@ import {
   type Recurrence,
 } from "../schedule/recurrence.js";
 import { ContinuationSchema } from "../continuation.js";
-import { parseDocument, stringify, type Document } from "yaml";
+import { isNode, parseDocument, stringify, visit, type Document } from "yaml";
 import { z } from "zod";
 import {
   integrationProviders,
@@ -53,6 +53,7 @@ export interface TriggerFormValue {
   githubPermissions: string;
   githubDuration: string;
   tools: Partial<Record<IntegrationProvider, IntegrationToolFormValue>>;
+  toolGrantEditReason?: string;
   prompt: string;
 }
 
@@ -78,10 +79,11 @@ export function projectTriggerForm(yaml: string): TriggerFormProjection {
   if ("choices" in trigger.run.agent) {
     return { status: "yaml_only", reason: "Agent choices can only be edited in YAML." };
   }
-  const agent = trigger.run.agent;
+  const value = toFormValue(trigger, event, definition, trigger.run.agent);
+  const toolGrantEditReason = integrationToolEditReason(parsed.document);
   return {
     status: "editable",
-    value: toFormValue(trigger, event, definition, agent),
+    value: toolGrantEditReason === undefined ? value : { ...value, toolGrantEditReason },
   };
 }
 
@@ -335,6 +337,12 @@ function patchIntegrationToolGrants(
 ): void {
   const before = integrationToolGrants(previous);
   const after = integrationToolGrants(value);
+  if (previous.toolGrantEditReason !== undefined) {
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      throw new Error(previous.toolGrantEditReason);
+    }
+    return;
+  }
   if (after === undefined) {
     deleteIfPresent(document, ["run", "tools"]);
     return;
@@ -353,6 +361,23 @@ function patchIntegrationToolGrants(
       }
     }
   }
+}
+
+function integrationToolEditReason(document: Document): string | undefined {
+  const tools = document.getIn(["run", "tools"], true);
+  if (!isNode(tools)) return undefined;
+  let usesReferences = false;
+  const found = () => {
+    usesReferences = true;
+    return visit.BREAK;
+  };
+  visit(tools, {
+    Alias: found,
+    Value: (_, node) => (node.anchor === undefined ? undefined : found()),
+  });
+  return usesReferences
+    ? "Edit integration tools in YAML because these grants use anchors or aliases."
+    : undefined;
 }
 
 function integrationToolErrors(value: TriggerFormValue): TriggerFieldErrors {
@@ -492,7 +517,9 @@ export function splitAgentId(value: string): { provider: string; model?: string 
 
 function parseEditorDocument(
   yaml: string,
-): { success: true; data: TriggerDocument } | { success: false; error: string } {
+):
+  | { success: true; data: TriggerDocument; document: Document }
+  | { success: false; error: string } {
   const document = parseDocument(yaml, { compat: ["timestamp"] });
   if (document.errors.length > 0) return { success: false, error: document.errors[0]!.message };
   const parsed = TriggerDocumentSchema.safeParse(document.toJS());
@@ -500,7 +527,7 @@ function parseEditorDocument(
     const issue = parsed.error.issues[0]!;
     return { success: false, error: `${issue.path.join(".") || "YAML"}: ${issue.message}` };
   }
-  return { success: true, data: parsed.data };
+  return { success: true, data: parsed.data, document };
 }
 
 function assertDocument(document: Document): void {

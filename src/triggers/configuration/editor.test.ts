@@ -74,36 +74,45 @@ describe("trigger form YAML bridge", () => {
     }
   });
 
-  test("preserves tool grant anchors and comments when changing instructions or actions", () => {
+  test("keeps shared tool grant settings in YAML and preserves them during form edits", () => {
     const original = ADVANCED.replace(
       "run:",
       `run:
   tools:
     slack:
-      channels: [CDIGEST] # keep the channel comment
+      channels: &digestChannels [CDIGEST] # keep the channel comment
       connection: &digestConnection engineering-slack
       actions: [post]`,
-    ).replace("TEAM: core", "TEAM: core\n    DIGEST_CONNECTION: *digestConnection");
+    )
+      .replace("TEAM: core", "TEAM: core\n    DIGEST_CONNECTION: *digestConnection")
+      .replace("      type: object", "      type: object\n      examples: *digestChannels");
     const projection = projectTriggerForm(original);
     if (projection.status !== "editable") throw new Error(projection.reason);
+    expect(projection.value.toolGrantEditReason).toMatch(/edit .* in YAML/i);
     const instructions = { ...projection.value, prompt: "Send a scheduled digest." };
     const saved = patchTriggerYaml(original, instructions);
-    expect(saved).toMatch(/channels: \[\s*CDIGEST\s*\] # keep the channel comment/);
+    expect(saved).toMatch(/channels: &digestChannels \[\s*CDIGEST\s*\] # keep the channel comment/);
     expect(saved).toContain("connection: &digestConnection engineering-slack");
     expect(saved).toContain("DIGEST_CONNECTION: *digestConnection");
+    expect(saved).toContain("examples: *digestChannels");
     expect(projectTriggerForm(saved).status).toBe("editable");
 
-    const actions = patchTriggerYaml(saved, {
-      ...instructions,
-      tools: {
-        slack: { ...instructions.tools.slack!, actions: ["read", "post"] },
-      },
-    });
-    expect(actions).toContain("# keep the channel comment");
-    expect(actions).toContain("&digestConnection engineering-slack");
-    const amended = projectTriggerForm(actions);
-    if (amended.status !== "editable") throw new Error(amended.reason);
-    expect(amended.value.tools.slack?.actions).toEqual(["read", "post"]);
+    expect(() =>
+      patchTriggerYaml(saved, {
+        ...instructions,
+        tools: {
+          slack: { ...instructions.tools.slack!, connection: "different-slack" },
+        },
+      }),
+    ).toThrow(/edit .* in YAML/i);
+    expect(() =>
+      patchTriggerYaml(saved, {
+        ...instructions,
+        tools: {
+          slack: { ...instructions.tools.slack!, channels: "COTHER" },
+        },
+      }),
+    ).toThrow(/edit .* in YAML/i);
   });
 
   test("patches owned nodes while preserving comments and advanced configuration", () => {
