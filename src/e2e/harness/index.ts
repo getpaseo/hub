@@ -112,6 +112,7 @@ interface ManagedChild {
 interface HubE2EOptions {
   realAgent?: boolean;
   fakeChatOrigin?: string;
+  daemonProviders?: Record<string, unknown>;
 }
 
 export interface SourceCliBundleDeploymentEvidence {
@@ -126,12 +127,19 @@ export interface SourceCliBundleDeploymentEvidence {
     environments: readonly { name: string; cwd: string; daemonId: string }[];
     slackWorkerEnvironment: unknown;
     slackAgentSelector: string | undefined;
-    codexOptions: unknown;
+    agentChoiceOptions: Record<string, unknown>;
     classifierPartial: unknown;
   };
 }
 
-type RealAgentProvider = "claude" | "codex" | "opencode";
+export interface RealAgentScenario {
+  provider: string;
+  model?: string;
+  mode?: string;
+  thinkingOptionId?: string;
+  providerOptions?: Record<string, unknown>;
+  processPattern: RegExp;
+}
 type DispatchedManualRun = z.infer<typeof DispatchedManualRunSchema>;
 
 export interface ShutdownEvidence {
@@ -144,6 +152,7 @@ export interface ShutdownEvidence {
 
 export class HubE2E {
   private root = "";
+  private realAgentScenario?: RealAgentScenario;
   private source: SourcePaseo | undefined;
   private workspace = "";
   private hubOrigin = "";
@@ -325,7 +334,9 @@ export class HubE2E {
         })),
         slackWorkerEnvironment: worker.environment,
         slackAgentSelector: worker.agent.selector,
-        codexOptions: worker.agent.choices?.["codex"]?.options,
+        agentChoiceOptions: Object.fromEntries(
+          Object.entries(worker.agent.choices ?? {}).map(([name, agent]) => [name, agent.options]),
+        ),
         classifierPartial: classifier.prompt[0],
       },
     };
@@ -446,6 +457,7 @@ export class HubE2E {
 
   async runScheduledIntegrationTools(input: {
     name: string;
+    scenario: RealAgentScenario;
     tools: IntegrationToolGrants;
     prompt: string;
     continueSession?: boolean;
@@ -469,11 +481,7 @@ export class HubE2E {
       },
       run: {
         target: { daemon: slug, cwd: this.workspace },
-        agent: {
-          provider: "codex",
-          mode: "full-access",
-          options: { approval_policy: "never", sandbox_mode: "read-only", web_search: "disabled" },
-        },
+        agent: realAgentSelection(input.scenario),
         continuation: input.continueSession ? { mode: "key", key: input.name } : { mode: "new" },
         max_runtime: "10m",
         idle_timeout: "4m",
@@ -522,7 +530,7 @@ export class HubE2E {
       ]);
       const evidence = await this.realAgentCompletionEvidence(
         { ...run, provider, processDescriptions },
-        "codex",
+        input.scenario,
       );
       const timeline = await source.canonicalAgentTimeline(run.agentId);
       return { evidence, timeline };
@@ -535,7 +543,11 @@ ${this.failureArtifacts()}`,
     }
   }
 
-  async installRealAgentConfiguration(provider: RealAgentProvider): Promise<void> {
+  async installRealAgentConfiguration(
+    scenario: RealAgentScenario,
+    structuredOutput = false,
+  ): Promise<void> {
+    this.realAgentScenario = scenario;
     const daemon = await this.requirePool().query<{ slug: string }>(
       "select slug from daemons where presence = 'connected' order by connected_at desc limit 1",
     );
@@ -559,10 +571,18 @@ ${this.failureArtifacts()}`,
       "        max_runtime: 1h",
       "        idle_timeout: 5m",
       "        auto_archive: true",
-      "        agent:",
-      `          provider: ${provider}`,
-      ...realAgentOptionsYaml(provider),
-      '        prompt: [{ text: "Call the finish_execution MCP tool exactly once. Do not use curl, shell, or direct HTTP." }] ',
+      realAgentConfigurationYaml(scenario),
+      ...(structuredOutput
+        ? [
+            "        output:",
+            "          schema:",
+            "            type: object",
+            "            required: [result]",
+            "            properties:",
+            "              result: { type: string, enum: [done] }",
+          ]
+        : []),
+      `        prompt: [{ text: "Call the finish_execution MCP tool exactly once.${structuredOutput ? " Set output to {result: done}." : ""} Do not use curl, shell, or direct HTTP." }]`,
     ].join("\n");
     const response = await fetch(`${this.requireProxy().origin}/api/v1/configurations/install`, {
       method: "POST",
@@ -575,7 +595,8 @@ ${this.failureArtifacts()}`,
     assertStatus(response, 201, "install real-agent configuration");
   }
 
-  async installRealAgentRoutingConfiguration(provider: RealAgentProvider): Promise<void> {
+  async installRealAgentRoutingConfiguration(scenario: RealAgentScenario): Promise<void> {
+    this.realAgentScenario = scenario;
     const daemon = await this.requirePool().query<{ slug: string }>(
       "select slug from daemons where presence = 'connected' order by connected_at desc limit 1",
     );
@@ -606,9 +627,7 @@ ${this.failureArtifacts()}`,
       "        max_runtime: 1h",
       "        idle_timeout: 5m",
       "        auto_archive: true",
-      "        agent:",
-      `          provider: ${provider}`,
-      ...realAgentOptionsYaml(provider),
+      realAgentConfigurationYaml(scenario),
       '        prompt: [{ text: "Classify the request and call finish_execution exactly once with output {repo: hub}. Do not use curl, shell, or direct HTTP. Request: ${{ paseo.prompt }}" }] ',
       "        output:",
       "          schema:",
@@ -625,9 +644,7 @@ ${this.failureArtifacts()}`,
       "        max_runtime: 1h",
       "        idle_timeout: 5m",
       "        auto_archive: true",
-      "        agent:",
-      `          provider: ${provider}`,
-      ...realAgentOptionsYaml(provider),
+      realAgentConfigurationYaml(scenario),
       '        prompt: [{ text: "Call finish_execution exactly once. Do not use curl, shell, or direct HTTP." }] ',
       "      - id: work-hub",
       "        if: \"${{ values.selected == 'hub' }}\"",
@@ -635,9 +652,7 @@ ${this.failureArtifacts()}`,
       "        max_runtime: 1h",
       "        idle_timeout: 5m",
       "        auto_archive: true",
-      "        agent:",
-      `          provider: ${provider}`,
-      ...realAgentOptionsYaml(provider),
+      realAgentConfigurationYaml(scenario),
       '        prompt: [{ text: "Call finish_execution exactly once. Do not use curl, shell, or direct HTTP." }] ',
     ].join("\n");
     const response = await fetch(`${this.requireProxy().origin}/api/v1/configurations/install`, {
@@ -682,10 +697,14 @@ ${this.failureArtifacts()}`,
     const dispatch = await this.dispatchManualRun({ trigger, actor, deliveryKey, input });
     const run = await this.waitForManualRun(dispatch);
     const source = this.requireSource();
-    const [provider, processDescriptions] = await Promise.all([
-      source.agentProvider(run.agentId),
-      source.processDescriptions(),
-    ]);
+    const provider = await source.agentProvider(run.agentId);
+    const scenario = this.realAgentScenario;
+    if (scenario === undefined) throw new Error("Real-agent scenario is not configured");
+    let processDescriptions: string[] = [];
+    await this.observe(async () => {
+      processDescriptions = await source.processDescriptions();
+      return processDescriptions.some((description) => scenario.processPattern.test(description));
+    }, "provider runtime to start for the dispatched turn");
     this.realAgentLaunchEvidence.set(deliveryKey, {
       provider,
       processDescriptions,
@@ -695,7 +714,7 @@ ${this.failureArtifacts()}`,
 
   async realAgentRoutingEvidence(
     run: PublicManualRun,
-    provider: RealAgentProvider = "codex",
+    scenario: RealAgentScenario,
   ): Promise<{
     runStatus: string;
     steps: Array<{ stepId: string; status: string; output: unknown }>;
@@ -707,6 +726,7 @@ ${this.failureArtifacts()}`,
       processDescriptions: string[];
     }>;
   }> {
+    const { provider } = scenario;
     let evidence:
       | {
           runStatus: string;
@@ -800,7 +820,7 @@ ${this.failureArtifacts()}`,
       if (!item.completedToolCall) {
         throw new Error(`real ${provider} step ${item.stepId} has no completed finish tool call`);
       }
-      const binary = realAgentProcessPattern(provider);
+      const binary = scenario.processPattern;
       if (!item.processDescriptions.some((description) => binary.test(description))) {
         throw new Error(
           `real ${provider} process evidence missing for step ${item.stepId}: ${JSON.stringify(item.processDescriptions)}`,
@@ -820,7 +840,7 @@ ${this.failureArtifacts()}`,
 
   async realAgentCompletionEvidence(
     run: ManualRun,
-    provider: RealAgentProvider = "codex",
+    scenario: RealAgentScenario,
   ): Promise<{
     status: string;
     completedByAgent: boolean;
@@ -829,6 +849,7 @@ ${this.failureArtifacts()}`,
     sourceProvider: string;
     processDescriptions: string[];
   }> {
+    const { provider } = scenario;
     let completedToolCall = false;
     let lastObserved: {
       status: string | null;
@@ -892,7 +913,7 @@ ${this.failureArtifacts()}`,
       );
     }
     const processDescriptions = run.processDescriptions ?? [];
-    const binary = realAgentProcessPattern(provider);
+    const binary = scenario.processPattern;
     if (!processDescriptions.some((description) => binary.test(description))) {
       throw new Error(
         `real ${provider} process evidence missing: ${JSON.stringify(processDescriptions)}`,
@@ -993,8 +1014,8 @@ ${this.failureArtifacts()}`,
     };
   }
 
-  async enableAgentContinuation(realAgent = false): Promise<void> {
-    if (realAgent) await this.installRealAgentConfiguration("codex");
+  async enableAgentContinuation(realAgent?: RealAgentScenario): Promise<void> {
+    if (realAgent) await this.installRealAgentConfiguration(realAgent);
     else await this.installProductionConfiguration();
     const result = await this.requirePool().query<{
       id: string;
@@ -1522,6 +1543,26 @@ ${this.failureArtifacts()}`,
   }
 
   private paseoConfig(packagesRoot: string, daemonHost: string) {
+    let providers = this.options.daemonProviders;
+    if (providers === undefined && this.options.realAgent !== true) {
+      providers = {
+        "hub-e2e": {
+          extends: "acp",
+          label: "Hub E2E",
+          command: [process.execPath, join(HUB_ROOT, "src/e2e/harness/acp-agent.mjs")],
+          env: {
+            NODE_OPTIONS: "",
+            HUB_E2E_ACP_SDK: join(
+              packagesRoot,
+              "node_modules/@agentclientprotocol/sdk/dist/acp.js",
+            ),
+            HUB_E2E_ACP_RECORD_FILE: this.acpRecordFile,
+            HUB_E2E_COMPLETE_GATE: this.completionGate,
+            HUB_E2E_COMPLETION_JOBS: this.completionJobs,
+          },
+        },
+      };
+    }
     return {
       version: 1,
       daemon: {
@@ -1530,29 +1571,7 @@ ${this.failureArtifacts()}`,
         mcp: { enabled: false, injectIntoAgents: false },
         cors: { allowedOrigins: [] },
       },
-      ...(this.options.realAgent === true
-        ? {}
-        : {
-            agents: {
-              providers: {
-                "hub-e2e": {
-                  extends: "acp",
-                  label: "Hub E2E",
-                  command: [process.execPath, join(HUB_ROOT, "src/e2e/harness/acp-agent.mjs")],
-                  env: {
-                    NODE_OPTIONS: "",
-                    HUB_E2E_ACP_SDK: join(
-                      packagesRoot,
-                      "node_modules/@agentclientprotocol/sdk/dist/acp.js",
-                    ),
-                    HUB_E2E_ACP_RECORD_FILE: this.acpRecordFile,
-                    HUB_E2E_COMPLETE_GATE: this.completionGate,
-                    HUB_E2E_COMPLETION_JOBS: this.completionJobs,
-                  },
-                },
-              },
-            },
-          }),
+      ...(providers === undefined ? {} : { agents: { providers } }),
       features: {
         dictation: { enabled: false },
         voiceMode: { enabled: false },
@@ -1774,40 +1793,20 @@ ${this.failureArtifacts()}`,
   }
 }
 
-function realAgentOptionsYaml(provider: RealAgentProvider): string[] {
-  if (provider === "codex") {
-    return [
-      "          options:",
-      "            approval_policy: never",
-      "            sandbox_mode: read-only",
-      "            web_search: disabled",
-    ];
-  }
-  if (provider === "claude") {
-    return [
-      "          options:",
-      "            disallowedTools: [Bash, Edit, Write, NotebookEdit, WebFetch, WebSearch]",
-      "            sandbox:",
-      "              enabled: true",
-      "              failIfUnavailable: true",
-    ];
-  }
-  return [
-    "          options:",
-    "            permission:",
-    "              edit: deny",
-    "              bash: deny",
-    "              task: deny",
-    "              webfetch: deny",
-    "              websearch: deny",
-  ];
+function realAgentConfigurationYaml(scenario: RealAgentScenario): string {
+  return `        agent: ${JSON.stringify(realAgentSelection(scenario))}`;
 }
 
-function realAgentProcessPattern(provider: RealAgentProvider): RegExp {
-  if (provider === "codex") return /(?:^|\/)codex(?:\s|$)/u;
-  if (provider === "claude") return /(?:^|\/)claude(?:\s|$)/u;
-  return /(?:^|\/)opencode(?:\s|$)/u;
+function realAgentSelection(scenario: RealAgentScenario) {
+  return {
+    provider: scenario.provider,
+    model: scenario.model,
+    mode: scenario.mode,
+    thinkingOptionId: scenario.thinkingOptionId,
+    options: scenario.providerOptions,
+  };
 }
+
 async function initializeGitWorkspace(workspace: string): Promise<void> {
   await runCommand("git", ["init", "-q"], workspace, {});
   await writeFile(join(workspace, "README.md"), "phase five\n");

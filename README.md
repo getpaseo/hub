@@ -109,6 +109,9 @@ paseo hub connect https://hub.example.com
 
 The image is published as `ghcr.io/getpaseo/hub:latest`.
 
+Before your first Fly deploy, copy `fly.example.toml` to `fly.toml` in your Hub checkout.
+Set `app`, `primary_region`, and `PASEO_HUB_APP_URL` to match your Fly app.
+
 See the [self-hosting guide](https://paseo.sh/docs/hub/self-hosting) for production deployment details.
 For Linear setup and workflows, see the public [Linear app](https://paseo.sh/docs/hub/self-hosting/linear-app) and [Linear triggers](https://paseo.sh/docs/hub/triggers/linear) guides.
 

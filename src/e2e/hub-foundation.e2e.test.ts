@@ -121,7 +121,7 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     ]);
     assert.equal(configuration.slackWorkerEnvironment, "${{ values.selected_environment }}");
     assert.equal(configuration.slackAgentSelector, "${{ values.selected_agent }}");
-    assert.deepEqual(configuration.codexOptions, {
+    assert.deepEqual(configuration.agentChoiceOptions["codex"], {
       sandbox_workspace_write: {
         writable_roots: ["/var/cache/npm"],
         network_access: false,

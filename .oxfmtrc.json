@@ -1,10 +1,4 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
-  "ignorePatterns": [
-    "PLAN.md",
-    "fly.toml",
-    "base/fly.toml",
-    "src/db/migrations/meta/*.json",
-    "src/routeTree.gen.ts"
-  ]
+  "ignorePatterns": ["PLAN.md", "fly.toml", "src/db/migrations/meta/*.json", "src/routeTree.gen.ts"]
 }
