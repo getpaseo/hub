@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { REST } from "discord.js";
 import { z } from "zod";
 import { discordHttp } from "./discord-http.js";
@@ -293,21 +294,29 @@ function scopedDiscord(
       if (channel !== undefined) requireChannel(grant, channel);
       const messages: Message[] = [];
       const scannedChannels: string[] = [];
+      const unavailableChannels: string[] = [];
       let moreArchivedThreads = false;
       let skippedThreads = 0;
+
+      async function scanChannel(id: string, active: Channel[]) {
+        const parent = await baseChannel(id);
+        if (isText(parent)) messages.push(...(await history(parent.id, limit)));
+        const recent = await recentThreads(parent, active);
+        moreArchivedThreads ||= recent.moreArchivedThreads;
+        for (const thread of recent.threads) {
+          const page = await unlessNotFound(history(thread.id, limit));
+          if (page === undefined) skippedThreads++;
+          else messages.push(...page);
+        }
+        return id;
+      }
+
       try {
         const active = await activeThreads();
         for (const id of channels) {
-          const parent = await baseChannel(id);
-          if (isText(parent)) messages.push(...(await history(parent.id, limit)));
-          const recent = await recentThreads(parent, active);
-          moreArchivedThreads ||= recent.moreArchivedThreads;
-          for (const thread of recent.threads) {
-            const page = await unlessNotFound(history(thread.id, limit));
-            if (page === undefined) skippedThreads++;
-            else messages.push(...page);
-          }
-          scannedChannels.push(id);
+          const scanned = await unlessNotFound(scanChannel(id, active));
+          if (scanned === undefined) unavailableChannels.push(id);
+          else scannedChannels.push(scanned);
         }
       } catch (error) {
         if (!deadline.aborted) throw error;
@@ -318,6 +327,7 @@ function scopedDiscord(
         moreArchivedThreads,
         skippedThreads,
         scannedChannels,
+        unavailableChannels,
         timedOut: deadline.aborted,
       };
     },
@@ -350,6 +360,8 @@ function scopedDiscord(
       }
       const posted = await api(`/channels/${destination.id}/messages`, Message, {
         content,
+        nonce: randomBytes(12).toString("hex"),
+        enforce_nonce: true,
         allowed_mentions: { parse: [], replied_user: false },
         ...(isThread(channel) && ids.message !== undefined
           ? {

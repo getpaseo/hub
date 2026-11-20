@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { z } from "zod";
 import { createFetchServer } from "../http/node-server.js";
 import type { QueryHandle } from "../db/runtime/index.js";
 
@@ -60,6 +61,7 @@ export function localChatFetch(origin: string): typeof fetch {
 export async function startFakeChat(
   options: {
     deletedThreadDuringScan?: boolean;
+    loseFirstReferencedPostResponse?: boolean;
     threadCreationRace?: boolean;
     rateLimitActiveThreads?: boolean;
   } = {},
@@ -67,6 +69,7 @@ export async function startFakeChat(
   const calls: { method: string; path: string; body?: unknown }[] = [];
   let contextualThread = false;
   let activeThreadsRateLimited = false;
+  let lostPostNonce: string | null | undefined;
   const { slack, discord } = chat;
   const channel = (id: string, type: number, parent_id?: string, guild_id = discord.guild) => ({
     id,
@@ -231,7 +234,28 @@ export async function startFakeChat(
       "message_reference" in body
         ? { referenced_message: message(discord.thread, discord.reply, "Thread reply") }
         : {};
-    return Response.json(message(id, "995", body.content, reference));
+    const receiptId =
+      "message_reference" in body && options.loseFirstReferencedPostResponse
+        ? postWithLostResponse(body)
+        : "995";
+    if (receiptId === undefined) {
+      return Response.json({ message: "Lost success response" }, { status: 502 });
+    }
+    return Response.json(message(id, receiptId, body.content, reference));
+  }
+
+  function postWithLostResponse(body: object) {
+    const nonce = "nonce" in body && typeof body.nonce === "string" ? body.nonce : null;
+    if (lostPostNonce === undefined) {
+      lostPostNonce = nonce;
+      return undefined;
+    }
+    return nonce !== null &&
+      lostPostNonce === nonce &&
+      "enforce_nonce" in body &&
+      body.enforce_nonce === true
+      ? "995"
+      : "996";
   }
 
   function discordMessages(id: string, messageId: string | undefined) {
@@ -257,6 +281,24 @@ export async function startFakeChat(
   return {
     origin,
     calls,
+    discordWrites() {
+      return calls
+        .filter(({ method, path }) => method === "POST" && path.startsWith("/api/v10"))
+        .map((call) => {
+          if (!call.path.endsWith("/messages")) return call;
+          const {
+            nonce: _nonce,
+            enforce_nonce: _enforceNonce,
+            ...body
+          } = z
+            .looseObject({
+              nonce: z.string().regex(/^[a-f0-9]{24}$/u),
+              enforce_nonce: z.literal(true),
+            })
+            .parse(call.body);
+          return { method: call.method, path: call.path, body };
+        });
+    },
     async close() {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => {

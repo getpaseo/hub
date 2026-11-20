@@ -193,19 +193,16 @@ describeRealAgent("scheduled scoped integration tools", () => {
     assert(fake.calls.some(({ path }) => path === "/api/v10/channels/110/messages/110"));
     assert(fake.calls.some(({ path }) => path === "/api/v10/channels/200"));
     assert(fake.calls.some(({ path }) => path === "/api/v10/channels/210"));
-    assert.deepEqual(
-      fake.calls.filter(({ method }) => method === "POST"),
-      [
-        {
-          method: "POST",
-          path: "/api/v10/channels/110/messages",
-          body: {
-            content: "Reviewed report.txt",
-            allowed_mentions: { parse: [], replied_user: false },
-            message_reference: { message_id: "111", channel_id: "110", fail_if_not_exists: true },
-          },
+    assert.deepEqual(fake.discordWrites(), [
+      {
+        method: "POST",
+        path: "/api/v10/channels/110/messages",
+        body: {
+          content: "Reviewed report.txt",
+          allowed_mentions: { parse: [], replied_user: false },
+          message_reference: { message_id: "111", channel_id: "110", fail_if_not_exists: true },
         },
-      ],
-    );
+      },
+    ]);
   }, 300_000);
 });

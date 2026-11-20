@@ -72,6 +72,7 @@ describe("Scoped integration tools through Hub MCP", () => {
     const database = createDatabase(runtime, locks);
     const fake = await startFakeChat({
       deletedThreadDuringScan: true,
+      loseFirstReferencedPostResponse: true,
       threadCreationRace: true,
       rateLimitActiveThreads: true,
     });
@@ -119,7 +120,7 @@ describe("Scoped integration tools through Hub MCP", () => {
           discord: createDiscordIntegrationTools(
             database,
             chat.discord.appId,
-            new REST({ api: `${fake.origin}/api`, retries: 0 }).setToken(chat.discord.token),
+            new REST({ api: `${fake.origin}/api`, retries: 1 }).setToken(chat.discord.token),
           ),
         },
         completeExecution: async ({ executionId }) =>
@@ -319,11 +320,21 @@ describe("Scoped integration tools through Hub MCP", () => {
       assert.match(discordRead.output, /"reactions"/u);
       assert.match(discordRead.output, /"embeds"/u);
       assert.match(discordRead.output, /discord\.com\/channels\/900\/110\/111/u);
-      const latest = await call("discord_latest", { channel: chat.discord.forum });
+      const scanId = await insertExecution("owner", {
+        discord: {
+          connection: "test-discord",
+          actions: ["read"],
+          channels: [chat.discord.forum, "101", chat.discord.text],
+        },
+      });
+      const latest = await call("discord_latest", {}, false, scanId);
       assert.match(latest.output, /Archived report/u);
       assert.match(latest.output, /Thread reply/u);
       assert.match(latest.output, /"skippedThreads":1/u);
-      assert.match(latest.output, /"scannedChannels":\["100"\],"timedOut":false/u);
+      assert.match(latest.output, /Standalone question/u);
+      assert.match(latest.output, /"scannedChannels":\["100","300"\]/u);
+      assert.match(latest.output, /"unavailableChannels":\["101"\]/u);
+      assert.match(latest.output, /"timedOut":false/u);
       assert.equal(
         fake.calls.filter(({ path }) => path === "/api/v10/guilds/900/threads/active").length,
         2,
@@ -389,8 +400,13 @@ describe("Scoped integration tools through Hub MCP", () => {
         ).ok,
         true,
       );
+      const attempts = fake.calls.filter(
+        ({ method, path }) => method === "POST" && path === "/api/v10/channels/110/messages",
+      );
+      assert.equal(attempts.length, 2);
+      assert.deepEqual(attempts[0], attempts[1]);
       assert.deepEqual(
-        fake.calls.filter(({ method, path }) => method === "POST" && path.startsWith("/api/v10")),
+        fake.discordWrites().filter((_write, index) => index !== 1),
         [
           {
             method: "POST",
