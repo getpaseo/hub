@@ -66,6 +66,30 @@ describe("GitHub reply output", () => {
     },
   );
 
+  it("delivers the original comment when a footer would exceed GitHub's byte limit", async () => {
+    const content = "🙂".repeat(65_536);
+    const comments: string[] = [];
+    await createGitHubReplyExecutor({
+      client: {
+        async createIssueComment(comment) {
+          comments.push(comment.body);
+        },
+      },
+    })({
+      agentExecutionId: "execution-1",
+      toolType: "github.reply",
+      args: { content },
+      openInPaseoUrl: "https://hub.example/open/executions/00000000-0000-4000-8000-000000000001",
+      outputContext: {
+        provider: "github",
+        target: { installationId: 42, repository: "getpaseo/hub" },
+        event: { github: { item: { number: 92 } } },
+      },
+    });
+
+    assert.equal(comments[0], content);
+  });
+
   it("does not advertise reply when the event has no conversation item", () => {
     assert.equal(
       githubReplyAvailable({
