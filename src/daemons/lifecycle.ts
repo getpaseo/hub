@@ -602,8 +602,8 @@ export class DaemonDispatchLifecycle {
     return buildCreateAgentOptions(
       materialized.intent,
       hubExecutionEnv,
-      materialized.env,
       this.executionCapabilities,
+      materialized.env,
     );
   }
 
@@ -1944,8 +1944,8 @@ async function buildCreateAgentOptions(
     completionToken: string;
     publicBaseUrl: string;
   },
-  materializedEnv: Readonly<Record<string, string>>,
   capabilities: OutputExecutorRegistry,
+  materializedEnv: Readonly<Record<string, string>>,
 ): Promise<DaemonCreateAgentOptions> {
   return {
     provider: intent.agent.provider,
@@ -1968,7 +1968,7 @@ async function buildCreateAgentOptions(
     toolPolicy: executionToolPolicy({
       allowOutputs: intent.allowOutputs,
       outputContext: intent.outputContext,
-      outputSchema: intent.outputSchema,
+      ...(intent.outputSchema === undefined ? {} : { outputSchema: intent.outputSchema }),
       capabilities,
     }),
     ...(intent.environment.worktree === undefined

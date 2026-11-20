@@ -11,7 +11,7 @@ const HUB_MCP_SERVER = "hub";
 export function executionToolPolicy(input: {
   allowOutputs: readonly AllowedOutput[];
   outputContext: unknown;
-  outputSchema: JsonValue | undefined;
+  outputSchema?: JsonValue;
   capabilities: OutputExecutorRegistry;
 }): ToolPolicy {
   const materializedOutputs = input.capabilities.materialize(
