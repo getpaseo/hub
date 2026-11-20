@@ -10,18 +10,7 @@ import { OrganizationTriggerStore } from "./store.js";
 
 describe("trigger dashboard read model", () => {
   it("describes the provider and latest run on the organization trigger list", async () => {
-    const database = createMemoryDatabase({
-      memberships: [
-        {
-          userId: "user-1",
-          organizationId: "org-1",
-          organizationName: "Acme",
-          organizationSlug: "acme",
-          membershipId: "membership-1",
-          role: "owner",
-        },
-      ],
-    });
+    const database = memberDatabase();
     await enrollTestDaemon(database, "org-1");
     const trigger = await new OrganizationTriggerStore(
       database,
@@ -80,6 +69,29 @@ describe("trigger dashboard read model", () => {
       receivedAt: receivedAt.toISOString(),
     });
   });
+  it("labels a YAML-only webhook with its saved event before any deliveries", async () => {
+    const database = memberDatabase();
+    await enrollTestDaemon(database, "org-1");
+    const yaml = triggerYaml
+      .replace("manual.run", "webhook.received")
+      .replace(
+        "agent: { provider: codex, mode: full-access }",
+        "agent: { select: coding, choices: { coding: { provider: codex, mode: full-access } } }",
+      );
+    await new OrganizationTriggerStore(database, "org-1", acceptingAgentValidator()).save({
+      yaml,
+      userId: "user-1",
+    });
+
+    const snapshot = await new TriggerDashboard(
+      database,
+      accountAuth(),
+      acceptingAgentValidator(),
+    ).snapshot(new Request("https://hub.test/o/acme/triggers"), "acme");
+    assert.equal(snapshot.triggers[0]?.event, "webhook.received");
+    assert.equal(snapshot.triggers[0]?.provider, "webhook");
+    assert.equal(snapshot.triggers[0]?.draft, null);
+  });
 });
 
 const triggerYaml = `name: manual-task
@@ -91,6 +103,21 @@ run:
   agent: { provider: codex, mode: full-access }
   prompt: Handle it
 `;
+
+function memberDatabase() {
+  return createMemoryDatabase({
+    memberships: [
+      {
+        userId: "user-1",
+        organizationId: "org-1",
+        organizationName: "Acme",
+        organizationSlug: "acme",
+        membershipId: "membership-1",
+        role: "owner",
+      },
+    ],
+  });
+}
 
 function accountAuth(): AuthServer {
   return {

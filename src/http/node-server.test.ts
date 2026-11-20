@@ -32,6 +32,7 @@ it.each(["declared", "streamed"] as const)(
       };
       const response = await fetch(`http://127.0.0.1:${address.port}/`, init);
       assert.equal(response.status, 413);
+      assert.equal(response.headers.get("connection"), "close");
       assert.equal(await response.text(), "Payload Too Large");
     } finally {
       await closeServer(server);

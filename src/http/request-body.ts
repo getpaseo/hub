@@ -5,23 +5,25 @@ export async function readBoundedRequestBody(
   const declaredLength = request.headers.get("content-length");
   if (declaredLength !== null && /^\d+$/u.test(declaredLength)) {
     const bytes = Number(declaredLength);
-    if (bytes > maxBytes) return payloadTooLarge();
+    if (Number.isSafeInteger(bytes) && bytes > maxBytes) {
+      await request.body?.cancel();
+      return new Response("Payload Too Large", { status: 413 });
+    }
   }
   if (request.body === null) return new Uint8Array();
 
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
   let byteLength = 0;
-  try {
-    for (;;) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      byteLength += chunk.value.byteLength;
-      if (byteLength > maxBytes) return payloadTooLarge();
-      chunks.push(chunk.value);
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    byteLength += chunk.value.byteLength;
+    if (byteLength > maxBytes) {
+      await reader.cancel();
+      return new Response("Payload Too Large", { status: 413 });
     }
-  } finally {
-    reader.releaseLock();
+    chunks.push(chunk.value);
   }
   const body = new Uint8Array(byteLength);
   let offset = 0;
@@ -30,9 +32,4 @@ export async function readBoundedRequestBody(
     offset += chunk.byteLength;
   }
   return body;
-}
-
-function payloadTooLarge(): Response {
-  // Canceling the Node request stream closes its socket before the client can read the 413.
-  return new Response("Payload Too Large", { status: 413, headers: { Connection: "close" } });
 }

@@ -55,7 +55,10 @@ async function forwardRequest(
 ): Promise<void> {
   try {
     const clientAddress = resolveClientAddress(incoming, options.trustedClientIpHeader);
-    const request = toRequest(incoming, clientAddress, options);
+    const request = toRequest(incoming, clientAddress, options, () => {
+      // Let the client read the response before closing a connection with an unread body.
+      outgoing.shouldKeepAlive = false;
+    });
     const tracked = await runWithFailureTracking(async () => {
       const response = await fetchHandler(request);
       return { response, failureReported: failureWasReported() };
@@ -174,6 +177,7 @@ function toRequest(
   incoming: IncomingMessage,
   clientAddress: string,
   options: FetchServerOptions,
+  onBodyCancelled: () => void,
 ): Request {
   const method = incoming.method ?? "GET";
   const origin = `http://${incoming.headers.host ?? "localhost"}`;
@@ -186,7 +190,7 @@ function toRequest(
   }
   const streaming = {
     ...base,
-    body: requestBody(incoming),
+    body: requestBody(incoming, onBodyCancelled),
     duplex: "half",
   } satisfies StreamingRequestInit;
   return new Request(new URL(incoming.url ?? "/", origin), streaming);
@@ -204,12 +208,15 @@ function resolveClientAddress(
   return isIP(address) === 0 ? peerAddress : address;
 }
 
-function requestBody(incoming: IncomingMessage): ReadableStream<Uint8Array> {
+function requestBody(
+  incoming: IncomingMessage,
+  onCancelled: () => void,
+): ReadableStream<Uint8Array> {
   let iterator: AsyncIterator<unknown> | undefined;
   const source = {
     type: "bytes",
     async pull(controller) {
-      iterator ??= incoming[Symbol.asyncIterator]();
+      iterator ??= incoming.iterator({ destroyOnReturn: false });
       try {
         const chunk = await iterator.next();
         if (chunk.done) {
@@ -222,8 +229,8 @@ function requestBody(incoming: IncomingMessage): ReadableStream<Uint8Array> {
       }
     },
     async cancel() {
+      onCancelled();
       await iterator?.return?.();
-      incoming.destroy();
     },
   } satisfies UnderlyingByteSource;
   return new ReadableStream(source);

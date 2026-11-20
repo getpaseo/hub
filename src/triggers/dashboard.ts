@@ -162,13 +162,15 @@ export class TriggerDashboard {
 async function triggerView(
   store: OrganizationTriggerStore,
   trigger: OrganizationTriggerRecord,
-  lastTriggered:
-    | { provider: string; source: string; status: string; receivedAt: string }
-    | undefined,
+  lastTriggered: { source: string; status: string; receivedAt: string } | undefined,
 ) {
   const revision = await store.activeRevision(trigger);
   const evidence = record(revision.sourceEvidence);
-  const event = triggerEvent(revision.yaml, lastTriggered?.source);
+  const event =
+    parseCompiledHubConfig(revision.normalizedConfiguration).triggers[0]?.on ??
+    lastTriggered?.source ??
+    "manual.run";
+  const provider = triggerProvider(event);
   const operational =
     lastTriggered === undefined
       ? null
@@ -184,7 +186,7 @@ async function triggerView(
       blockers: stringArray(evidence?.["conversionBlockers"]),
       draft: null,
       event,
-      provider: triggerProvider(event, lastTriggered?.provider),
+      provider,
       lastTriggered: operational,
     };
   }
@@ -198,27 +200,16 @@ async function triggerView(
     updatedAt: trigger.updatedAt.toISOString(),
     blockers: [],
     draft: projection.status === "editable" ? projection.value : null,
-    event: projection.status === "editable" ? projection.value.event : event,
-    provider: triggerProvider(
-      projection.status === "editable" ? projection.value.event : event,
-      lastTriggered?.provider,
-    ),
+    event,
+    provider,
     lastTriggered: operational,
   };
 }
 
-function triggerEvent(yaml: string, fallback: string | undefined): string {
-  const inline = /^on:\s+([a-z]+(?:\.[a-z_]+)+)\s*$/mu.exec(yaml)?.[1];
-  if (inline !== undefined) return inline;
-  const nested = /^on:\s*$[\s\S]*?^\s{2}([a-z]+(?:\.[a-z_]+)+):\s*$/mu.exec(yaml)?.[1];
-  return nested ?? fallback ?? "manual.run";
-}
-
 function triggerProvider(
   event: string,
-  fallback: string | undefined,
 ): "github" | "discord" | "slack" | "linear" | "manual" | "schedule" | "webhook" {
-  const provider = event.split(".")[0] ?? fallback;
+  const provider = event.split(".")[0];
   if (
     provider === "schedule" ||
     provider === "webhook" ||
