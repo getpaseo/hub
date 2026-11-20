@@ -101,10 +101,9 @@ describe("trigger form YAML bridge", () => {
     ],
   ])("keeps a trigger in YAML when anchors link %s", (_, yaml) => {
     expect(TriggerDocumentSchema.safeParse(parseDocument(yaml).toJS()).success).toBe(true);
-    expect(projectTriggerForm(yaml)).toMatchObject({
-      status: "yaml_only",
-      reason: expect.stringMatching(/integration tool grants.*anchors or aliases/i),
-    });
+    const projection = projectTriggerForm(yaml);
+    if (projection.status !== "yaml_only") throw new Error("Expected the form to be unavailable.");
+    expect(projection.reason).toMatch(/integration tool grants.*anchors or aliases/i);
   });
 
   test("preserves channel comments when changing unrelated grant fields", () => {
