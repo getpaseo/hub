@@ -7,12 +7,16 @@ import {
 } from "./reply.js";
 
 describe("GitHub reply output", () => {
-  it.each([false, true])(
-    "posts a comment to the originating issue or pull request (already linked: %s)",
-    async (alreadyLinked) => {
+  it.each(["missing", "linked", "quoted"] as const)(
+    "posts a comment to the originating issue or pull request (%s URL)",
+    async (urlForm) => {
       const url = "https://hub.example/open/executions/00000000-0000-4000-8000-000000000001";
       const link = `[Open in Paseo](${url})`;
-      const content = alreadyLinked ? "Existing: " + link : "Shipped.";
+      const content = {
+        missing: "Shipped.",
+        linked: "Existing: " + link,
+        quoted: "Log: `" + url + "`",
+      }[urlForm];
       const comments: Parameters<GitHubReplyClient["createIssueComment"]>[0][] = [];
       const client: GitHubReplyClient = {
         async createIssueComment(comment) {
@@ -40,7 +44,7 @@ describe("GitHub reply output", () => {
           owner: "getpaseo",
           repo: "hub",
           issueNumber: 92,
-          body: alreadyLinked ? content : `${content}\n\n${link}`,
+          body: urlForm === "linked" ? content : `${content}\n\n${link}`,
         },
       ]);
     },

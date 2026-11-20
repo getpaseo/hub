@@ -1,4 +1,5 @@
 import { executionLinkUrl } from "../agent-executions/link.js";
+import { integrationProviders } from "../integration-tools/grants.js";
 import { parseConnectionTemplate } from "../config/connection-template.js";
 import { createHash } from "node:crypto";
 import type { Database, AgentExecutionRecord } from "../db/types.js";
@@ -194,7 +195,8 @@ export class AgentSessions {
           `Hub execution: ${input.executionId}\nUse this executionId for Hub tool calls for this request.`,
         );
       }
-      if (input.intent.tools !== undefined) {
+      const grants = input.intent.tools;
+      if (integrationProviders.some((provider) => grants?.[provider]?.actions.includes("post"))) {
         const url = executionLinkUrl(this.publicBaseUrl, execution);
         if (url !== undefined) {
           context.push(

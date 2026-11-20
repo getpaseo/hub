@@ -58,6 +58,19 @@ describe("Slack reply output", () => {
     },
   );
 
+  it("delivers the original reply when a footer would be truncated", async () => {
+    const client = new RecordingSlackClient();
+    const content = "x".repeat(39_970);
+    await createSlackReplyExecutor({ client })({
+      agentExecutionId: "execution",
+      toolType: "slack.reply",
+      args: { content },
+      openInPaseoUrl: "https://hub.example/open/executions/00000000-0000-4000-8000-000000000001",
+      outputContext: { organizationId: "org-1", teamId: "T1", channelId: "C1", threadTs: "1.1" },
+    });
+    assert.equal(client.messages[0]?.content, content);
+  });
+
   it("rejects invalid arguments before calling Slack", async () => {
     const client = new RecordingSlackClient();
     const execute = createSlackReplyExecutor({ client });

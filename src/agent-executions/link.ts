@@ -23,14 +23,15 @@ export function withExecutionLink(
   url: string | undefined,
   syntax: "markdown" | "slack" = "markdown",
 ): string {
-  if (url === undefined || containsUrl(content, url)) return content;
+  if (url === undefined || containsClickableUrl(content, url)) return content;
   const footer = syntax === "slack" ? `<${url}|Open in Paseo>` : `[Open in Paseo](${url})`;
   return `${content.trimEnd()}\n\n${footer}`;
 }
 
-function containsUrl(content: string, url: string): boolean {
+function containsClickableUrl(content: string, url: string): boolean {
+  const text = content.replace(/(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/gu, "");
   return (
-    content
+    text
       .match(/https?:\/\/[^\s<>"|`\])]+/gu)
       ?.some((candidate) => candidate.replace(/[.,;!:?]+$/u, "") === url) ?? false
   );
