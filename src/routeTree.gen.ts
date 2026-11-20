@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WebhookRouteImport } from './routes/webhook'
 import { Route as HealthRouteImport } from './routes/health'
+import { Route as FaviconDotsvgRouteImport } from './routes/favicon[.]svg'
 import { Route as ShellRouteImport } from './routes/_shell'
 import { Route as ShellIndexRouteImport } from './routes/_shell/index'
 import { Route as TestTriggerRouteImport } from './routes/test/trigger'
@@ -66,6 +67,11 @@ const WebhookRoute = WebhookRouteImport.update({
 const HealthRoute = HealthRouteImport.update({
   id: '/health',
   path: '/health',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const FaviconDotsvgRoute = FaviconDotsvgRouteImport.update({
+  id: '/favicon.svg',
+  path: '/favicon.svg',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ShellRoute = ShellRouteImport.update({
@@ -324,6 +330,7 @@ const ShellOOrganizationSlugSettingsApiKeysRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
+  '/favicon.svg': typeof FaviconDotsvgRoute
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
   '/apps': typeof ShellAppsRoute
@@ -372,6 +379,7 @@ export interface FileRoutesByFullPath {
   '/o/$organizationSlug/triggers/': typeof ShellOOrganizationSlugTriggersIndexRoute
 }
 export interface FileRoutesByTo {
+  '/favicon.svg': typeof FaviconDotsvgRoute
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
   '/apps': typeof ShellAppsRoute
@@ -421,6 +429,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_shell': typeof ShellRouteWithChildren
+  '/favicon.svg': typeof FaviconDotsvgRoute
   '/health': typeof HealthRoute
   '/webhook': typeof WebhookRoute
   '/_shell/apps': typeof ShellAppsRoute
@@ -473,6 +482,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/favicon.svg'
     | '/health'
     | '/webhook'
     | '/apps'
@@ -521,6 +531,7 @@ export interface FileRouteTypes {
     | '/o/$organizationSlug/triggers/'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/favicon.svg'
     | '/health'
     | '/webhook'
     | '/apps'
@@ -569,6 +580,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/_shell'
+    | '/favicon.svg'
     | '/health'
     | '/webhook'
     | '/_shell/apps'
@@ -620,6 +632,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   ShellRoute: typeof ShellRouteWithChildren
+  FaviconDotsvgRoute: typeof FaviconDotsvgRoute
   HealthRoute: typeof HealthRoute
   WebhookRoute: typeof WebhookRoute
   ApiSplatRoute: typeof ApiSplatRoute
@@ -663,6 +676,13 @@ declare module '@tanstack/react-router' {
       path: '/health'
       fullPath: '/health'
       preLoaderRoute: typeof HealthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/favicon.svg': {
+      id: '/favicon.svg'
+      path: '/favicon.svg'
+      fullPath: '/favicon.svg'
+      preLoaderRoute: typeof FaviconDotsvgRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_shell': {
@@ -1086,6 +1106,7 @@ const ApiV1CliAuthorizationsRouteWithChildren =
 
 const rootRouteChildren: RootRouteChildren = {
   ShellRoute: ShellRouteWithChildren,
+  FaviconDotsvgRoute: FaviconDotsvgRoute,
   HealthRoute: HealthRoute,
   WebhookRoute: WebhookRoute,
   ApiSplatRoute: ApiSplatRoute,

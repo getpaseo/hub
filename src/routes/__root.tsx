@@ -14,7 +14,8 @@ export const Route = createRootRoute({
     links: [
       {
         rel: "icon",
-        href: "data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><circle cx=%2216%22 cy=%2216%22 r=%2214%22 fill=%22%23fafafa%22/><path d=%22M10 9h7a6 6 0 0 1 0 12h-3v4h-4V9zm4 4v4h3a2 2 0 1 0 0-4h-3z%22 fill=%22%2309090b%22/></svg>",
+        type: "image/svg+xml",
+        href: "/favicon.svg",
       },
     ],
   }),
