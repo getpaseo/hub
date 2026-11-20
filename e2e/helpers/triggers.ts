@@ -313,6 +313,7 @@ export class OrganizationTriggers {
 
     await this.addIntegrationAccess("GitHub");
     const github = this.page.getByRole("region", { name: "GitHub", exact: true });
+    await expect(github.getByRole("combobox", { name: "Connection", exact: true })).toBeFocused();
     await expect(github.getByRole("combobox", { name: "Connection", exact: true })).toHaveAttribute(
       "data-value",
       "acme-inc-github",

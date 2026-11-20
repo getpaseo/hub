@@ -1,6 +1,6 @@
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-new-array-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop -- each integration grant binds its own fields and controls */
 import { Plus } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { CheckboxField } from "../components/app/checkbox-field.js";
 import { Combobox } from "../components/app/combobox.js";
@@ -154,6 +154,10 @@ export function removeIntegrationAccess(
   return { ...form, tools: nextTools };
 }
 
+function connectionControlId(provider: IntegrationAccessProvider): string {
+  return provider === "github" ? "trigger-github-connection" : `trigger-tools-${provider}`;
+}
+
 export function IntegrationAccess({
   form,
   connections,
@@ -170,6 +174,7 @@ export function IntegrationAccess({
   const configured = configuredIntegrationProviders(form);
   const active = activeIntegrationProviders(form);
   const [open, setOpen] = useState(() => active.length > 0);
+  const pendingFocusId = useRef<string | null>(null);
   const activeSet = new Set<IntegrationAccessProvider>(active);
   const activeProviders = INTEGRATION_ACCESS_PROVIDERS.filter(({ provider }) =>
     activeSet.has(provider),
@@ -181,13 +186,30 @@ export function IntegrationAccess({
   const isOpen = open || hasError;
   const status = configured.length === 0 ? undefined : `${String(configured.length)} configured`;
 
+  useEffect(() => {
+    const targetId = pendingFocusId.current;
+    if (targetId === null) return undefined;
+    const element = document.getElementById(targetId);
+    if (element === null) return undefined;
+    const frame = requestAnimationFrame(() => {
+      pendingFocusId.current = null;
+      element.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [active]);
+
   const handleAdd = (provider: IntegrationAccessProvider) => {
+    pendingFocusId.current = connectionControlId(provider);
     setOpen(true);
     onChange(addIntegrationAccess(form, provider, connections));
   };
 
   const handleRemove = (provider: IntegrationAccessProvider) => {
     onChange(removeIntegrationAccess(form, provider));
+  };
+
+  const handleCloseAutoFocus = (event: Event) => {
+    if (pendingFocusId.current !== null) event.preventDefault();
   };
 
   return (
@@ -206,6 +228,7 @@ export function IntegrationAccess({
             providers={remainingProviders}
             disabled={disabled}
             onAdd={handleAdd}
+            onCloseAutoFocus={handleCloseAutoFocus}
           />
         </div>
       ) : (
@@ -230,6 +253,7 @@ export function IntegrationAccess({
                 providers={remainingProviders}
                 disabled={disabled}
                 onAdd={handleAdd}
+                onCloseAutoFocus={handleCloseAutoFocus}
               />
             </div>
           )}
@@ -243,10 +267,12 @@ function AddIntegrationMenu({
   providers,
   disabled,
   onAdd,
+  onCloseAutoFocus,
 }: {
   providers: readonly IntegrationAccessDefinition[];
   disabled: boolean;
   onAdd: (provider: IntegrationAccessProvider) => void;
+  onCloseAutoFocus: (event: Event) => void;
 }) {
   return (
     <DropdownMenu>
@@ -256,7 +282,7 @@ function AddIntegrationMenu({
           Add integration
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-48">
+      <DropdownMenuContent align="start" className="w-48" onCloseAutoFocus={onCloseAutoFocus}>
         {providers.map((item) => (
           <DropdownMenuItem key={item.provider} onSelect={() => onAdd(item.provider)}>
             <ProviderGlyph provider={item.provider} />
