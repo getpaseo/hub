@@ -355,40 +355,93 @@ test("launches arbitrary daemon providers with MCP servers and no Hub tool polic
   expect(requests[0]).not.toHaveProperty("config.mcpServerRequirements");
 });
 
-test.each([true, false, undefined])(
-  "passes a Hub policy only when the daemon advertises optional MCP support (%s)",
-  async (optionalMcpSupport) => {
-    const requests: Record<string, unknown>[] = [];
-    const agents = connect(requests);
+const launchWithPolicy = {
+  ...options,
+  provider: "provider-from-daemon",
+  toolPolicy: { preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }] },
+  mcpServers: { hub: { type: "http", url: "https://hub.test/mcp" } },
+} as const;
+const unsupportedPolicy =
+  "Provider 'provider-from-daemon' cannot preapprove exact MCP tools for unattended execution";
+const unsupportedPolicyReply = {
+  errorCode: "unknown",
+  error: `${unsupportedPolicy}; select Claude, Codex, or OpenCode`,
+};
+
+function connectForCreateFailures(
+  requests: Record<string, unknown>[],
+  ...rejections: { errorCode: string; error: string }[]
+): DaemonAgents {
+  const agents = new DaemonAgents((frame) => {
+    const { message } = z
+      .object({ message: z.record(z.string(), z.unknown()) })
+      .parse(JSON.parse(frame));
+    requests.push(message);
+    const rejection = rejections.shift();
     agents.receive({
       type: "session",
       message: {
-        type: "server_info",
+        type: "status",
         payload: {
-          features: { hubAgentRpc: true, agentRequestReceipts: true, optionalMcpSupport },
+          requestId: message["requestId"],
+          ...(rejection === undefined
+            ? {
+                status: "agent_created",
+                agent: { id: "agent", workspaceId: "workspace", status: "idle" },
+              }
+            : { status: "agent_create_failed", ...rejection }),
         },
       },
     });
-    const grants = {
-      preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
-    } as const;
-    const launch = {
-      ...options,
-      provider: "provider-from-daemon",
-      toolPolicy: grants,
-      mcpServers: { hub: { type: "http", url: "https://hub.test/mcp" } } as const,
-    };
-    await agents.create("key", launch);
-    expect(requests[0]).toMatchObject({
-      config: { provider: launch.provider, mcpServers: launch.mcpServers },
-    });
-    if (optionalMcpSupport) {
-      expect(requests[0]).toHaveProperty("config.toolPolicy", {
-        ...grants,
-        enforcement: "if-supported",
-      });
-    } else {
-      expect(requests[0]).not.toHaveProperty("config.toolPolicy");
-    }
+  });
+  enable(agents);
+  return agents;
+}
+
+test("a provider that accepts exact grants launches on the first request", async () => {
+  const requests: Record<string, unknown>[] = [];
+  const agents = connect(requests);
+
+  await agents.create("key", launchWithPolicy);
+
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toHaveProperty("config.toolPolicy", launchWithPolicy.toolPolicy);
+});
+
+test.each([
+  unsupportedPolicyReply,
+  { errorCode: "unknown", error: unsupportedPolicy },
+  { errorCode: "tool_policy_unsupported", error: "Exact tool policy unsupported" },
+])(
+  "retries once without grants after the daemon reports unsupported policy ($errorCode: $error)",
+  async (rejection) => {
+    const requests: Record<string, unknown>[] = [];
+    const agents = connectForCreateFailures(requests, rejection);
+
+    await expect(agents.create("key", launchWithPolicy)).resolves.toMatchObject({ id: "agent" });
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0]).toHaveProperty("config.toolPolicy", launchWithPolicy.toolPolicy);
+    expect(requests[1]).toHaveProperty("idempotencyKey", "key:without-tool-policy");
+    expect(requests[1]).not.toHaveProperty("config.toolPolicy");
+    expect(requests[1]).toHaveProperty("config.provider", launchWithPolicy.provider);
+    expect(requests[1]).toHaveProperty("config.mcpServers", launchWithPolicy.mcpServers);
   },
 );
+
+test("propagates unrelated create failures without retrying", async () => {
+  const error = "The requested working directory is unavailable";
+  const requests: Record<string, unknown>[] = [];
+  const agents = connectForCreateFailures(requests, { errorCode: "unknown", error });
+
+  await expect(agents.create("key", launchWithPolicy)).rejects.toThrow(error);
+  expect(requests).toHaveLength(1);
+});
+
+test("propagates a rejected fallback without a third create request", async () => {
+  const requests: Record<string, unknown>[] = [];
+  const agents = connectForCreateFailures(requests, unsupportedPolicyReply, unsupportedPolicyReply);
+
+  await expect(agents.create("key", launchWithPolicy)).rejects.toThrow(unsupportedPolicy);
+  expect(requests).toHaveLength(2);
+});

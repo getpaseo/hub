@@ -174,7 +174,9 @@ describe("daemon enrollment and execution", () => {
     assert.equal(agent.cwd, "/workspace");
     assert.equal(agent.prompt, "Reply pong.");
     assert.equal(agent.thinkingOptionId, "xhigh");
-    assert.equal(agent.toolPolicy, undefined);
+    assert.deepEqual(agent.toolPolicy, {
+      preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
+    });
     assert.deepEqual(agent.env, {
       USER_DEFINED: "yes",
       PASEO_AGENT_PROVIDER: "opencode",
@@ -189,29 +191,6 @@ describe("daemon enrollment and execution", () => {
         url: `${hub.originUrl()}/agent-executions/${result.execution.id}/mcp`,
         headers: { Authorization: "Bearer <private>" },
       },
-    });
-  });
-
-  it("sends exact grants for the tools exposed by each execution when optional preapproval is supported", async () => {
-    await hub.connectDaemon(undefined, undefined, { optionalMcpSupport: true });
-
-    await hub.dispatch({
-      outputContext: { provider: "discord", channelId: "channel-1" },
-    });
-    assert.deepEqual(hub.createdAgentLaunch().toolPolicy, {
-      enforcement: "if-supported",
-      preapproved: [
-        { kind: "mcp", server: "hub", tool: "finish_execution" },
-        { kind: "mcp", server: "hub", tool: "reply" },
-      ],
-    });
-
-    await hub.dispatch({
-      outputContext: { provider: "manual", channelId: "channel-1" },
-    });
-    assert.deepEqual(hub.createdAgentLaunch().toolPolicy, {
-      enforcement: "if-supported",
-      preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
     });
   });
 
@@ -246,13 +225,20 @@ describe("daemon enrollment and execution", () => {
       outputContext: { provider: "discord", channelId: "channel-1" },
     });
     assert.equal(hub.createdAgentLaunch().prompt, "Reply pong.");
-    assert.equal(hub.createdAgentLaunch().toolPolicy, undefined);
+    assert.deepEqual(hub.createdAgentLaunch().toolPolicy, {
+      preapproved: [
+        { kind: "mcp", server: "hub", tool: "finish_execution" },
+        { kind: "mcp", server: "hub", tool: "reply" },
+      ],
+    });
 
     await hub.dispatch({
       outputContext: { provider: "manual", channelId: "channel-1" },
     });
     assert.equal(hub.createdAgentLaunch().prompt, "Reply pong.");
-    assert.equal(hub.createdAgentLaunch().toolPolicy, undefined);
+    assert.deepEqual(hub.createdAgentLaunch().toolPolicy, {
+      preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
+    });
   });
 
   it("passes provider options unchanged and keeps an omitted mode omitted", async () => {

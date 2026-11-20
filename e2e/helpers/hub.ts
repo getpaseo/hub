@@ -5739,7 +5739,9 @@ class ContractDaemon {
     if (!Object.hasOwn(expected, "modeId")) {
       expect(this.createdConfigurations.at(-1)).not.toHaveProperty("modeId");
     }
-    expect(this.createdConfigurations.at(-1)).not.toHaveProperty("toolPolicy");
+    expect(this.createdConfigurations.at(-1)).toHaveProperty("toolPolicy", {
+      preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
+    });
   }
 
   async executionCapability(executionId: string): Promise<ExecutionCapability> {
