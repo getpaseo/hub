@@ -7,6 +7,13 @@ import {
 import { ContinuationSchema } from "../continuation.js";
 import { parseDocument, stringify, type Document } from "yaml";
 import { z } from "zod";
+import {
+  integrationProviders,
+  IntegrationToolGrantsSchema,
+  type IntegrationAction,
+  type IntegrationProvider,
+  type IntegrationToolGrants,
+} from "../../integration-tools/grants.js";
 import { IDENTIFIER, TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
 
 import {
@@ -16,6 +23,12 @@ import {
   type QualifierValues,
   type QualifierKey,
 } from "./events.js";
+
+export interface IntegrationToolFormValue {
+  connection: string;
+  actions: IntegrationAction[];
+  channels: string;
+}
 
 export interface TriggerFormValue {
   name: string;
@@ -39,6 +52,7 @@ export interface TriggerFormValue {
   githubRepositories: string;
   githubPermissions: string;
   githubDuration: string;
+  tools: Partial<Record<IntegrationProvider, IntegrationToolFormValue>>;
   prompt: string;
 }
 
@@ -102,6 +116,14 @@ function toFormValue(
         ? ""
         : JSON.stringify(trigger.run.github.permissions, null, 2),
     githubDuration: trigger.run.github?.duration ?? "",
+    tools: Object.fromEntries(
+      integrationProviders.flatMap((provider) => {
+        const grant = trigger.run.tools?.[provider];
+        return grant === undefined
+          ? []
+          : [[provider, { ...grant, channels: grant.channels.join(", ") }]];
+      }),
+    ),
     prompt: trigger.run.prompt,
   };
 }
@@ -164,6 +186,11 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   setIfChanged(document, ["run", "max_runtime"], value.maxRuntime.trim());
   setIfChanged(document, ["run", "idle_timeout"], value.idleTimeout.trim());
   setOptional(document, ["run", "github"], githubAuthority(value));
+  const tools = integrationToolGrants(value);
+  for (const provider of integrationProviders) {
+    setOptional(document, ["run", "tools", provider], tools?.[provider]);
+  }
+  if (tools === undefined) deleteIfPresent(document, ["run", "tools"]);
   setIfChanged(document, ["run", "prompt"], value.prompt);
   return document.toString({ lineWidth: 0 });
 }
@@ -206,6 +233,7 @@ export function createTriggerYaml(value: TriggerFormValue): string {
   const agent = splitAgentId(value.agent);
   const providerOptions = parseProviderOptions(value.providerOptions);
   const github = githubAuthority(value);
+  const tools = integrationToolGrants(value);
   const definition = formEventDefinition(value);
   return stringify(
     {
@@ -227,6 +255,7 @@ export function createTriggerYaml(value: TriggerFormValue): string {
         max_runtime: value.maxRuntime.trim(),
         idle_timeout: value.idleTimeout.trim(),
         ...(github === undefined ? {} : { github }),
+        ...(tools === undefined ? {} : { tools }),
         prompt: value.prompt,
       },
     },
@@ -285,9 +314,45 @@ function parsePermissions(value: string): Record<string, "read" | "write" | "adm
   return permissions.data;
 }
 
+function authoredIntegrationToolGrants(value: TriggerFormValue) {
+  const entries = integrationProviders.flatMap(
+    (
+      provider,
+    ): [IntegrationProvider, NonNullable<IntegrationToolGrants[IntegrationProvider]>][] => {
+      const grant = value.tools[provider];
+      return grant === undefined || grant.connection === ""
+        ? []
+        : [[provider, { ...grant, channels: commaSeparated(grant.channels) }]];
+    },
+  );
+  return entries.length === 0 ? undefined : Object.fromEntries(entries);
+}
+
+function integrationToolGrants(value: TriggerFormValue): IntegrationToolGrants | undefined {
+  return IntegrationToolGrantsSchema.optional().parse(authoredIntegrationToolGrants(value));
+}
+
+function integrationToolErrors(value: TriggerFormValue): TriggerFieldErrors {
+  const grants = IntegrationToolGrantsSchema.optional().safeParse(
+    authoredIntegrationToolGrants(value),
+  );
+  if (grants.success) return {};
+  return Object.fromEntries(
+    grants.error.issues.map(({ path, message }) => {
+      const key = "tools." + path.slice(0, 2).join(".");
+      return [key, message];
+    }),
+  );
+}
+
 /** What is wrong with each field, keyed by the field that has to change. */
 export type TriggerFieldErrors = Partial<
-  Record<keyof TriggerFormValue | `qualifiers.${QualifierKey}`, string>
+  Record<
+    | keyof TriggerFormValue
+    | `qualifiers.${QualifierKey}`
+    | `tools.${IntegrationProvider}.${keyof IntegrationToolFormValue}`,
+    string
+  >
 >;
 
 /**
@@ -331,7 +396,7 @@ export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
     const permissions = refused(() => parsePermissions(value.githubPermissions));
     if (permissions !== undefined) errors.githubPermissions = permissions;
   }
-  Object.assign(errors, continuationErrors(value));
+  Object.assign(errors, integrationToolErrors(value), continuationErrors(value));
   if (value.prompt.trim().length === 0) errors.prompt = "Instructions are required.";
   return errors;
 }

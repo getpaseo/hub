@@ -42,6 +42,7 @@ import {
 import { saveTrigger, triggerSnapshot, type TriggerSnapshot } from "./functions.js";
 import { daemonProviderSnapshot } from "../daemons/functions.js";
 import type { HubProviderSnapshotEntry } from "../hub/protocol.js";
+import { IntegrationToolFields } from "./integration-tool-fields.js";
 import { EventFields } from "./event-fields.js";
 import { EDITOR_EVENTS, eventDefinition, parseEditorEvent } from "./configuration/events.js";
 import { selectedProviderModel } from "./provider-catalog.js";
@@ -960,6 +961,12 @@ function TriggerForm({
                   ) : null}
                 </div>
               </Disclosure>
+              <IntegrationToolFields
+                tools={form.tools}
+                connections={snapshot.connections}
+                errors={errors}
+                onChange={(tools) => update("tools", tools)}
+              />
             </>
           )}
         </Card>
@@ -1280,6 +1287,7 @@ function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
     githubRepositories: "",
     githubPermissions: "",
     githubDuration: "1h",
+    tools: {},
     prompt:
       "Handle this request in the originating conversation.\n\nWhen hub.reply is available, use it for useful progress updates and your final user-facing response. Call hub.finish_execution once the request is complete.\n\nRequest:\n${{ paseo.prompt }}",
   };

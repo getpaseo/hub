@@ -173,6 +173,7 @@ describe("trigger form YAML bridge", () => {
       githubRepositories: "",
       githubPermissions: "",
       githubDuration: "1h",
+      tools: {},
       prompt: "Handle it.",
     });
     expect(parseDocument(yaml).toJS()).toEqual({
@@ -212,6 +213,7 @@ describe("trigger form YAML bridge", () => {
       githubRepositories: "",
       githubPermissions: "",
       githubDuration: "1h",
+      tools: {},
       prompt: "${{ paseo.prompt }}",
     });
     const projection = projectTriggerForm(initial);

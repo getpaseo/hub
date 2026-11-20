@@ -1,3 +1,4 @@
+import type { IntegrationToolHandlers } from "./integration-tools/index.js";
 import { createHubApplication } from "./app.js";
 import type { AuthServer } from "./auth/server.js";
 import type { BillingRuntime } from "./billing/index.js";
@@ -83,9 +84,11 @@ async function createOwnedApplicationRuntime(
     connectionsForProject,
     integrations,
   );
+  const integrationTools: IntegrationToolHandlers = {};
   const outputRegistry = new OutputExecutorRegistry();
-  for (const output of registrations.flatMap((registration) => registration.outputs)) {
-    outputRegistry.register(output);
+  for (const registration of registrations) {
+    for (const output of registration.outputs) outputRegistry.register(output);
+    Object.assign(integrationTools, registration.integrationTools);
   }
 
   const application = createHubApplication({
@@ -111,6 +114,7 @@ async function createOwnedApplicationRuntime(
       ? {}
       : { completionTokenSecret: options.completionTokenSecret }),
     outputRegistry,
+    integrationTools,
     ...(options.daemonConnectionForId === undefined
       ? {}
       : { daemonConnectionForId: options.daemonConnectionForId }),

@@ -1,3 +1,6 @@
+import { createSlackRegistration } from "../../providers/slack/index.js";
+import { createDiscordRegistration } from "../../providers/discord/index.js";
+import { chat, localChatFetch, seedChatConnections } from "../../test-utils/fake-chat.js";
 import { randomUUID } from "node:crypto";
 import { createExecutionAuthority } from "../../execution-authority/index.js";
 import { z } from "zod";
@@ -172,6 +175,38 @@ async function main(): Promise<void> {
       },
     },
   });
+  const fakeChatOrigin = process.env["HUB_E2E_FAKE_CHAT_ORIGIN"];
+  const integrationTools = {};
+  if (fakeChatOrigin) {
+    await seedChatConnections(runtime, organizationId, "hub-e2e");
+    const baseUrl = requiredEnvironment("PASEO_HUB_APP_URL");
+    const shared = {
+      database,
+      auth,
+      applicationBaseUrl: baseUrl,
+      publicBaseUrl: baseUrl,
+      fetch: localChatFetch(fakeChatOrigin),
+    };
+    const slack = createSlackRegistration({
+      ...shared,
+      configuration: {
+        transport: "webhook",
+        appId: chat.slack.appId,
+        clientId: "slack-client",
+        clientSecret: "slack-secret",
+        signingSecret: "slack-signing-secret",
+      },
+    });
+    const discord = createDiscordRegistration({
+      ...shared,
+      configuration: {
+        clientId: chat.discord.appId,
+        clientSecret: "discord-secret",
+        botToken: chat.discord.token,
+      },
+    });
+    Object.assign(integrationTools, slack.integrationTools, discord.integrationTools);
+  }
   const application = createHubApplication({
     database,
     executionAuthority,
@@ -181,6 +216,7 @@ async function main(): Promise<void> {
         ? { status: "unavailable" }
         : { status: "enabled", authenticator: auth.publicCredentials },
     outputRegistry: outputs,
+    integrationTools,
     providers: [
       {
         name: "discord",

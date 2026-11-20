@@ -195,6 +195,29 @@ export class OrganizationTriggers {
     ).toBeVisible();
   }
 
+  async grantScheduledIntegrationTools() {
+    await this.page.getByRole("button", { name: "Integration tools", exact: true }).click();
+    await this.selectOption("Slack integration", "company-slack");
+    await this.page.getByRole("textbox", { name: "Slack channel IDs" }).fill("CALLOWED");
+    await this.page.getByRole("checkbox", { name: "Post to Slack" }).check();
+    await this.selectOption("Discord integration", "company-discord");
+    await this.page
+      .getByRole("textbox", { name: "Discord channel IDs" })
+      .fill("123456789012345678");
+    await this.page.getByRole("checkbox", { name: "Read from Discord" }).check();
+  }
+
+  async expectScheduledIntegrationTools() {
+    await expect(this.page.getByRole("textbox", { name: "Slack channel IDs" })).toHaveValue(
+      "CALLOWED",
+    );
+    await expect(this.page.getByRole("checkbox", { name: "Post to Slack" })).toBeChecked();
+    await expect(this.page.getByRole("textbox", { name: "Discord channel IDs" })).toHaveValue(
+      "123456789012345678",
+    );
+    await expect(this.page.getByRole("checkbox", { name: "Read from Discord" })).toBeChecked();
+  }
+
   async editScheduleToWeekdays() {
     await this.page.getByRole("combobox", { name: "Repeat", exact: true }).click();
     await this.page.getByRole("option", { name: "Every week", exact: true }).click();

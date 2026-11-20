@@ -160,6 +160,7 @@ function singleRunDocument(
         ? {}
         : { startup_timeout: duration(step.startupTimeoutMs) }),
       ...(step.env === undefined ? {} : { env: { ...step.env } }),
+      ...(step.tools === undefined ? {} : { tools: step.tools }),
       ...(step.github === undefined
         ? {}
         : {

@@ -1,3 +1,4 @@
+import { createDiscordIntegrationTools } from "../../integration-tools/index.js";
 import type { AuthServer } from "../../auth/server.js";
 import type { Database, DiscordConnectionRecord } from "../../db/types.js";
 import { reportFailure } from "../../failures/index.js";
@@ -120,6 +121,14 @@ export function createDiscordRegistration(
         }),
     ],
     sources: [gateway],
+    integrationTools: {
+      discord: createDiscordIntegrationTools(
+        database,
+        configuration.clientId,
+        configuration.botToken,
+        options.fetch,
+      ),
+    },
     outputs: [
       {
         type: "discord.reply",
