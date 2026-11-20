@@ -173,7 +173,13 @@ export function IntegrationAccess({
 }) {
   const configured = configuredIntegrationProviders(form);
   const active = activeIntegrationProviders(form);
-  const [open, setOpen] = useState(() => active.length > 0);
+  const hasError = hasIntegrationAccessError(errors);
+  const [open, setOpen] = useState(() => active.length > 0 || hasError);
+  const [previousHasError, setPreviousHasError] = useState(hasError);
+  if (hasError !== previousHasError) {
+    setPreviousHasError(hasError);
+    if (hasError) setOpen(true);
+  }
   const pendingFocusId = useRef<string | null>(null);
   const activeSet = new Set<IntegrationAccessProvider>(active);
   const activeProviders = INTEGRATION_ACCESS_PROVIDERS.filter(({ provider }) =>
@@ -182,8 +188,6 @@ export function IntegrationAccess({
   const remainingProviders = INTEGRATION_ACCESS_PROVIDERS.filter(
     ({ provider }) => !activeSet.has(provider),
   );
-  const hasError = hasIntegrationAccessError(errors);
-  const isOpen = open || hasError;
   const status = configured.length === 0 ? undefined : `${String(configured.length)} configured`;
 
   useEffect(() => {
@@ -223,7 +227,7 @@ export function IntegrationAccess({
       title="Integration access"
       description="Grant scoped access to organization integrations during this run."
       {...(status === undefined ? {} : { status })}
-      open={isOpen}
+      open={open}
       onOpenChange={setOpen}
     >
       <div
