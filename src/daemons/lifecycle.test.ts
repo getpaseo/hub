@@ -421,7 +421,6 @@ async function acknowledgementFixture() {
       provider: "codex",
       cwd: "/workspace",
       env: {},
-      toolPolicy: { preapproved: [] },
     },
   });
   await database.attachExecutionToSession(EXECUTION_ID, "session");

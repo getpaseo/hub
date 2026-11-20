@@ -44,8 +44,7 @@ import { daemonProviderSnapshot } from "../daemons/functions.js";
 import type { HubProviderSnapshotEntry } from "../hub/protocol.js";
 import { EventFields } from "./event-fields.js";
 import { EDITOR_EVENTS, eventDefinition, parseEditorEvent } from "./configuration/events.js";
-import { selectedProviderModel } from "./provider-catalog.js";
-import { supportsUnattendedRuns } from "./configuration/unattended.js";
+import { changeTriggerModel, selectedProviderModel } from "./provider-catalog.js";
 
 type BrowserTrigger = TriggerSnapshot["triggers"][number];
 type EditorMode = "form" | "yaml";
@@ -390,6 +389,7 @@ function TriggerEditor({
               errors={editor.errors}
               triggerId={trigger?.id}
               snapshot={snapshot}
+              providerCatalog={editor.providerCatalog}
               onChange={editor.setForm}
             />
           )}
@@ -428,8 +428,16 @@ function useTriggerEditorState(
   const initialForm = trigger?.draft ?? defaultForm(snapshot);
   const initialYaml = trigger?.yaml ?? "";
   const initialProjection = useMemo(() => projectTriggerForm(initialYaml), [initialYaml]);
+  const initialErrors =
+    initialProjection.status === "editable" ? triggerFormErrors(initialProjection.value) : {};
   const [mode, setMode] = useState<EditorMode>(
-    trigger === null || (initialProjection.status === "editable" && !legacy) ? "form" : "yaml",
+    trigger === null ||
+      (initialProjection.status === "editable" &&
+        !legacy &&
+        initialErrors.agent === undefined &&
+        initialProjection.value.mode.trim().length > 0)
+      ? "form"
+      : "yaml",
   );
   const [yaml, setYaml] = useState(initialYaml);
   const [form, setForm] = useState<TriggerFormValue>(
@@ -446,7 +454,14 @@ function useTriggerEditorState(
   // new trigger is not a page of errors, it is a page nobody has filled in. Once they have asked,
   // the marks stay and follow what they type.
   const [refused, setRefused] = useState(false);
-  const errors = useMemo(() => triggerFormErrors(form), [form]);
+  const selectedDaemon = snapshot.daemons.find((daemon) => daemon.slug === form.daemon);
+  const providerCatalog = useDaemonProviderCatalog(
+    snapshot.organization.slug,
+    mode === "form" ? selectedDaemon?.id : undefined,
+    form.cwd,
+  );
+  const { entry } = selectedProviderModel(providerCatalog.entries, form.agent);
+  const errors = triggerFormErrors(form, entry?.modes);
   const refuse = () => setRefused(true);
   const switchMode = (next: EditorMode) => {
     if (next === mode) return;
@@ -462,7 +477,7 @@ function useTriggerEditorState(
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (mode === "yaml") onSave(yaml);
-    else if (other.status === "ok") onSave(other.yaml);
+    else if (other.status === "ok" && Object.keys(errors).length === 0) onSave(other.yaml);
     else refuse();
   };
   return {
@@ -470,6 +485,7 @@ function useTriggerEditorState(
     yaml,
     form,
     errors: refused ? errors : NO_FIELD_ERRORS,
+    providerCatalog,
     // Legacy workflows are explained by their own alert; repeating the schema error underneath it
     // would say the same thing twice in less useful words.
     blocked: legacy ? undefined : blocked,
@@ -566,6 +582,7 @@ function TriggerForm({
   errors,
   triggerId,
   snapshot,
+  providerCatalog,
   onChange,
 }: {
   form: TriggerFormValue;
@@ -573,6 +590,7 @@ function TriggerForm({
   errors: TriggerFieldErrors;
   triggerId: string | undefined;
   snapshot: TriggerSnapshot;
+  providerCatalog: ReturnType<typeof useDaemonProviderCatalog>;
   onChange: (value: TriggerFormValue) => void;
 }) {
   const { provider } = eventDefinition(form.event);
@@ -605,11 +623,6 @@ function TriggerForm({
   const text = (key: TriggerTextField) => (value: string) => update(key, value);
   const selectedDaemon = snapshot.daemons.find((daemon) => daemon.slug === form.daemon);
   const noDaemons = snapshot.daemons.length === 0;
-  const providerCatalog = useDaemonProviderCatalog(
-    snapshot.organization.slug,
-    selectedDaemon?.id,
-    form.cwd,
-  );
   return (
     <div className="grid gap-6">
       <Card>
@@ -1127,10 +1140,8 @@ function ProviderCatalogFields({
   onChange: (value: TriggerFormValue) => void;
 }) {
   const selected = selectedProviderModel(entries, form.agent);
-  // A provider the daemon cannot run unattended is not offered: Hub sends a tool policy with every
-  // run, and the daemon refuses the policy at launch for any provider outside that set.
   const agentOptions = (entries ?? []).flatMap((entry) =>
-    entry.status !== "ready" || !entry.enabled || !supportsUnattendedRuns(entry.provider)
+    entry.status !== "ready" || !entry.enabled
       ? []
       : (entry.models ?? [])
           .filter((model) => model.isSelectable !== false)
@@ -1154,7 +1165,7 @@ function ProviderCatalogFields({
       <FormField
         id="trigger-agent"
         label="Agent"
-        description="Models the selected daemon can run unattended: Claude, Codex, or OpenCode."
+        description="Providers and models available on the selected daemon."
         required
         {...fieldError(errors, "agent")}
       >
@@ -1169,30 +1180,32 @@ function ProviderCatalogFields({
             searchPlaceholder="Search models…"
             empty="No models found."
             onChange={(option) =>
-              onChange({ ...form, agent: option.value, mode: "", thinkingOptionId: "" })
+              onChange(changeTriggerModel({ entries: entries ?? [], form, agent: option.value }))
             }
           />
         )}
       </FormField>
-      <FormField
-        id="trigger-mode"
-        label="Execution mode"
-        description="Modes reported for the selected provider."
-        required
-        {...fieldError(errors, "mode")}
-      >
-        {(control) => (
-          <Combobox
-            {...control}
-            required
-            value={form.mode}
-            options={modeOptions}
-            placeholder="Select a mode"
-            empty="No modes found."
-            onChange={(option) => onChange({ ...form, mode: option.value })}
-          />
-        )}
-      </FormField>
+      {modeOptions.length === 0 ? null : (
+        <FormField
+          id="trigger-mode"
+          label="Execution mode"
+          description="Modes reported for the selected provider."
+          required
+          {...fieldError(errors, "mode")}
+        >
+          {(control) => (
+            <Combobox
+              {...control}
+              required
+              value={form.mode}
+              options={modeOptions}
+              placeholder="Select a mode"
+              empty="No execution modes reported by this daemon."
+              onChange={(option) => onChange({ ...form, mode: option.value })}
+            />
+          )}
+        </FormField>
+      )}
       {thinkingOptions.length === 0 ? null : (
         <FormField
           id="trigger-thinking"
