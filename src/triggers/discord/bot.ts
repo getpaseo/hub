@@ -2,6 +2,7 @@ import {
   Client,
   DiscordAPIError,
   GatewayIntentBits,
+  MessageFlags,
   RESTJSONErrorCodes,
   type GuildBasedChannel,
   type Message,
@@ -235,7 +236,11 @@ export function createDiscordBotClient(
         input.threadId === undefined || input.threadId === null
           ? await resolveReplyDestination(client, input, pendingReplyDestinations)
           : await fetchSendableChannel(client, input.threadId);
-      await channel.send({ content: input.content, allowedMentions: { parse: [] } });
+      await channel.send({
+        content: input.content,
+        allowedMentions: { parse: [] },
+        flags: MessageFlags.SuppressEmbeds,
+      });
     },
     async readMessage(input) {
       const message = await fetchMessage(

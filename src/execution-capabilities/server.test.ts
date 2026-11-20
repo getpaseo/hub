@@ -695,6 +695,24 @@ describe("execution capability MCP boundary", () => {
     assert.equal(typeof fixture.outbound[0]?.attemptId, "string");
   });
 
+  it("gives the reply executor a shareable link once the daemon agent is attached", async () => {
+    const fixture = await capabilityFixture(undefined, "succeeded", 2);
+    const reply = () =>
+      fixture.call("tools/call", {
+        name: "reply",
+        arguments: { content: "Ready" },
+      });
+
+    assert.equal(ToolResultSchema.parse((await reply()).result).isError, undefined);
+    assert.equal(fixture.outbound[0]?.openInPaseoUrl, undefined);
+    await fixture.database.attachAgentToExecution(fixture.executionId, randomUUID(), "agent");
+    assert.equal(ToolResultSchema.parse((await reply()).result).isError, undefined);
+    assert.equal(
+      fixture.outbound[1]?.openInPaseoUrl,
+      `https://hub.test/open/executions/${fixture.executionId}`,
+    );
+  });
+
   it("allows replies up to the configured maximum", async () => {
     const fixture = await capabilityFixture(() => Promise.resolve(), "succeeded", 3);
 
@@ -808,6 +826,7 @@ async function capabilityFixture(
   }> = [];
   const server = createExecutionCapabilityServer({
     database,
+    publicBaseUrl: "https://hub.test",
     outputs,
     async completeExecution(input) {
       completions.push(input);

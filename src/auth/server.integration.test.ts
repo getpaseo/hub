@@ -1,3 +1,4 @@
+import { createExecutionLauncher } from "../agent-executions/launcher.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, it } from "vitest";
@@ -65,6 +66,39 @@ describe("account and organization boundary", () => {
       { name: "Default", slug: "default", createdByEmail: "alice@example.com" },
     ]);
     assert.equal(await alice.createOrganizationWithMetadata(), 400);
+  });
+
+  it("opens a recorded agent only for a member of the execution's organization", async () => {
+    const hub = await startAccounts(postgres);
+    const owner = await hub.signUp("Owner", "launcher-owner@example.com");
+    const studio = await owner.createOrganization("Private Studio");
+    const resources = await hub.seedResources(studio, "launcher");
+    await owner.createOrganization("Other Studio");
+    const outsider = await hub.signUp("Outsider", "launcher-outsider@example.com");
+    await outsider.createOrganization("Outsider Studio");
+    const path = `/open/executions/${resources.execution}`;
+    const anonymous = await hub.openExecution(new Request(`http://localhost:3000${path}`));
+    assert.equal(anonymous.status, 303);
+    assert.equal(anonymous.headers.get("location"), `/?openExecution=${resources.execution}`);
+    assert.equal(await anonymous.text(), "");
+
+    for (const target of [path, `/open/executions/${randomUUID()}`]) {
+      const denied = await hub.openExecution(outsider.request(target));
+      assert.equal(denied.status, 404);
+      assert.equal(denied.headers.get("cache-control"), "no-store");
+      assert.equal(await denied.text(), "Not Found");
+    }
+
+    assert.equal((await hub.openExecution(owner.request(path))).status, 404);
+    await hub.attachAgent(resources, "agent/launcher");
+    const allowed = await hub.openExecution(owner.request(path));
+    assert.equal(allowed.status, 200);
+    assert.equal(allowed.headers.get("cache-control"), "no-store");
+    const page = await allowed.text();
+    assert.match(page, /href="paseo:\/\/h\/server-launcher\/agent\/agent%2Flauncher"/u);
+    assert.match(page, /href=".*[?]view=run"/u);
+    const run = await hub.openExecution(owner.request(`${path}?view=run`));
+    assert.match(await run.text(), /Execution details/u);
   });
 
   it("requires an explicit valid active membership and fails closed when it goes stale", async () => {
@@ -745,6 +779,17 @@ class PaseoAccounts {
     );
   }
 
+  openExecution(request: Request): Promise<Response> {
+    return createExecutionLauncher(this.database, this.auth)(
+      request,
+      new URL(request.url).pathname.split("/").at(-1)!,
+    );
+  }
+
+  async attachAgent(ids: ResourceIds, agentId: string): Promise<void> {
+    await this.database.attachAgentToExecution(ids.execution, ids.daemon, agentId);
+  }
+
   async seedResources(organizationId: string, suffix: string): Promise<ResourceIds> {
     const projectId = randomUUID();
     await this.query(
@@ -1105,7 +1150,7 @@ class AccountBrowser {
       .join("; ");
   }
 
-  private request(path: string): Request {
+  request(path: string): Request {
     return new Request(`http://localhost:3000${path}`, {
       headers: this.cookie.length === 0 ? {} : { cookie: this.cookie },
     });

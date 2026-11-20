@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { DiscordAPIError, RESTJSONErrorCodes, type Client } from "discord.js";
+import { DiscordAPIError, MessageFlags, RESTJSONErrorCodes, type Client } from "discord.js";
 import { describe, it } from "vitest";
 import { createDiscordBotClient } from "./bot.js";
 
@@ -119,9 +119,17 @@ describe("Discord bot client", () => {
     const createdThread = channel.message?.thread;
     assert.ok(createdThread);
     assert.deepEqual(createdThread.sentPayloads, [
-      { content: "done", allowedMentions: { parse: [] } },
-      { content: "more detail", allowedMentions: { parse: [] } },
-      { content: "final detail", allowedMentions: { parse: [] } },
+      { content: "done", allowedMentions: { parse: [] }, flags: MessageFlags.SuppressEmbeds },
+      {
+        content: "more detail",
+        allowedMentions: { parse: [] },
+        flags: MessageFlags.SuppressEmbeds,
+      },
+      {
+        content: "final detail",
+        allowedMentions: { parse: [] },
+        flags: MessageFlags.SuppressEmbeds,
+      },
     ]);
   });
 
@@ -144,7 +152,11 @@ describe("Discord bot client", () => {
 
     assert.deepEqual(message.startedThreads, []);
     assert.deepEqual(existingThread.sentPayloads, [
-      { content: "existing thread reply", allowedMentions: { parse: [] } },
+      {
+        content: "existing thread reply",
+        allowedMentions: { parse: [] },
+        flags: MessageFlags.SuppressEmbeds,
+      },
     ]);
   });
 
@@ -172,8 +184,16 @@ describe("Discord bot client", () => {
 
     assert.deepEqual(channel.sentPayloads, []);
     assert.deepEqual(thread.sentPayloads, [
-      { content: "thread reply", allowedMentions: { parse: [] } },
-      { content: "second thread reply", allowedMentions: { parse: [] } },
+      {
+        content: "thread reply",
+        allowedMentions: { parse: [] },
+        flags: MessageFlags.SuppressEmbeds,
+      },
+      {
+        content: "second thread reply",
+        allowedMentions: { parse: [] },
+        flags: MessageFlags.SuppressEmbeds,
+      },
     ]);
   });
 

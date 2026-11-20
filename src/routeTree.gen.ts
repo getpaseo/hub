@@ -28,6 +28,7 @@ import { Route as ShellOperatorRouteImport } from './routes/_shell/operator'
 import { Route as ShellIntegrationsRouteImport } from './routes/_shell/integrations'
 import { Route as ShellCliLoginRouteImport } from './routes/_shell/cli-login'
 import { Route as ShellAppsRouteImport } from './routes/_shell/apps'
+import { Route as OpenExecutionsExecutionIdRouteImport } from './routes/open/executions/$executionId'
 import { Route as ApiV1CliAuthorizationsRouteImport } from './routes/api/v1/cli-authorizations'
 import { Route as ApiV1SplatRouteImport } from './routes/api/v1/$'
 import { Route as ApiDaemonsEnrollRouteImport } from './routes/api/daemons/enroll'
@@ -154,6 +155,12 @@ const ShellAppsRoute = ShellAppsRouteImport.update({
   path: '/apps',
   getParentRoute: () => ShellRoute,
 } as any)
+const OpenExecutionsExecutionIdRoute =
+  OpenExecutionsExecutionIdRouteImport.update({
+    id: '/open/executions/$executionId',
+    path: '/open/executions/$executionId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiV1CliAuthorizationsRoute = ApiV1CliAuthorizationsRouteImport.update({
   id: '/api/v1/cli-authorizations',
   path: '/api/v1/cli-authorizations',
@@ -362,6 +369,7 @@ export interface FileRoutesByFullPath {
   '/api/daemons/enroll': typeof ApiDaemonsEnrollRoute
   '/api/v1/$': typeof ApiV1SplatRoute
   '/api/v1/cli-authorizations': typeof ApiV1CliAuthorizationsRouteWithChildren
+  '/open/executions/$executionId': typeof OpenExecutionsExecutionIdRoute
   '/o/$organizationSlug/activity': typeof ShellOOrganizationSlugActivityRoute
   '/o/$organizationSlug/daemons': typeof ShellOOrganizationSlugDaemonsRoute
   '/o/$organizationSlug/home': typeof ShellOOrganizationSlugHomeRoute
@@ -413,6 +421,7 @@ export interface FileRoutesByTo {
   '/api/daemons/enroll': typeof ApiDaemonsEnrollRoute
   '/api/v1/$': typeof ApiV1SplatRoute
   '/api/v1/cli-authorizations': typeof ApiV1CliAuthorizationsRouteWithChildren
+  '/open/executions/$executionId': typeof OpenExecutionsExecutionIdRoute
   '/o/$organizationSlug/activity': typeof ShellOOrganizationSlugActivityRoute
   '/o/$organizationSlug/daemons': typeof ShellOOrganizationSlugDaemonsRoute
   '/o/$organizationSlug/home': typeof ShellOOrganizationSlugHomeRoute
@@ -464,6 +473,7 @@ export interface FileRoutesById {
   '/api/daemons/enroll': typeof ApiDaemonsEnrollRoute
   '/api/v1/$': typeof ApiV1SplatRoute
   '/api/v1/cli-authorizations': typeof ApiV1CliAuthorizationsRouteWithChildren
+  '/open/executions/$executionId': typeof OpenExecutionsExecutionIdRoute
   '/_shell/o/$organizationSlug/activity': typeof ShellOOrganizationSlugActivityRoute
   '/_shell/o/$organizationSlug/daemons': typeof ShellOOrganizationSlugDaemonsRoute
   '/_shell/o/$organizationSlug/home': typeof ShellOOrganizationSlugHomeRoute
@@ -517,6 +527,7 @@ export interface FileRouteTypes {
     | '/api/daemons/enroll'
     | '/api/v1/$'
     | '/api/v1/cli-authorizations'
+    | '/open/executions/$executionId'
     | '/o/$organizationSlug/activity'
     | '/o/$organizationSlug/daemons'
     | '/o/$organizationSlug/home'
@@ -568,6 +579,7 @@ export interface FileRouteTypes {
     | '/api/daemons/enroll'
     | '/api/v1/$'
     | '/api/v1/cli-authorizations'
+    | '/open/executions/$executionId'
     | '/o/$organizationSlug/activity'
     | '/o/$organizationSlug/daemons'
     | '/o/$organizationSlug/home'
@@ -618,6 +630,7 @@ export interface FileRouteTypes {
     | '/api/daemons/enroll'
     | '/api/v1/$'
     | '/api/v1/cli-authorizations'
+    | '/open/executions/$executionId'
     | '/_shell/o/$organizationSlug/activity'
     | '/_shell/o/$organizationSlug/daemons'
     | '/_shell/o/$organizationSlug/home'
@@ -665,6 +678,7 @@ export interface RootRouteChildren {
   ApiDaemonsEnrollRoute: typeof ApiDaemonsEnrollRoute
   ApiV1SplatRoute: typeof ApiV1SplatRoute
   ApiV1CliAuthorizationsRoute: typeof ApiV1CliAuthorizationsRouteWithChildren
+  OpenExecutionsExecutionIdRoute: typeof OpenExecutionsExecutionIdRoute
   AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute: typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
   ApiIntegrationsDiscordCallbackRoute: typeof ApiIntegrationsDiscordCallbackRoute
   ApiIntegrationsGithubCallbackRoute: typeof ApiIntegrationsGithubCallbackRoute
@@ -809,6 +823,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/apps'
       preLoaderRoute: typeof ShellAppsRouteImport
       parentRoute: typeof ShellRoute
+    }
+    '/open/executions/$executionId': {
+      id: '/open/executions/$executionId'
+      path: '/open/executions/$executionId'
+      fullPath: '/open/executions/$executionId'
+      preLoaderRoute: typeof OpenExecutionsExecutionIdRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/v1/cli-authorizations': {
       id: '/api/v1/cli-authorizations'
@@ -1147,6 +1168,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiDaemonsEnrollRoute: ApiDaemonsEnrollRoute,
   ApiV1SplatRoute: ApiV1SplatRoute,
   ApiV1CliAuthorizationsRoute: ApiV1CliAuthorizationsRouteWithChildren,
+  OpenExecutionsExecutionIdRoute: OpenExecutionsExecutionIdRoute,
   AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute:
     AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute,
   ApiIntegrationsDiscordCallbackRoute: ApiIntegrationsDiscordCallbackRoute,

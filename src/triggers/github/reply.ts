@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { withExecutionLink } from "../../agent-executions/link.js";
 import type { OutputExecutor } from "../../execution-capabilities/outputs.js";
 
 const GitHubReplyArgsSchema = z.object({ content: z.string().min(1) });
@@ -42,7 +43,7 @@ export function createGitHubReplyExecutor(options: { client: GitHubReplyClient }
       owner,
       repo,
       issueNumber: item.number,
-      body: args.content,
+      body: withExecutionLink(args.content, input.openInPaseoUrl),
     });
   };
 }

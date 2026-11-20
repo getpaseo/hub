@@ -273,6 +273,71 @@ export class PaseoHub {
     await user.signUp(account);
   }
 
+  async seedExecutionLink(alias: string): Promise<string> {
+    await this.seedProjectHistory(alias, "default");
+    const daemon = await this.seedDaemon(alias, "launcher-daemon");
+    const execution = randomUUID();
+    await this.queryDatabase(
+      this.primary,
+      `insert into agent_executions
+         (id, organization_id, project_id, configuration_revision_id, machine_id, daemon_id,
+          daemon_agent_id, status)
+       select $1, daemon.organization_id, revision.project_id, revision.id, daemon.machine_id,
+              daemon.id, 'launcher-agent', 'succeeded'
+       from daemons daemon
+       join project_configuration_revisions revision on revision.organization_id = daemon.organization_id
+       where daemon.id = $2`,
+      [execution, daemon],
+    );
+    return `${this.primary.origin}/open/executions/${execution}`;
+  }
+
+  async expectExecutionLinkRequiresSignIn(url: string): Promise<void> {
+    const response = await this.requests.get(url, { maxRedirects: 0 });
+    expect(response.status()).toBe(303);
+    const location = new URL(response.headers()["location"]!, url);
+    expect(location.pathname).toBe("/");
+    expect(location.searchParams.get("openExecution")).toBe(
+      new URL(url).pathname.split("/").at(-1),
+    );
+    const redirect = JSON.stringify(response.headers()) + (await response.text());
+    expect(redirect).not.toMatch(/browser-boundary|launcher-agent|studio-owner|succeeded/u);
+    await this.page.goto(url);
+    await expect(this.page.getByRole("form", { name: "Sign in" })).toBeVisible();
+  }
+
+  async signInFromExecutionLink(account: Account): Promise<void> {
+    const form = this.page.getByRole("form", { name: "Sign in" });
+    await form.getByLabel("Email").fill(account.email);
+    await form.getByLabel("Password").fill(account.password);
+    await form.getByRole("button", { name: "Sign in" }).click();
+  }
+
+  async expectExecutionLauncher(url: string): Promise<void> {
+    await expect(this.page).toHaveURL(url);
+    await expect(this.page.getByRole("heading", { name: "Open in Paseo" })).toBeVisible();
+    await expect(this.page.getByRole("link", { name: "Open in Paseo" })).toHaveAttribute(
+      "href",
+      "paseo://h/browser-boundary/agent/launcher-agent",
+    );
+    await expect(this.page.getByRole("link", { name: "View run in Hub" })).toBeVisible();
+    await expect(this.page.getByRole("link", { name: "Install Paseo" })).toHaveAttribute(
+      "href",
+      "https://paseo.sh/download",
+    );
+  }
+
+  async viewExecutionInHub(executionUrl: string): Promise<void> {
+    await this.page.getByRole("link", { name: "View run in Hub" }).click();
+    await expect(this.page).toHaveURL(`${executionUrl}?view=run`);
+    await expect(this.page.getByRole("heading", { name: "Execution details" })).toBeVisible();
+    await expect(this.page.getByText("succeeded", { exact: true })).toBeVisible();
+  }
+
+  async expectExecutionLinkDenied(alias: string, url: string): Promise<void> {
+    await this.requireUser(alias).expectExecutionLinkDenied(url);
+  }
+
   async proveUnverifiedSignInJourney(alias: string, account: Account): Promise<void> {
     await (await this.user(alias)).verifyFromSignIn(account);
   }
@@ -4543,7 +4608,7 @@ class HubUser {
     await expect(plan.getByRole("listitem")).toHaveText([
       `${FIXTURE_FREE_EXECUTIONS} agent runs a month`,
       "1 seat",
-      "Managed GitHub, Slack, and Discord triggers",
+      "Managed GitHub, Linear, Slack, Discord, schedules, and webhooks",
       "Daemons run on your machines",
     ]);
     await expect(plan.getByRole("button", { name: "Upgrade", exact: true })).toBeVisible();
@@ -4658,7 +4723,7 @@ class HubUser {
       "Unlimited agent runs",
       "Unlimited seats",
       "Paseo operates Hub",
-      "Managed GitHub, Slack, and Discord triggers",
+      "Managed GitHub, Linear, Slack, Discord, schedules, and webhooks",
       "Daemons run on your machines",
       "Same projects, workflows, and activity",
     ]);
@@ -5485,6 +5550,12 @@ class HubUser {
     }
   }
 
+  async expectExecutionLinkDenied(url: string): Promise<void> {
+    const response = await this.page.request.get(url);
+    expect(response.status()).toBe(404);
+    expect(await response.text()).toBe("Not Found");
+  }
+
   async signOut(): Promise<void> {
     const account = this.page.getByRole("button", { name: this.accountEmail });
     if ((await account.count()) > 0) {
@@ -6113,7 +6184,7 @@ const FIXTURE_FREE_PLAN_EXPECTATION: PublicBillingPlanExpectation = {
   features: [
     {
       key: "managed-triggers",
-      label: "Managed GitHub, Slack, and Discord triggers",
+      label: "Managed GitHub, Linear, Slack, Discord, schedules, and webhooks",
       tooltip: null,
     },
     { key: "daemon-location", label: "Daemons run on your machines", tooltip: null },
@@ -6146,7 +6217,7 @@ const FIXTURE_BILLING_PLAN_EXPECTATIONS: readonly PublicBillingPlanExpectation[]
       { key: "hub-operation", label: "Paseo operates Hub", tooltip: null },
       {
         key: "managed-triggers",
-        label: "Managed GitHub, Slack, and Discord triggers",
+        label: "Managed GitHub, Linear, Slack, Discord, schedules, and webhooks",
         tooltip: null,
       },
       { key: "daemon-location", label: "Daemons run on your machines", tooltip: null },

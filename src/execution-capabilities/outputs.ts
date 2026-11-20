@@ -29,6 +29,7 @@ export interface OutputToolDefinition {
 export interface OutputExecutionInput {
   agentExecutionId: string;
   attemptId?: string;
+  openInPaseoUrl?: string;
   toolType: string;
   args: Record<string, unknown>;
   outputContext: unknown;

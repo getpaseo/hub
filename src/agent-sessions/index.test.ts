@@ -178,6 +178,10 @@ test("continuations reuse matching integration grants and reject a different sco
   expect((await followUp.dispatch()).agentId).toBe(agent.agentId);
   await expect(differentChannel.dispatch()).rejects.toThrow("Continuation settings differ");
   expect(f.connection.deliveries).toHaveLength(2);
+  expect(f.connection.deliveries.map(({ text }) => text)).toEqual([
+    expect.stringContaining(`https://hub.test/open/executions/${first.executionId}`),
+    expect.stringContaining(`https://hub.test/open/executions/${followUp.executionId}`),
+  ]);
 });
 
 test("same-key arrivals share an agent; an earlier completion cannot archive newer work", async () => {

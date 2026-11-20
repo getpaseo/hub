@@ -4,52 +4,59 @@ import type { SlackBotClient } from "./client.js";
 import { createSlackReplyExecutor } from "./reply.js";
 
 describe("Slack reply output", () => {
-  it("posts repeated replies into the same originating thread", async () => {
-    const client = new RecordingSlackClient();
-    const execute = createSlackReplyExecutor({ client });
-    await execute({
-      agentExecutionId: "execution-1",
-      toolType: "slack.reply",
-      args: { content: "Done" },
-      outputContext: {
-        provider: "slack",
-        organizationId: "org-1",
-        teamId: "T1",
-        channelId: "C1",
-        threadTs: "1700000000.000001",
-        messageTs: "1700000000.000001",
-      },
-    });
-    await execute({
-      agentExecutionId: "execution-1",
-      toolType: "slack.reply",
-      args: { content: "Still working" },
-      outputContext: {
-        provider: "slack",
-        organizationId: "org-1",
-        teamId: "T1",
-        channelId: "C1",
-        threadTs: "1700000000.000001",
-        messageTs: "1700000000.000001",
-      },
-    });
-    assert.deepEqual(client.messages, [
-      {
-        organizationId: "org-1",
-        teamId: "T1",
-        channelId: "C1",
-        threadTs: "1700000000.000001",
-        content: "Done",
-      },
-      {
-        organizationId: "org-1",
-        teamId: "T1",
-        channelId: "C1",
-        threadTs: "1700000000.000001",
-        content: "Still working",
-      },
-    ]);
-  });
+  it.each([false, true])(
+    "posts repeated replies into the same originating thread (already linked: %s)",
+    async (alreadyLinked) => {
+      const url = "https://hub.example/open/executions/00000000-0000-4000-8000-000000000001";
+      const link = `<${url}|Open in Paseo>`;
+      const content = alreadyLinked ? "Existing: " + link : "Done";
+      const client = new RecordingSlackClient();
+      const execute = createSlackReplyExecutor({ client });
+      await execute({
+        agentExecutionId: "execution-1",
+        toolType: "slack.reply",
+        args: { content },
+        openInPaseoUrl: url,
+        outputContext: {
+          provider: "slack",
+          organizationId: "org-1",
+          teamId: "T1",
+          channelId: "C1",
+          threadTs: "1700000000.000001",
+          messageTs: "1700000000.000001",
+        },
+      });
+      await execute({
+        agentExecutionId: "execution-1",
+        toolType: "slack.reply",
+        args: { content: "Still working" },
+        outputContext: {
+          provider: "slack",
+          organizationId: "org-1",
+          teamId: "T1",
+          channelId: "C1",
+          threadTs: "1700000000.000001",
+          messageTs: "1700000000.000001",
+        },
+      });
+      assert.deepEqual(client.messages, [
+        {
+          organizationId: "org-1",
+          teamId: "T1",
+          channelId: "C1",
+          threadTs: "1700000000.000001",
+          content: alreadyLinked ? content : `${content}\n\n${link}`,
+        },
+        {
+          organizationId: "org-1",
+          teamId: "T1",
+          channelId: "C1",
+          threadTs: "1700000000.000001",
+          content: "Still working",
+        },
+      ]);
+    },
+  );
 
   it("rejects invalid arguments before calling Slack", async () => {
     const client = new RecordingSlackClient();

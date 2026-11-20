@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { withExecutionLink } from "../../agent-executions/link.js";
 import type { OutputExecutor } from "../../execution-capabilities/outputs.js";
 import type { SlackBotClient } from "./client.js";
 
@@ -14,6 +15,9 @@ export function createSlackReplyExecutor(options: { client: SlackBotClient }): O
   return async function executeSlackReply(input) {
     const args = SlackReplyArgsSchema.parse(input.args);
     const context = SlackReplyOutputContextSchema.parse(input.outputContext);
-    await options.client.sendMessage({ ...context, content: args.content });
+    await options.client.sendMessage({
+      ...context,
+      content: withExecutionLink(args.content, input.openInPaseoUrl, "slack"),
+    });
   };
 }
