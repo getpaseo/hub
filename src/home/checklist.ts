@@ -1,3 +1,4 @@
+import { eventDefinition, isEditorEvent } from "../triggers/configuration/events.js";
 import type { HomeSnapshot } from "./dashboard.js";
 
 /**
@@ -42,11 +43,18 @@ function daemonState(snapshot: ChecklistFacts): Extract<ChecklistStep, { key: "d
 
 export function deriveChecklist(snapshot: ChecklistFacts): Checklist {
   const steps: ChecklistStep[] = [
-    { key: "app", state: appState(snapshot) },
     { key: "daemon", state: daemonState(snapshot) },
     { key: "trigger", state: snapshot.triggers.length > 0 ? "done" : "pending" },
     { key: "run", state: snapshot.recentRuns.length > 0 ? "done" : "pending" },
   ];
+  const integration = appState(snapshot);
+  const canRunWithoutIntegration = snapshot.triggers.some(
+    ({ enabled, event }) =>
+      enabled && isEditorEvent(event) && eventDefinition(event).origin === "hub",
+  );
+  if (integration === "done" || !canRunWithoutIntegration) {
+    steps.unshift({ key: "app", state: integration });
+  }
   const completed = steps.filter((step) => step.state === "done").length;
   return { steps, completed, complete: completed === steps.length };
 }

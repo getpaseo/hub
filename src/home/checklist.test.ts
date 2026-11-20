@@ -38,6 +38,21 @@ describe("the onboarding checklist", () => {
     assert.equal(states({ ...snapshot, appsConfigured: false })[0], "done");
   });
 
+  it("opens the first-run step without an integration for an enabled webhook trigger", () => {
+    const webhook = { id: "t", name: "alert", event: "webhook.received", enabled: true };
+    const snapshot: ChecklistFacts = {
+      ...nothing,
+      daemons: [{ id: "2", slug: "devbox", presence: "connected", canExecute: true }],
+      triggers: [webhook],
+    };
+    assert.deepEqual(deriveChecklist(snapshot).steps, [
+      { key: "daemon", state: "done" },
+      { key: "trigger", state: "done" },
+      { key: "run", state: "pending" },
+    ]);
+    assert.equal(states({ ...snapshot, triggers: [{ ...webhook, enabled: false }] })[0], "pending");
+  });
+
   it("tells a daemon that cannot run agents apart from no daemon at all", () => {
     const laptop = { id: "1", slug: "laptop", presence: "connected" as const, canExecute: false };
     const devbox = { id: "2", slug: "devbox", presence: "offline" as const, canExecute: true };

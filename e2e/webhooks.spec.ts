@@ -11,7 +11,6 @@ test("creates a webhook and reveals each secret only once", async ({ hub, page }
     password: "webhook-owner-password",
   });
   await hub.createOrganization("owner", "Acme");
-  await hub.connectGitHub("owner");
   const daemon = await hub.connectProviderDaemon("owner", "Acme");
   const home = new OrganizationHome(page);
   const triggers = new OrganizationTriggers(page);
