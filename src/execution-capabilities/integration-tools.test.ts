@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { REST } from "discord.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { describe, it } from "vitest";
@@ -69,7 +70,11 @@ describe("Scoped integration tools through Hub MCP", () => {
     const directory = await mkdtemp(".artifacts/integration-db-");
     const { runtime, locks } = await embeddedDatabaseRuntime(directory);
     const database = createDatabase(runtime, locks);
-    const fake = await startFakeChat({ deletedThreadDuringScan: true, threadCreationRace: true });
+    const fake = await startFakeChat({
+      deletedThreadDuringScan: true,
+      threadCreationRace: true,
+      rateLimitActiveThreads: true,
+    });
     try {
       await runtime.migrate();
       await runtime.query(
@@ -114,8 +119,7 @@ describe("Scoped integration tools through Hub MCP", () => {
           discord: createDiscordIntegrationTools(
             database,
             chat.discord.appId,
-            chat.discord.token,
-            upstreamFetch,
+            new REST({ api: `${fake.origin}/api`, retries: 0 }).setToken(chat.discord.token),
           ),
         },
         completeExecution: async ({ executionId }) =>
@@ -319,6 +323,11 @@ describe("Scoped integration tools through Hub MCP", () => {
       assert.match(latest.output, /Archived report/u);
       assert.match(latest.output, /Thread reply/u);
       assert.match(latest.output, /"skippedThreads":1/u);
+      assert.match(latest.output, /"scannedChannels":\["100"\],"timedOut":false/u);
+      assert.equal(
+        fake.calls.filter(({ path }) => path === "/api/v10/guilds/900/threads/active").length,
+        2,
+      );
       assert.equal((await call("discord_read", { target: chat.discord.otherThread })).ok, false);
       assert.equal(
         (await call("discord_read", { target: chat.discord.otherGuildChannel })).ok,

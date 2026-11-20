@@ -2,8 +2,6 @@ import { z } from "zod";
 import type { Database, OrganizationConnectionUsage } from "../db/types.js";
 import type { IntegrationProvider, IntegrationToolGrant } from "./grants.js";
 
-const ProviderError = z.object({ code: z.number().optional() });
-
 export class IntegrationToolError extends Error {}
 
 export class IntegrationHttpError extends IntegrationToolError {
@@ -64,10 +62,6 @@ export function providerHttp(base: string, authorization: string, request: typeo
       redirect: "error",
     });
     if (!response.ok) {
-      if (response.status === 400) {
-        const error = ProviderError.safeParse(await response.json().catch(() => undefined));
-        throw new IntegrationHttpError(response.status, error.data?.code);
-      }
       await response.body?.cancel();
       throw new IntegrationHttpError(response.status);
     }

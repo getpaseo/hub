@@ -61,10 +61,12 @@ export async function startFakeChat(
   options: {
     deletedThreadDuringScan?: boolean;
     threadCreationRace?: boolean;
+    rateLimitActiveThreads?: boolean;
   } = {},
 ) {
   const calls: { method: string; path: string; body?: unknown }[] = [];
   let contextualThread = false;
+  let activeThreadsRateLimited = false;
   const { slack, discord } = chat;
   const channel = (id: string, type: number, parent_id?: string, guild_id = discord.guild) => ({
     id,
@@ -166,6 +168,16 @@ export async function startFakeChat(
   function discordResponse(request: Request, url: URL, body: unknown): Response | undefined {
     const path = url.pathname;
     if (path === `/api/v10/guilds/${discord.guild}/threads/active`) {
+      if (options.rateLimitActiveThreads && !activeThreadsRateLimited) {
+        activeThreadsRateLimited = true;
+        return Response.json(
+          { message: "Slow down", retry_after: 0.01, global: true },
+          {
+            status: 429,
+            headers: { "retry-after": "0.01", "x-ratelimit-global": "true" },
+          },
+        );
+      }
       return Response.json({ threads: [channels[discord.thread], channels[discord.otherThread]] });
     }
     if (path === `/api/v10/channels/${discord.forum}/threads/archived/public`) {

@@ -5,6 +5,7 @@ import {
   RESTJSONErrorCodes,
   type GuildBasedChannel,
   type Message,
+  type REST,
   type TextBasedChannel,
 } from "discord.js";
 import { Routes } from "discord-api-types/v10";
@@ -115,7 +116,9 @@ export interface CreateDiscordBotClientOptions {
   client?: Client;
 }
 
-export function createDiscordBotClient(options: CreateDiscordBotClientOptions): DiscordBotClient {
+export function createDiscordBotClient(
+  options: CreateDiscordBotClientOptions,
+): DiscordBotClient & { readonly rest: REST } {
   const client =
     options.client ??
     new Client({
@@ -125,6 +128,7 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
         GatewayIntentBits.MessageContent,
       ],
     });
+  if (options.client === undefined) client.rest.setToken(options.token);
   const handlers = new Set<DiscordRawMessageHandler>();
   const guildDeleteHandlers = new Set<DiscordGuildDeleteHandler>();
   const pendingReplyDestinations = new Map<string, Promise<DiscordSendableChannel>>();
@@ -164,6 +168,7 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
   });
 
   return {
+    rest: client.rest,
     async start() {
       if (started) {
         return;

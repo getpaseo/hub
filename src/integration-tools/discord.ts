@@ -1,4 +1,6 @@
+import type { REST } from "discord.js";
 import { z } from "zod";
+import { discordHttp } from "./discord-http.js";
 import { resolveDiscordMessageThread } from "../discord/message-thread.js";
 import type { Database } from "../db/types.js";
 import { discordLatest, discordPost, discordRead } from "./contracts.js";
@@ -7,7 +9,6 @@ import {
   IntegrationHttpError,
   IntegrationToolError,
   ownedConnection,
-  providerHttp,
   requireChannel,
   type IntegrationToolHandler,
 } from "./http.js";
@@ -38,6 +39,16 @@ const FORUM = 15;
 const MEDIA = 16;
 const HAS_THREAD = 1 << 5;
 const ARCHIVED_THREADS_PER_CHANNEL = 10;
+const DISCORD_TOOL_TIMEOUT_MS = 25_000;
+
+async function unlessNotFound<T>(operation: Promise<T>): Promise<T | undefined> {
+  try {
+    return await operation;
+  } catch (error) {
+    if (error instanceof IntegrationHttpError && error.status === 404) return undefined;
+    throw error;
+  }
+}
 
 function hasThread(message: Message) {
   return ((message.flags ?? 0) & HAS_THREAD) !== 0;
@@ -76,8 +87,7 @@ function targetIds(guild: string, target: string, message?: string) {
 export function createDiscordIntegrationTools(
   database: Database,
   appId: string,
-  token: string,
-  request: typeof fetch = fetch,
+  rest: REST,
 ): IntegrationToolHandler {
   return async ({ name, organizationId, grant, args }) => {
     const connection = await ownedConnection(
@@ -87,8 +97,13 @@ export function createDiscordIntegrationTools(
       organizationId,
       grant.connection,
     );
-    const api = providerHttp("https://discord.com/api/v10", `Bot ${token}`, request);
-    const discord = scopedDiscord(api, discordId.parse(connection.guildId), grant);
+    const deadline = AbortSignal.timeout(DISCORD_TOOL_TIMEOUT_MS);
+    const discord = scopedDiscord(
+      discordHttp(rest, deadline),
+      discordId.parse(connection.guildId),
+      grant,
+      deadline,
+    );
     switch (name) {
       case "discord_list_channels":
         return { channels: await discord.channels() };
@@ -105,9 +120,10 @@ export function createDiscordIntegrationTools(
 }
 
 function scopedDiscord(
-  api: ReturnType<typeof providerHttp>,
+  api: ReturnType<typeof discordHttp>,
   guild: string,
   grant: IntegrationToolGrant,
+  deadline: AbortSignal,
 ) {
   function messageUrl(channel: string, message: string) {
     return `https://discord.com/channels/${guild}/${channel}/${message}`;
@@ -215,11 +231,8 @@ function scopedDiscord(
   }
 
   async function readThread(channel: Channel, parent: Channel, limit: number, before?: string) {
-    const starter = await getMessage(isForum(parent) ? channel.id : parent.id, channel.id).catch(
-      (error: unknown) => {
-        if (error instanceof IntegrationHttpError && error.status === 404) return undefined;
-        throw error;
-      },
+    const starter = await unlessNotFound(
+      getMessage(isForum(parent) ? channel.id : parent.id, channel.id),
     );
     const page = await history(channel.id, limit, before);
     const messages = page
@@ -276,31 +289,36 @@ function scopedDiscord(
       };
     },
     async latest({ channel, limit = 20 }: z.infer<typeof discordLatest>) {
-      const parents = await Promise.all(
-        (channel === undefined ? grant.channels : [channel]).map(baseChannel),
-      );
-      const active = await activeThreads();
+      const channels = channel === undefined ? grant.channels : [channel];
+      if (channel !== undefined) requireChannel(grant, channel);
       const messages: Message[] = [];
+      const scannedChannels: string[] = [];
       let moreArchivedThreads = false;
       let skippedThreads = 0;
-      for (const parent of parents) {
-        if (isText(parent)) messages.push(...(await history(parent.id, limit)));
-        const recent = await recentThreads(parent, active);
-        moreArchivedThreads ||= recent.moreArchivedThreads;
-        for (const thread of recent.threads) {
-          try {
-            messages.push(...(await history(thread.id, limit)));
-          } catch (error) {
-            if (!(error instanceof IntegrationHttpError) || error.status !== 404) throw error;
-            skippedThreads++;
+      try {
+        const active = await activeThreads();
+        for (const id of channels) {
+          const parent = await baseChannel(id);
+          if (isText(parent)) messages.push(...(await history(parent.id, limit)));
+          const recent = await recentThreads(parent, active);
+          moreArchivedThreads ||= recent.moreArchivedThreads;
+          for (const thread of recent.threads) {
+            const page = await unlessNotFound(history(thread.id, limit));
+            if (page === undefined) skippedThreads++;
+            else messages.push(...page);
           }
+          scannedChannels.push(id);
         }
+      } catch (error) {
+        if (!deadline.aborted) throw error;
       }
       messages.sort((a, b) => Number(BigInt(b.id) - BigInt(a.id)));
       return {
         messages: messages.slice(0, limit).map(describeMessage),
         moreArchivedThreads,
         skippedThreads,
+        scannedChannels,
+        timedOut: deadline.aborted,
       };
     },
     async post({ target, message, content, threadName }: z.infer<typeof discordPost>) {

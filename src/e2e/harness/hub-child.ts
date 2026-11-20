@@ -1,3 +1,4 @@
+import { REST } from "discord.js";
 import { createSlackRegistration } from "../../providers/slack/index.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { chat, localChatFetch, seedChatConnections } from "../../test-utils/fake-chat.js";
@@ -199,6 +200,9 @@ async function main(): Promise<void> {
     });
     const discord = createDiscordRegistration({
       ...shared,
+      integrationRest: new REST({ api: `${fakeChatOrigin}/api`, retries: 0 }).setToken(
+        chat.discord.token,
+      ),
       configuration: {
         clientId: chat.discord.appId,
         clientSecret: "discord-secret",
