@@ -209,7 +209,7 @@ function validateAuthoringContract(trigger: TriggerDocument): void {
     issues.push({ path: ["run", "target", "cwd"], message: "must be an absolute path" });
   }
   for (const { path, agent } of authoredAgents(trigger)) {
-    if (agent.mode === undefined) {
+    if (agent.provider !== "pi" && agent.mode === undefined) {
       issues.push({ path: [...path, "mode"], message: "is required for new triggers" });
     }
   }

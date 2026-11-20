@@ -9,7 +9,7 @@
  * The daemon's provider snapshot does not carry that flag, so Hub keeps the same list and refuses
  * at save instead. Delete this file once the snapshot says it per provider.
  */
-const UNATTENDED_PROVIDERS: ReadonlySet<string> = new Set(["claude", "codex", "opencode"]);
+const UNATTENDED_PROVIDERS: ReadonlySet<string> = new Set(["claude", "codex", "opencode", "pi"]);
 
 export function supportsUnattendedRuns(provider: string): boolean {
   return UNATTENDED_PROVIDERS.has(provider);
@@ -17,5 +17,5 @@ export function supportsUnattendedRuns(provider: string): boolean {
 
 /** The daemon's own sentence, said before the run instead of after it. */
 export function unattendedProviderRefusal(provider: string): string {
-  return `Provider '${provider}' cannot run unattended Hub automations; select Claude, Codex, or OpenCode.`;
+  return `Provider '${provider}' cannot run unattended Hub automations; select Claude, Codex, OpenCode, or Pi.`;
 }
