@@ -17,7 +17,7 @@ export interface DaemonCreateAgentOptions {
   model?: string;
   thinkingOptionId?: string;
   providerOptions?: Readonly<Record<string, JsonValue>>;
-  toolPolicy: ToolPolicy;
+  toolPolicy?: ToolPolicy;
   cwd: string;
   env: Record<string, string>;
   mcpServers?: Record<string, McpHttpServerConfig>;

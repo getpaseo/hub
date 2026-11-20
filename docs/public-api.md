@@ -62,7 +62,7 @@ Hub appends the body and limited delivery metadata to the agent prompt as untrus
 
 ## Workflow MCP tools
 
-Hub sends each daemon the rendered prompt. Execution tools are exposed through the provider-native Hub MCP server and its exact tool policy; Hub does not prepend a tool inventory or otherwise rewrite the prompt at dispatch. Completion is exposed as `finish_execution`; allowed and materialized output tools use their registered names, such as `reply`. For structured-output steps, `finish_execution` accepts the configured result under `output`. Completing an execution does not necessarily complete the whole workflow.
+Hub sends each daemon the rendered prompt. Execution tools are exposed through the injected Hub MCP server. Hub passes the selected provider settings and its MCP server without imposing a provider-side tool policy; missing MCP support does not exclude a provider. Hub still requires authenticated completion and authorizes output calls at its own endpoint; Hub does not prepend a tool inventory or otherwise rewrite the prompt at dispatch. Completion is exposed as `finish_execution`; allowed and materialized output tools use their registered names, such as `reply`. For structured-output steps, `finish_execution` accepts the configured result under `output`. Completing an execution does not necessarily complete the whole workflow.
 
 ## Trigger prompt and optional context
 
