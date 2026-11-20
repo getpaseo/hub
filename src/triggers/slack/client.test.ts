@@ -54,7 +54,13 @@ describe("Slack Web API client", () => {
       {
         url: "https://slack.com/api/chat.postMessage",
         authorization: "Bearer xoxb-secret",
-        body: { channel: "C1", thread_ts: "1.1", text: "Hi" },
+        body: {
+          channel: "C1",
+          thread_ts: "1.1",
+          text: "Hi",
+          unfurl_links: false,
+          unfurl_media: false,
+        },
       },
     ]);
 

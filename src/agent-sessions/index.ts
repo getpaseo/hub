@@ -1,3 +1,5 @@
+import { executionLinkUrl } from "../agent-executions/link.js";
+import { integrationProviders } from "../integration-tools/grants.js";
 import { parseConnectionTemplate } from "../config/connection-template.js";
 import { createHash } from "node:crypto";
 import type { Database, AgentExecutionRecord } from "../db/types.js";
@@ -187,12 +189,25 @@ export class AgentSessions {
       if (execution.deadlineAt !== null && execution.deadlineAt.getTime() <= this.now()) {
         throw new AgentSessionError("execution_deadline_exceeded");
       }
+      const context: string[] = [];
+      if (input.intent.continuation !== undefined) {
+        context.push(
+          `Hub execution: ${input.executionId}\nUse this executionId for Hub tool calls for this request.`,
+        );
+      }
+      const grants = input.intent.tools;
+      if (integrationProviders.some((provider) => grants?.[provider]?.actions.includes("post"))) {
+        const url = executionLinkUrl(this.publicBaseUrl, execution);
+        if (url !== undefined) {
+          context.push(
+            `Open in Paseo: ${url}\nWhen sharing a link to this session, use this URL. For Slack use <${url}|Open in Paseo>. For Discord use [Open in Paseo](${url}).`,
+          );
+        }
+      }
       await input.connection.send(
         agentId,
         input.executionId,
-        input.intent.continuation === undefined
-          ? input.intent.prompt
-          : `Hub execution: ${input.executionId}\nUse this executionId for Hub tool calls for this request.\n\n${input.intent.prompt}`,
+        [...context, input.intent.prompt].join("\n\n"),
         startupTimeoutMs,
       );
       return unsubscribe;

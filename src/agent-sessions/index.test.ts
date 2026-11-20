@@ -178,6 +178,20 @@ test("continuations reuse matching integration grants and reject a different sco
   expect((await followUp.dispatch()).agentId).toBe(agent.agentId);
   await expect(differentChannel.dispatch()).rejects.toThrow("Continuation settings differ");
   expect(f.connection.deliveries).toHaveLength(2);
+  expect(f.connection.deliveries.map(({ text }) => text)).toEqual([
+    expect.stringContaining(`https://hub.test/open/executions/${first.executionId}`),
+    expect.stringContaining(`https://hub.test/open/executions/${followUp.executionId}`),
+  ]);
+});
+
+test("a fresh agent with read-only integration tools gets the authored prompt verbatim", async () => {
+  const f = await fixture();
+  const prompt = "Read the latest update.";
+  const run = await f.arrival(false, "daemon", {}, prompt, {
+    tools: { slack: { connection: "workspace-slack", actions: ["read"], channels: ["CALLOWED"] } },
+  });
+  await run.dispatch();
+  expect(f.connection.deliveries.map(({ text }) => text)).toEqual([prompt]);
 });
 
 test("same-key arrivals share an agent; an earlier completion cannot archive newer work", async () => {

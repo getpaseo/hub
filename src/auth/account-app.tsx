@@ -1,6 +1,9 @@
+import { Navigate } from "@tanstack/react-router";
+import { parseExecutionLinkId } from "../agent-executions/link.js";
 import { useSnapshotQuery } from "../queries/index.js";
 import { useServerFn } from "@tanstack/react-start";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import type { AccountState } from "./organization-contract.js";
 import { accountState } from "./functions.js";
 import { DaemonHandoffEntry } from "../daemons/handoff.js";
 import { AccountEntry, InvitationEntry, OrganizationGate } from "./account-entry.js";
@@ -59,6 +62,8 @@ function AccountApplication() {
   if (state.status === "instanceSetupRequired") return <InstanceSetupEntry />;
   if (state.status === "passwordChangeRequired")
     return <PasswordChangeEntry account={state.account} />;
+  const execution = resumeExecution(state, search);
+  if (execution !== undefined) return execution;
   if (state.status === "appSetupRequired") {
     return <AppSetupEntry organizationId={state.organization.id} onLeft={enterHandoff} />;
   }
@@ -71,6 +76,27 @@ function AccountApplication() {
   }
   if (state.status === "organizationRequired") return <OrganizationGate account={state} />;
   return <DashboardShell account={state} />;
+}
+
+function resumeExecution(state: AccountState, search: URLSearchParams | undefined) {
+  if (state.status === "signedOut" || search === undefined) return undefined;
+  const id = parseExecutionLinkId(search.get("openExecution"));
+  if (id === undefined) return undefined;
+  return <ResumeExecution id={id} showRun={search.get("view") === "run"} />;
+}
+
+function ResumeExecution({ id, showRun }: { id: string; showRun: boolean }) {
+  const params = useMemo(() => ({ executionId: id }), [id]);
+  const search = useMemo((): { view?: "run" } => (showRun ? { view: "run" } : {}), [showRun]);
+  return (
+    <Navigate
+      to="/open/executions/$executionId"
+      params={params}
+      search={search}
+      reloadDocument
+      replace
+    />
+  );
 }
 
 type AuthCallback =

@@ -1,3 +1,4 @@
+import { executionLinkUrl } from "../agent-executions/link.js";
 import {
   callIntegrationTool,
   IntegrationToolError,
@@ -19,6 +20,7 @@ import { compileJsonSchema, formatJsonSchemaErrors } from "../workflows/json-sch
 import {
   executionToolDefinitions,
   finishExecutionToolName,
+  replyOutputTool,
   type MaterializedOutputCapability,
   type OutputExecutorRegistry,
   type OutputToolSchema,
@@ -33,6 +35,7 @@ export interface ExecutionCapabilityServer {
 
 interface ExecutionCapabilityOptions {
   completionTokenSecret?: string;
+  publicBaseUrl?: string;
   database: Database;
   outputs: OutputExecutorRegistry;
   integrationTools?: IntegrationToolHandlers;
@@ -357,9 +360,14 @@ async function executeOutputCall(
     return toolFailure(`Output limit reached for ${output.declaration.type}`);
   }
   try {
+    const url =
+      toolName === replyOutputTool.name
+        ? executionLinkUrl(options.publicBaseUrl, execution)
+        : undefined;
     await options.outputs.execute({
       agentExecutionId: execution.id,
       attemptId: attempt.id,
+      ...(url === undefined ? {} : { openInPaseoUrl: url }),
       toolType: output.declaration.type,
       args,
       outputContext: execution.outputContext,

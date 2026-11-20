@@ -1,3 +1,4 @@
+import { createExecutionLauncher } from "./agent-executions/launcher.js";
 import { createWebhookProvider, handleWebhookDelivery } from "./triggers/webhook/index.js";
 import { createScheduleSource, createScheduleProvider } from "./triggers/schedule/index.js";
 import { createExecutionCapabilityServer } from "./execution-capabilities/server.js";
@@ -103,6 +104,7 @@ export interface HubOperations {
   handleOrganizationDaemonRevocation(request: Request, daemonId: string): Promise<Response>;
   handleSessionCapabilities(request: Request, sessionId: string): Promise<Response>;
   handleExecutionCapabilities(request: Request, executionId: string): Promise<Response>;
+  handleExecutionLauncher(request: Request, executionId: string): Promise<Response>;
   handleAttachmentDownload(
     request: Request,
     executionId: string,
@@ -315,6 +317,10 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       capabilityServer === null
         ? databaseUnavailable()
         : capabilityServer.handle(request, executionId),
+    handleExecutionLauncher: createExecutionLauncher(
+      options.database,
+      options.browserOrganizationAccess,
+    ),
     handleAttachmentDownload: (request, executionId, attachmentId) =>
       attachments === undefined
         ? databaseUnavailable()
@@ -436,6 +442,7 @@ function createAppExecutionCapabilityServer(
       ? {}
       : { completionTokenSecret: options.completionTokenSecret }),
     database: options.database,
+    ...(options.publicBaseUrl === undefined ? {} : { publicBaseUrl: options.publicBaseUrl }),
     outputs: outputRegistry,
     ...(options.integrationTools === undefined
       ? {}

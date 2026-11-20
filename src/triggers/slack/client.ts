@@ -113,7 +113,7 @@ export function createSlackBotClient(options: {
     organizationId: string,
     teamId: string,
     method: string,
-    body: Record<string, string>,
+    body: Record<string, string | boolean>,
   ): Promise<void> {
     const token = await options.tokenForWorkspace(organizationId, teamId);
     if (token === undefined) throw new Error("Slack workspace is not connected");
@@ -285,6 +285,8 @@ export function createSlackBotClient(options: {
         channel: input.channelId,
         thread_ts: input.threadTs,
         text: input.content,
+        unfurl_links: false,
+        unfurl_media: false,
       }),
     addReaction: (input) =>
       call(input.organizationId, input.teamId, "reactions.add", {
