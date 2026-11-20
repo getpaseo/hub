@@ -338,14 +338,18 @@ function triggerFormDocumentErrors(value: TriggerFormValue): TriggerFieldErrors 
 /** Form-only completeness; YAML conversion and save retain their authored optional fields. */
 export function triggerFormErrors(
   value: TriggerFormValue,
-  modes: readonly { id: string }[] = [],
+  modes?: readonly { id: string }[],
 ): TriggerFieldErrors {
   const errors = triggerFormDocumentErrors(value);
   if (errors.agent === undefined && splitAgentId(value.agent).model === undefined) {
     errors.agent = "Choose a provider and model.";
   }
-  if (modes.length > 0 && value.mode.trim().length === 0) {
-    errors.mode = "Execution mode is required.";
+  if (value.mode.trim().length === 0) {
+    if (modes === undefined) {
+      errors.mode = "Load execution modes from the selected daemon or save as YAML.";
+    } else if (modes.length > 0) {
+      errors.mode = "Execution mode is required.";
+    }
   }
   return errors;
 }

@@ -511,3 +511,13 @@ test("form submission requires concrete model and mode selections without reject
     "Updated YAML content",
   );
 });
+
+test("the form waits to learn that a provider has no modes", () => {
+  const projected = projectTriggerForm(ADVANCED);
+  if (projected.status !== "editable") throw new Error("expected editable form");
+  const value = { ...projected.value, mode: "" };
+  expect(triggerFormErrors(value).mode).toBe(
+    "Load execution modes from the selected daemon or save as YAML.",
+  );
+  expect(triggerFormErrors(value, []).mode).toBeUndefined();
+});
