@@ -12,6 +12,7 @@ it("compiles a webhook without a connection or actor and appends the delivery pr
 
 it.each([
   ["Read the delivery: ${{paseo.prompt}}", "Read the delivery: webhook payload"],
+  ["Read the delivery: ${{ (paseo.prompt) }}", "Read the delivery: webhook payload"],
   ["Delivery received: ${{ paseo.prompt != '' }}", "Delivery received: true\nwebhook payload"],
 ])("renders the delivery once with instructions %s", (instructions, expected) => {
   const { events } = compileTriggerDocument(

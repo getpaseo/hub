@@ -7,6 +7,7 @@ import {
   type CompiledEnvironment,
   type CompiledTrigger,
 } from "../../config/compiler.js";
+import { templateInsertsPrompt } from "../../workflows/expression.js";
 import { TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
 
 export { TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
@@ -126,11 +127,9 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
   };
 }
 
-const WEBHOOK_DELIVERY_INSERTION = /\$\{\{\s*paseo\s*\.\s*prompt\s*\}\}/u;
-
 function withEventDefaults(trigger: CompiledTrigger, instructions: string): CompiledTrigger {
   if (trigger.on === "webhook.received") {
-    if (WEBHOOK_DELIVERY_INSERTION.test(instructions)) return trigger;
+    if (templateInsertsPrompt(instructions)) return trigger;
     return {
       ...trigger,
       steps: trigger.steps.map((step) => ({
