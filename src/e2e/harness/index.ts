@@ -543,6 +543,117 @@ ${this.failureArtifacts()}`,
     }
   }
 
+  async runRealAgentWebhook() {
+    const {
+      rows: [daemon],
+    } = await this.requirePool().query<{ slug: string }>(
+      "select slug from daemons where presence = 'connected' order by connected_at desc limit 1",
+    );
+    const triggers = join(this.workspace, ".paseo", "triggers");
+    await mkdir(triggers, { recursive: true });
+    const path = join(triggers, "webhook-alert.yml");
+    const yaml = [
+      "name: webhook-alert",
+      "on:",
+      "  webhook.received: {}",
+      "run:",
+      `  target: { daemon: ${daemon!.slug}, cwd: ${JSON.stringify(this.workspace)} }`,
+      "  agent:",
+      "    provider: codex",
+      "    mode: full-access",
+      "    options: { approval_policy: never, sandbox_mode: read-only, web_search: disabled }",
+      '  prompt: "Read the alert and call the finish_execution MCP tool. Include the exact alert string in your summary."',
+    ].join("\n");
+    const origin = this.requireProxy().origin;
+    const source = this.requireSource();
+    const deploy = () =>
+      source.runFrom(
+        ["hub", "deploy", "--hub", origin, "--api-key", MACHINE_KEY, "--json"],
+        this.workspace,
+      );
+    await writeFile(path, yaml);
+    const installed = await deploy();
+    const triggerId = requiredString(installed, "triggerId");
+    const rotated = await fetch(`${origin}/api/v1/triggers/webhook-secret`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${MACHINE_KEY}`, "content-type": "application/json" },
+      body: JSON.stringify({ triggerId }),
+    });
+    assertStatus(rotated, 200, "issue webhook secret");
+    const endpoint = z.object({ path: z.string(), secret: z.string() }).parse(await rotated.json());
+    await writeFile(path, yaml.replace("Read the alert", "Summarize the alert"));
+    const redeployed = await deploy();
+    if (redeployed["triggerId"] !== triggerId) throw new Error("Redeploy changed trigger identity");
+    const alert = "local webhook smoke: disk usage 97 percent";
+    const { stdout } = await exec("curl", [
+      "--silent",
+      "--show-error",
+      "--max-time",
+      "20",
+      "-X",
+      "POST",
+      `${origin}${endpoint.path}`,
+      "-H",
+      `Authorization: Bearer ${endpoint.secret}`,
+      "-H",
+      "Content-Type: application/json",
+      "-H",
+      "Idempotency-Key: isolated-webhook-qa",
+      "-d",
+      JSON.stringify({ alert }),
+      "--write-out",
+      "\n%{http_code}",
+    ]).catch(() => {
+      throw new Error("Local webhook curl failed");
+    });
+    const [body, status] = stdout.split("\n");
+    if (status !== "202") throw new Error(`Webhook curl returned ${status}: ${body}`);
+    const { runId } = z
+      .object({ runId: z.string().uuid(), status: z.literal("accepted") })
+      .parse(JSON.parse(body!));
+    const history = async () => {
+      const {
+        rows: [entry],
+      } = await this.requirePool().query<{
+        source: string;
+        workflow_status: string;
+        execution_status: string;
+        provider: string;
+        completed_by_agent: boolean;
+        prompt: string;
+      }>(
+        `select receipt.source, run.status as workflow_status, execution.status as execution_status,
+                execution.launch_intent -> 'agent' ->> 'provider' as provider,
+                execution.completed_by_agent_at is not null as completed_by_agent, run.prompt
+         from trigger_runs run
+         join provider_event_receipts receipt on receipt.id = run.provider_event_receipt_id
+         join workflow_step_runs step on step.trigger_run_id = run.id
+         join agent_executions execution on execution.id = step.agent_execution_id
+         where run.id = $1`,
+        [runId],
+      );
+      return entry;
+    };
+    await this.observe(
+      async () => {
+        const entry = await history();
+        return entry !== undefined && entry.workflow_status !== "running";
+      },
+      "webhook run to finish in history",
+      240_000,
+    );
+    const completed = (await history())!;
+    return {
+      runId,
+      source: completed.source,
+      runStatus: completed.workflow_status,
+      executionStatus: completed.execution_status,
+      provider: completed.provider,
+      completedByAgent: completed.completed_by_agent,
+      payloadInPrompt: completed.prompt.includes(alert),
+    };
+  }
+
   async installRealAgentConfiguration(
     scenario: RealAgentScenario,
     structuredOutput = false,

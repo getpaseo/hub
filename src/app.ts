@@ -1,3 +1,4 @@
+import { createWebhookProvider, handleWebhookDelivery } from "./triggers/webhook/index.js";
 import { createScheduleSource, createScheduleProvider } from "./triggers/schedule/index.js";
 import { createExecutionCapabilityServer } from "./execution-capabilities/server.js";
 import { OutputExecutorRegistry } from "./execution-capabilities/outputs.js";
@@ -107,6 +108,7 @@ export interface HubOperations {
     executionId: string,
     attachmentId: string,
   ): Promise<Response>;
+  handleWebhookDelivery(request: Request, endpointId: string): Promise<Response>;
   handleManualTrigger(request: Request, entrypoint: "trigger" | "smoke"): Promise<Response>;
 }
 
@@ -152,6 +154,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
         );
   const providers = [
     createScheduleProvider(),
+    createWebhookProvider(),
     manualProvider,
     ...configuredProviders,
     ...(options.providers ?? []),
@@ -316,6 +319,15 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       attachments === undefined
         ? databaseUnavailable()
         : attachments.handle(request, executionId, attachmentId),
+    handleWebhookDelivery: (request, endpointId) =>
+      options.database === null || options.entitlements === null
+        ? databaseUnavailable()
+        : handleWebhookDelivery(
+            request,
+            endpointId,
+            options.database.webhooks,
+            options.entitlements,
+          ),
     handleManualTrigger: (request, entrypoint) =>
       manualSource === undefined
         ? databaseUnavailable()
@@ -356,6 +368,7 @@ function createAppPublicOperations(
       triggerForOrganization: (organizationId) => {
         const store = new OrganizationTriggerStore(database, organizationId, daemonAgentValidator);
         return {
+          rotateWebhookSecret: (triggerId) => database.webhooks.rotate(organizationId, triggerId),
           async list() {
             return Promise.all(
               (await store.list()).map(async (trigger) => ({

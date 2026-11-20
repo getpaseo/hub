@@ -165,7 +165,8 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
     ["on", value.event, "recurrence"],
     value.event === "schedule.tick" ? (value.recurrence ?? DEFAULT_RECURRENCE) : undefined,
   );
-  if (value.event === "schedule.tick") deleteIfPresent(document, ["on", value.event, "filters"]);
+  if (value.event === "schedule.tick" || value.event === "webhook.received")
+    deleteIfPresent(document, ["on", value.event, "filters"]);
   const qualifiers = authoredQualifiers(value);
   const ownedKeys = new Set(
     [...eventDefinition(previousEvent).qualifiers, ...eventDefinition(value.event).qualifiers].map(

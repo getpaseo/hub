@@ -72,6 +72,18 @@ describeRealAgent("Hub execution MCP real-agent smoke", () => {
     assert.equal(evidence.completionHelperLaunched, false);
   }, 300_000);
 
+  it("deploys a webhook, accepts curl and completes a real Codex run", async () => {
+    await hub.connect();
+    await hub.daemonIsConnected();
+    const run = await hub.runRealAgentWebhook();
+    assert.equal(run.source, "webhook.received");
+    assert.equal(run.runStatus, "succeeded");
+    assert.equal(run.executionStatus, "succeeded");
+    assert.equal(run.provider, "codex");
+    assert.equal(run.completedByAgent, true);
+    assert.equal(run.payloadInPrompt, true);
+  }, 300_000);
+
   it("launches a provider introduced only in the daemon configuration", async () => {
     const scenario: RealAgentScenario = {
       provider: "plugin-runtime",

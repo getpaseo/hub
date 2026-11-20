@@ -164,7 +164,16 @@ export type ListTriggersResult =
   | { status: "listed"; triggers: readonly PublicTrigger[] }
   | InfrastructureUnavailable;
 
+export type RotateWebhookSecretResult =
+  | { status: "rotated"; path: string; secret: string }
+  | { status: "webhook_not_found" }
+  | InfrastructureUnavailable;
+
 export interface PublicOperations {
+  rotateWebhookSecret(
+    authorization: PublicAuthorization,
+    triggerId: string,
+  ): Promise<RotateWebhookSecretResult>;
   listTriggers(authorization: PublicAuthorization): Promise<ListTriggersResult>;
   validateTrigger(
     authorization: PublicAuthorization,
@@ -222,6 +231,9 @@ export interface PublicOperationRepository {
 export interface PublicOperationCapabilities {
   triggerForOrganization?(organizationId: string): {
     list(): Promise<readonly PublicTrigger[]>;
+    rotateWebhookSecret(
+      triggerId: string,
+    ): Promise<{ endpointId: string; secret: string } | undefined>;
     validate(yaml: string): Promise<{ name: string }>;
     install(input: {
       yaml: string;

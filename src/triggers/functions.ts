@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { getRequest } from "@tanstack/react-start/server";
+import { getRequest, setResponseHeader } from "@tanstack/react-start/server";
 import { z } from "zod";
 import { respondOk, type Result } from "../contract/respond.js";
 import { respondWithFailure } from "../failures/index.js";
@@ -43,6 +43,28 @@ export const saveTrigger = createServerFn({ method: "POST" })
         forbidden: "You don't have permission to manage triggers.",
         validation: error instanceof Error ? error.message : "This trigger is invalid.",
         conflict: "A trigger with this name already exists.",
+      });
+    }
+  });
+
+export const rotateWebhookSecret = createServerFn({ method: "POST" })
+  .validator(scopeSchema.extend({ triggerId: z.string().uuid() }))
+  .handler(async ({ data }): Promise<Result<{ endpointId: string; secret: string }>> => {
+    setResponseHeader("cache-control", "no-store");
+    try {
+      const dashboard = (await getApplication()).triggerDashboard;
+      if (dashboard == null) throw new Error("trigger dashboard unavailable");
+      const result = await dashboard.rotateWebhookSecret(
+        getRequest(),
+        data.organizationSlug,
+        data.triggerId,
+      );
+      if (result === undefined) throw new Error("Webhook trigger not found.");
+      return respondOk(result);
+    } catch (error) {
+      return respondWithFailure(error, triggerContext("webhook.rotate", data.organizationSlug), {
+        fallback: "Hub couldn't create a new webhook secret.",
+        forbidden: "You don't have permission to manage triggers.",
       });
     }
   });

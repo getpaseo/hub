@@ -1,4 +1,5 @@
 import { ExecutionAuthorityRepository } from "../execution-authority/index.js";
+import { WebhookRepository } from "../triggers/webhook/index.js";
 import { ScheduleRepository } from "../triggers/schedule/index.js";
 import { acceptWorkflowRun } from "./workflow-intake.js";
 import { randomUUID } from "node:crypto";
@@ -139,6 +140,7 @@ export function createDatabase(runtime: DatabaseRuntime, locks: Locks): Database
 }
 
 class PgDatabase implements Database {
+  readonly webhooks;
   readonly schedules;
   readonly executionAuthority;
   private readonly connections;
@@ -148,6 +150,7 @@ class PgDatabase implements Database {
     private readonly pool: DatabaseRuntime,
     private readonly locks: Locks,
   ) {
+    this.webhooks = new WebhookRepository(this.pool);
     this.schedules = new ScheduleRepository(this.pool);
     this.executionAuthority = new ExecutionAuthorityRepository(this.pool);
     this.connections = new ConnectionRepository(this.pool, locks);
@@ -3293,6 +3296,11 @@ class PgDatabase implements Database {
       );
       const recurrence = input.enabled ? input.recurrence : undefined;
       await ScheduleRepository.synchronize(client, trigger.id, recurrence, new Date());
+      await WebhookRepository.synchronize(
+        client,
+        trigger.id,
+        configuration.triggers.some(({ on }) => on === "webhook.received"),
+      );
       return toOrganizationTriggerRecord(activated.rows[0]!);
     });
   }

@@ -39,6 +39,7 @@ import {
   type TriggerFieldErrors,
   type TriggerFormValue,
 } from "./configuration/editor.js";
+import { WebhookSettings } from "./webhook/settings.js";
 import { saveTrigger, triggerSnapshot, type TriggerSnapshot } from "./functions.js";
 import { daemonProviderSnapshot } from "../daemons/functions.js";
 import type { HubProviderSnapshotEntry } from "../hub/protocol.js";
@@ -237,27 +238,39 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
       />
     );
   }
+  const webhook = data.webhooks.find((endpoint) => endpoint.triggerId === trigger?.id);
   const returnToList = () => {
     void navigate({ to: `/o/${organizationSlug}/triggers` as never });
   };
   return (
-    <TriggerEditor
-      key={trigger?.id ?? "new"}
-      trigger={trigger}
-      snapshot={data}
-      saving={save.isPending}
-      saveError={save.data?.status === "error" ? save.data.error.message : undefined}
-      onCancel={returnToList}
-      onSave={(yaml) =>
-        save.mutate({
-          data: {
-            organizationSlug,
-            ...(trigger?.id === undefined ? {} : { triggerId: trigger.id }),
-            yaml,
-          },
-        })
-      }
-    />
+    <>
+      <TriggerEditor
+        key={trigger?.id ?? "new"}
+        trigger={trigger}
+        snapshot={data}
+        saving={save.isPending}
+        saveError={save.data?.status === "error" ? save.data.error.message : undefined}
+        onCancel={returnToList}
+        onSave={(yaml) =>
+          save.mutate({
+            data: {
+              organizationSlug,
+              ...(trigger?.id === undefined ? {} : { triggerId: trigger.id }),
+              yaml,
+            },
+          })
+        }
+      />
+      {webhook === undefined ? null : (
+        <WebhookSettings
+          key={webhook.endpointId}
+          organizationSlug={organizationSlug}
+          origin={data.webhookOrigin}
+          endpoint={webhook}
+          canManage={data.canManage}
+        />
+      )}
+    </>
   );
 }
 
