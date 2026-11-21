@@ -70,7 +70,7 @@ export function GitHubAccountChooserPage({
           standalone
           title="GitHub wasn't connected"
           error={failed.data ?? failed.error}
-          fallback="Hub couldn't reach this GitHub connection. Connect GitHub again."
+          fallback="Hub couldn't reach this GitHub connection. Connect GitHub again"
         />
       )}
       <Card>
@@ -118,7 +118,7 @@ export function GitHubAccountChooserUnavailable({ error }: { error: Result<unkno
       <FailureAlert
         title="GitHub accounts unavailable"
         error={error}
-        fallback="Hub couldn't reach this GitHub connection. Connect GitHub again."
+        fallback="Hub couldn't reach this GitHub connection. Connect GitHub again"
       />
     </AuthLayout>
   );
@@ -155,9 +155,9 @@ function explanation(choice: GitHubAccountChoice): string {
     return choice.accountType === "User" ? "Personal account" : "Organization";
   }
   if (choice.availability === "connectedElsewhere") {
-    return "Connected to another organization on this Hub. Disconnect it there to connect it here.";
+    return "Connected to another organization on this Hub. Disconnect it there to connect it here";
   }
-  return `Only an owner of ${choice.accountLogin} can connect it.`;
+  return `Only an owner of ${choice.accountLogin} can connect it`;
 }
 
 function follow(result: Result<Destination>): void {

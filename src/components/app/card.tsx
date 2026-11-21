@@ -40,7 +40,9 @@ export function Card({
               </span>
             )}
             <div className="grid min-w-0 gap-1">
-              {title === undefined ? null : <h2 className="text-sm text-foreground">{title}</h2>}
+              {title === undefined ? null : (
+                <h2 className="text-base font-title text-foreground">{title}</h2>
+              )}
               {description === undefined ? null : (
                 <p className="text-sm text-muted-foreground">{description}</p>
               )}

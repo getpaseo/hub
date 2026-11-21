@@ -5,6 +5,7 @@ import { respondOk, type Result } from "../contract/respond.js";
 import { reportFailure, respondWithFailure } from "../failures/index.js";
 import { getApplication } from "../server/runtime.js";
 import type { HubProviderSnapshot } from "../hub/protocol.js";
+import type { DaemonProject } from "./protocol.js";
 
 const daemonSchema = z.object({
   id: z.string().uuid(),
@@ -40,10 +41,10 @@ export const daemonProviderSnapshot = createServerFn({ method: "GET" })
   .validator(providerSnapshotSchema)
   .handler(async ({ data }): Promise<Result<HubProviderSnapshot>> => {
     try {
-      const catalog = (await getApplication()).daemonProviderCatalog;
-      if (catalog == null) throw new Error("daemon provider catalog unavailable");
+      const catalog = (await getApplication()).daemonCatalog;
+      if (catalog == null) throw new Error("daemon catalog unavailable");
       return respondOk(
-        await catalog.read(getRequest(), {
+        await catalog.providers(getRequest(), {
           organizationSlug: data.organizationSlug,
           daemonId: data.daemonId,
           ...(data.cwd === undefined ? {} : { cwd: data.cwd }),
@@ -60,6 +61,22 @@ export const daemonProviderSnapshot = createServerFn({ method: "GET" })
               ? "Update Paseo on this daemon to browse its providers."
               : "Hub couldn't load this daemon's providers. Check the daemon connection and retry.",
         },
+      );
+    }
+  });
+
+export const daemonProjects = createServerFn({ method: "GET" })
+  .validator(scopedDaemonIdSchema)
+  .handler(async ({ data }): Promise<Result<{ projects: readonly DaemonProject[] }>> => {
+    try {
+      const catalog = (await getApplication()).daemonCatalog;
+      if (catalog == null) throw new Error("daemon catalog unavailable");
+      return respondOk({ projects: await catalog.projects(getRequest(), data) });
+    } catch (error) {
+      return respondWithFailure(
+        error,
+        daemonContext("daemon.project.list", data.organizationSlug, data.daemonId),
+        { fallback: "Hub couldn't load this daemon's projects" },
       );
     }
   });

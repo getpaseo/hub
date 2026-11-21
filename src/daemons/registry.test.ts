@@ -224,6 +224,54 @@ describe("daemon socket generations", () => {
     ]);
   });
 
+  it("lists the projects the daemon has open", async () => {
+    const projects = await daemon.pendingProjectList();
+    daemon.respondProjectList(projects, [
+      {
+        projectId: "project-1",
+        projectDisplayName: "hub",
+        projectCustomName: "Paseo Hub",
+        projectRootPath: "/home/dev/hub",
+        projectKind: "git",
+      },
+      {
+        projectId: "project-2",
+        projectDisplayName: "notes",
+        projectCustomName: null,
+        projectRootPath: "/home/dev/notes",
+        projectKind: "a-kind-added-later",
+      },
+    ]);
+
+    assert.deepEqual(await projects.promise, [
+      { id: "project-1", name: "Paseo Hub", rootPath: "/home/dev/hub" },
+      { id: "project-2", name: "notes", rootPath: "/home/dev/notes" },
+    ]);
+  });
+
+  it.each(["access_denied", "unknown_schema"])(
+    "reads a daemon that answers the project list with %s as offering no projects",
+    async (code) => {
+      const projects = await daemon.pendingProjectList();
+      daemon.rejectRequest(projects, code);
+
+      assert.deepEqual(await projects.promise, []);
+    },
+  );
+
+  it("still fails the project list when the daemon breaks while answering it", async () => {
+    const projects = await daemon.pendingProjectList();
+    daemon.rejectRequest(projects, "handler_error");
+
+    await assert.rejects(projects.promise, /daemon refused/u);
+  });
+
+  it("asks a legacy daemon for nothing and offers no projects", async () => {
+    await daemon.replaceConnection(false, "legacy");
+
+    assert.deepEqual(await daemon.listProjects(), []);
+  });
+
   it("waits for offline presence before shutdown completes", async () => {
     daemon.holdOfflinePresence();
 

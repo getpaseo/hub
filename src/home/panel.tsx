@@ -7,7 +7,7 @@ import { Cpu, History, Sparkles } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { useActiveAccount } from "../auth/active-account.js";
-import { CardSkeleton } from "../components/app/card.js";
+import { Card, CardSkeleton } from "../components/app/card.js";
 import { CopyField } from "../components/app/copy-field.js";
 import { Disclosure } from "../components/app/disclosure.js";
 import { WarningAlert } from "../components/app/failure-alert.js";
@@ -26,7 +26,7 @@ import { useRouteTenant } from "../projects/context.js";
 import { deriveChecklist, type Checklist, type ChecklistStep } from "./checklist.js";
 import { homeSnapshot, type HomeSnapshot } from "./functions.js";
 
-const HOME_DESCRIPTION = "What to do next, and what has run.";
+const HOME_DESCRIPTION = "What to do next and what has run";
 
 export function HomePanel() {
   const tenant = useRouteTenant();
@@ -100,7 +100,7 @@ function Runs({
   const agents = agentsUsed(runs);
   return (
     <>
-      <Section title="Overview" description={`The last ${String(windowDays)} days.`}>
+      <Section title="Overview" description={`Last ${String(windowDays)} days`}>
         <StatGrid>
           <StatTile
             label="Runs"
@@ -130,23 +130,27 @@ function Runs({
           </Button>
         }
       >
-        <RecordList label="Recent runs">
-          {recentRuns.map((run) => (
-            <RecordRow
-              key={run.id}
-              status={<StatusPill tone={runTone(run.status)}>{statusLabel(run.status)}</StatusPill>}
-            >
-              <TwoLine
-                primary={run.triggerName}
-                secondary={
-                  <>
-                    {run.source} · <RelativeTime value={run.receivedAt} />
-                  </>
+        <Card>
+          <RecordList label="Recent runs">
+            {recentRuns.map((run) => (
+              <RecordRow
+                key={run.id}
+                status={
+                  <StatusPill tone={runTone(run.status)}>{statusLabel(run.status)}</StatusPill>
                 }
-              />
-            </RecordRow>
-          ))}
-        </RecordList>
+              >
+                <TwoLine
+                  primary={run.triggerName}
+                  secondary={
+                    <>
+                      {run.source} · <RelativeTime value={run.receivedAt} />
+                    </>
+                  }
+                />
+              </RecordRow>
+            ))}
+          </RecordList>
+        </Card>
       </Section>
     </>
   );
@@ -162,23 +166,25 @@ function Daemons({ daemons, base }: { daemons: HomeSnapshot["daemons"]; base: st
         </Button>
       }
     >
-      <RecordList label="Daemons">
-        {daemons.map((daemon) => (
-          <RecordRow
-            key={daemon.id}
-            status={
-              <StatusPill tone={daemon.presence === "connected" ? "success" : "neutral"}>
-                {daemon.presence === "connected" ? "Connected" : "Offline"}
-              </StatusPill>
-            }
-          >
-            <TwoLine
-              primary={daemon.slug}
-              secondary={daemon.canExecute ? "Hub automations" : "Connected only"}
-            />
-          </RecordRow>
-        ))}
-      </RecordList>
+      <Card>
+        <RecordList label="Daemons">
+          {daemons.map((daemon) => (
+            <RecordRow
+              key={daemon.id}
+              status={
+                <StatusPill tone={daemon.presence === "connected" ? "success" : "neutral"}>
+                  {daemon.presence === "connected" ? "Connected" : "Offline"}
+                </StatusPill>
+              }
+            >
+              <TwoLine
+                primary={daemon.slug}
+                secondary={daemon.canExecute ? "Hub automations" : "Connected only"}
+              />
+            </RecordRow>
+          ))}
+        </RecordList>
+      </Card>
     </Section>
   );
 }
@@ -280,19 +286,19 @@ function integrationStep(
       ? {
           ...step,
           state: "blocked",
-          hint: "Set up GitHub, Slack, Discord, or Linear on this Hub first.",
+          hint: "Set up GitHub, Slack, Discord, or Linear on this Hub first",
           action: stepAction("/apps", "Set up apps"),
         }
       : {
           ...step,
           state: "blocked",
-          hint: "Ask whoever runs this Hub to set up GitHub, Slack, Discord, or Linear.",
+          hint: "Ask whoever runs this Hub to set up GitHub, Slack, Discord, or Linear",
         };
   }
   return {
     ...step,
     state: "todo",
-    hint: "Pick where events come from: GitHub, Slack, Discord, or Linear.",
+    hint: "Pick where events come from: GitHub, Slack, Discord, or Linear",
     action: stepAction(`${base}/integrations`, "Connect integration"),
   };
 }
@@ -325,7 +331,7 @@ function daemonStep(
   return {
     ...step,
     state: "todo",
-    hint: "Run this where your code lives, and allow Hub automations when asked.",
+    hint: "Run this where your code lives and allow Hub automations when asked",
     ...(origin === undefined
       ? {}
       : {
@@ -348,7 +354,7 @@ function triggerStep(
   return {
     ...step,
     state: "todo",
-    hint: "Choose which event starts which agent.",
+    hint: "Choose which event starts which agent",
     action: stepAction(`${base}/triggers/new`, "New trigger"),
   };
 }
@@ -376,25 +382,25 @@ function runStep(
 /** How to make a trigger fire, said for the events the organization actually listens to. */
 function runHint(triggers: HomeSnapshot["triggers"]): string {
   const events = triggers.filter(({ enabled }) => enabled).flatMap((trigger) => trigger.events);
-  if (events.length === 0) return "Enable a trigger and fire one of its events.";
+  if (events.length === 0) return "Enable a trigger and fire one of its events";
   const hints = new Set<string>();
   for (const event of events) {
     const provider = event.split(".")[0];
     if (provider === "slack" || provider === "discord") {
-      hints.add("Mention the bot in a channel it can see.");
+      hints.add("Mention the bot in a channel it can see");
     } else if (provider === "github") {
-      hints.add("Open or comment on an issue or pull request in a connected repository.");
+      hints.add("Open or comment on an issue or pull request in a connected repository");
     } else if (provider === "linear") {
-      hints.add("Update an issue in the connected Linear workspace.");
+      hints.add("Update an issue in the connected Linear workspace");
     } else if (provider === "schedule") {
-      hints.add("It runs on its schedule.");
+      hints.add("Runs on its schedule");
     } else if (provider === "webhook") {
-      hints.add("Send a POST to the webhook URL with the secret from the trigger editor.");
+      hints.add("Send a POST to the webhook URL with the secret from the trigger editor");
     } else {
-      hints.add("Dispatch it with an API key: POST /api/v1/manual-runs.");
+      hints.add("Dispatch it with an API key: POST /api/v1/manual-runs");
     }
   }
-  return [...hints].join(" ");
+  return [...hints].join(" · ");
 }
 
 function unroutedSentence(unrouted: HomeSnapshot["unrouted"], windowDays: number): string {
@@ -402,7 +408,7 @@ function unroutedSentence(unrouted: HomeSnapshot["unrouted"], windowDays: number
   const sources = unrouted
     .map(({ provider, count }) => `${String(count)} from ${providerName(provider)}`)
     .join(", ");
-  return `${String(total)} ${total === 1 ? "event" : "events"} in the last ${String(windowDays)} days were dropped because no trigger handles them: ${sources}.`;
+  return `${String(total)} ${total === 1 ? "event" : "events"} in the last ${String(windowDays)} days were dropped because no trigger handles them: ${sources}`;
 }
 
 function providerName(provider: HomeSnapshot["unrouted"][number]["provider"]): string {

@@ -204,6 +204,41 @@ describe("GitHub Phase 1 trigger provider", () => {
     assert.equal(wrongActor, "trigger_filters_rejected");
   });
 
+  it("admits a repository member and turns away an outside commenter on a members-only trigger", async () => {
+    const configuration = githubConfiguration();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      createMemoryDatabase(),
+      {
+        ...configuration,
+        triggers: configuration.triggers.map((trigger) =>
+          Object.assign({}, trigger, {
+            filters: {
+              repo: "boudra/faro",
+              contains: "@paseo",
+              author_associations: ["OWNER", "MEMBER", "COLLABORATOR"] as const,
+            },
+          }),
+        ),
+      },
+    );
+    const provider = createProvider(store, new TestReactions());
+
+    const member = await provider.match(
+      external(project.id, revision.id, createEvent({ actor: "teammate", association: "MEMBER" })),
+    );
+    if (!isAcceptedTriggerProviderMatch(member[0])) throw new Error("expected accepted match");
+
+    const outsider = await provider.match(
+      external(project.id, revision.id, createEvent({ actor: "passerby", association: "NONE" })),
+    );
+    assert.equal(outsider, "trigger_filters_rejected");
+
+    const unreported = await provider.match(
+      external(project.id, revision.id, createEvent({ actor: "teammate" })),
+    );
+    assert.equal(unreported, "trigger_filters_rejected");
+  });
+
   it("routes a semantic trigger from the legacy GitHub webhook source", async () => {
     const configuration = githubConfiguration();
     const trigger = configuration.triggers[0]!;
@@ -677,7 +712,7 @@ function external(
 }
 
 function createEvent(
-  overrides: { actor?: string; body?: string; pullRequest?: boolean } = {},
+  overrides: { actor?: string; association?: string; body?: string; pullRequest?: boolean } = {},
 ): NormalizedGitHubEvent {
   const actor = overrides.actor ?? "boudra";
   return {
@@ -700,6 +735,9 @@ function createEvent(
         body: overrides.body ?? "hello @paseo",
         html_url: "https://github.com/boudra/faro/issues/211#issuecomment-123",
         user: { login: actor },
+        ...(overrides.association === undefined
+          ? {}
+          : { author_association: overrides.association }),
         credential: "comment-credential",
       },
       sender: { login: actor },

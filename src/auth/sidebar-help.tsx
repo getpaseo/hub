@@ -20,14 +20,13 @@ export function HelpChannels() {
             Paseo Discord
           </a>
         </Button>{" "}
-        and ask in #paseo-hub.
+        and ask in #paseo-hub
       </p>
       <p>
         Or email{" "}
         <Button asChild variant="link">
           <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>
         </Button>
-        .
       </p>
     </div>
   );

@@ -4,6 +4,7 @@ import { IntegrationToolGrantsSchema } from "../../integration-tools/grants.js";
 import { ContinuationSchema } from "../continuation.js";
 import { eventDefinition, isEditorEvent } from "./events.js";
 import { AuthoredGitHubAuthoritySchema } from "../../config/github-authority.js";
+import { GitHubAuthorAssociationSchema } from "../github/author-association.js";
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -50,6 +51,8 @@ export const TriggerFilterSchema = z
     assignees: z.array(z.string().min(1)).min(1).optional(),
     channels: z.array(z.string().min(1)).optional(),
     from_users: z.array(z.string().min(1)).optional(),
+    /** GitHub repository associations whose holders may invoke the trigger. */
+    author_associations: z.array(GitHubAuthorAssociationSchema).min(1).optional(),
     inputs: z.record(z.string(), InputValueSchema).optional(),
   })
   .strict();

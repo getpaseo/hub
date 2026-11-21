@@ -194,7 +194,7 @@ it("leads with the renewal date while a subscription is running", () => {
   assert.deepEqual(summary.status, { tone: "success", label: "Active" });
   // The date is the app's one absolute formatter — a billing date and the same instant in a
   // tooltip read as the same string.
-  assert.equal(summary.detail, `Renews on ${formatAbsolute("2026-10-01T00:00:00.000Z")}.`);
+  assert.equal(summary.detail, `Renews on ${formatAbsolute("2026-10-01T00:00:00.000Z")}`);
 });
 
 it("leads with the cancellation date once a subscription is set to end", () => {
@@ -209,7 +209,7 @@ it("leads with the cancellation date once a subscription is set to end", () => {
     }),
   );
   // A pending cancellation outranks the renewal, and it dates from the period end.
-  assert.equal(summary.detail, `Cancels on ${formatAbsolute("2026-10-01T00:00:00.000Z")}.`);
+  assert.equal(summary.detail, `Cancels on ${formatAbsolute("2026-10-01T00:00:00.000Z")}`);
 });
 
 it("warns on a payment problem and stays neutral on an unrecognised status", () => {

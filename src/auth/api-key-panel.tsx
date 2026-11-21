@@ -58,37 +58,37 @@ type CreateResult = Result<{ key: ApiKeyRecord; secret: string }>;
  * reading the list: a key that was not issued has no secret to recover, and a key that may or may
  * not have been revoked has to be checked.
  */
-const LIST_FAILURE = "Hub did not receive the API-key list. Check your connection and reload.";
+const LIST_FAILURE = "Hub did not receive the API-key list. Check your connection and reload";
 const CREATE_FAILURE =
-  "Hub did not receive the API-key creation result. Check your connection and reload the key list; no secret can be recovered later.";
+  "Hub did not receive the API-key creation result. Check your connection and reload the key list; no secret can be recovered later";
 const REVOKE_FAILURE =
-  "Hub did not receive the API-key revocation result. Check your connection and reload the key list to confirm its status.";
+  "Hub did not receive the API-key revocation result. Check your connection and reload the key list to confirm its status";
 
 const SCOPE_OPTIONS = [
   {
     value: "projects:read",
     label: "List projects",
-    description: "List active projects in the organization.",
+    description: "List active projects in the organization",
   },
   {
     value: "configuration:validate",
     label: "Validate configuration",
-    description: "Validate configuration without creating a revision.",
+    description: "Validate configuration without creating a revision",
   },
   {
     value: "configuration:install",
     label: "Install configuration",
-    description: "Replace and activate a project's configuration.",
+    description: "Replace and activate a project's configuration",
   },
   {
     value: "runs:dispatch",
     label: "Start runs",
-    description: "Dispatch manual runs for a project.",
+    description: "Dispatch manual runs for a project",
   },
   {
     value: "daemons:enroll",
     label: "Enroll daemons",
-    description: "Issue a daemon enrollment token.",
+    description: "Issue a daemon enrollment token",
   },
 ] as const;
 
@@ -105,11 +105,11 @@ const TABLE_COLUMNS = [
 const EMPTY_TABLE = {
   title: "No API keys",
   description:
-    "Create a key to install configuration, start runs, or enroll daemons from automation.",
+    "Create a key to install configuration, start runs, or enroll daemons from automation",
 };
 const EMPTY_CLI_TABLE = {
   title: "No CLI logins",
-  description: "Run paseo hub login to create one.",
+  description: "Run paseo hub login to create one",
 };
 const CLI_COLUMNS = [
   { header: "Prefix", fill: true },
@@ -121,7 +121,7 @@ const CLI_COLUMNS = [
 
 const CLI_LOGINS = {
   title: "CLI logins",
-  description: "Durable terminal credentials created through browser approval.",
+  description: "Durable terminal credentials created through browser approval",
 };
 
 export function ApiKeys() {
@@ -197,7 +197,7 @@ export function ApiKeys() {
     [create],
   );
   const header = (
-    <PageHeader title="API keys" description={`Machine access for ${account.organization.name}.`}>
+    <PageHeader title="API keys" description={`Machine access for ${account.organization.name}`}>
       <Button asChild variant="outline">
         <a href="https://paseo.sh/docs/hub/api">API reference</a>
       </Button>
@@ -215,7 +215,7 @@ export function ApiKeys() {
         {header}
         <EmptyState
           title="No access to API keys"
-          description="You don't have permission to manage API keys."
+          description="You don't have permission to manage API keys"
         />
       </>
     );
@@ -347,7 +347,7 @@ function CliCredentialRow({
               label="Revoke"
               destructive
               title="Revoke CLI login?"
-              description="This terminal credential stops working immediately."
+              description="This terminal credential stops working immediately"
               confirmLabel="Revoke login"
               cancelLabel="Cancel"
               busy={busy}
@@ -397,7 +397,7 @@ function ApiKeyRow({
               label="Revoke"
               destructive
               title={`Revoke ${record.name}?`}
-              description="Any automation using this key stops working immediately. This cannot be undone."
+              description="Any automation using this key stops working immediately. This cannot be undone"
               confirmLabel="Revoke key"
               cancelLabel="Cancel"
               busy={busy}
@@ -442,7 +442,7 @@ function ApiKeyDialog({
     (event: FormEvent<HTMLFormElement>) => {
       if (selectedScopes === 0) {
         event.preventDefault();
-        setScopeError("Select at least one scope.");
+        setScopeError("Select at least one scope");
         return;
       }
       setScopeError(undefined);
@@ -459,7 +459,7 @@ function ApiKeyDialog({
       open={open}
       onOpenChange={onOpenChange}
       title="Create API key"
-      description="Choose the machine operations this organization key can perform."
+      description="Choose the machine operations this organization key can perform"
       label="Create API key"
       submitLabel="Create API key"
       busy={busy}
@@ -474,7 +474,7 @@ function ApiKeyDialog({
           ))}
         </div>
         {scopeError === undefined ? (
-          <FieldDescription>Select at least one scope.</FieldDescription>
+          <FieldDescription>Select at least one scope</FieldDescription>
         ) : (
           <FieldError>{scopeError}</FieldError>
         )}
@@ -515,11 +515,11 @@ function SecretDialog({
         <DialogHeader>
           <DialogTitle>Copy your API key</DialogTitle>
           <DialogDescription>
-            This key is shown once. Store it in your deployment secrets now.
+            This key is shown once. Store it in your deployment secrets now
           </DialogDescription>
         </DialogHeader>
         <WarningAlert title="Save this key now">
-          This secret cannot be recovered after you close this dialog.
+          This secret cannot be recovered after you close this dialog
         </WarningAlert>
         <CopyField label="Generated API key" value={secret} copyLabel="Copy API key" focusOnMount />
         <FormActions>

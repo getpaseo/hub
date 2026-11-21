@@ -91,7 +91,7 @@ export function PlanDialog({
           <FailureAlert
             title="Checkout unavailable"
             error={checkout.data}
-            fallback="Hub could not start checkout. Try again in a moment."
+            fallback="Hub could not start checkout. Try again in a moment"
           />
         )}
       </DialogContent>

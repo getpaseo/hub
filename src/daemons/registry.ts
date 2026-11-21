@@ -15,11 +15,13 @@ import {
   GetProvidersSnapshotResponseSchema,
   RefreshProvidersSnapshotRequestSchema,
   RefreshProvidersSnapshotResponseSchema,
+  ProjectListRequestSchema,
+  ProjectListResponseSchema,
   HubExecutionOutboundSchema,
   HubDaemonHelloSchema,
   HubDaemonServerInfoEnvelopeSchema,
 } from "../hub/protocol.js";
-import { type DaemonConnection } from "./protocol.js";
+import type { DaemonConnection, DaemonProject } from "./protocol.js";
 import type { HubProviderSnapshot } from "../hub/protocol.js";
 
 interface PendingAgentValidationRequest {
@@ -40,6 +42,12 @@ interface PendingProviderRefreshRequest {
   resolve(): void;
   reject(error: Error): void;
 }
+interface PendingProjectListRequest {
+  kind: "project-list";
+  generation: number;
+  resolve(value: readonly DaemonProject[]): void;
+  reject(error: Error): void;
+}
 interface AgentValidationIssue {
   path: readonly (string | number)[];
   message: string;
@@ -47,7 +55,15 @@ interface AgentValidationIssue {
 type PendingRequest =
   | PendingAgentValidationRequest
   | PendingProviderSnapshotRequest
-  | PendingProviderRefreshRequest;
+  | PendingProviderRefreshRequest
+  | PendingProjectListRequest;
+
+/**
+ * How a daemon says it will not list its projects for Hub: one that predates sharing them
+ * refuses the session, and one that predates the request does not know its name. Neither is a
+ * failure to report; the daemon offers no projects.
+ */
+const PROJECT_LIST_WITHHELD = new Set(["access_denied", "unknown_schema"]);
 interface ActiveSocket {
   agents: DaemonAgents;
   generation: number;
@@ -56,6 +72,7 @@ interface ActiveSocket {
   ready: boolean;
   presenceReady: Promise<void>;
   providerSnapshotSupported: boolean;
+  sessionProtocol: DaemonSessionProtocol;
 }
 
 export type DaemonSessionProtocol = "legacy" | "session-v1";
@@ -99,6 +116,7 @@ export class ActiveDaemonRegistry {
       ready: false,
       presenceReady: Promise.resolve(),
       providerSnapshotSupported: false,
+      sessionProtocol,
     };
     this.active.set(daemon.id, active);
     previous?.agents.close();
@@ -164,6 +182,7 @@ export class ActiveDaemonRegistry {
       agents: this.active.get(daemonId)!.agents,
       getProviderSnapshot: (options) => this.getProviderSnapshot(daemonId, options),
       refreshProviderSnapshot: (options) => this.refreshProviderSnapshot(daemonId, options),
+      listProjects: () => this.listProjects(daemonId),
       validateAgentConfiguration: (agent) => this.validateAgentConfiguration(daemonId, agent),
     };
   }
@@ -274,6 +293,24 @@ export class ActiveDaemonRegistry {
     });
   }
 
+  private listProjects(daemonId: string): Promise<readonly DaemonProject[]> {
+    const active = this.active.get(daemonId);
+    if (!active?.ready) return Promise.reject(new Error("daemon_not_connected"));
+    // A legacy session never said which requests it serves, and may not answer one it does not.
+    if (active.sessionProtocol === "legacy") return Promise.resolve([]);
+    const requestId = randomUUID();
+    const request = ProjectListRequestSchema.parse({ type: "project.list.request", requestId });
+    return new Promise((resolve, reject) => {
+      this.pendingFor(daemonId).set(requestId, {
+        kind: "project-list",
+        generation: active.generation,
+        resolve,
+        reject,
+      });
+      active.socket.send(JSON.stringify({ type: "session", message: request }));
+    });
+  }
+
   private requireProviderSnapshotConnection(daemonId: string): ActiveSocket {
     const active = this.active.get(daemonId);
     if (!active?.ready) throw new Error("daemon_not_connected");
@@ -312,6 +349,8 @@ export class ActiveDaemonRegistry {
       return this.receiveProviderSnapshot(active, providerSnapshot.data);
     const providerRefresh = RefreshProvidersSnapshotResponseSchema.safeParse(message);
     if (providerRefresh.success) return this.receiveProviderRefresh(active, providerRefresh.data);
+    const projectList = ProjectListResponseSchema.safeParse(message);
+    if (projectList.success) return this.receiveProjectList(active, projectList.data);
   }
 
   private acceptServerInfo(
@@ -444,14 +483,41 @@ export class ActiveDaemonRegistry {
     pending.resolve();
   }
 
+  private receiveProjectList(
+    active: ActiveSocket,
+    response: z.infer<typeof ProjectListResponseSchema>,
+  ): void {
+    const requests = this.pendingFor(active.daemon.id);
+    const pending = requests.get(response.payload.requestId);
+    if (!pending || pending.kind !== "project-list" || pending.generation !== active.generation) {
+      return;
+    }
+    requests.delete(response.payload.requestId);
+    pending.resolve(
+      response.payload.projects.map((project) => ({
+        id: project.projectId,
+        name: project.projectCustomName ?? project.projectDisplayName,
+        rootPath: project.projectRootPath,
+      })),
+    );
+  }
+
   private receiveRpcError(
     active: ActiveSocket,
-    payload: { requestId: string; error: string },
+    payload: { requestId: string; error: string; code?: string | undefined },
   ): void {
     const requests = this.pendingFor(active.daemon.id);
     const pending = requests.get(payload.requestId);
     if (pending?.generation !== active.generation) return;
     requests.delete(payload.requestId);
+    if (
+      pending.kind === "project-list" &&
+      payload.code !== undefined &&
+      PROJECT_LIST_WITHHELD.has(payload.code)
+    ) {
+      pending.resolve([]);
+      return;
+    }
     pending.reject(new Error(payload.error));
   }
 

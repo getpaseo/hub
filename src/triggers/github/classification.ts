@@ -6,6 +6,7 @@ import {
   PullRequestReviewPayloadSchema,
 } from "../../auth/github-events.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
+import { actorAssociation, type GitHubAuthorAssociation } from "./author-association.js";
 
 export const GITHUB_SEMANTIC_TRIGGER_EVENT_NAMES = [
   "github.issue_created",
@@ -33,6 +34,8 @@ export interface GitHubClassifiedEvent {
   readonly semanticEvent: GitHubSemanticEvent | undefined;
   readonly pullRequest: { readonly draft: boolean | null; readonly headSha: string | null } | null;
   readonly actor: string;
+  /** The actor's standing in the repository, when GitHub reports it for this event. */
+  readonly actorAssociation: GitHubAuthorAssociation | undefined;
   readonly text: string;
   readonly labels: readonly string[];
   readonly changedLabel: string | undefined;
@@ -61,10 +64,12 @@ export function classifyGitHubEvent(event: NormalizedGitHubEvent): GitHubClassif
 function classifyIssue(event: NormalizedGitHubEvent): GitHubClassifiedEvent {
   const payload = IssuesPayloadSchema.parse(event.payload);
   const item = payload.issue === undefined ? null : itemFor("issue", payload.issue);
+  const actor = payload.sender?.login ?? "";
   return {
     semanticEvent: issueSemanticEvent(payload.action),
     pullRequest: null,
-    actor: payload.sender?.login ?? "",
+    actor,
+    actorAssociation: actorAssociation(actor, payload.issue),
     text: textFor(item),
     labels: labelsFor(payload.issue?.labels),
     changedLabel: payload.action === "labeled" ? payload.label?.name : undefined,
@@ -76,6 +81,7 @@ function classifyPullRequest(event: NormalizedGitHubEvent): GitHubClassifiedEven
   const payload = PullRequestPayloadSchema.parse(event.payload);
   const item =
     payload.pull_request === undefined ? null : itemFor("pull_request", payload.pull_request);
+  const actor = payload.sender?.login ?? "";
   return {
     semanticEvent: pullRequestSemanticEvent(payload.action),
     pullRequest:
@@ -85,7 +91,8 @@ function classifyPullRequest(event: NormalizedGitHubEvent): GitHubClassifiedEven
             draft: payload.pull_request.draft ?? null,
             headSha: payload.pull_request.head?.sha ?? null,
           },
-    actor: payload.sender?.login ?? "",
+    actor,
+    actorAssociation: actorAssociation(actor, payload.pull_request),
     text: textFor(item),
     labels: labelsFor(payload.pull_request?.labels),
     changedLabel: payload.action === "labeled" ? payload.label?.name : undefined,
@@ -96,10 +103,12 @@ function classifyPullRequest(event: NormalizedGitHubEvent): GitHubClassifiedEven
 function classifyIssueComment(event: NormalizedGitHubEvent): GitHubClassifiedEvent {
   const payload = IssueCommentPayloadSchema.parse(event.payload);
   const isPullRequest = payload.issue?.pull_request !== undefined;
+  const actor = payload.sender?.login ?? payload.comment?.user?.login ?? "";
   return {
     semanticEvent: commentSemanticEvent(payload.action, isPullRequest),
     pullRequest: null,
-    actor: payload.sender?.login ?? payload.comment?.user?.login ?? "",
+    actor,
+    actorAssociation: actorAssociation(actor, payload.comment),
     text: payload.comment?.body ?? "",
     labels: labelsFor(payload.issue?.labels),
     changedLabel: undefined,
@@ -112,9 +121,11 @@ function classifyIssueComment(event: NormalizedGitHubEvent): GitHubClassifiedEve
 
 function classifyReview(event: NormalizedGitHubEvent): GitHubClassifiedEvent {
   const payload = PullRequestReviewPayloadSchema.parse(event.payload);
+  const actor = payload.sender?.login ?? payload.review?.user?.login ?? "";
   return {
     ...emptyClassification(),
-    actor: payload.sender?.login ?? payload.review?.user?.login ?? "",
+    actor,
+    actorAssociation: actorAssociation(actor, payload.review),
     text: payload.review?.body ?? "",
     labels: labelsFor(payload.pull_request?.labels),
     item: payload.pull_request === undefined ? null : itemFor("pull_request", payload.pull_request),
@@ -123,9 +134,11 @@ function classifyReview(event: NormalizedGitHubEvent): GitHubClassifiedEvent {
 
 function classifyReviewComment(event: NormalizedGitHubEvent): GitHubClassifiedEvent {
   const payload = PullRequestReviewCommentPayloadSchema.parse(event.payload);
+  const actor = payload.sender?.login ?? payload.comment?.user?.login ?? "";
   return {
     ...emptyClassification(),
-    actor: payload.sender?.login ?? payload.comment?.user?.login ?? "",
+    actor,
+    actorAssociation: actorAssociation(actor, payload.comment),
     text: payload.comment?.body ?? "",
     labels: labelsFor(payload.pull_request?.labels),
     item: payload.pull_request === undefined ? null : itemFor("pull_request", payload.pull_request),
@@ -137,6 +150,7 @@ function emptyClassification(): GitHubClassifiedEvent {
     semanticEvent: undefined,
     pullRequest: null,
     actor: "",
+    actorAssociation: undefined,
     text: "",
     labels: [],
     changedLabel: undefined,

@@ -117,6 +117,39 @@ export class DaemonRegistryHarness {
     };
   }
 
+  listProjects() {
+    return this.connection().listProjects();
+  }
+
+  async pendingProjectList() {
+    const promise = this.listProjects();
+    void promise.catch(() => undefined);
+    return { promise, request: await this.currentSocket().next("project.list.request") };
+  }
+
+  respondProjectList(
+    pending: Awaited<ReturnType<DaemonRegistryHarness["pendingProjectList"]>>,
+    projects: readonly Record<string, unknown>[],
+  ): void {
+    this.currentSocket().send({
+      type: "project.list.response",
+      payload: { requestId: pending.request.requestId, projects },
+    });
+  }
+
+  /** The daemon's own refusal of a request, as it reports one it will not or cannot serve. */
+  rejectRequest(pending: { request: { requestId: string; type: string } }, code: string): void {
+    this.currentSocket().send({
+      type: "rpc_error",
+      payload: {
+        requestId: pending.request.requestId,
+        requestType: pending.request.type,
+        error: "daemon refused",
+        code,
+      },
+    });
+  }
+
   respondProviderSnapshot(
     pending: Awaited<ReturnType<DaemonRegistryHarness["pendingProviderSnapshot"]>>,
   ): void {

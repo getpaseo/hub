@@ -105,7 +105,7 @@ test("GitHub repository access is set up on plain HTTP while event triggers wait
     await expect(github.body().getByRole("heading", { name: "Event triggers" })).toBeVisible();
     await expect(github.body().getByRole("alert")).toContainText("Not available at this address");
     await expect(github.body().getByRole("alert")).toContainText(
-      `Repository access works now; reopen Hub at its HTTPS address to add event triggers.`,
+      `Repository access works now; reopen Hub at its HTTPS address to add event triggers`,
     );
     await expect(github.form().getByLabel("Webhook secret", { exact: true })).toHaveCount(0);
     await expect(github.body().getByRole("button", { name: "Copy Webhook URL" })).toHaveCount(0);
@@ -117,11 +117,11 @@ test("GitHub repository access is set up on plain HTTP while event triggers wait
 
     // Nothing reaches the provider until every required field is present.
     await github.save();
-    await github.expectFieldError("Enter the App ID.");
+    await github.expectFieldError("Enter the App ID");
     await github.expectStatus("Not set up");
 
     await surface.verifyGitHubFromKeyboard();
-    await github.expectFocusedResult("GitHub accepted this App.");
+    await github.expectFocusedResult("GitHub accepted this App");
     // Verified is not green: credentials a provider accepted are not a working integration.
     await github.expectStatus("Verified");
     await github.expectSummary({
@@ -135,7 +135,7 @@ test("GitHub repository access is set up on plain HTTP while event triggers wait
     await surface.shoot(SHOTS, "apps-03-github-verified.desktop");
 
     await github.connectGitHub();
-    await github.expectFocusedResult("GitHub connected.");
+    await github.expectFocusedResult("GitHub connected");
     // The outcome is consumed, so a reload cannot replay it.
     await expect(page).not.toHaveURL(/[?&](?:app|result)=/u);
     await github.expectStatus("Connected");
@@ -326,7 +326,7 @@ test("Discord walks its portal in order and proves both secrets before saying Ve
 
     await discord.fill(WORKING_CREDENTIALS.Discord);
     await discord.save();
-    await discord.expectFocusedResult("Discord accepted this application.");
+    await discord.expectFocusedResult("Discord accepted this application");
     await discord.expectStatus("Verified");
     await discord.expectSummary({
       Application: "Paseo",
@@ -337,7 +337,7 @@ test("Discord walks its portal in order and proves both secrets before saying Ve
     await surface.shoot(SHOTS, "apps-10-discord-verified.desktop");
 
     await discord.action("Add to a Discord server").click();
-    await discord.expectFocusedResult("Discord connected.");
+    await discord.expectFocusedResult("Discord connected");
     await expect(session.page).not.toHaveURL(/[?&](?:app|result)=/u);
     await discord.expectStatus("Connected");
     await discord.expectSummary({ Servers: "Acme Guild" });
@@ -479,7 +479,7 @@ test("Slack Socket Mode connects on plain HTTP with only two tokens", async ({ h
     await slack.fillWorkingCredentials();
     await slack.save();
     await slack.expectExpanded();
-    await slack.expectFocusedResult("Slack connected.");
+    await slack.expectFocusedResult("Slack connected");
     await slack.expectStatus("Connected");
     await slack.expectSummary({
       "App ID": "browser-slack-app",
@@ -563,43 +563,43 @@ test("every way a provider can send the operator back is answered in that sectio
       {
         provider: "github" as const,
         result: "github_cancelled",
-        copy: "Authorization cancelled at GitHub. Nothing changed. Start again when you're ready.",
+        copy: "Authorization cancelled at GitHub. Nothing changed. Start again when you're ready",
         focus: "result" as const,
       },
       {
         provider: "github" as const,
         result: "github_approval_required",
-        copy: "A GitHub organization owner has to approve this installation. Nothing was connected. Ask an owner to approve the request, then install again.",
+        copy: "A GitHub organization owner has to approve this installation. Nothing was connected. Ask an owner to approve the request, then install again",
         focus: "error" as const,
       },
       {
         provider: "discord" as const,
         result: "connection_invalid",
-        copy: "That connection link had already been used or had expired, so it was refused. Nothing was connected. Start the connection again from this page.",
+        copy: "That connection link had already been used or had expired, so it was refused. Nothing was connected. Start the connection again from this page",
         focus: "error" as const,
       },
       {
         provider: "slack" as const,
         result: "connection_conflict",
-        copy: "That account is already connected to another organization. Nothing was connected. Disconnect it there, or pick a different one.",
+        copy: "That account is already connected to another organization. Nothing was connected. Disconnect it there, or pick a different one",
         focus: "error" as const,
       },
       {
         provider: "discord" as const,
         result: "provider_not_configured",
-        copy: "There are no saved credentials to connect yet. Verify and save the app first.",
+        copy: "There are no saved credentials to connect yet. Verify and save the app first",
         focus: "error" as const,
       },
       {
         provider: "linear" as const,
         result: "linear_cancelled",
-        copy: "Authorization cancelled at Linear. Nothing changed. Start again when you're ready.",
+        copy: "Authorization cancelled at Linear. Nothing changed. Start again when you're ready",
         focus: "result" as const,
       },
       {
         provider: "github" as const,
         result: "something_nobody_mapped",
-        copy: "Hub couldn't finish the GitHub connection. Nothing was connected. Start the connection again from this page.",
+        copy: "Hub couldn't finish the GitHub connection. Nothing was connected. Start the connection again from this page",
         focus: "error" as const,
       },
     ];
@@ -747,7 +747,7 @@ test("the operator finishes, then manages the same apps from the account menu", 
       await expect(
         github
           .body()
-          .getByText("Rotating secrets for the same app keeps your connections.", { exact: false }),
+          .getByText("Rotating secrets for the same app keeps your connections", { exact: false }),
       ).toBeVisible();
       await expect(github.setupSteps()).toHaveAttribute("aria-expanded", "false");
       await surface.shoot(SHOTS, "apps-17-replace-credentials.desktop");
@@ -778,7 +778,7 @@ test("an account that already has the App connects from the chooser on both app 
       { account: "acme-inc", explanation: "Organization", connectable: true },
     ]);
     await expect(page).toHaveURL((url) => url.pathname === "/");
-    await github.expectFocusedResult("GitHub connected.");
+    await github.expectFocusedResult("GitHub connected");
     await github.expectSummary({ Installations: "acme-inc" });
 
     await surface.leave("Finish");
@@ -794,7 +794,7 @@ test("an account that already has the App connects from the chooser on both app 
       { account: "orbit-inc", explanation: "Organization", connectable: true },
     ]);
     await expect(page).toHaveURL((url) => url.pathname === "/apps");
-    await github.expectFocusedResult("GitHub connected.");
+    await github.expectFocusedResult("GitHub connected");
     await github.expectSummary({ Installations: /acme-inc.*orbit-inc|orbit-inc.*acme-inc/u });
   } finally {
     await session.close();
@@ -824,7 +824,7 @@ test("an exit that never reaches Hub says so, keeps the work, and retries in pla
     await surface.wayOut("Do this later").click();
 
     await surface.expectFocusedExitFailure(
-      "Hub didn't get the request, so nothing changed. Check your connection, then try again.",
+      "Hub didn't get the request, so nothing changed. Check your connection, then try again",
     );
     // Still here, and nothing typed was thrown away.
     await expect(page.getByRole("heading", { name: "Set up your apps" })).toBeVisible();

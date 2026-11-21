@@ -39,7 +39,7 @@ function NotFound() {
           <p className="text-sm text-muted-foreground">404</p>
           <h1 className="text-xl font-title">Page not found</h1>
           <p className="text-sm text-muted-foreground">
-            This address does not match a page in Paseo Hub. Check the address or return home.
+            This address does not match a page in Paseo Hub. Check the address or return home
           </p>
           <div>
             <Button asChild>

@@ -9,6 +9,7 @@ import {
   comboboxLabel,
   comboboxFilter,
   comboboxSelection,
+  withCustomOption,
   type ComboboxOption,
 } from "./combobox.js";
 
@@ -145,5 +146,44 @@ describe("what the closed combobox reads while its options are still arriving", 
 
   it("still shows the placeholder when nothing is stored", () => {
     assert.equal(comboboxLabel([], "", "Select a model", true), "Select a model");
+  });
+});
+
+const CUSTOM_PROJECTS: readonly ComboboxOption[] = [
+  { value: "/srv/hub", label: "hub", detail: "/srv/hub" },
+];
+const customPath = (typed: string): ComboboxOption | undefined =>
+  typed.startsWith("/") ? { value: typed, label: typed } : undefined;
+
+describe("a combobox that takes a value of the reader's own", () => {
+  const closed = (value: string): string =>
+    renderToStaticMarkup(
+      <Combobox
+        id="cwd"
+        value={value}
+        options={CUSTOM_PROJECTS}
+        onChange={NOOP}
+        placeholder="Select a project"
+        empty="No projects found"
+        custom={customPath}
+      />,
+    );
+
+  it("shows a stored value nobody suggested as it is", () => {
+    assert.match(closed("/srv/elsewhere"), />\/srv\/elsewhere</u);
+    assert.doesNotMatch(closed("/srv/elsewhere"), /unavailable/u);
+  });
+
+  it("still shows a listed value by its name", () => {
+    assert.match(closed("/srv/hub"), />hub</u);
+  });
+
+  it("lists the reader's own value beside the suggestions, once", () => {
+    assert.deepEqual(
+      withCustomOption(CUSTOM_PROJECTS, customPath("/srv/elsewhere")).map(({ value }) => value),
+      ["/srv/hub", "/srv/elsewhere"],
+    );
+    assert.equal(withCustomOption(CUSTOM_PROJECTS, customPath("/srv/hub")), CUSTOM_PROJECTS);
+    assert.equal(withCustomOption(CUSTOM_PROJECTS, customPath("relative")), CUSTOM_PROJECTS);
   });
 });

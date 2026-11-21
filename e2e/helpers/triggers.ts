@@ -20,36 +20,117 @@ export class OrganizationTriggers {
     await this.page.getByRole("link", { name: "New trigger" }).click();
     await expect(this.page).toHaveURL(/\/triggers\/new$/u);
     await expect(this.page.getByRole("heading", { name: "New trigger", level: 1 })).toBeVisible();
-    await expect(this.page.getByRole("heading", { name: "The event" })).toBeVisible();
-    await expect(this.page.getByRole("heading", { name: "Where it runs" })).toBeVisible();
-    // The last step keeps its place and says what it is waiting for, so the shape of the
-    // trigger is on screen before a daemon is chosen; only its controls are absent.
-    await expect(this.page.getByRole("heading", { name: "What runs there" })).toBeVisible();
+    // Every step keeps its place and says what it is waiting for, so the shape of the trigger
+    // is on screen before a daemon is chosen; only the controls of the later steps are absent.
+    for (const step of ["When it runs", "Where it runs", "What runs there", "What it can access"])
+      await expect(this.page.getByRole("heading", { name: step, exact: true })).toBeVisible();
     const topbar = this.page.locator("header.sticky");
     await expect(topbar.getByRole("radio", { name: "Form" })).toBeEnabled();
     await expect(topbar.getByRole("radio", { name: "YAML" })).toBeVisible();
     await expect(topbar.getByRole("button", { name: "Discard" })).toBeVisible();
-    await expect(this.page.getByLabel("Trigger ID")).toHaveValue("Assigned when saved");
+    await expect(this.page.getByLabel("Trigger ID")).toHaveCount(0);
   }
 
-  /** No daemon yet: the target and agent steps keep their place and say what they wait for. */
-  async expectWaitingForDaemon() {
+  /** No daemon yet: the steps after it keep their place and offer nothing to press. */
+  async expectWaitingForDaemon(reason: "Choose a daemon first" | "Connect a daemon first") {
+    await expect(this.page.getByText(reason, { exact: true })).toHaveCount(2);
     await expect(this.page.getByRole("combobox", { name: "Agent" })).toBeHidden();
     await expect(this.page.getByLabel("Working directory")).toBeHidden();
+    await expect(this.page.getByLabel("Instructions", { exact: true })).toBeHidden();
+    await expect(this.page.getByRole("button", { name: "Add integration" })).toBeHidden();
+  }
+
+  async chooseDaemon(daemon: string) {
+    await this.selectOption("Daemon", daemon);
+  }
+
+  /** The directory picker suggests the daemon's projects, each by name over its path. */
+  async expectProjectChoices(projects: readonly { name: string; path: string }[]) {
+    await this.page.getByRole("combobox", { name: "Working directory", exact: true }).click();
+    await expect(this.page.getByRole("option")).toHaveCount(projects.length);
+    for (const project of projects) {
+      await expect(
+        this.page.getByRole("option", { name: `${project.name} ${project.path}`, exact: true }),
+      ).toBeVisible();
+    }
+  }
+
+  /** Narrows the open directory picker to one project and takes it. */
+  async chooseListedProject(search: string, path: string) {
+    await this.page.getByPlaceholder("Search projects or type a path…").fill(search);
+    await expect(this.page.getByRole("option")).toHaveCount(1);
+    await this.page.locator(`[role="option"][data-value=${JSON.stringify(path)}]`).click();
+    await this.expectWorkingDirectory(path);
+  }
+
+  async expectWorkingDirectory(path: string) {
+    await expect(
+      this.page.getByRole("combobox", { name: "Working directory", exact: true }),
+    ).toHaveAttribute("data-value", path);
+  }
+
+  /** Any absolute path is a working directory, whether or not the daemon suggested it. */
+  async chooseWorkingDirectory(path: string) {
+    await this.page.getByRole("combobox", { name: "Working directory", exact: true }).click();
+    await this.page.getByPlaceholder("Search projects or type a path…").fill(path);
+    await this.page.locator(`[role="option"][data-value=${JSON.stringify(path)}]`).click();
+    await this.expectWorkingDirectory(path);
+  }
+
+  /** The audience sits closed under the event, and its header reads the current answer. */
+  async expectAudience(audience: string) {
+    await expect(this.audienceDisclosure()).toContainText(`Audience: ${audience}`);
+    await expect(this.audienceDisclosure()).toHaveAttribute("aria-expanded", "false");
+  }
+
+  async openAudience() {
+    await this.audienceDisclosure().click();
+    await expect(this.page.getByRole("radiogroup", { name: "Audience" })).toBeVisible();
+  }
+
+  async expectAudienceChoices(audiences: readonly string[], chosen: string) {
+    const group = this.page.getByRole("radiogroup", { name: "Audience" });
+    await expect(group.getByRole("radio")).toHaveText([...audiences]);
+    await expect(group.getByRole("radio", { name: chosen, exact: true })).toBeChecked();
+  }
+
+  async chooseAudience(audience: string) {
+    await this.page
+      .getByRole("radiogroup", { name: "Audience" })
+      .getByRole("radio", { name: audience, exact: true })
+      .click();
+  }
+
+  async chooseEvent(event: string) {
+    await this.selectOption("Event", event);
+  }
+
+  async chooseConnection(connection: string) {
+    await this.selectOption("Connection", connection);
+  }
+
+  async openContinuity() {
+    await this.page.getByRole("button", { name: /Advanced.*Agent continuity/u }).click();
+    await expect(this.page.getByRole("radiogroup", { name: "Agent continuity" })).toBeVisible();
+  }
+
+  private audienceDisclosure() {
+    return this.page.getByRole("button", { name: /Advanced.*Audience/u });
   }
 
   /**
-   * The organization's daemon is already chosen, and the working directory is the one thing the
-   * form does not guess: a prefilled path that did not exist on the daemon was saved as it was and
-   * failed the first run, so the field starts empty and the agent step waits for it.
+   * The organization's only daemon is already chosen, and the working directory is the one thing
+   * the form does not guess: a prefilled path that did not exist on the daemon was saved as it was
+   * and failed the first run, so the field starts empty.
    */
   async expectDaemonPreselected(daemon: string) {
-    await expect(this.page.getByRole("combobox", { name: "Run on daemon" })).toHaveAttribute(
+    await expect(this.page.getByRole("combobox", { name: "Daemon", exact: true })).toHaveAttribute(
       "data-value",
       daemon,
     );
-    await expect(this.page.getByLabel("Working directory")).toHaveValue("");
-    await expect(this.page.getByLabel("Working directory")).toHaveAttribute("required", "");
+    const directory = this.page.getByRole("combobox", { name: "Working directory", exact: true });
+    await expect(directory).toHaveAttribute("data-value", "");
+    await expect(directory).toHaveAttribute("aria-required", "true");
   }
 
   /** Pressing save with the document as it is answers in the summary and stays on the editor. */
@@ -68,7 +149,7 @@ export class OrganizationTriggers {
   }
 
   async exploreEventQualifiers() {
-    await this.page.getByRole("combobox", { name: "When this happens" }).click();
+    await this.page.getByRole("combobox", { name: "Event", exact: true }).click();
     const search = this.page.getByPlaceholder("Select an event…");
     await expect(search).toBeFocused();
     await expect(search).toHaveCSS("outline-style", "none");
@@ -81,14 +162,14 @@ export class OrganizationTriggers {
       }),
     ).toBeVisible();
     await this.page.keyboard.press("Escape");
-    await this.selectOption("When this happens", "github.pull_request_label_added");
+    await this.selectOption("Event", "github.pull_request_label_added");
     await expect(this.page.getByRole("radio", { name: "Any label", exact: true })).toBeHidden();
     await expect(this.page.getByLabel("Added label", { exact: true })).toHaveValue("");
 
     await this.page.getByLabel("Added label", { exact: true }).fill("ready-for-review");
     await this.page.getByLabel("Added label", { exact: true }).scrollIntoViewIfNeeded();
     await this.page.screenshot({ path: "e2e/screenshots/triggers/added-label-qualifier.png" });
-    await this.selectOption("When this happens", "github.issue_label_added");
+    await this.selectOption("Event", "github.issue_label_added");
     await expect(this.page.getByLabel("Added label", { exact: true })).toHaveValue(
       "ready-for-review",
     );
@@ -97,9 +178,9 @@ export class OrganizationTriggers {
       "required",
       "",
     );
-    await this.selectOption("When this happens", "slack.mention");
+    await this.selectOption("Event", "slack.mention");
     await expect(this.page.getByLabel("Added label", { exact: true })).toBeHidden();
-    await this.selectOption("When this happens", "github.pull_request_label_added");
+    await this.selectOption("Event", "github.pull_request_label_added");
     await expect(this.page.getByLabel("Added label", { exact: true })).toHaveValue("");
     await expect(this.page.getByRole("radio", { name: "Any label", exact: true })).toBeHidden();
   }
@@ -117,20 +198,22 @@ export class OrganizationTriggers {
     prompt: string;
   }) {
     await this.page.getByLabel("Trigger name").fill(input.name);
-    await this.selectOption("When this happens", "slack.mention");
-    // An event that arrives on a connection is an event someone sends, so the step asking who
-    // may send it joins the run; a manual run has no audience and no step.
-    await expect(this.page.getByRole("heading", { name: "Who can invoke it" })).toBeVisible();
+    await this.selectOption("Event", "slack.mention");
     await this.selectOption("Connection", input.connection);
-    await this.page.getByRole("radio", { name: "Specific people" }).click();
+    // An event someone sends has an audience. A Slack mention starts open to the workspace, and
+    // naming people is the choice behind the closed header.
+    await this.expectAudience("Everyone");
+    await this.openAudience();
+    await this.expectAudienceChoices(["Everyone", "Specific people"], "Everyone");
+    await this.chooseAudience("Specific people");
     await this.page.getByLabel("User IDs").fill(input.users);
-    await this.selectOption("Run on daemon", input.daemon);
+    await this.selectOption("Daemon", input.daemon);
     await expect(this.page.getByRole("combobox", { name: "Agent" })).toHaveAttribute(
       "data-value",
       "",
     );
     await expect(this.page.getByRole("combobox", { name: "Execution mode" })).toBeHidden();
-    await this.page.getByLabel("Working directory").fill(input.cwd);
+    await this.chooseWorkingDirectory(input.cwd);
     await this.selectAgent(input.agent);
     await this.selectOption("Execution mode", input.mode);
     await this.selectOption("Thinking", input.thinking);
@@ -140,7 +223,7 @@ export class OrganizationTriggers {
   }
 
   async expectReportedModelChoices(cwd: string, labels: string[]) {
-    await this.page.getByLabel("Working directory").fill(cwd);
+    await this.chooseWorkingDirectory(cwd);
     const picker = this.page.getByRole("combobox", { name: "Agent", exact: true });
     await picker.scrollIntoViewIfNeeded();
     await picker.click();
@@ -176,9 +259,9 @@ export class OrganizationTriggers {
     prompt: string;
   }) {
     await this.page.getByLabel("Trigger name").fill(input.name);
-    await this.selectOption("When this happens", "manual.run");
-    await this.selectOption("Run on daemon", input.daemon);
-    await this.page.getByLabel("Working directory").fill(input.cwd);
+    await this.selectOption("Event", "manual.run");
+    await this.selectOption("Daemon", input.daemon);
+    await this.chooseWorkingDirectory(input.cwd);
     await this.selectAgent(input.agent);
     if (input.mode !== undefined) await this.selectOption("Execution mode", input.mode);
     if (input.thinking !== undefined) await this.selectOption("Thinking", input.thinking);
@@ -199,7 +282,7 @@ export class OrganizationTriggers {
       thinking: "low",
       prompt: "Summarize the alert.",
     });
-    await this.selectOption("When this happens", "webhook.received");
+    await this.selectOption("Event", "webhook.received");
   }
 
   async addScheduleBeforeWebhook() {
@@ -290,10 +373,12 @@ export class OrganizationTriggers {
       thinking: "low",
       prompt: "Read reports and summarize new items.",
     });
-    await this.selectOption("When this happens", "schedule.tick");
+    await this.selectOption("Event", "schedule.tick");
+    await this.openContinuity();
     await this.page.getByRole("radio", { name: "New agent", exact: true }).check();
     await expect(this.page.getByRole("combobox", { name: "Connection", exact: true })).toBeHidden();
-    await expect(this.page.getByRole("heading", { name: "Who can invoke it" })).toBeHidden();
+    // A schedule has no outside sender, so there is no audience to choose.
+    await expect(this.audienceDisclosure()).toHaveCount(0);
     await this.expectSimpleScheduleControls();
     await this.page.getByLabel("Time 1", { exact: true }).fill("08:15");
     await this.page.getByRole("button", { name: "Add time", exact: true }).click();
@@ -308,8 +393,10 @@ export class OrganizationTriggers {
   }
 
   async grantScheduledIntegrationTools() {
-    await this.page.getByRole("button", { name: "Integration access" }).click();
-    await expect(this.page.getByText("No integrations granted for this run.")).toBeVisible();
+    await expect(
+      this.page.getByRole("heading", { name: "What it can access", exact: true }),
+    ).toBeVisible();
+    await expect(this.page.getByText("No integrations granted", { exact: true })).toBeVisible();
 
     await this.addIntegrationAccess("GitHub");
     const github = this.page.getByRole("region", { name: "GitHub", exact: true });
@@ -347,9 +434,6 @@ export class OrganizationTriggers {
     await expect(
       this.page.getByRole("button", { name: "Add integration", exact: true }),
     ).toHaveCount(0);
-    await expect(
-      this.page.getByRole("button", { name: /Integration access.*3 configured/u }),
-    ).toBeVisible();
   }
 
   async addIntegrationAccess(provider: "GitHub" | "Slack" | "Discord") {
@@ -538,7 +622,7 @@ export class OrganizationTriggers {
       thinking: "high",
       prompt: "Handle the labeled item.",
     });
-    await this.selectOption("When this happens", input.event);
+    await this.selectOption("Event", input.event);
     await this.page.getByRole("combobox", { name: "Connection", exact: true }).click();
     await this.page.getByRole("option", { name: "acme-inc", exact: true }).click();
   }
@@ -555,7 +639,7 @@ export class OrganizationTriggers {
       .click();
     await expect(
       this.page.getByRole("alert").filter({ hasText: "This trigger is not ready to save" }),
-    ).toContainText("Added label is required.");
+    ).toContainText("Added label is required");
     await expect(this.page.getByLabel("Added label", { exact: true })).toHaveAttribute(
       "aria-invalid",
       "true",
@@ -565,7 +649,7 @@ export class OrganizationTriggers {
 
   async expectPersistedLabel(event: string, label: string) {
     await this.page.reload();
-    await expect(this.page.getByRole("combobox", { name: "When this happens" })).toHaveAttribute(
+    await expect(this.page.getByRole("combobox", { name: "Event", exact: true })).toHaveAttribute(
       "data-value",
       event,
     );
@@ -593,6 +677,7 @@ export class OrganizationTriggers {
   }
 
   async exerciseContinuity() {
+    await this.openContinuity();
     await expect(
       this.page.getByRole("radio", { name: "Same conversation", exact: true }),
     ).toBeChecked();
@@ -603,6 +688,9 @@ export class OrganizationTriggers {
     await this.page.getByRole("radio", { name: "New agent", exact: true }).click();
     await expect(this.page.getByLabel("Continuation key", { exact: true })).toBeHidden();
     await this.page.getByRole("radio", { name: "Same conversation", exact: true }).click();
+    await expect(
+      this.page.getByRole("button", { name: /Advanced.*Agent continuity: Same conversation/u }),
+    ).toBeVisible();
   }
 
   async save(name: string) {
@@ -654,9 +742,10 @@ export class OrganizationTriggers {
 
   async expectComboboxes() {
     for (const name of [
-      "When this happens",
+      "Event",
       "Connection",
-      "Run on daemon",
+      "Daemon",
+      "Working directory",
       "Agent",
       "Execution mode",
       "Thinking",
@@ -684,6 +773,18 @@ export class OrganizationTriggers {
     }));
     expect(sizing.clientHeight).toBeGreaterThan(300);
     expect(sizing.clientHeight).toBeGreaterThanOrEqual(sizing.scrollHeight - 2);
+  }
+
+  async nameTrigger(name: string) {
+    await this.page.getByLabel("Trigger name").fill(name);
+  }
+
+  async expectYamlMatches(expected: Record<string, unknown>) {
+    expect(parseDocument(await this.readYaml()).toJS()).toMatchObject(expected);
+  }
+
+  async expectYamlOmits(fragment: string) {
+    expect(await this.readYaml()).not.toContain(fragment);
   }
 
   async expectYamlContains(...fragments: string[]) {
@@ -714,7 +815,7 @@ export class OrganizationTriggers {
   async expectDisclosureRailsAtPhoneWidth() {
     const viewport = this.page.viewportSize();
     await this.page.setViewportSize({ width: 420, height: 900 });
-    for (const name of ["Integration access", "Advanced provider options"]) {
+    for (const name of ["Advanced provider options", "Agent continuity"]) {
       const header = this.page.getByRole("button", { name, exact: false }).first();
       await header.scrollIntoViewIfNeeded();
       const rails = await header.evaluate((element: HTMLElement) =>

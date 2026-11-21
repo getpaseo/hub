@@ -396,6 +396,94 @@ describe("GitHub trigger matching", () => {
     );
   });
 
+  it.each([
+    {
+      acceptance: "a member's comment reaches a members-only trigger",
+      event: eventFor("issue_comment", {
+        action: "created",
+        issue: issue(),
+        comment: comment({ author_association: "MEMBER" }),
+      }),
+      expected: 1,
+    },
+    {
+      acceptance: "an outside commenter does not",
+      event: eventFor("issue_comment", {
+        action: "created",
+        issue: issue({ author_association: "OWNER" }),
+        comment: comment({ author_association: "NONE" }),
+      }),
+      expected: 0,
+    },
+    {
+      acceptance: "an event that reports no association does not",
+      event: eventFor("issue_comment", { action: "created", issue: issue(), comment: comment() }),
+      expected: 0,
+    },
+    {
+      acceptance: "an association GitHub does not define does not",
+      event: eventFor("issue_comment", {
+        action: "created",
+        issue: issue(),
+        comment: comment({ author_association: "ADMIN" }),
+      }),
+      expected: 0,
+    },
+    {
+      acceptance: "the item author's association is not the actor's when someone else acts on it",
+      event: eventFor("issues", {
+        action: "closed",
+        issue: issue({ author_association: "OWNER" }),
+      }),
+      on: "github.issues",
+      expected: 0,
+    },
+    {
+      acceptance: "an owner opening their own issue does",
+      event: eventFor("issues", {
+        action: "opened",
+        issue: issue({ user: { login: "boudra" }, author_association: "OWNER" }),
+      }),
+      on: "github.issue_created",
+      expected: 1,
+    },
+    {
+      acceptance: "a collaborator's review does",
+      event: eventFor("pull_request_review", {
+        action: "submitted",
+        pull_request: pullRequest({ author_association: "NONE" }),
+        review: {
+          body: "Looks right",
+          user: { login: "boudra" },
+          author_association: "COLLABORATOR",
+        },
+      }),
+      on: "github.pull_request_review",
+      expected: 1,
+    },
+  ])("gates on the actor's repository association: $acceptance", ({ event, expected, on }) => {
+    const config = configFor(
+      { author_associations: ["OWNER", "MEMBER", "COLLABORATOR"] },
+      on ?? "github.issue_comment",
+    );
+    assert.equal(matchTriggers(config, event).length, expected);
+  });
+
+  it("narrows by association and by name when a trigger declares both", () => {
+    const config = configFor({ author_associations: ["MEMBER"], from_users: ["someone-else"] });
+    const event = eventFor("issue_comment", {
+      action: "created",
+      issue: issue(),
+      comment: comment({ author_association: "MEMBER" }),
+    });
+    assert.equal(matchTriggers(config, event).length, 0);
+    assert.equal(
+      matchTriggers(configFor({ author_associations: ["MEMBER"], from_users: ["boudra"] }), event)
+        .length,
+      1,
+    );
+  });
+
   it("applies the same security filters to pull-request review comments", () => {
     const config = compileHubConfig({
       environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
@@ -431,13 +519,13 @@ describe("GitHub trigger matching", () => {
   });
 });
 
-function configFor(filters: Record<string, unknown>) {
+function configFor(filters: Record<string, unknown>, on = "github.issue_comment") {
   return compileHubConfig({
     environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
     triggers: [
       {
         name: "github-comment",
-        on: "github.issue_comment",
+        on,
         max_runtime: "2h",
         filters,
         steps: [

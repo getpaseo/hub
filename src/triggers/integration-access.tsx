@@ -1,10 +1,9 @@
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-new-array-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop -- each integration grant binds its own fields and controls */
 import { Plus } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
 import { CheckboxField } from "../components/app/checkbox-field.js";
 import { Combobox } from "../components/app/combobox.js";
-import { Disclosure } from "../components/app/disclosure.js";
 import { FormField } from "../components/app/form-field.js";
 import { TwoLine } from "../components/app/two-line.js";
 import { Button } from "../components/ui/button.js";
@@ -78,29 +77,6 @@ export function activeIntegrationProviders(form: TriggerFormValue): IntegrationA
   });
 }
 
-/** Integration providers with a selected connection in the current form value. */
-export function configuredIntegrationProviders(
-  form: TriggerFormValue,
-): IntegrationAccessProvider[] {
-  return INTEGRATION_ACCESS_PROVIDERS.flatMap(({ provider }) => {
-    if (provider === "github") {
-      return form.githubConnection.trim() === "" ? [] : ["github"];
-    }
-    return (form.tools[provider]?.connection ?? "").trim() === "" ? [] : [provider];
-  });
-}
-
-/** Whether any validation error belongs to an integration access field. */
-export function hasIntegrationAccessError(errors: TriggerFieldErrors): boolean {
-  if (errors.githubConnection !== undefined || errors.githubPermissions !== undefined) return true;
-  return integrationProviders.some(
-    (provider) =>
-      errors[`tools.${provider}.connection`] !== undefined ||
-      errors[`tools.${provider}.channels`] !== undefined ||
-      errors[`tools.${provider}.actions`] !== undefined,
-  );
-}
-
 /** Add an integration grant row, auto-selecting the connection when the organization has exactly one. */
 export function addIntegrationAccess(
   form: TriggerFormValue,
@@ -158,6 +134,10 @@ function connectionControlId(provider: IntegrationAccessProvider): string {
   return provider === "github" ? "trigger-github-connection" : `trigger-tools-${provider}`;
 }
 
+/**
+ * What the run may reach beyond the daemon: one grant per integration, each scoped to a
+ * connection. Nothing is granted until the author adds it.
+ */
 export function IntegrationAccess({
   form,
   connections,
@@ -171,15 +151,7 @@ export function IntegrationAccess({
   disabled?: boolean;
   onChange: (value: TriggerFormValue) => void;
 }) {
-  const configured = configuredIntegrationProviders(form);
   const active = activeIntegrationProviders(form);
-  const hasError = hasIntegrationAccessError(errors);
-  const [open, setOpen] = useState(() => active.length > 0 || hasError);
-  const [previousHasError, setPreviousHasError] = useState(hasError);
-  if (hasError !== previousHasError) {
-    setPreviousHasError(hasError);
-    if (hasError) setOpen(true);
-  }
   const pendingFocusId = useRef<string | null>(null);
   const activeSet = new Set<IntegrationAccessProvider>(active);
   const activeProviders = INTEGRATION_ACCESS_PROVIDERS.filter(({ provider }) =>
@@ -188,7 +160,6 @@ export function IntegrationAccess({
   const remainingProviders = INTEGRATION_ACCESS_PROVIDERS.filter(
     ({ provider }) => !activeSet.has(provider),
   );
-  const status = configured.length === 0 ? undefined : `${String(configured.length)} configured`;
 
   useEffect(() => {
     if (remainingProviders.length > 0) return undefined;
@@ -205,7 +176,6 @@ export function IntegrationAccess({
 
   const handleAdd = (provider: IntegrationAccessProvider) => {
     pendingFocusId.current = connectionControlId(provider);
-    setOpen(true);
     onChange(addIntegrationAccess(form, provider, connections));
   };
 
@@ -222,51 +192,42 @@ export function IntegrationAccess({
   };
 
   return (
-    <Disclosure
-      id="trigger-integration-access"
-      title="Integration access"
-      description="Grant scoped access to organization integrations during this run."
-      {...(status === undefined ? {} : { status })}
-      open={open}
-      onOpenChange={setOpen}
+    <div
+      className={
+        activeProviders.length === 0
+          ? "flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between"
+          : "grid gap-4"
+      }
     >
-      <div
-        className={
-          activeProviders.length === 0
-            ? "flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between"
-            : "grid gap-4"
-        }
-      >
-        {activeProviders.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No integrations granted for this run.</p>
-        ) : (
-          <div className="grid divide-y divide-border">
-            {activeProviders.map((definition) => (
-              <IntegrationGrantItem
-                key={definition.provider}
-                definition={definition}
-                form={form}
-                connections={connections}
-                errors={errors}
-                disabled={disabled}
-                onChange={onChange}
-                onRemove={() => handleRemove(definition.provider)}
-              />
-            ))}
-          </div>
-        )}
-        {remainingProviders.length === 0 ? null : (
-          <div className={activeProviders.length === 0 ? "flex shrink-0" : "flex border-t pt-4"}>
-            <AddIntegrationMenu
-              providers={remainingProviders}
+      {activeProviders.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No integrations granted</p>
+      ) : (
+        <div className="grid divide-y divide-border">
+          {activeProviders.map((definition) => (
+            <IntegrationGrantItem
+              key={definition.provider}
+              definition={definition}
+              form={form}
+              connections={connections}
+              errors={errors}
               disabled={disabled}
-              onAdd={handleAdd}
-              onCloseAutoFocus={handleCloseAutoFocus}
+              onChange={onChange}
+              onRemove={() => handleRemove(definition.provider)}
             />
-          </div>
-        )}
-      </div>
-    </Disclosure>
+          ))}
+        </div>
+      )}
+      {remainingProviders.length === 0 ? null : (
+        <div className={activeProviders.length === 0 ? "flex shrink-0" : "flex border-t pt-4"}>
+          <AddIntegrationMenu
+            providers={remainingProviders}
+            disabled={disabled}
+            onAdd={handleAdd}
+            onCloseAutoFocus={handleCloseAutoFocus}
+          />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -377,8 +338,8 @@ function connectionFieldDescription(
   connectionCount: number,
   selected: string,
 ): string | undefined {
-  if (connectionCount === 0) return `No ${label} connections configured in this organization.`;
-  if (selected.trim() === "") return `Choose a ${label} connection to activate this grant.`;
+  if (connectionCount === 0) return `No ${label} connection in this organization`;
+  if (selected.trim() === "") return `Choose a ${label} connection to activate this grant`;
   return undefined;
 }
 
@@ -422,7 +383,7 @@ function GitHubAccessFields({
               value={form.githubConnection}
               options={options}
               placeholder="Select a GitHub connection"
-              empty="No GitHub connections found."
+              empty="No GitHub connections found"
               onChange={(option) => onChange({ ...form, githubConnection: option.value })}
             />
           )}
@@ -430,7 +391,7 @@ function GitHubAccessFields({
         <FormField
           id="trigger-github-repositories"
           label="Repositories"
-          description="Comma-separated owner/repo names."
+          description="Comma-separated owner/repo names"
           kind="text"
           name="githubRepositories"
           placeholder="owner/repo"
@@ -441,7 +402,7 @@ function GitHubAccessFields({
         <FormField
           id="trigger-github-duration"
           label="Token lifetime"
-          description="At most 1h."
+          description="At most 1h"
           kind="text"
           name="githubDuration"
           placeholder="1h"
@@ -453,7 +414,7 @@ function GitHubAccessFields({
       <FormField
         id="trigger-github-permissions"
         label="Permissions (JSON)"
-        description="Defaults to read-only repository contents when blank."
+        description="Read-only repository contents when blank"
         {...(errors.githubPermissions === undefined ? {} : { error: errors.githubPermissions })}
       >
         {(control) => (
@@ -525,7 +486,7 @@ function ChannelToolAccessFields({
               value={value.connection}
               options={options}
               placeholder={`Select a ${label} connection`}
-              empty={`No ${label} connections found.`}
+              empty={`No ${label} connections found`}
               onChange={(option) => update({ connection: option.value })}
             />
           )}
@@ -535,8 +496,8 @@ function ChannelToolAccessFields({
           label="Channel IDs"
           description={
             provider === "discord"
-              ? "Comma-separated channel or forum IDs. Threads inherit parent access."
-              : "Comma-separated channel IDs."
+              ? "Comma-separated channel or forum IDs, whose threads inherit access"
+              : "Comma-separated channel IDs"
           }
           kind="text"
           name={`${id}-channels`}
@@ -570,7 +531,7 @@ function ChannelToolAccessFields({
         </div>
         {actionsError === undefined ? null : (
           <p role="alert" className="mt-2 text-sm text-destructive">
-            Select at least one permission.
+            Select at least one permission
           </p>
         )}
       </fieldset>

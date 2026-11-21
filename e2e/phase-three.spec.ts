@@ -129,7 +129,7 @@ test("lists an organization a member does not own without offering to connect it
   await github.expectChooser([
     {
       account: "acme-inc",
-      explanation: "Only an owner of acme-inc can connect it.",
+      explanation: "Only an owner of acme-inc can connect it",
       connectable: false,
     },
   ]);
@@ -147,7 +147,7 @@ test("refuses an installation GitHub did not confirm and says so", async ({ hub 
   await github.forgeSetupReturn(84);
   await hub.expectGitHubNotConnected(
     "alice",
-    "GitHub didn't confirm that you can connect that account. Nothing was connected. Connect GitHub again, and pick an account you own.",
+    "GitHub didn't confirm that you can connect that account. Nothing was connected. Connect GitHub again, and pick an account you own",
   );
 });
 
@@ -162,7 +162,7 @@ test("says Hub couldn't finish when GitHub cannot confirm an owner, then connect
   await hub.startGitHubConnection("alice");
   await hub.expectGitHubNotConnected(
     "alice",
-    "Hub couldn't finish the GitHub connection. Nothing was connected. Start the connection again from this page.",
+    "Hub couldn't finish the GitHub connection. Nothing was connected. Start the connection again from this page",
   );
 
   await hub.onGitHub({ op: "graphqlOutage", down: false });
@@ -182,7 +182,7 @@ test("connects GitHub again after a cancelled authorization or an expired return
   await cancelled.cancelAuthorization();
   await hub.expectGitHubNotice(
     "alice",
-    "Authorization cancelled at GitHub. Nothing changed. Start again when you're ready.",
+    "Authorization cancelled at GitHub. Nothing changed. Start again when you're ready",
   );
 
   await hub.proveExpiredGitHubReturnRecovers("alice");

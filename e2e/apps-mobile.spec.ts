@@ -51,7 +51,7 @@ test("the whole app setup journey completes at phone width", async ({ hub }) => 
 
     await github.fill({ ...WORKING_CREDENTIALS.GitHub, ...GITHUB_EVENT_CREDENTIALS });
     await github.save();
-    await github.expectFocusedResult("GitHub accepted this App.");
+    await github.expectFocusedResult("GitHub accepted this App");
     await github.expectStatus("Verified");
     await github.expectSummary({ App: "Paseo Hub", Owner: "acme-inc", Installations: "None yet" });
     await github.expectSetupStepsRetired();

@@ -43,7 +43,7 @@ function AccountApplication() {
       <FailedEntry
         message={
           account.error ??
-          "Hub did not receive your account state. Check your connection and reload the page."
+          "Hub did not receive your account state. Check your connection and reload the page"
         }
       />
     );
@@ -68,7 +68,7 @@ function AccountApplication() {
     return <AppSetupEntry organizationId={state.organization.id} onLeft={enterHandoff} />;
   }
   if (state.invitationUnavailable === true) {
-    return <UnavailableInvitation message="This invitation is unavailable." />;
+    return <UnavailableInvitation message="This invitation is unavailable" />;
   }
   if (state.status === "signedOut") return <AccountEntry account={state} />;
   if (state.invitation !== undefined) {

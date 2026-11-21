@@ -116,6 +116,7 @@ export const IssueCommentPayloadSchema = z
         body: OptionalStringSchema,
         html_url: OptionalStringSchema,
         user: UserSchema,
+        author_association: OptionalStringSchema,
         labels: z.array(LabelSchema).optional().catch(undefined),
         pull_request: z.object({}).passthrough().optional().catch(undefined),
       })
@@ -126,6 +127,7 @@ export const IssueCommentPayloadSchema = z
         id: OptionalNumberSchema,
         body: OptionalStringSchema,
         user: UserSchema,
+        author_association: OptionalStringSchema,
       })
       .optional()
       .catch(undefined),
@@ -143,6 +145,7 @@ export const IssuesPayloadSchema = z
         body: OptionalStringSchema,
         html_url: OptionalStringSchema,
         user: UserSchema,
+        author_association: OptionalStringSchema,
         labels: z.array(LabelSchema).optional().catch(undefined),
       })
       .optional()
@@ -163,6 +166,7 @@ export const PullRequestPayloadSchema = z
         body: OptionalStringSchema,
         html_url: OptionalStringSchema,
         user: UserSchema,
+        author_association: OptionalStringSchema,
         labels: z.array(LabelSchema).optional().catch(undefined),
         head: z
           .object({
@@ -184,6 +188,7 @@ export const PullRequestReviewPayloadSchema = PullRequestPayloadSchema.extend({
     .object({
       body: OptionalStringSchema,
       user: UserSchema,
+      author_association: OptionalStringSchema,
     })
     .optional()
     .catch(undefined),
@@ -195,6 +200,7 @@ export const PullRequestReviewCommentPayloadSchema = PullRequestPayloadSchema.ex
       id: OptionalNumberSchema,
       body: OptionalStringSchema,
       user: UserSchema,
+      author_association: OptionalStringSchema,
     })
     .optional()
     .catch(undefined),

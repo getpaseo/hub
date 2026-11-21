@@ -22,13 +22,12 @@ test("requires daemon setup before trigger configuration", async ({ hub, page })
   );
   await page.screenshot({ path: `${SHOTS}/00-no-daemon-callout.png`, fullPage: true });
   await triggers.startNew();
-  await triggers.expectWaitingForDaemon();
+  await triggers.expectWaitingForDaemon("Connect a daemon first");
   await triggers.exploreEventQualifiers();
   await expect(
-    page.getByText("No daemon is connected to this organization yet", { exact: false }),
+    page.getByText("A trigger runs on a daemon, and none is connected yet", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByRole("combobox", { name: "Run on daemon" })).toBeHidden();
-  await expect(page.getByText("Choose a daemon first", { exact: false })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Daemon", exact: true })).toBeHidden();
   await page.screenshot({ path: `${SHOTS}/00-no-daemons.png`, fullPage: true });
   await page.getByRole("link", { name: "Go to Daemons" }).click();
   await expect(page).toHaveURL(/\/daemons$/u);
@@ -55,7 +54,7 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
     await triggers.startNew();
     await triggers.expectDaemonPreselected(daemon);
     await page.screenshot({ path: `${SHOTS}/01b-daemon-required.png`, fullPage: true });
-    await triggers.expectRefusedOnSubmit("Working directory is required.");
+    await triggers.expectRefusedOnSubmit("Working directory is required");
     await triggers.configureSlackMention({
       name: "slack-help",
       connection: "company-slack",
@@ -147,6 +146,98 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
     await triggers.openTrigger("legacy-review");
     await triggers.expectLegacyReadOnly();
     await triggers.capture(`${SHOTS}/07-legacy-workflow-warning.png`);
+  });
+});
+
+test("a GitHub trigger starts at members, waits for a daemon, and runs in one of its projects", async ({
+  hub,
+  page,
+}) => {
+  await hub.signUpAs("owner", owner);
+  await hub.createOrganization("owner", "Acme");
+  const daemon = await hub.connectProviderDaemon("owner", "Acme");
+  const olderDaemon = await hub.connectProviderDaemon("owner", "Acme");
+  hub.openDaemonProjects(daemon, [
+    {
+      projectId: "project-hub",
+      projectDisplayName: "hub",
+      projectRootPath: "/srv/acme/hub",
+      projectKind: "git",
+    },
+    {
+      projectId: "project-storefront",
+      projectDisplayName: "web",
+      projectCustomName: "Storefront",
+      projectRootPath: "/srv/acme/web",
+      projectKind: "git",
+    },
+  ]);
+  await hub.connectGitHub("owner");
+  const triggers = new OrganizationTriggers(page);
+  await triggers.open();
+  await triggers.startNew();
+
+  await test.step("with several daemons none is chosen, and the later steps wait for one", async () => {
+    await triggers.expectWaitingForDaemon("Choose a daemon first");
+    await triggers.capture(`${SHOTS}/08-waiting-for-daemon.png`);
+  });
+
+  await test.step("a GitHub comment is open to repository members until the author widens it", async () => {
+    await triggers.chooseEvent("github.issue_comment_created");
+    await triggers.chooseConnection("acme-inc-github");
+    await triggers.expectAudience("Members");
+    await triggers.openAudience();
+    await triggers.expectAudienceChoices(
+      ["Members", "Contributors", "Everyone", "Specific people"],
+      "Members",
+    );
+    // GitHub reports no author association on a push, which only writers can make.
+    await triggers.chooseEvent("github.push");
+    await triggers.expectAudienceChoices(["Everyone", "Specific people"], "Everyone");
+    await triggers.chooseEvent("github.issue_comment_created");
+    await triggers.expectAudienceChoices(
+      ["Members", "Contributors", "Everyone", "Specific people"],
+      "Members",
+    );
+    await triggers.chooseAudience("Contributors");
+    await triggers.capture(`${SHOTS}/09-github-audience.png`);
+  });
+
+  await test.step("the working directory is one of the chosen daemon's projects", async () => {
+    await triggers.chooseDaemon(daemon);
+    await triggers.expectProjectChoices([
+      { name: "hub", path: "/srv/acme/hub" },
+      { name: "Storefront", path: "/srv/acme/web" },
+    ]);
+    await triggers.capture(`${SHOTS}/10-daemon-projects.png`);
+    await triggers.chooseListedProject("store", "/srv/acme/web");
+  });
+
+  await test.step("a daemon that lists no projects still takes a typed path", async () => {
+    await triggers.chooseDaemon(olderDaemon);
+    await triggers.expectWorkingDirectory("");
+    await triggers.chooseWorkingDirectory("/workspace/acme");
+  });
+
+  await test.step("the audience is saved as repository associations and read back", async () => {
+    await triggers.nameTrigger("github-comments");
+    await triggers.selectAgent("opencode/gateway/vendor/model-v1");
+    await triggers.changePrompt("Answer the comment.");
+    await triggers.switchToYaml();
+    await triggers.expectYamlMatches({
+      on: {
+        "github.issue_comment_created": {
+          connection: "acme-inc-github",
+          filters: { author_associations: ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"] },
+        },
+      },
+      run: { target: { daemon: olderDaemon, cwd: "/workspace/acme" } },
+    });
+    await triggers.expectYamlOmits("from_users");
+    await triggers.save("github-comments");
+    await triggers.openTrigger("github-comments");
+    await triggers.expectAudience("Contributors");
+    await triggers.expectWorkingDirectory("/workspace/acme");
   });
 });
 
@@ -361,7 +452,7 @@ run:
   await triggers.openTrigger("unknown-run");
   await expect(page.getByRole("radio", { name: "YAML" })).toBeChecked();
   await triggers.switchToForm();
-  await triggers.expectRefusedOnSubmit("Choose a provider and model.");
+  await triggers.expectRefusedOnSubmit("Choose a provider and model");
   await triggers.switchToYaml();
   await triggers.save("unknown-run");
 });

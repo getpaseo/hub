@@ -65,7 +65,7 @@ export function UnavailableInvitation({ message }: { message: string | undefined
       <AuthCard
         titleId="invitation-unavailable-heading"
         title="Invitation unavailable"
-        description="This link is invalid, expired, already used, or belongs to another account."
+        description="This link is invalid, expired, already used, or belongs to another account"
       >
         {message === undefined ? null : <Alert variant="destructive">{message}</Alert>}
         <AuthActions>
