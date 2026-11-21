@@ -23,13 +23,52 @@ Configuration YAML may include an optional top-level `name` slug as deployment m
 
 Configuration validation and installation accept the same YAML, optional `projectSlug`, and prompt-partial bundle. Both use the same parser, compiler, project selection, daemon/provider resolution, and business validation. Validation returns the resolved `projectSlug` and `wouldCreateProject` without creating a project, recording a revision, or changing active configuration. Installation silently creates a missing bundle-named or default project, then records and activates the revision.
 
+## Inbound webhooks
+
+Choose **Webhook received** in the trigger editor, or save this trigger in `.paseo/triggers/alert-handler.yml` and run `paseo hub deploy`.
+
+```yaml
+name: alert-handler
+on:
+  webhook.received: {}
+run:
+  target: { daemon: devbox, cwd: /absolute/path/to/workspace }
+  agent: { provider: codex, mode: full-access }
+  prompt: Summarize the alert and call finish_execution with the summary.
+```
+
+Hub assigns a random endpoint path of the form `/webhooks/wh_<random-id>`. Open the saved trigger and choose **Create secret**, or send `POST /api/v1/triggers/webhook-secret` with `{"triggerId":"<trigger-id>"}` and an organization credential with `configuration:install`. The API returns `{ path, secret }`. Each call replaces the previous secret. Copy the new secret when Hub shows it and store it in the sender's secret store. Redeploying the same trigger name with `webhook.received` preserves the endpoint and its secret.
+
+```sh
+curl -X POST "$WEBHOOK_URL" \
+  -H "Authorization: Bearer $WEBHOOK_SECRET" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: alert-123' \
+  -d '{"alert":"Disk usage over 95%"}'
+```
+
+Hub accepts UTF-8 bodies up to 32 KiB and validates JSON media types. A literal NUL character returns HTTP 400. A successful delivery returns HTTP 202 with `{ "runId": "...", "status": "accepted" }` after saving the receipt and queuing the run. Reuse the same optional `Idempotency-Key` on delivery retries to get the original run ID. Keys are scoped to the endpoint and accept up to 200 printable ASCII characters without spaces. The run appears in Activity as `webhook.received`.
+
+| Status | Meaning                                                                          |
+| ------ | -------------------------------------------------------------------------------- |
+| 400    | Invalid body, content type, or idempotency key                                   |
+| 401    | Invalid endpoint or missing or invalid secret                                    |
+| 403    | The organization has used its monthly execution allowance                        |
+| 409    | The trigger is disabled                                                          |
+| 413    | The body exceeds 32 KiB                                                          |
+| 429    | The endpoint has already accepted 60 new deliveries in its current minute window |
+
+Hub appends the body and limited delivery metadata to the agent prompt as untrusted external data. To choose where it appears, insert the standalone `${{ paseo.prompt }}` expression in the instructions. Execution uses the same monthly meter as other Hub runs. If another run consumes the remaining allowance after a delivery is accepted, the execution meter records the denial in run history.
+
 ## Workflow MCP tools
 
-Hub sends each daemon the authored rendered prompt unchanged. Execution tools are exposed through the provider-native Hub MCP server and its exact tool policy; Hub does not prepend a tool inventory or otherwise rewrite the prompt. Completion is exposed as `finish_execution`; allowed and materialized output tools use their registered names, such as `reply`. For structured-output steps, `finish_execution` accepts the configured result under `output`. Completing an execution does not necessarily complete the whole workflow.
+Hub sends each daemon the rendered prompt. Execution tools are exposed through the injected Hub MCP server. Hub passes the selected provider settings and its MCP server without imposing a provider-side tool policy; missing MCP support does not exclude a provider. Hub requires authenticated completion and authorizes output calls at its own endpoint. Completion is exposed as `finish_execution`; allowed and materialized output tools use their registered names, such as `reply`. For structured-output steps, `finish_execution` accepts the configured result under `output`. Completing an execution does not necessarily complete the whole workflow.
 
 ## Trigger prompt and optional context
 
-`${{ paseo.prompt }}` is exactly the complete text received by any textual trigger, including provider mentions, command markers, typed-input headers, and whitespace. Parsing those elements can select a trigger or populate `${{ paseo.inputs }}`, but never rewrites the prompt. Structured manual input without a textual prompt produces an empty string. `${{ paseo.context }}` is a separate opt-in merge value containing safe ambient provider data. Each workflow step opts in independently: a step that does not author `${{ paseo.context }}` receives no ambient context, no automatic attachment list, and no prompt mutation. Context history and attachment descriptors are fetched and materialized only when an opting step launches; attachment descriptors are Hub URLs scoped to that execution. Provider credentials, raw tokens, private provider download URLs, and unrelated webhook fields are not exposed. There is no alias or fallback for the removed automatic prompt behavior.
+For conversation triggers, `${{ paseo.prompt }}` contains the complete received text, including provider mentions, command markers, typed-input headers, and whitespace. Parsing those elements can select a trigger or populate `${{ paseo.inputs }}`, but never rewrites the prompt. Structured manual input without a textual prompt produces an empty string. `${{ paseo.context }}` is a separate opt-in merge value containing safe ambient provider data. Each workflow step opts in independently. Hub includes provider context and attachment descriptors only when the step uses `${{ paseo.context }}`. Context history and attachment descriptors are fetched and materialized only when an opting step launches; attachment descriptors are Hub URLs scoped to that execution. Provider credentials, raw tokens, private provider download URLs, and unrelated webhook fields are not exposed.
+
+When a step grants Slack or Discord `post` access, Hub adds the Open in Paseo URL to the agent prompt. The link requires a configured HTTPS Hub URL and a recorded daemon agent. Organization members can use that link to open the session or view the execution in Hub.
 
 Daemon environments may author `worktree.newBranch: "trigger-${{ paseo.execution.id }}"` for a stable branch name unique to each agent execution. Hub materializes the execution UUID before persisting or dispatching the launch intent; recovery reuses that fully rendered intent. This is independent of whether a manual, Slack, Discord, GitHub, or Linear trigger selected the reusable environment. No prompt, context, input, value, step output, or provider event namespace is available in environment configuration, and unsupported expressions fail bundle activation at the authored `newBranch` field.
 

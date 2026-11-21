@@ -78,7 +78,7 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
         <FailureAlert
           title="CLI login unavailable"
           error={snapshot.error}
-          fallback="This CLI login request is unavailable or expired."
+          fallback="This CLI login request is unavailable or expired"
         />
       </Centered>
     );
@@ -89,9 +89,9 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
         <AuthCard
           titleId="approval-outcome-heading"
           title={`CLI login ${decide.data.data.decision}`}
-          description="You can close this window and return to the terminal."
+          description="You can close this window and return to the terminal"
         >
-          <p role="status">The terminal has received the decision.</p>
+          <p role="status">The terminal has received the decision</p>
         </AuthCard>
       </Centered>
     );
@@ -104,20 +104,20 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
       <AuthCard
         titleId="approval-heading"
         title="Approve CLI login"
-        description="Grant this terminal durable access to one organization."
+        description="Grant this terminal durable access to one organization"
       >
         <SummaryPanel label="CLI login" rows={facts} />
         {request.canManage ? (
           <form className="grid gap-6" onSubmit={submitDecision} aria-label="Approve CLI login">
             <p className="text-sm text-muted-foreground">
               The credential can list projects, validate and install configuration, enroll daemons,
-              and dispatch manual runs for this organization until revoked.
+              and dispatch manual runs for this organization until revoked
             </p>
             {failed ? (
               <FailureAlert
                 title="Decision not recorded"
                 error={decide.data}
-                fallback="Hub did not receive this CLI login decision. Check your connection and confirm the request is still active."
+                fallback="Hub did not receive this CLI login decision. Check your connection and confirm the request is still active"
               />
             ) : null}
             <FormActions>
@@ -137,7 +137,7 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
           </form>
         ) : (
           <WarningAlert title="Approval required">
-            Switch to an organization where you are an owner or admin, then reopen the login URL.
+            Switch to an organization where you are an owner or admin, then reopen the login URL
           </WarningAlert>
         )}
       </AuthCard>
@@ -166,7 +166,7 @@ function CodeEntry({ onCode }: { onCode: (code: string) => void }) {
       <AuthCard
         titleId="cli-login-code-heading"
         title="Log in the Paseo CLI"
-        description="Enter the code shown in your terminal."
+        description="Enter the code shown in your terminal"
       >
         <form className="grid gap-6" onSubmit={submit} aria-label="Log in the Paseo CLI">
           <FormField
@@ -174,7 +174,7 @@ function CodeEntry({ onCode }: { onCode: (code: string) => void }) {
             id="cli-login-code"
             name="code"
             label="Verification code"
-            description="Only approve a code you requested yourself."
+            description="Only approve a code you requested yourself"
             autoComplete="one-time-code"
             required
           />
@@ -199,7 +199,7 @@ function Loading({ rows }: { rows: readonly SummaryRow[] }) {
         <AuthCard
           titleId="approval-loading-heading"
           title="Approve CLI login"
-          description="Grant this terminal durable access to one organization."
+          description="Grant this terminal durable access to one organization"
         >
           <SummaryPanel label="CLI login" rows={rows} />
           <Skeleton className="h-4 w-full" />

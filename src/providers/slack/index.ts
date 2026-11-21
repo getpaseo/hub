@@ -1,3 +1,4 @@
+import { createSlackIntegrationTools } from "../../integration-tools/index.js";
 import type { AuthServer } from "../../auth/server.js";
 import {
   CONNECTION_ATTEMPT_LIFETIME_MINUTES,
@@ -176,6 +177,9 @@ export function createSlackRegistration(
         }),
     ],
     sources: [events],
+    integrationTools: {
+      slack: createSlackIntegrationTools(database, configuration.appId, options.fetch),
+    },
     outputs: [
       {
         type: "slack.reply",

@@ -21,9 +21,9 @@ import { overLimit } from "./limits.js";
 type Snapshot = Awaited<ReturnType<UsageDashboard["snapshot"]>>;
 
 const LIMITS_TITLE = "Limits";
-const LIMITS_DESCRIPTION = "What this organization is allowed, and how much is in use.";
+const LIMITS_DESCRIPTION = "What this organization is allowed and how much is in use";
 const HISTORY_TITLE = "History";
-const HISTORY_DESCRIPTION = "Every change to this organization's limits, most recent first.";
+const HISTORY_DESCRIPTION = "Changes to this organization's limits, most recent first";
 const LIMIT_COLUMNS: readonly DataColumn[] = [
   { header: "Resource", fill: true },
   { header: "Limit" },
@@ -37,7 +37,7 @@ const HISTORY_COLUMNS: readonly DataColumn[] = [
 ];
 const HISTORY_EMPTY = {
   title: "No changes yet",
-  description: "Limit changes to this organization appear here.",
+  description: "Limit changes to this organization appear here",
 };
 
 // Customer-facing labels — never the operator's "override" / "entitlement" vocabulary, and no
@@ -62,7 +62,7 @@ export function OrganizationUsagePanel() {
       <FailureAlert
         title="Usage unavailable"
         error={query.error}
-        fallback="Hub did not receive the usage snapshot. Check your connection and reload the page."
+        fallback="Hub did not receive the usage snapshot. Check your connection and reload the page"
       />
     );
   }
@@ -75,7 +75,7 @@ function UsageContent({ snapshot }: { snapshot: Snapshot }) {
     <>
       <PageHeader
         title="Usage"
-        description={`Limits and usage for ${snapshot.organization.name}.`}
+        description={`Limits and usage for ${snapshot.organization.name}`}
       />
       <SeatOverLimitBanner seats={limits.seats} />
       <Section title={LIMITS_TITLE} description={LIMITS_DESCRIPTION}>
@@ -121,12 +121,9 @@ function SeatOverLimitBanner({ seats }: { seats: UsageMeasure }) {
   return (
     <WarningAlert standalone title="You're over your seat limit">
       <p>
-        You have {seats.used} seats in use, but your limit is {seats.limit}.
+        You have {seats.used} seats in use, but your limit is {seats.limit}
       </p>
-      <p>
-        Your existing seats are kept — nothing was removed. You can't add more until you're within
-        the limit.
-      </p>
+      <p>Your existing seats are kept. You can't add more until you're within the limit</p>
     </WarningAlert>
   );
 }
@@ -164,7 +161,7 @@ function measureUsage(measure: UsageMeasure): string {
 function UsageLoading({ name }: { name: string }) {
   return (
     <>
-      <PageHeader title="Usage" description={`Limits and usage for ${name}.`} />
+      <PageHeader title="Usage" description={`Limits and usage for ${name}`} />
       <Section title={LIMITS_TITLE} description={LIMITS_DESCRIPTION}>
         <DataTableSkeleton label="Limits" columns={LIMIT_COLUMNS} />
       </Section>

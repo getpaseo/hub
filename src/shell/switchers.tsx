@@ -3,8 +3,8 @@ import { Check, FolderKanban, LogOut, Plus, ShieldCheck } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useState, type FormEvent } from "react";
 
+import { PaseoHubMark } from "../brand/index.js";
 import { usePageContext } from "../navigation/index.js";
-import { PaseoGlyph } from "../components/app/auth-layout.js";
 import { FormDialog } from "../components/app/form-dialog.js";
 import { FormField } from "../components/app/form-field.js";
 import {
@@ -24,7 +24,7 @@ export type RouteTenant = NonNullable<ReturnType<typeof useOptionalRouteTenant>>
 /** Where the instance surfaces begin, for the one link into them that is not in a nav group. */
 const INSTANCE_ENTRY = "/apps";
 
-const ORGANIZATION_MARK = <PaseoGlyph />;
+const ORGANIZATION_MARK = <PaseoHubMark />;
 const PROJECT_MARK = <FolderKanban aria-hidden="true" />;
 
 const ROLE_LABELS: Record<string, string> = {
@@ -70,6 +70,7 @@ export function OrganizationSwitcher({
     <>
       <SidebarSwitcher
         label="Organization"
+        tone="plain"
         media={ORGANIZATION_MARK}
         primary={organization.name}
         secondary={ROLE_LABELS[role] ?? role}

@@ -1,7 +1,18 @@
 import { eventDefinition, isEditorEvent } from "../triggers/configuration/events.js";
 import { ContinuationSchema } from "../triggers/continuation.js";
+import {
+  GitHubAuthorAssociationSchema,
+  reportsAuthorAssociation,
+  type GitHubAuthorAssociation,
+} from "../triggers/github/author-association.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import {
+  CompiledIntegrationToolGrantsSchema,
+  IntegrationToolGrantsSchema,
+  normalizeIntegrationToolGrants,
+  type IntegrationToolGrants,
+} from "../integration-tools/grants.js";
 import {
   expressionPaths,
   parseExpression,
@@ -108,6 +119,8 @@ const AuthoredTriggerFilterSchema = z
     from_teams: z
       .array(z.string().regex(GITHUB_TEAM_REFERENCE, "must be formatted as organization/team-slug"))
       .optional(),
+    /** GitHub repository associations whose holders may invoke the trigger. */
+    author_associations: z.array(GitHubAuthorAssociationSchema).min(1).optional(),
     inputs: z.record(z.string(), InputValueSchema).optional(),
     connection: z
       .string()
@@ -181,6 +194,7 @@ const StepSchema = z
     prompt: z.array(PromptBlockSchema).min(1),
     env: z.record(z.string().min(1), z.string()).optional(),
     github: AuthoredGitHubAuthoritySchema.optional(),
+    tools: IntegrationToolGrantsSchema.optional(),
     if: z.string().min(1).optional(),
     output: z.object({ schema: JsonSchemaSchema }).strict().optional(),
     allow_outputs: z.array(AllowOutputSchema).optional(),
@@ -260,6 +274,7 @@ export interface CompiledStep {
   prompt: readonly CompiledPromptBlock[];
   env?: Readonly<Record<string, string>> | undefined;
   github?: CompiledGitHubAuthority | undefined;
+  tools?: IntegrationToolGrants | undefined;
   condition?: Expression | undefined;
   output?: { schema: JsonValue } | undefined;
   allowOutputs: readonly { type: string; max?: number | undefined; required: boolean }[];
@@ -272,11 +287,19 @@ export type CompiledSteps = readonly CompiledStep[];
 export type CompiledTriggerFilter = Readonly<
   Omit<
     AuthoredTriggerFilter,
-    "channels" | "from_users" | "from_teams" | "states" | "labels" | "exclude_labels" | "assignees"
+    | "channels"
+    | "from_users"
+    | "from_teams"
+    | "author_associations"
+    | "states"
+    | "labels"
+    | "exclude_labels"
+    | "assignees"
   > & {
     channels?: readonly string[] | undefined;
     from_users?: readonly string[] | undefined;
     from_teams?: readonly string[] | undefined;
+    author_associations?: readonly GitHubAuthorAssociation[] | undefined;
     states?: readonly string[] | undefined;
     labels?: readonly string[] | undefined;
     exclude_labels?: readonly string[] | undefined;
@@ -412,6 +435,7 @@ const CompiledStepSchema: z.ZodType<CompiledStep> = z
     prompt: z.array(CompiledPromptBlockSchema).min(1),
     env: z.record(z.string(), z.string()).optional(),
     github: CompiledGitHubAuthoritySchema.optional(),
+    tools: CompiledIntegrationToolGrantsSchema.optional(),
     condition: z.custom<Expression>(isExpression).optional(),
     output: z.object({ schema: CompiledJsonSchemaSchema }).strict().optional(),
     allowOutputs: z.array(
@@ -624,6 +648,7 @@ function compileStep(
     prompt: compilePromptBlocks(trigger.name, step.id, step.prompt, resolvedPromptPartials),
     ...(env === undefined ? {} : { env }),
     ...(github === undefined ? {} : { github }),
+    ...(step.tools === undefined ? {} : { tools: normalizeIntegrationToolGrants(step.tools) }),
     ...(condition === undefined ? {} : { condition }),
     ...(outputDeclaration === undefined ? {} : { output: outputDeclaration }),
     allowOutputs: (step.allow_outputs ?? []).map((allowOutput) => ({
@@ -1392,6 +1417,12 @@ function validateTriggerLaunchSecurity(trigger: CompiledTrigger): void {
   if (fromTeams.length > 0 && !trigger.on.startsWith("github.")) {
     throw new Error(`trigger ${trigger.name} may use filters.from_teams only for GitHub events`);
   }
+  const associations = trigger.filters?.author_associations;
+  if (associations !== undefined && !reportsAuthorAssociation(trigger.on)) {
+    throw new Error(
+      `trigger ${trigger.name}: filters.author_associations is not available for ${trigger.on}`,
+    );
+  }
   if (isEditorEvent(trigger.on) && eventDefinition(trigger.on).origin === "hub") return;
   // A project scout is an intentionally autonomous, project-scoped policy. Every other
   // externally-originated Linear action remains actor-allowlisted below.
@@ -1403,15 +1434,25 @@ function validateTriggerLaunchSecurity(trigger: CompiledTrigger): void {
     }
     return;
   }
-  const fromUsers = trigger.filters?.from_users ?? [];
-  if (fromUsers.length === 0 && fromTeams.length === 0) {
-    const allowlist = trigger.on.startsWith("github.")
-      ? "filters.from_users or filters.from_teams"
-      : "filters.from_users";
-    throw new Error(
-      `trigger ${trigger.name} requires a non-empty ${allowlist} allowlist for externally sourced events`,
-    );
+  if (
+    (trigger.filters?.from_users?.length ?? 0) > 0 ||
+    fromTeams.length > 0 ||
+    associations !== undefined
+  )
+    return;
+  const allowlist = identityAllowlistDescription(trigger.on);
+  throw new Error(
+    `trigger ${trigger.name} requires a non-empty ${allowlist} allowlist for externally sourced events`,
+  );
+}
+
+function identityAllowlistDescription(event: string): string {
+  if (reportsAuthorAssociation(event)) {
+    return "filters.from_users, filters.from_teams, or filters.author_associations";
   }
+  return event.startsWith("github.")
+    ? "filters.from_users or filters.from_teams"
+    : "filters.from_users";
 }
 
 function assertIdentifier(value: string, kind: string): void {

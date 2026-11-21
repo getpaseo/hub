@@ -55,7 +55,7 @@ export function daemonLink(snapshot: Snapshot<BrowserDaemonList>): DaemonLink {
   if (snapshot.status === "error")
     return {
       state: "failed",
-      message: snapshot.error ?? "Hub didn't answer. Check your connection, then check again.",
+      message: snapshot.error ?? "Hub didn't answer. Check your connection, then check again",
     };
   const connected = snapshot.data.daemons.find(
     (daemon) => daemon.status === "active" && daemon.presence === "connected",
@@ -126,7 +126,7 @@ export function DaemonHandoffView({
       <AuthLayout width="md">
         <AuthCard
           title="Daemon connected"
-          description={`${link.slug} is connected to this Hub. Finish the starter workflow in your terminal whenever you're ready.`}
+          description={`${link.slug} is connected to this Hub. Finish the starter workflow in your terminal whenever you're ready`}
           descriptionRole="status"
         >
           <Button onClick={onContinue}>Continue</Button>
@@ -142,7 +142,7 @@ export function DaemonHandoffView({
       >
         <CopyField label="Command" value={command} />
         <p className="text-sm text-muted-foreground">
-          Your terminal signs you in, connects this daemon, and offers to set up a starter workflow.
+          Your terminal signs you in, connects this daemon, and offers to set up a starter workflow
         </p>
         <LinkProgress link={link} onRetry={onRetry} />
         <Button variant="ghost" onClick={onContinue}>
@@ -164,7 +164,7 @@ function LinkProgress({ link, onRetry }: { link: DaemonLink; onRetry: () => void
       <FailureAlert
         title="Hub couldn't check for daemons"
         error={link.message}
-        fallback="Hub didn't answer. Check your connection, then check again."
+        fallback="Hub didn't answer. Check your connection, then check again"
         onRetry={onRetry}
       />
     );

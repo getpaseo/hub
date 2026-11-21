@@ -7,10 +7,10 @@ controls. `src/typography-policy.test.ts` enforces the parts a regex can see; th
 
 ## Hard rules
 
-1. **One weight.** Everything is 400. The only exception is `font-title`, and it goes on the one title
-   of a surface: the page `h1`, a dialog or sheet title, the auth card title. Never on a section
-   heading, a table header, a label, a button, a nav item, or a value. `font-medium`, `font-semibold`,
-   `font-bold`, `<strong>`, `<b>`, and `fontWeight` do not exist here.
+1. **One weight.** Everything is 400. The only exception is `font-title`, and it goes on surface
+   and group titles: the page `h1`, a `Section` or `Card` `h2`, a dialog or sheet title, and the
+   auth card title. Never on a table header, a label, a button, a nav item, a list row, or a value.
+   `font-medium`, `font-semibold`, `font-bold`, `<strong>`, `<b>`, and `fontWeight` do not exist here.
 2. **Emphasis is colour, not weight.** Three text steps: `text-foreground` for what the reader came
    for, `text-muted-foreground` for context, `text-extra-muted-foreground` for decoration that can be
    missed. Pick one per element. A primary line over a muted line is how a record shows two facts.
@@ -62,15 +62,15 @@ light column correct anyway so a toggle is a one-line change.
 Tailwind's size names are remapped in `@theme` so shadcn markup keeps reading normally while rendering
 at Linear's density. Use the name for the role, not for the pixel.
 
-| Utility     | Size / line | Role                                                                                                                                       |
-| ----------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `text-xs`   | 12 / 16     | Meta lines, pills, table headers, field descriptions, timestamps.                                                                          |
-| `text-sm`   | 13 / 20     | The UI size. Body, cells, inputs, buttons, sidebar, section titles, descriptions. This is the `<body>` default; most elements set nothing. |
-| `text-base` | 15 / 24     | Dialog and auth card titles. Long prose if a screen ever has any.                                                                          |
-| `text-lg`   | 17 / 24     | Unused today. Do not reach for it to make something "a bit bigger".                                                                        |
-| `text-xl`   | 20 / 28     | The page title. `PageHeader` owns it.                                                                                                      |
-| `text-2xl`  | 24 / 32     | A figure: `StatTile` value, a price.                                                                                                       |
-| `text-3xl`  | 32 / 36     | The largest figure. One per screen at most.                                                                                                |
+| Utility     | Size / line | Role                                                                                                                               |
+| ----------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `text-xs`   | 12 / 16     | Meta lines, pills, table headers, field descriptions, timestamps.                                                                  |
+| `text-sm`   | 13 / 20     | The UI size. Body, cells, inputs, buttons, sidebar, labels, descriptions. This is the `<body>` default; most elements set nothing. |
+| `text-base` | 15 / 24     | `Section`, `Card`, dialog, sheet, and auth card titles (`font-title`). Long prose if a screen ever has any.                        |
+| `text-lg`   | 17 / 24     | Unused today. Do not reach for it to make something "a bit bigger".                                                                |
+| `text-xl`   | 20 / 28     | The page title. `PageHeader` owns it.                                                                                              |
+| `text-2xl`  | 24 / 32     | A figure: `StatTile` value, a price.                                                                                               |
+| `text-3xl`  | 32 / 36     | The largest figure. One per screen at most.                                                                                        |
 
 `font-title` is the single elevated weight (500). `tabular-nums` on every number that sits in a
 column — `DataTable` sets it for the whole table, so no cell decides this for itself.
@@ -100,16 +100,18 @@ background only.
 | Sidebar                 | 240px wide. Item h-8 `text-sm` `rounded-md`. Inactive `muted-foreground`; active `accent` fill and `foreground`. Hover promotes colour, no fill.                                                                                                                             |
 | Site header             | h-12, `border-b`, `background` fill, no blur. A route's own actions sit here from `sm`; a phone fits the sidebar trigger and the trail only, so the route puts the same controls in the page.                                                                                |
 | Table                   | Header row h-9 `text-xs muted-foreground`. Body row h-11 `text-sm`. Rows divided by `border`. Hover fill only on rows that navigate. A column is as wide as its widest value; only `fill` columns, the ones whose values can be cut, share the remaining width and truncate. |
-| Card                    | p-6. `rounded-xl border bg-card`. Title `text-sm` foreground, description `text-sm muted-foreground`, gap-1 between them, gap-4 to the body.                                                                                                                                 |
+| Card                    | p-6. `rounded-xl border bg-card`. Title `text-base font-title` foreground, description `text-sm muted-foreground`, gap-1 between them, gap-4 to the body.                                                                                                                    |
 | Page column             | `max-w-5xl`, inset p-4 on phones and p-8 from `md`. Owned by the shell; screens never pad themselves.                                                                                                                                                                        |
-| Section                 | mb-8 between sections, gap-3 inside. Owned by `Section`.                                                                                                                                                                                                                     |
+| Section                 | mb-8 between sections, gap-3 inside. Title `text-base font-title` foreground, description `text-sm muted-foreground`. Owned by `Section`.                                                                                                                                    |
 | Field                   | gap-2 between label, control, and description. Fields in a form: gap-4.                                                                                                                                                                                                      |
 
 ## Emphasis without weight
 
 - A record is a primary line over a muted line at the same size. Use `TwoLine`.
-- A group heading is `text-sm text-foreground` with its description in `muted-foreground` beneath it.
-  It is not bigger and not heavier than the rows below it; it is set apart by the gap above it.
+- A group or card heading is `text-base font-title text-foreground` with its description in
+  `text-sm text-muted-foreground` beneath it, separating headings from `text-sm` rows and labels.
+- `RecordList` always sits inside a `Card` so short lists share the same surface as tables and tiles.
+- UI copy (subtitles, descriptions, helper text, alerts, empty states) never ends with a trailing period.
 - Active navigation is a colour step at identical size and weight, plus the `accent` fill.
 - A number that matters is bigger, not bolder: `text-2xl` and `tabular-nums`.
 - A key/value pair is `text-xs muted-foreground` over `text-sm foreground`. Use `SummaryPanel`.

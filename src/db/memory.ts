@@ -161,6 +161,21 @@ export function createMemoryDatabase(options: MemoryDatabaseOptions = {}): Datab
 
 class MemoryDatabase implements Database {
   // This test double has no background work. Scheduling tests use the actual embedded/PG runtime.
+  readonly webhooks: import("../triggers/webhook/index.js").WebhookStore = {
+    async list() {
+      return [];
+    },
+    async rotate() {
+      return undefined;
+    },
+    async authenticate() {
+      return undefined;
+    },
+    async accept() {
+      return { status: "unauthorized" };
+    },
+  };
+
   get schedules(): import("../triggers/schedule/index.js").ScheduleStore {
     return (
       this.options.schedules ?? {

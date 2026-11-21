@@ -80,7 +80,7 @@ function matchTriggersWithoutTeams(
     if (
       !eventNames.has(trigger.on) ||
       !matchesStaticFilter(classified, trigger.filters, event, connectionId) ||
-      !matchesUserFilter(trigger.filters, classified.actor)
+      !admitsWithoutTeamLookup(trigger.filters, classified.actor)
     ) {
       continue;
     }
@@ -103,7 +103,7 @@ async function matchTriggersWithTeams(
   for (const trigger of config.triggers) {
     if (!eventNames.has(trigger.on)) continue;
     if (!matchesStaticFilter(classified, trigger.filters, event, options.connectionId)) continue;
-    if (matchesUserFilter(trigger.filters, classified.actor)) {
+    if (admitsWithoutTeamLookup(trigger.filters, classified.actor)) {
       matches.push({ event, trigger });
       continue;
     }
@@ -134,6 +134,7 @@ function matchesStaticFilter(
   if (filter === undefined) return false;
   return (
     hasIdentityAllowlist(filter) &&
+    matchesAuthorAssociation(classified, filter) &&
     matchesConnection(filter, connectionId) &&
     matchesRepository(filter, event) &&
     matchesText(classified.text, filter) &&
@@ -142,7 +143,11 @@ function matchesStaticFilter(
 }
 
 function hasIdentityAllowlist(filter: TriggerFilter): boolean {
-  return (filter.from_users?.length ?? 0) > 0 || (filter.from_teams?.length ?? 0) > 0;
+  return (
+    (filter.from_users?.length ?? 0) > 0 ||
+    (filter.from_teams?.length ?? 0) > 0 ||
+    (filter.author_associations?.length ?? 0) > 0
+  );
 }
 
 function matchesConnection(
@@ -175,8 +180,13 @@ function matchesLabels(
   );
 }
 
-function matchesUserFilter(filter: TriggerFilter | undefined, actor: string): boolean {
-  const fromUsers = filter?.from_users;
+/** Association-only policies have already passed the static gate; named users and teams are ORed. */
+function admitsWithoutTeamLookup(filter: TriggerFilter | undefined, actor: string): boolean {
+  if (filter === undefined) return false;
+  if (filter.from_users === undefined && filter.from_teams === undefined) {
+    return filter.author_associations !== undefined;
+  }
+  const fromUsers = filter.from_users;
   return fromUsers?.includes("*") === true || fromUsers?.includes(actor) === true;
 }
 
@@ -211,6 +221,19 @@ async function matchesTeamFilter(
   }
 
   return false;
+}
+
+/** A declared repository-association filter narrows either user or team authorization. */
+function matchesAuthorAssociation(
+  classified: ReturnType<typeof classifyGitHubEvent>,
+  filter: TriggerFilter,
+): boolean {
+  const associations = filter.author_associations;
+  return (
+    associations === undefined ||
+    (classified.actorAssociation !== undefined &&
+      associations.includes(classified.actorAssociation))
+  );
 }
 
 function matchesText(text: string, filter: TriggerFilter): boolean {

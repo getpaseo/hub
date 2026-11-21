@@ -222,6 +222,27 @@ export const RefreshProvidersSnapshotResponseSchema = z.object({
   }),
 });
 
+export const ProjectListRequestSchema = z.object({
+  type: z.literal("project.list.request"),
+  requestId: z.string(),
+});
+
+/** The fields Hub reads from a daemon project; the daemon sends more, and may add to them. */
+export const ProjectListResponseSchema = z.object({
+  type: z.literal("project.list.response"),
+  payload: z.object({
+    requestId: z.string(),
+    projects: z.array(
+      z.object({
+        projectId: z.string(),
+        projectDisplayName: z.string(),
+        projectCustomName: z.string().nullable().optional(),
+        projectRootPath: z.string(),
+      }),
+    ),
+  }),
+});
+
 export const HubExecutionControlActionSchema = z.enum(["interrupt", "archive"]);
 
 const RpcErrorSchema = z.object({
@@ -240,6 +261,7 @@ export const HubExecutionOutboundSchema = z.object({
     HubExecutionAgentValidateResponseSchema,
     GetProvidersSnapshotResponseSchema,
     RefreshProvidersSnapshotResponseSchema,
+    ProjectListResponseSchema,
     RpcErrorSchema,
   ]),
 });

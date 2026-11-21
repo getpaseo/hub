@@ -4,37 +4,57 @@ import { MemoryDiscordBotClient } from "./memory-bot.js";
 import { createDiscordReplyExecutor } from "./reply.js";
 
 describe("Discord reply executor", () => {
-  it("sends repeated replies through the conversation reply capability", async () => {
+  it.each([false, true])(
+    "sends repeated replies through the conversation reply capability (already linked: %s)",
+    async (alreadyLinked) => {
+      const url = "https://hub.example/open/executions/00000000-0000-4000-8000-000000000001";
+      const link = `[Open in Paseo](${url})`;
+      const content = alreadyLinked ? "Existing: " + link : "hello world";
+      const bot = new MemoryDiscordBotClient({ selfUserId: "900" });
+      const executor = createDiscordReplyExecutor({ bot });
+
+      await executor({
+        agentExecutionId: "exec-1",
+        toolType: "discord.reply",
+        args: { content },
+        openInPaseoUrl: url,
+        outputContext: { channelId: "200", threadId: null, messageId: "300" },
+      });
+      await executor({
+        agentExecutionId: "exec-1",
+        toolType: "discord.reply",
+        args: { content: "second reply" },
+        outputContext: { channelId: "200", threadId: null, messageId: "300" },
+      });
+
+      assert.deepEqual(bot.messages, [
+        {
+          channelId: "200",
+          threadId: null,
+          messageId: "300",
+          content: alreadyLinked ? content : `${content}\n\n${link}`,
+        },
+        {
+          channelId: "200",
+          threadId: null,
+          messageId: "300",
+          content: "second reply",
+        },
+      ]);
+    },
+  );
+
+  it("delivers a reply that already fills Discord's message limit", async () => {
     const bot = new MemoryDiscordBotClient({ selfUserId: "900" });
-    const executor = createDiscordReplyExecutor({ bot });
-
-    await executor({
+    const content = "x".repeat(2000);
+    await createDiscordReplyExecutor({ bot })({
       agentExecutionId: "exec-1",
       toolType: "discord.reply",
-      args: { content: "hello world" },
-      outputContext: { channelId: "200", threadId: null, messageId: "300" },
+      args: { content },
+      openInPaseoUrl: "https://hub.example/open/executions/00000000-0000-4000-8000-000000000001",
+      outputContext: { channelId: "200", messageId: "300" },
     });
-    await executor({
-      agentExecutionId: "exec-1",
-      toolType: "discord.reply",
-      args: { content: "second reply" },
-      outputContext: { channelId: "200", threadId: null, messageId: "300" },
-    });
-
-    assert.deepEqual(bot.messages, [
-      {
-        channelId: "200",
-        threadId: null,
-        messageId: "300",
-        content: "hello world",
-      },
-      {
-        channelId: "200",
-        threadId: null,
-        messageId: "300",
-        content: "second reply",
-      },
-    ]);
+    assert.equal(bot.messages[0]?.content, content);
   });
 
   it("routes the reply to the thread when output context has a threadId", async () => {

@@ -152,6 +152,7 @@ describe("durable Hub action acknowledgement state", () => {
           throw new Error("Provider catalog is not used");
         },
         refreshProviderSnapshot: async () => {},
+        listProjects: async () => [],
         validateAgentConfiguration: async () => ({ valid: true }),
       };
       const lifecycle = createDaemonDispatchLifecycle({
@@ -421,7 +422,6 @@ async function acknowledgementFixture() {
       provider: "codex",
       cwd: "/workspace",
       env: {},
-      toolPolicy: { preapproved: [] },
     },
   });
   await database.attachExecutionToSession(EXECUTION_ID, "session");
@@ -506,6 +506,10 @@ class AcknowledgementConnection implements DaemonConnection {
   }
 
   async refreshProviderSnapshot(): Promise<never> {
+    throw new Error("not used");
+  }
+
+  async listProjects(): Promise<never> {
     throw new Error("not used");
   }
 

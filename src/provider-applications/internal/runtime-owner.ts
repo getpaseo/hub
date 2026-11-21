@@ -4,6 +4,7 @@ import type { Database } from "../../db/types.js";
 import { replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { logger } from "../../logger.js";
 import { reportFailure } from "../../failures/index.js";
+import { IntegrationToolError, type IntegrationToolCall } from "../../integration-tools/index.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
 import { GITHUB_CONNECTION_ACTIONS } from "../../providers/github/connection.js";
@@ -399,6 +400,20 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         },
       ],
       sources: [source],
+      ...(provider === "slack" || provider === "discord"
+        ? {
+            integrationTools: {
+              [provider]: (input: IntegrationToolCall) => {
+                const active = slot.active;
+                const handler = active?.registration.integrationTools?.[provider];
+                if (active === undefined || handler === undefined) {
+                  throw new IntegrationToolError("The integration is unavailable.");
+                }
+                return this.withLease(active, () => handler(input));
+              },
+            },
+          }
+        : {}),
       outputs: [
         {
           type: `${provider}.reply`,

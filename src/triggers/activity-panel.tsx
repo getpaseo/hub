@@ -17,7 +17,7 @@ const ACTIVITY_COLUMNS = [
   { header: "Received" },
 ];
 const EMPTY_ACTIVITY = { title: "No activity" };
-const ACTIVITY_DESCRIPTION = "Agent runs launched by organization triggers.";
+const ACTIVITY_DESCRIPTION = "Agent runs launched by organization triggers";
 
 export function TriggerActivityPanel() {
   const tenant = useRouteTenant();
@@ -40,7 +40,7 @@ export function TriggerActivityPanel() {
       <FailureAlert
         title="Activity unavailable"
         error={snapshot.error}
-        fallback="Hub couldn't load trigger activity."
+        fallback="Hub couldn't load trigger activity"
       />
     );
   }
@@ -63,7 +63,12 @@ export function TriggerActivityPanel() {
               />
             </DataCell>
             <DataCell>{run.provider}</DataCell>
-            <DataCell>{run.source}</DataCell>
+            <DataCell>
+              <TwoLine
+                primary={run.source}
+                {...(run.webhookDeliveryId === null ? {} : { secondary: run.webhookDeliveryId })}
+              />
+            </DataCell>
             <DataCell>
               <StatusPill tone={tone(run.status)}>{statusLabel(run.status)}</StatusPill>
             </DataCell>

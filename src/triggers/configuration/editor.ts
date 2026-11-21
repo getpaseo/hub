@@ -5,23 +5,45 @@ import {
   type Recurrence,
 } from "../schedule/recurrence.js";
 import { ContinuationSchema } from "../continuation.js";
-import { parseDocument, stringify, type Document } from "yaml";
+import { isAlias, isNode, parseDocument, stringify, visit, type Document } from "yaml";
 import { z } from "zod";
+import {
+  integrationProviders,
+  IntegrationToolGrantsSchema,
+  type IntegrationAction,
+  type IntegrationProvider,
+  type IntegrationToolGrants,
+} from "../../integration-tools/grants.js";
 import { IDENTIFIER, TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
 
 import {
+  defaultAudience,
   eventDefinition,
   isEditorEvent,
   type EditorEvent,
   type QualifierValues,
   type QualifierKey,
+  type TriggerAudience,
 } from "./events.js";
+import {
+  CONTRIBUTOR_ASSOCIATIONS,
+  MEMBER_ASSOCIATIONS,
+  type GitHubAuthorAssociation,
+} from "../github/author-association.js";
+
+export interface IntegrationToolFormValue {
+  connection: string;
+  actions: IntegrationAction[];
+  channels: string;
+}
 
 export interface TriggerFormValue {
   name: string;
   enabled: boolean;
   event: EditorEvent;
   connection: string;
+  audience: TriggerAudience;
+  /** The comma-separated people a `specific` audience names; empty for every other audience. */
   allowedUsers: string;
   qualifiers: QualifierValues;
   recurrence?: Recurrence;
@@ -35,10 +57,12 @@ export interface TriggerFormValue {
   continuationKey: string;
   maxRuntime: string;
   idleTimeout: string;
+  githubEnabled?: boolean;
   githubConnection: string;
   githubRepositories: string;
   githubPermissions: string;
   githubDuration: string;
+  tools: Partial<Record<IntegrationProvider, IntegrationToolFormValue>>;
   prompt: string;
 }
 
@@ -55,23 +79,81 @@ export function projectTriggerForm(yaml: string): TriggerFormProjection {
   const trigger = parsed.data;
   const events = Object.entries(trigger.on);
   if (events.length !== 1) {
-    return { status: "yaml_only", reason: "The form supports exactly one event." };
+    return { status: "yaml_only", reason: "The form supports exactly one event" };
   }
   const [event, definition] = events[0]!;
   if (!isEditorEvent(event)) {
-    return { status: "yaml_only", reason: `The form does not support the ${event} event.` };
+    return { status: "yaml_only", reason: `The form does not support the ${event} event` };
   }
   if ((definition.filters?.from_teams?.length ?? 0) > 0) {
     return { status: "yaml_only", reason: "GitHub team allowlists can only be edited in YAML." };
   }
   if ("choices" in trigger.run.agent) {
-    return { status: "yaml_only", reason: "Agent choices can only be edited in YAML." };
+    return { status: "yaml_only", reason: "Agent choices can only be edited in YAML" };
   }
-  const agent = trigger.run.agent;
+  if (trigger.run.tools !== undefined && integrationToolsUseYamlReferences(parsed.document)) {
+    return {
+      status: "yaml_only",
+      reason:
+        "Edit this trigger in YAML because its integration tool grants use anchors or aliases",
+    };
+  }
+  const audience = readAudience(event, definition.filters);
+  if ("reason" in audience) return { status: "yaml_only", reason: audience.reason };
   return {
     status: "editable",
-    value: toFormValue(trigger, event, definition, agent),
+    value: toFormValue(trigger, event, definition, trigger.run.agent, audience),
   };
+}
+
+type FormAudience = Pick<TriggerFormValue, "audience" | "allowedUsers">;
+
+const ASSOCIATION_AUDIENCES: readonly {
+  audience: TriggerAudience;
+  associations: readonly GitHubAuthorAssociation[];
+}[] = [
+  { audience: "members", associations: MEMBER_ASSOCIATIONS },
+  { audience: "contributors", associations: CONTRIBUTOR_ASSOCIATIONS },
+];
+
+/** The audience a document's filters amount to, or why the form has no control for it. */
+function readAudience(
+  event: EditorEvent,
+  filters: TriggerDocument["on"][string]["filters"],
+): FormAudience | { reason: string } {
+  const associations = filters?.author_associations;
+  const named = filters?.from_users;
+  if (associations === undefined) {
+    return named === undefined || (named.length === 1 && named[0] === "*")
+      ? { audience: "everyone", allowedUsers: "" }
+      : { audience: "specific", allowedUsers: named.join(", ") };
+  }
+  if (named !== undefined) {
+    return {
+      reason: "Edit this trigger in YAML because it combines named users with author associations",
+    };
+  }
+  const preset = ASSOCIATION_AUDIENCES.find(
+    (candidate) =>
+      candidate.associations.length === new Set(associations).size &&
+      candidate.associations.every((association) => associations.includes(association)),
+  );
+  if (preset === undefined || !eventDefinition(event).audiences.includes(preset.audience)) {
+    return {
+      reason: "Edit this trigger in YAML because its author associations are a custom list",
+    };
+  }
+  return { audience: preset.audience, allowedUsers: "" };
+}
+
+/** The two filters an audience owns. A key it does not use is absent, never empty. */
+function authoredAudience(value: TriggerFormValue): {
+  from_users?: string[];
+  author_associations?: GitHubAuthorAssociation[];
+} {
+  const preset = ASSOCIATION_AUDIENCES.find((candidate) => candidate.audience === value.audience);
+  if (preset !== undefined) return { author_associations: [...preset.associations] };
+  return { from_users: value.audience === "specific" ? commaSeparated(value.allowedUsers) : ["*"] };
 }
 
 function toFormValue(
@@ -79,13 +161,14 @@ function toFormValue(
   event: EditorEvent,
   definition: TriggerDocument["on"][string],
   agent: Extract<TriggerDocument["run"]["agent"], { provider: string }>,
+  audience: FormAudience,
 ): TriggerFormValue {
   return {
     name: trigger.name,
     enabled: trigger.enabled,
     event,
     connection: definition.connection ?? "",
-    allowedUsers: definition.filters?.from_users?.join(", ") ?? "*",
+    ...audience,
     qualifiers: readQualifiers(event, definition.filters),
     recurrence: definition.recurrence ?? DEFAULT_RECURRENCE,
     daemon: trigger.run.target.daemon,
@@ -105,6 +188,14 @@ function toFormValue(
         ? ""
         : JSON.stringify(trigger.run.github.permissions, null, 2),
     githubDuration: trigger.run.github?.duration ?? "",
+    tools: Object.fromEntries(
+      integrationProviders.flatMap((provider) => {
+        const grant = trigger.run.tools?.[provider];
+        return grant === undefined
+          ? []
+          : [[provider, { ...grant, channels: grant.channels.join(", ") }]];
+      }),
+    ),
     prompt: trigger.run.prompt,
   };
 }
@@ -130,9 +221,16 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   if (eventDefinition(value.event).origin === "hub") {
     deleteIfPresent(document, ["on", value.event, "connection"]);
     deleteIfPresent(document, ["on", value.event, "filters", "from_users"]);
+    deleteIfPresent(document, ["on", value.event, "filters", "author_associations"]);
   } else {
     setIfChanged(document, ["on", value.event, "connection"], value.connection);
-    setIfChanged(document, ["on", value.event, "filters", "from_users"], users(value.allowedUsers));
+    const audience = authoredAudience(value);
+    setOptional(document, ["on", value.event, "filters", "from_users"], audience.from_users);
+    setOptional(
+      document,
+      ["on", value.event, "filters", "author_associations"],
+      audience.author_associations,
+    );
   }
 
   setOptional(
@@ -140,7 +238,8 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
     ["on", value.event, "recurrence"],
     value.event === "schedule.tick" ? (value.recurrence ?? DEFAULT_RECURRENCE) : undefined,
   );
-  if (value.event === "schedule.tick") deleteIfPresent(document, ["on", value.event, "filters"]);
+  if (value.event === "schedule.tick" || value.event === "webhook.received")
+    deleteIfPresent(document, ["on", value.event, "filters"]);
   const qualifiers = authoredQualifiers(value);
   const ownedKeys = new Set(
     [...eventDefinition(previousEvent).qualifiers, ...eventDefinition(value.event).qualifiers].map(
@@ -156,7 +255,7 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   const agent = splitAgentId(value.agent);
   setIfChanged(document, ["run", "agent", "provider"], agent.provider);
   setOptional(document, ["run", "agent", "model"], agent.model);
-  setIfChanged(document, ["run", "agent", "mode"], value.mode.trim());
+  setOptional(document, ["run", "agent", "mode"], blankToUndefined(value.mode));
   setOptional(
     document,
     ["run", "agent", "thinkingOptionId"],
@@ -167,6 +266,7 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   setIfChanged(document, ["run", "max_runtime"], value.maxRuntime.trim());
   setIfChanged(document, ["run", "idle_timeout"], value.idleTimeout.trim());
   setOptional(document, ["run", "github"], githubAuthority(value));
+  patchIntegrationToolGrants(document, projection.value, value);
   setIfChanged(document, ["run", "prompt"], value.prompt);
   return document.toString({ lineWidth: 0 });
 }
@@ -201,7 +301,7 @@ export function mergeTriggerForm(yaml: string, value: TriggerFormValue): Trigger
 function incompleteReason(cause: unknown): string {
   return cause instanceof Error && cause.message.trim() !== ""
     ? cause.message
-    : "The trigger is invalid.";
+    : "The trigger is invalid";
 }
 
 export function createTriggerYaml(value: TriggerFormValue): string {
@@ -209,6 +309,7 @@ export function createTriggerYaml(value: TriggerFormValue): string {
   const agent = splitAgentId(value.agent);
   const providerOptions = parseProviderOptions(value.providerOptions);
   const github = githubAuthority(value);
+  const tools = integrationToolGrants(value);
   const definition = formEventDefinition(value);
   return stringify(
     {
@@ -220,7 +321,7 @@ export function createTriggerYaml(value: TriggerFormValue): string {
         agent: {
           provider: agent.provider,
           ...(agent.model === undefined ? {} : { model: agent.model }),
-          mode: value.mode.trim(),
+          ...(value.mode.trim() ? { mode: value.mode.trim() } : {}),
           ...(blankToUndefined(value.thinkingOptionId) === undefined
             ? {}
             : { thinkingOptionId: value.thinkingOptionId.trim() }),
@@ -230,6 +331,7 @@ export function createTriggerYaml(value: TriggerFormValue): string {
         max_runtime: value.maxRuntime.trim(),
         idle_timeout: value.idleTimeout.trim(),
         ...(github === undefined ? {} : { github }),
+        ...(tools === undefined ? {} : { tools }),
         prompt: value.prompt,
       },
     },
@@ -243,14 +345,14 @@ function formEventDefinition(value: TriggerFormValue): TriggerDocument["on"][str
   if (eventDefinition(value.event).origin === "hub") return {};
   return {
     connection: value.connection,
-    filters: { from_users: users(value.allowedUsers), ...authoredQualifiers(value) },
+    filters: { ...authoredAudience(value), ...authoredQualifiers(value) },
   };
 }
 
 function workingDirectoryErrors(value: TriggerFormValue): TriggerFieldErrors {
   const cwd = value.cwd.trim();
-  if (cwd.length === 0) return { cwd: "Working directory is required." };
-  return cwd.startsWith("/") ? {} : { cwd: "Working directory must be an absolute path." };
+  if (cwd.length === 0) return { cwd: "Working directory is required" };
+  return cwd.startsWith("/") ? {} : { cwd: "Working directory must be an absolute path" };
 }
 
 function recurrenceErrors(value: TriggerFormValue): TriggerFieldErrors {
@@ -279,18 +381,111 @@ function parsePermissions(value: string): Record<string, "read" | "write" | "adm
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new Error("GitHub permissions must be valid JSON.");
+    throw new Error("GitHub permissions must be valid JSON");
   }
   const permissions = GitHubPermissionsSchema.safeParse(parsed);
   if (!permissions.success) {
-    throw new Error('GitHub permissions map a scope to "read", "write", or "admin".');
+    throw new Error('GitHub permissions map a scope to "read", "write", or "admin"');
   }
   return permissions.data;
 }
 
+function authoredIntegrationToolGrants(value: TriggerFormValue) {
+  const entries = integrationProviders.flatMap(
+    (
+      provider,
+    ): [IntegrationProvider, NonNullable<IntegrationToolGrants[IntegrationProvider]>][] => {
+      const grant = value.tools[provider];
+      return grant === undefined
+        ? []
+        : [[provider, { ...grant, channels: commaSeparated(grant.channels) }]];
+    },
+  );
+  return entries.length === 0 ? undefined : Object.fromEntries(entries);
+}
+
+function integrationToolGrants(value: TriggerFormValue): IntegrationToolGrants | undefined {
+  return IntegrationToolGrantsSchema.optional().parse(authoredIntegrationToolGrants(value));
+}
+
+function patchIntegrationToolGrants(
+  document: Document,
+  previous: TriggerFormValue,
+  value: TriggerFormValue,
+): void {
+  const before = integrationToolGrants(previous);
+  const after = integrationToolGrants(value);
+  if (after === undefined) {
+    deleteIfPresent(document, ["run", "tools"]);
+    return;
+  }
+  for (const provider of integrationProviders) {
+    const path = ["run", "tools", provider];
+    const existing = before?.[provider];
+    const updated = after[provider];
+    if (updated === undefined || existing === undefined) {
+      setOptional(document, path, updated);
+      continue;
+    }
+    for (const field of ["connection", "actions", "channels"] as const) {
+      if (JSON.stringify(existing[field]) !== JSON.stringify(updated[field])) {
+        document.setIn([...path, field], updated[field]);
+      }
+    }
+  }
+}
+
+function integrationToolsUseYamlReferences(document: Document): boolean {
+  const run = document.get("run", true);
+  if (isNode(run) && (isAlias(run) || run.anchor !== undefined)) return true;
+  const tools = document.getIn(["run", "tools"], true);
+  if (!isNode(tools)) return false;
+  let usesReferences = false;
+  const found = () => {
+    usesReferences = true;
+    return visit.BREAK;
+  };
+  visit(tools, {
+    Alias: found,
+    Value: (_, node) => (node.anchor === undefined ? undefined : found()),
+  });
+  return usesReferences;
+}
+
+const INTEGRATION_TOOL_LABELS: Record<IntegrationProvider, string> = {
+  slack: "Slack",
+  discord: "Discord",
+};
+
+function integrationToolErrors(value: TriggerFormValue): TriggerFieldErrors {
+  const grants = IntegrationToolGrantsSchema.optional().safeParse(
+    authoredIntegrationToolGrants(value),
+  );
+  if (grants.success) return {};
+  return Object.fromEntries(
+    grants.error.issues.map(({ path, message }) => {
+      const [provider, field] = path;
+      const key = "tools." + path.slice(0, 2).join(".");
+      if (
+        field === "connection" &&
+        (provider === "slack" || provider === "discord") &&
+        (value.tools[provider]?.connection ?? "").trim() === ""
+      ) {
+        return [key, `Choose a ${INTEGRATION_TOOL_LABELS[provider]} connection`];
+      }
+      return [key, message];
+    }),
+  );
+}
+
 /** What is wrong with each field, keyed by the field that has to change. */
 export type TriggerFieldErrors = Partial<
-  Record<keyof TriggerFormValue | `qualifiers.${QualifierKey}`, string>
+  Record<
+    | keyof TriggerFormValue
+    | `qualifiers.${QualifierKey}`
+    | `tools.${IntegrationProvider}.${keyof IntegrationToolFormValue}`,
+    string
+  >
 >;
 
 /**
@@ -301,41 +496,72 @@ export type TriggerFieldErrors = Partial<
  * `mergeTriggerForm` reports when the document cannot be written at all. Insertion order is the
  * order the fields appear on screen, so "the first problem" is the topmost one.
  */
-export function triggerFormErrors(value: TriggerFormValue): TriggerFieldErrors {
+function githubAccessErrors(value: TriggerFormValue): TriggerFieldErrors {
+  const githubActive = value.githubEnabled ?? value.githubConnection.trim().length !== 0;
+  if (!githubActive) return {};
+  const errors: TriggerFieldErrors = {};
+  if (value.githubConnection.trim().length === 0) {
+    errors.githubConnection = "Choose a GitHub connection";
+  }
+  const permissions = refused(() => parsePermissions(value.githubPermissions));
+  if (permissions !== undefined) errors.githubPermissions = permissions;
+  return errors;
+}
+
+function triggerFormDocumentErrors(value: TriggerFormValue): TriggerFieldErrors {
   const errors: TriggerFieldErrors = {};
   const name = value.name.trim();
-  if (name.length === 0) errors.name = "Trigger name is required.";
+  if (name.length === 0) errors.name = "Trigger name is required";
   else if (!IDENTIFIER.test(name)) {
-    errors.name = "Use lowercase letters, digits, and hyphens, starting with a letter.";
+    errors.name = "Use lowercase letters, digits, and hyphens, starting with a letter";
   }
   if (eventDefinition(value.event).origin === "provider") {
-    if (value.connection.trim().length === 0) errors.connection = "Connection is required.";
-    if (value.allowedUsers.trim().length === 0) {
-      errors.allowedUsers = "Name at least one user ID, or let everyone trigger it.";
+    if (value.connection.trim().length === 0) errors.connection = "Connection is required";
+    if (value.audience === "specific" && commaSeparated(value.allowedUsers).length === 0) {
+      errors.allowedUsers = "Name at least one person";
     }
   }
   for (const qualifier of eventDefinition(value.event).qualifiers) {
     const selection = value.qualifiers[qualifier.key];
     if (qualifier.required && (selection === undefined || selection.trim().length === 0)) {
-      errors[`qualifiers.${qualifier.key}`] = `${qualifier.label} is required.`;
+      errors[`qualifiers.${qualifier.key}`] = `${qualifier.label} is required`;
     }
   }
   Object.assign(errors, recurrenceErrors(value));
-  if (value.daemon.trim().length === 0) errors.daemon = "Daemon is required.";
+  if (value.daemon.trim().length === 0) errors.daemon = "Daemon is required";
   Object.assign(errors, workingDirectoryErrors(value));
-  if (value.maxRuntime.trim().length === 0) errors.maxRuntime = "Maximum runtime is required.";
-  if (value.idleTimeout.trim().length === 0) errors.idleTimeout = "Idle timeout is required.";
+  if (value.maxRuntime.trim().length === 0) errors.maxRuntime = "Maximum runtime is required";
+  if (value.idleTimeout.trim().length === 0) errors.idleTimeout = "Idle timeout is required";
   const agent = refused(() => splitAgentId(value.agent));
   if (agent !== undefined) errors.agent = agent;
-  if (value.mode.trim().length === 0) errors.mode = "Execution mode is required.";
   const options = refused(() => parseProviderOptions(value.providerOptions));
   if (options !== undefined) errors.providerOptions = options;
-  if (value.githubConnection.trim().length !== 0) {
-    const permissions = refused(() => parsePermissions(value.githubPermissions));
-    if (permissions !== undefined) errors.githubPermissions = permissions;
+  Object.assign(
+    errors,
+    githubAccessErrors(value),
+    integrationToolErrors(value),
+    continuationErrors(value),
+  );
+  if (value.prompt.trim().length === 0) errors.prompt = "Instructions are required";
+  return errors;
+}
+
+/** Form-only completeness; YAML conversion and save retain their authored optional fields. */
+export function triggerFormErrors(
+  value: TriggerFormValue,
+  modes?: readonly { id: string }[],
+): TriggerFieldErrors {
+  const errors = triggerFormDocumentErrors(value);
+  if (errors.agent === undefined && splitAgentId(value.agent).model === undefined) {
+    errors.agent = "Choose a provider and model";
   }
-  Object.assign(errors, continuationErrors(value));
-  if (value.prompt.trim().length === 0) errors.prompt = "Instructions are required.";
+  if (value.mode.trim().length === 0) {
+    if (modes === undefined) {
+      errors.mode = "Load execution modes from the selected daemon or save as YAML";
+    } else if (modes.length > 0) {
+      errors.mode = "Execution mode is required";
+    }
+  }
   return errors;
 }
 
@@ -350,7 +576,7 @@ function refused(parse: () => unknown): string | undefined {
 }
 
 function validateFormValue(value: TriggerFormValue): void {
-  const [message] = Object.values(triggerFormErrors(value));
+  const [message] = Object.values(triggerFormDocumentErrors(value));
   if (message !== undefined) throw new Error(message);
 }
 
@@ -360,10 +586,10 @@ export function parseProviderOptions(value: string): Record<string, unknown> | u
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new Error("Provider options must be valid JSON.");
+    throw new Error("Provider options must be valid JSON");
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error("Provider options must be a JSON object.");
+    throw new Error("Provider options must be a JSON object");
   }
   return ProviderOptionsSchema.parse(parsed);
 }
@@ -376,20 +602,22 @@ export function splitAgentId(value: string): { provider: string; model?: string 
   const normalized = value.trim();
   const separator = normalized.indexOf("/");
   if (separator < 0) {
-    if (normalized.length === 0) throw new Error("Agent is required.");
+    if (normalized.length === 0) throw new Error("Agent is required");
     return { provider: normalized };
   }
   const provider = normalized.slice(0, separator).trim();
   const model = normalized.slice(separator + 1).trim();
   if (provider.length === 0 || model.length === 0) {
-    throw new Error("Agent must look like provider/model.");
+    throw new Error("Agent must look like provider/model");
   }
   return { provider, model };
 }
 
 function parseEditorDocument(
   yaml: string,
-): { success: true; data: TriggerDocument } | { success: false; error: string } {
+):
+  | { success: true; data: TriggerDocument; document: Document }
+  | { success: false; error: string } {
   const document = parseDocument(yaml, { compat: ["timestamp"] });
   if (document.errors.length > 0) return { success: false, error: document.errors[0]!.message };
   const parsed = TriggerDocumentSchema.safeParse(document.toJS());
@@ -397,7 +625,7 @@ function parseEditorDocument(
     const issue = parsed.error.issues[0]!;
     return { success: false, error: `${issue.path.join(".") || "YAML"}: ${issue.message}` };
   }
-  return { success: true, data: parsed.data };
+  return { success: true, data: parsed.data, document };
 }
 
 function assertDocument(document: Document): void {
@@ -419,11 +647,6 @@ function deleteIfPresent(document: Document, path: readonly string[]): void {
 
 function sameFormValue(left: TriggerFormValue, right: TriggerFormValue): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function users(value: string): string[] {
-  const values = commaSeparated(value);
-  return values.length === 0 ? ["*"] : values;
 }
 
 function commaSeparated(value: string): string[] {
@@ -456,7 +679,29 @@ export function changeTriggerEvent(value: TriggerFormValue, event: EditorEvent):
       }
     }
   }
-  return { ...value, event, qualifiers, connection: sameProvider ? value.connection : "" };
+  return {
+    ...value,
+    event,
+    qualifiers,
+    connection: sameProvider ? value.connection : "",
+    ...nextAudience(value, event, sameProvider),
+  };
+}
+
+/**
+ * An audience nobody chose follows the event to its own default. One that was chosen is kept
+ * wherever the next event offers it, except across providers, where the names mean nothing.
+ */
+function nextAudience(
+  value: TriggerFormValue,
+  event: EditorEvent,
+  sameProvider: boolean,
+): FormAudience {
+  const chosen = value.audience !== defaultAudience(value.event);
+  if (sameProvider && chosen && eventDefinition(event).audiences.includes(value.audience)) {
+    return { audience: value.audience, allowedUsers: value.allowedUsers };
+  }
+  return { audience: defaultAudience(event), allowedUsers: "" };
 }
 
 function readQualifiers(
@@ -491,7 +736,7 @@ function formContinuation(value: TriggerFormValue) {
 function continuationErrors(value: TriggerFormValue): TriggerFieldErrors {
   return refused(() => formContinuation(value)) === undefined
     ? {}
-    : { continuationKey: "Enter a continuation key or expression." };
+    : { continuationKey: "Enter a continuation key or expression" };
 }
 
 /**

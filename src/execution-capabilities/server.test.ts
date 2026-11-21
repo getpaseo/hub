@@ -168,6 +168,40 @@ describe("execution capability MCP boundary", () => {
     }
   });
 
+  it("advertises only granted integration actions beside existing Hub tools", async () => {
+    const fixture = await capabilityFixture(
+      undefined,
+      "succeeded",
+      1,
+      undefined,
+      false,
+      [],
+      replyOutputTool,
+      [],
+      {
+        slack: { connection: "workspace-slack", actions: ["post"], channels: ["CALLOWED"] },
+        discord: { connection: "community-discord", actions: ["read"], channels: ["123"] },
+      },
+    );
+    const response = await fixture.call("tools/list");
+    assert.deepEqual(
+      ToolsListSchema.parse(response.result).tools.map(({ name }) => name),
+      [
+        "finish_execution",
+        "reply",
+        "slack_post",
+        "discord_list_channels",
+        "discord_read",
+        "discord_latest",
+      ],
+    );
+    const denied = await fixture.call("tools/call", {
+      name: "discord_post",
+      arguments: { target: "123", content: "hello" },
+    });
+    assert.equal(ToolResultSchema.parse(denied.result).isError, true);
+  });
+
   it("allows an event-native reply to be sent repeatedly without a synthetic cap", async () => {
     const fixture = await capabilityFixture(undefined, "succeeded", null);
 
@@ -661,6 +695,24 @@ describe("execution capability MCP boundary", () => {
     assert.equal(typeof fixture.outbound[0]?.attemptId, "string");
   });
 
+  it("gives the reply executor a shareable link once the daemon agent is attached", async () => {
+    const fixture = await capabilityFixture(undefined, "succeeded", 2);
+    const reply = () =>
+      fixture.call("tools/call", {
+        name: "reply",
+        arguments: { content: "Ready" },
+      });
+
+    assert.equal(ToolResultSchema.parse((await reply()).result).isError, undefined);
+    assert.equal(fixture.outbound[0]?.openInPaseoUrl, undefined);
+    await fixture.database.attachAgentToExecution(fixture.executionId, randomUUID(), "agent");
+    assert.equal(ToolResultSchema.parse((await reply()).result).isError, undefined);
+    assert.equal(
+      fixture.outbound[1]?.openInPaseoUrl,
+      `https://hub.test/open/executions/${fixture.executionId}`,
+    );
+  });
+
   it("allows replies up to the configured maximum", async () => {
     const fixture = await capabilityFixture(() => Promise.resolve(), "succeeded", 3);
 
@@ -736,11 +788,15 @@ async function capabilityFixture(
   requiredOutputTypes: readonly string[] = [],
   outputTool = replyOutputTool,
   additionalCapabilities: readonly OutputCapability[] = [],
+  tools?: LaunchMachineIntent["tools"],
 ) {
   const database = createMemoryDatabase();
   const executionId = randomUUID();
   const token = "token";
-  const intent = launchIntent(maxReplies, outputSchema, autoArchive, requiredOutputTypes);
+  const intent = {
+    ...launchIntent(maxReplies, outputSchema, autoArchive, requiredOutputTypes),
+    ...(tools === undefined ? {} : { tools }),
+  };
   await database.insertAgentExecution({
     id: executionId,
     organizationId: "org-1",
@@ -770,6 +826,7 @@ async function capabilityFixture(
   }> = [];
   const server = createExecutionCapabilityServer({
     database,
+    publicBaseUrl: "https://hub.test",
     outputs,
     async completeExecution(input) {
       completions.push(input);

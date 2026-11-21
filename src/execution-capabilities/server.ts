@@ -1,3 +1,9 @@
+import { executionLinkUrl } from "../agent-executions/link.js";
+import {
+  callIntegrationTool,
+  IntegrationToolError,
+  type IntegrationToolHandlers,
+} from "../integration-tools/index.js";
 import type { ErrorObject } from "ajv";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -14,6 +20,7 @@ import { compileJsonSchema, formatJsonSchemaErrors } from "../workflows/json-sch
 import {
   executionToolDefinitions,
   finishExecutionToolName,
+  replyOutputTool,
   type MaterializedOutputCapability,
   type OutputExecutorRegistry,
   type OutputToolSchema,
@@ -28,8 +35,10 @@ export interface ExecutionCapabilityServer {
 
 interface ExecutionCapabilityOptions {
   completionTokenSecret?: string;
+  publicBaseUrl?: string;
   database: Database;
   outputs: OutputExecutorRegistry;
+  integrationTools?: IntegrationToolHandlers;
   completeExecution(input: {
     executionId: string;
     token: string;
@@ -83,6 +92,8 @@ export function createExecutionCapabilityServer(
         if (
           !execution ||
           execution.agentSessionId !== session.id ||
+          execution.organizationId !== session.organizationId ||
+          execution.projectId !== session.projectId ||
           (execution.status !== "spawning" && execution.status !== "running")
         ) {
           return toolFailure("Execution is not live in this agent session");
@@ -188,16 +199,7 @@ async function authenticateExecution(
 }
 
 function createMcpServer(
-  options: {
-    database: Database;
-    outputs: OutputExecutorRegistry;
-    completeExecution(input: {
-      executionId: string;
-      token: string;
-      output?: unknown;
-    }): Promise<AgentExecutionRecord>;
-    now?: () => Date;
-  },
+  options: ExecutionCapabilityOptions,
   execution: AgentExecutionRecord,
   token: string,
   materializedOutputs: readonly MaterializedOutputCapability[],
@@ -206,7 +208,11 @@ function createMcpServer(
     { name: "paseo-hub-execution", version: "1.0.0" },
     { capabilities: { tools: {} } },
   );
-  const tools = executionToolDefinitions(execution.launchIntent?.outputSchema, materializedOutputs);
+  const tools = executionToolDefinitions(
+    execution.launchIntent?.outputSchema,
+    materializedOutputs,
+    execution.launchIntent?.tools,
+  );
   server.setRequestHandler(ListToolsRequestSchema, () => ({ tools }));
   server.setRequestHandler(CallToolRequestSchema, (request) =>
     callExecutionTool(
@@ -222,13 +228,31 @@ function createMcpServer(
 }
 
 async function callExecutionTool(
-  options: Pick<ExecutionCapabilityOptions, "database" | "outputs" | "completeExecution" | "now">,
+  options: ExecutionCapabilityOptions,
   execution: AgentExecutionRecord,
   token: string,
   materializedOutputs: readonly MaterializedOutputCapability[],
   toolName: string,
   args: Record<string, unknown>,
 ) {
+  try {
+    const integration = await callIntegrationTool({
+      name: toolName,
+      organizationId: execution.organizationId,
+      grants: execution.launchIntent?.tools,
+      handlers: options.integrationTools,
+      args,
+    });
+    if (integration !== undefined) return toolSuccess(JSON.stringify(integration.value));
+  } catch (error) {
+    if (error instanceof IntegrationToolError) return toolFailure(error.message);
+    const failure = reportFailure(error, {
+      operation: "execution_capability.integration_tool",
+      component: "execution_capabilities",
+      executionId: execution.id,
+    });
+    return toolFailure(withReference("The integration request failed.", failure.requestId));
+  }
   const tool = executionToolDefinitions(
     execution.launchIntent?.outputSchema,
     materializedOutputs,
@@ -336,9 +360,14 @@ async function executeOutputCall(
     return toolFailure(`Output limit reached for ${output.declaration.type}`);
   }
   try {
+    const url =
+      toolName === replyOutputTool.name
+        ? executionLinkUrl(options.publicBaseUrl, execution)
+        : undefined;
     await options.outputs.execute({
       agentExecutionId: execution.id,
       attemptId: attempt.id,
+      ...(url === undefined ? {} : { openInPaseoUrl: url }),
       toolType: output.declaration.type,
       args,
       outputContext: execution.outputContext,

@@ -160,6 +160,7 @@ function singleRunDocument(
         ? {}
         : { startup_timeout: duration(step.startupTimeoutMs) }),
       ...(step.env === undefined ? {} : { env: { ...step.env } }),
+      ...(step.tools === undefined ? {} : { tools: step.tools }),
       ...(step.github === undefined
         ? {}
         : {
@@ -244,6 +245,8 @@ function authoredFilters(
     channels: rest.channels === undefined ? undefined : [...rest.channels],
     from_users: rest.from_users === undefined ? undefined : [...rest.from_users],
     from_teams: rest.from_teams === undefined ? undefined : [...rest.from_teams],
+    author_associations:
+      rest.author_associations === undefined ? undefined : [...rest.author_associations],
     inputs: rest.inputs === undefined ? undefined : { ...rest.inputs },
   };
 }

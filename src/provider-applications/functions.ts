@@ -9,6 +9,7 @@ import {
   type ProviderApplicationOverview,
   type ProviderApplicationSaveResult,
 } from "./index.js";
+import { sensitiveConfigurationValues } from "./internal/configuration-secrets.js";
 import { providerApplicationSaveFailure, providerHost, providerName } from "./save-failure.js";
 
 const providerSchema = z.enum(["github", "slack", "discord", "linear"]);
@@ -90,22 +91,18 @@ export const providerApplicationsOverview = createServerFn({ method: "GET" }).ha
 export const verifyAndSaveProviderApplication = createServerFn({ method: "POST" })
   .validator(configurationSchema)
   .handler(async ({ data }): Promise<Result<ProviderApplicationSaveResult>> => {
+    const configuration = normalizedConfiguration(data);
     try {
       const capability = (await getApplication()).providerApplications;
       if (capability === null) throw new Error("unavailable");
       return respondOk(
-        await capability.verifyAndSave(
-          getRequest(),
-          data.provider,
-          normalizedConfiguration(data),
-          data.surface,
-        ),
+        await capability.verifyAndSave(getRequest(), data.provider, configuration, data.surface),
       );
     } catch (error) {
       return providerApplicationSaveFailure(
         data.provider,
         error,
-        sensitiveConfigurationValues(data),
+        sensitiveConfigurationValues(configuration),
       );
     }
   });
@@ -185,25 +182,6 @@ export const retrySlackSocketDelivery = createServerFn({ method: "POST" }).handl
     }
   },
 );
-
-function sensitiveConfigurationValues(
-  configuration: z.infer<typeof configurationSchema>,
-): readonly string[] {
-  if (configuration.provider === "github") {
-    return [
-      configuration.clientSecret,
-      configuration.privateKey,
-      ...(configuration.webhookSecret === undefined ? [] : [configuration.webhookSecret]),
-    ];
-  }
-  if (configuration.provider === "slack") {
-    return [configuration.clientSecret, configuration.signingSecret];
-  }
-  if (configuration.provider === "linear") {
-    return [configuration.clientSecret, configuration.webhookSecret];
-  }
-  return [configuration.clientSecret, configuration.botToken];
-}
 
 function normalizedConfiguration(
   data: z.infer<typeof configurationSchema>,

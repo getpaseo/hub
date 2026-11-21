@@ -43,6 +43,23 @@ const ResultSchema = z
 
 export class DaemonAgentError extends Error {}
 
+class DaemonAgentCreateError extends DaemonAgentError {
+  constructor(
+    message: string,
+    private readonly code: unknown,
+  ) {
+    super(message);
+  }
+
+  isToolPolicyUnsupported(provider: string): boolean {
+    if (this.code === "tool_policy_unsupported") return true;
+    if (this.code !== "unknown" && this.code !== undefined) return false;
+    // Released daemons flatten provider errors to "unknown" on the create status response.
+    const message = `Provider '${provider}' cannot preapprove exact MCP tools for unattended execution`;
+    return this.message === message || this.message.startsWith(`${message}; `);
+  }
+}
+
 /** The ordinary daemon protocol. This channel knows nothing about Hub executions or triggers. */
 export class DaemonAgents implements AgentConnection {
   private supported = false;
@@ -72,7 +89,14 @@ export class DaemonAgents implements AgentConnection {
     const requestId = payload["requestId"];
     const pending = typeof requestId === "string" ? this.pending.get(requestId) : undefined;
     if (pending) {
-      if (type === "rpc_error" || payload["status"] === "agent_create_failed") {
+      if (type === "status" && payload["status"] === "agent_create_failed") {
+        pending.reject(
+          new DaemonAgentCreateError(
+            z.string().catch("Daemon request rejected").parse(payload["error"]),
+            payload["errorCode"],
+          ),
+        );
+      } else if (type === "rpc_error") {
         pending.reject(
           new DaemonAgentError(z.string().catch("Daemon request rejected").parse(payload["error"])),
         );
@@ -115,27 +139,39 @@ export class DaemonAgents implements AgentConnection {
     options: DaemonCreateAgentOptions,
     timeoutMs?: number,
   ): Promise<AgentSnapshot> {
-    const response = await this.request(
-      {
-        type: "create_agent_request",
-        idempotencyKey: key,
-        config: {
-          provider: options.provider,
-          title: options.title,
-          cwd: options.cwd,
-          model: options.model,
-          modeId: options.mode,
-          thinkingOptionId: options.thinkingOptionId,
-          providerOptions: options.providerOptions,
-          mcpServers: options.mcpServers,
-          toolPolicy: options.toolPolicy,
-        },
-        env: options.env,
-        worktree: options.worktree,
-        background: options.background,
-      },
-      timeoutMs,
-    );
+    const { toolPolicy } = options;
+    const config = {
+      provider: options.provider,
+      title: options.title,
+      cwd: options.cwd,
+      model: options.model,
+      modeId: options.mode,
+      thinkingOptionId: options.thinkingOptionId,
+      providerOptions: options.providerOptions,
+      mcpServers: options.mcpServers,
+    };
+    const request = {
+      type: "create_agent_request",
+      idempotencyKey: key,
+      config: { ...config, toolPolicy },
+      env: options.env,
+      worktree: options.worktree,
+      background: options.background,
+    };
+    const response = await this.request(request, timeoutMs).catch((error: unknown) => {
+      if (
+        toolPolicy === undefined ||
+        !(error instanceof DaemonAgentCreateError) ||
+        !error.isToolPolicyUnsupported(config.provider)
+      ) {
+        throw error;
+      }
+      // The daemon fingerprints the configuration even when creation failed before agent startup.
+      return this.request(
+        { ...request, idempotencyKey: `${key}:without-tool-policy`, config },
+        timeoutMs,
+      );
+    });
     const agent = SnapshotSchema.parse(response["agent"]);
     if (options.workspaceTitle !== undefined)
       await this.titleWorkspace(agent.workspaceId, options.workspaceTitle);

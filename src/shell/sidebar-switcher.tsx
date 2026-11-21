@@ -24,9 +24,15 @@ export interface SwitcherFace {
   primary: string;
   secondary?: string;
   size?: "default" | "lg";
-  /** `accent` is for the account, which is a person rather than a tenant. */
-  tone?: "primary" | "accent";
+  /** `plain` sits directly on the sidebar background; `accent` is for the account initials tile. */
+  tone?: "plain" | "primary" | "accent";
 }
+
+const TONE_CLASSES: Record<NonNullable<SwitcherFace["tone"]>, string> = {
+  plain: "text-sidebar-foreground",
+  primary: "bg-primary text-primary-foreground",
+  accent: "bg-sidebar-accent",
+};
 
 export function SidebarSwitcher({
   label,
@@ -118,7 +124,7 @@ function Face({
         <span
           className={cn(
             "flex aspect-square size-8 shrink-0 items-center justify-center rounded-md text-xs",
-            tone === "primary" ? "bg-primary text-primary-foreground" : "bg-sidebar-accent",
+            TONE_CLASSES[tone],
           )}
         >
           {media}

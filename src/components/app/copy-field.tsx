@@ -207,7 +207,7 @@ export function CopyField({
         />
       </div>
       {state === "manual" ? (
-        <FieldDescription>Select the value and copy it.</FieldDescription>
+        <FieldDescription>Select the value and copy it</FieldDescription>
       ) : null}
       <Announcement message={announcement} />
     </Field>
@@ -239,7 +239,7 @@ export function CopyBlock({
       </div>
       <CodeBlock label={`${label} value`}>{value}</CodeBlock>
       {state === "manual" ? (
-        <FieldDescription>Select the value and copy it.</FieldDescription>
+        <FieldDescription>Select the value and copy it</FieldDescription>
       ) : null}
       <Announcement message={announcement} />
     </Field>

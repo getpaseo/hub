@@ -65,7 +65,7 @@ describe("home read model", () => {
       { id: CONNECTED_ONLY_DAEMON_ID, slug: "laptop", presence: "offline", canExecute: false },
     ]);
     assert.deepEqual(snapshot.triggers, [
-      { id: trigger.id, name: "manual-task", event: "manual.run", enabled: true },
+      { id: trigger.id, name: "manual-task", events: ["manual.run"], enabled: true },
     ]);
     assert.deepEqual(
       snapshot.runs.map(({ triggerName, provider, source, status, agent }) => ({
@@ -92,6 +92,26 @@ describe("home read model", () => {
         },
       ],
     );
+  });
+
+  it("reads every event of a YAML-only trigger with agent choices", async () => {
+    const database = memberDatabase();
+    await enrollTestDaemon(database, "org-1");
+    const yaml = scheduledTriggerYaml
+      .replace("manual.run", "webhook.received")
+      .replace(
+        "agent: { provider: codex, model: gpt-5.4, mode: full-access }",
+        "agent: { select: coding, choices: { coding: { provider: codex, mode: full-access } } }",
+      );
+    await new OrganizationTriggerStore(database, "org-1", acceptingAgentValidator()).save({
+      yaml,
+      userId: "user-1",
+    });
+    const snapshot = await new HomeDashboard(database, accountAuth(), APPS_CONFIGURED).snapshot(
+      request,
+      "acme",
+    );
+    assert.deepEqual(snapshot.triggers[0]?.events, ["schedule.tick", "webhook.received"]);
   });
 
   it("keeps the latest runs of an organization whose last run is older than the window", async () => {

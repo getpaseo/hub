@@ -1,5 +1,8 @@
 import { z } from "zod";
+import { withExecutionLink } from "../../agent-executions/reply-link.js";
 import type { OutputExecutor } from "../../execution-capabilities/outputs.js";
+
+const GITHUB_COMMENT_BYTE_LIMIT = 262_144;
 
 const GitHubReplyArgsSchema = z.object({ content: z.string().min(1) });
 const GitHubReplyOutputContextSchema = z.object({
@@ -37,12 +40,16 @@ export function createGitHubReplyExecutor(options: { client: GitHubReplyClient }
     const item = context.event.github.item;
     if (item === null) throw new Error("GitHub event has no issue or pull request to reply to");
     const [owner, repo] = splitRepository(context.target.repository);
+    const linkedContent = withExecutionLink(args.content, input.openInPaseoUrl);
     await options.client.createIssueComment({
       installationId: context.target.installationId,
       owner,
       repo,
       issueNumber: item.number,
-      body: args.content,
+      body:
+        Buffer.byteLength(linkedContent) <= GITHUB_COMMENT_BYTE_LIMIT
+          ? linkedContent
+          : args.content,
     });
   };
 }

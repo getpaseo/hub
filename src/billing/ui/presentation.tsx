@@ -193,12 +193,12 @@ export const NO_PLAN = "No plan";
 function subscriptionDetail(subscription: BillingOverviewView["subscription"]): string | null {
   if (!subscription.manageable) return null;
   if (subscription.cancelAtPeriodEnd && subscription.currentPeriodEnd !== null) {
-    return `Cancels on ${formatAbsolute(subscription.currentPeriodEnd)}.`;
+    return `Cancels on ${formatAbsolute(subscription.currentPeriodEnd)}`;
   }
   if (subscription.currentPeriodEnd !== null) {
-    return `Renews on ${formatAbsolute(subscription.currentPeriodEnd)}.`;
+    return `Renews on ${formatAbsolute(subscription.currentPeriodEnd)}`;
   }
-  return "Active subscription.";
+  return "Active subscription";
 }
 
 function formatAmount(price: PublicBillingPlanPrice): string {

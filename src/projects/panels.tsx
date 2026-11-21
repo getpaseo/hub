@@ -50,7 +50,7 @@ import {
   type ProjectSnapshot,
 } from "./panel-state.js";
 import { archiveProject, activityRunSnapshot, updateProjectSlug } from "./functions.js";
-const INTEGRATIONS_DESCRIPTION = "Where this organization's events come from.";
+const INTEGRATIONS_DESCRIPTION = "Where this organization's events come from";
 const CONNECTION_PROVIDERS = ["github", "discord", "slack", "linear"] as const;
 type ConnectionProviderName = (typeof CONNECTION_PROVIDERS)[number];
 
@@ -169,8 +169,8 @@ export function OrganizationIntegrationsPanel() {
   const nothingToConnect = CONNECTION_PROVIDERS.every(
     (provider) => status.data[provider].status === "notConfigured",
   )
-    ? "This Hub has no provider apps set up yet. Ask whoever runs it to add one."
-    : "An organization owner connects the providers this organization can use.";
+    ? "No provider apps are set up on this Hub yet. Ask whoever runs it to add one"
+    : "An organization owner connects the providers this organization can use";
   return (
     <>
       <PageHeader title="Integrations" description={INTEGRATIONS_DESCRIPTION} />
@@ -199,7 +199,7 @@ export function OrganizationIntegrationsPanel() {
       </Section>
       <Section
         title="Known unrouted events"
-        description="Events received for this organization that were not routed to a workflow."
+        description="Events received for this organization that were not routed to a workflow"
       >
         <ActivityTable activity={data.unroutedEvents} label="Unrouted events" showReason />
       </Section>
@@ -259,7 +259,7 @@ function ProviderConnections({
                       destructive
                       label="Revoke"
                       title={`Revoke ${connection.name}?`}
-                      description="Projects using this credential will stop receiving new events."
+                      description="Projects using this credential will stop receiving new events"
                       confirmLabel="Revoke connection"
                       cancelLabel="Cancel"
                       onConfirm={() => onRevoke(connection.id)}
@@ -298,7 +298,7 @@ export function ProjectOverviewPanel() {
     <>
       <PageHeader
         title="Overview"
-        description={`Setup and recent operations for ${data.project.name}.`}
+        description={`Setup and recent operations for ${data.project.name}`}
       />
       <Section className="sm:grid-cols-2">
         <SetupCard
@@ -346,7 +346,7 @@ export function ProjectActivityPanel() {
   if (!snapshot.ok) return snapshot.element;
   return (
     <>
-      <PageHeader title="Activity" description="Provider events routed to this project." />
+      <PageHeader title="Activity" description="Provider events routed to this project" />
       <ActivityTable
         activity={snapshot.data.activity}
         label="Project activity"
@@ -385,7 +385,7 @@ export function ProjectActivityRunPanel({ runId }: { runId: string }) {
       <Section title="Invocation">
         <SummaryPanel label="Invocation" rows={invocationRows(activity)} />
       </Section>
-      <Section title="Steps" description="Ordered durable step state and structured outputs.">
+      <Section title="Steps" description="Ordered durable step state and structured outputs">
         <DataTable
           label="Run steps"
           columns={[
@@ -485,10 +485,7 @@ export function ProjectGeneralSettingsPanel() {
       <CommandError mutations={[updateSlug, archive]} />
       {data.capabilities.manageResources ? (
         <>
-          <Section
-            title="Project URL"
-            description="Changing the slug deliberately breaks old project URLs."
-          >
+          <Section title="Project URL" description="Changing the slug breaks old project URLs">
             <form
               aria-label="Change project slug"
               className="grid max-w-md gap-4"
@@ -512,7 +509,7 @@ export function ProjectGeneralSettingsPanel() {
             <ConfirmAction
               label="Archive project"
               title={`Archive ${data.project.name}?`}
-              description="Routing is released; running recovery and history remain."
+              description="Routing stops, while running recovery and history remain"
               confirmLabel="Archive project"
               cancelLabel="Cancel"
               busy={archive.isPending}
@@ -530,7 +527,7 @@ function SettingsPage({ children }: { children: ReactNode }) {
   if (tenant.project === null) throw new Error("settings route has no project");
   return (
     <>
-      <PageHeader title="Settings" description={`Project settings for ${tenant.project.name}.`} />
+      <PageHeader title="Settings" description={`Project settings for ${tenant.project.name}`} />
       {children}
     </>
   );
@@ -669,7 +666,7 @@ function ConnectionReturnBanner({ copy }: { copy: ConnectionReturnCopy }) {
         standalone
         title={copy.title}
         error={copy.message}
-        fallback="Hub couldn't finish the connection. Start it again from this page."
+        fallback="Hub couldn't finish the connection. Start it again from this page"
       />
     );
   }

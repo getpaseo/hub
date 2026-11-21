@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from "react";
 
+import { PaseoHubLockup } from "../../brand/index.js";
 import { cn } from "../../lib/utils.js";
 import { Skeleton } from "../ui/skeleton.js";
 import { FieldSkeleton } from "./form-field.js";
@@ -31,7 +32,7 @@ export function AuthLayout({
         width === "lg" ? "justify-start py-10" : "justify-center",
       )}
     >
-      <ProductMark />
+      <PaseoHubLockup />
       <div className={cn("min-w-0 w-full", LAYOUT_WIDTHS[width])}>{children}</div>
     </main>
   );
@@ -103,30 +104,5 @@ export function AuthCardSkeleton() {
         <Skeleton className="h-5 w-32" />
       </div>
     </div>
-  );
-}
-
-export function ProductMark({ className }: { className?: string }) {
-  return (
-    <div className={cn("flex items-center gap-2", className)}>
-      <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
-        <PaseoGlyph />
-      </span>
-      <span className="text-sm">Paseo Hub</span>
-    </div>
-  );
-}
-
-export function PaseoGlyph() {
-  return (
-    <svg viewBox="0 0 16 16" className="size-4" fill="none" aria-hidden="true">
-      <path
-        d="M4 12.5V4.5a1 1 0 0 1 1-1h3.5a3 3 0 0 1 0 6H4"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
   );
 }

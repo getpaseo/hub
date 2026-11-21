@@ -23,7 +23,7 @@ export const HUB_PLAN_PRESENTATIONS: BillingPlanPresentations = {
     features: [
       {
         key: "managed-triggers",
-        label: "Managed GitHub, Slack, and Discord triggers",
+        label: "Managed GitHub, Linear, Slack, Discord, schedules, and webhooks",
         tooltip: null,
       },
       { key: "daemon-location", label: "Daemons run on your machines", tooltip: null },
@@ -36,7 +36,7 @@ export const HUB_PLAN_PRESENTATIONS: BillingPlanPresentations = {
       { key: "hub-operation", label: "Paseo operates Hub", tooltip: null },
       {
         key: "managed-triggers",
-        label: "Managed GitHub, Slack, and Discord triggers",
+        label: "Managed GitHub, Linear, Slack, Discord, schedules, and webhooks",
         tooltip: null,
       },
       { key: "daemon-location", label: "Daemons run on your machines", tooltip: null },

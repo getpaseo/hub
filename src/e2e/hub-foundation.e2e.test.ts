@@ -121,7 +121,7 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     ]);
     assert.equal(configuration.slackWorkerEnvironment, "${{ values.selected_environment }}");
     assert.equal(configuration.slackAgentSelector, "${{ values.selected_agent }}");
-    assert.deepEqual(configuration.codexOptions, {
+    assert.deepEqual(configuration.agentChoiceOptions["codex"], {
       sandbox_workspace_write: {
         writable_roots: ["/var/cache/npm"],
         network_access: false,
@@ -141,6 +141,7 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     await hub.daemonIsConnected();
     const connected = await hub.status();
     const unrelatedAgent = await hub.createUnrelatedLocalAgent();
+    const projects = await hub.requestProjectList();
     await hub.installProductionConfiguration();
 
     const run = await hub.runManual("canonical-delivery", "payments");
@@ -150,6 +151,16 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     const denial = await hub.requestForbiddenOperation();
 
     assert.equal(connected.state, "connected");
+    assert.ok(
+      Array.isArray(projects["projects"]) &&
+        projects["projects"].some(
+          (project: unknown) =>
+            typeof project === "object" &&
+            project !== null &&
+            "projectRootPath" in project &&
+            project.projectRootPath === hub.workspacePath(),
+        ),
+    );
     assert.deepEqual(completed, {
       prompt: "Deploy requested for phase-five-operator",
       output: "phase-five:requested",

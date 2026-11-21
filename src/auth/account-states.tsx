@@ -1,10 +1,6 @@
 import { useEffect, useRef } from "react";
-import {
-  AuthCard,
-  AuthCardSkeleton,
-  AuthLayout,
-  ProductMark,
-} from "../components/app/auth-layout.js";
+import { PaseoHubLockup } from "../brand/index.js";
+import { AuthCard, AuthCardSkeleton, AuthLayout } from "../components/app/auth-layout.js";
 import { AuthActions } from "../components/app/auth-form.js";
 import { Alert } from "../components/ui/alert.js";
 import { Button } from "../components/ui/button.js";
@@ -43,7 +39,7 @@ export function LoadingEntry() {
       aria-busy="true"
       className="flex min-h-svh flex-col items-center justify-center gap-6 bg-background p-6"
     >
-      <ProductMark />
+      <PaseoHubLockup />
       {/* The card whichever screen wins will be, held open at its own size so the mark
           does not jump up the page when the account resolves. */}
       <div className="w-full max-w-sm">
@@ -69,7 +65,7 @@ export function UnavailableInvitation({ message }: { message: string | undefined
       <AuthCard
         titleId="invitation-unavailable-heading"
         title="Invitation unavailable"
-        description="This link is invalid, expired, already used, or belongs to another account."
+        description="This link is invalid, expired, already used, or belongs to another account"
       >
         {message === undefined ? null : <Alert variant="destructive">{message}</Alert>}
         <AuthActions>

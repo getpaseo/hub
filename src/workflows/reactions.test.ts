@@ -354,6 +354,9 @@ async function runTwoStepWorkflow<
     refreshProviderSnapshot: async () => {
       throw new Error("not used");
     },
+    listProjects: async () => {
+      throw new Error("not used");
+    },
   };
   const lifecycle = createDaemonDispatchLifecycle({
     database,

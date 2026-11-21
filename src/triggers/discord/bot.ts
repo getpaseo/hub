@@ -1,17 +1,25 @@
+import { Readable } from "node:stream";
 import {
   Client,
+  DefaultRestOptions,
   DiscordAPIError,
   GatewayIntentBits,
+  MessageFlags,
   RESTJSONErrorCodes,
+  type ClientOptions,
   type GuildBasedChannel,
   type Message,
+  type REST,
+  type RESTOptions,
   type TextBasedChannel,
 } from "discord.js";
 import { Routes } from "discord-api-types/v10";
 import { reportFailure } from "../../failures/index.js";
+import { resolveDiscordMessageThread } from "../../discord/message-thread.js";
 import { DiscordSnowflakeSchema } from "../../discord/snowflake.js";
 import { NormalizedDiscordContextMessageSchema } from "./events.js";
 import type { NormalizedDiscordContextMessage } from "./events.js";
+import { createDiscordGatewayStrategy } from "./gateway-strategy.js";
 
 type DiscordGatewayFailure =
   | "authenticationFailed"
@@ -107,29 +115,164 @@ type DiscordReadableThread = TextBasedChannel & {
 };
 
 const DISCORD_THREAD_CONTEXT_LIMIT = 50;
+const DISCORD_STARTUP_TIMEOUT_MS = 15_000;
+const DISCORD_CLEANUP_TIMEOUT_MS = 1_000;
+
+class DiscordStartupTimeoutError extends Error {
+  override readonly name = "DiscordStartupTimeoutError";
+  readonly code = "timeout";
+
+  constructor(timeoutMs: number) {
+    super(`Discord gateway startup exceeded ${timeoutMs} ms`);
+  }
+}
+
+function createDeadline(timeoutMs: number, createError: (budgetMs: number) => Error) {
+  const startedAt = performance.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let expire!: (error: Error) => void;
+  const elapsed = new Promise<never>((_resolve, reject) => {
+    expire = reject;
+  });
+  const clear = () => clearTimeout(timer);
+  function allow(extraMs: number) {
+    clear();
+    const budgetMs = timeoutMs + extraMs;
+    const remainingMs = budgetMs - (performance.now() - startedAt);
+    timer = setTimeout(() => expire(createError(budgetMs)), remainingMs);
+  }
+
+  allow(0);
+  return { elapsed, allow, clear };
+}
+
+function gatewayDiscoveryTransport(startup: AbortSignal): RESTOptions["makeRequest"] {
+  return async (url, init) => {
+    if (!new URL(url).pathname.endsWith(Routes.gatewayBot())) {
+      return DefaultRestOptions.makeRequest(url, init);
+    }
+
+    startup.throwIfAborted();
+    const signal = init.signal == null ? startup : AbortSignal.any([startup, init.signal]);
+    try {
+      const response = await DefaultRestOptions.makeRequest(url, { ...init, signal });
+      // The REST SDK inspects these statuses without consuming the response body.
+      if (response.status === 429 || response.status >= 500) {
+        const body = response.body;
+        if (body instanceof Readable) {
+          body.once("error", () => {});
+          body.destroy();
+        } else if (body !== null) {
+          await body.cancel();
+        }
+      }
+      return response;
+    } catch (error) {
+      // The REST SDK retries AbortError. Propagate our startup deadline instead.
+      startup.throwIfAborted();
+      throw error;
+    }
+  };
+}
 
 export interface CreateDiscordBotClientOptions {
   token: string;
   clientId?: string;
   client?: Client;
+  restOptions?: Pick<NonNullable<ClientOptions["rest"]>, "api" | "timeout">;
+  startupTimeoutMs?: number;
+  cleanupTimeoutMs?: number;
 }
 
-export function createDiscordBotClient(options: CreateDiscordBotClientOptions): DiscordBotClient {
+export function createDiscordBotClient(
+  options: CreateDiscordBotClientOptions,
+): DiscordBotClient & { readonly rest: REST } {
+  const startupCancellation = new AbortController();
+  let startupDeadline: ReturnType<typeof createDeadline> | undefined;
   const client =
     options.client ??
     new Client({
+      rest: {
+        ...options.restOptions,
+        makeRequest: gatewayDiscoveryTransport(startupCancellation.signal),
+        // The SDK's rate-limit sleep does not observe the startup signal.
+        rejectOnRateLimit: [Routes.gatewayBot()],
+      },
+      ws: {
+        buildStrategy: (manager) =>
+          createDiscordGatewayStrategy(manager, startupCancellation.signal, (delayMs) => {
+            startupDeadline?.allow(delayMs);
+          }),
+      },
       intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
       ],
     });
+  if (options.client === undefined) client.rest.setToken(options.token);
   const handlers = new Set<DiscordRawMessageHandler>();
   const guildDeleteHandlers = new Set<DiscordGuildDeleteHandler>();
   const pendingReplyDestinations = new Map<string, Promise<DiscordSendableChannel>>();
   let started = false;
+  let startup: Promise<void> | undefined;
+  let abandoned: DiscordStartupTimeoutError | undefined;
+
+  async function destroyAfterTimeout() {
+    const deadline = createDeadline(
+      options.cleanupTimeoutMs ?? DISCORD_CLEANUP_TIMEOUT_MS,
+      () => new Error("Discord client destruction exceeded its deadline"),
+    );
+    try {
+      await Promise.race([client.destroy(), deadline.elapsed]);
+    } catch (error) {
+      reportFailure(
+        error,
+        { operation: "discord.startup.cleanup", component: "triggers", provider: "discord" },
+        { scrubValues: [options.token] },
+      );
+    } finally {
+      deadline.clear();
+    }
+  }
+
+  async function startClient() {
+    let gatewayCloseCode: number | undefined;
+    const observeGatewayClose = (event: { code: number }) => {
+      gatewayCloseCode = event.code;
+    };
+    client.on("shardDisconnect", observeGatewayClose);
+    const deadline = createDeadline(
+      options.startupTimeoutMs ?? DISCORD_STARTUP_TIMEOUT_MS,
+      (budgetMs) => new DiscordStartupTimeoutError(budgetMs),
+    );
+    startupDeadline = deadline;
+    try {
+      await Promise.race([
+        client
+          .login(options.token)
+          .then(() => (abandoned === undefined ? undefined : destroyAfterTimeout())),
+        deadline.elapsed,
+      ]);
+      started = true;
+    } catch (error) {
+      if (error instanceof DiscordStartupTimeoutError) {
+        abandoned = error;
+        startupCancellation.abort(error);
+        await destroyAfterTimeout();
+      }
+      const classified =
+        gatewayCloseCode === undefined ? undefined : discordGatewayError(gatewayCloseCode, error);
+      throw classified ?? error;
+    } finally {
+      deadline.clear();
+      startupDeadline = undefined;
+      client.off("shardDisconnect", observeGatewayClose);
+    }
+  }
 
   client.on("messageCreate", (message: Message) => {
+    if (abandoned !== undefined) return;
     void Promise.all(Array.from(handlers, (handler) => handler(message))).catch(
       (error: unknown) => {
         reportFailure(
@@ -148,6 +291,7 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
     );
   });
   client.on("guildDelete", (guild) => {
+    if (abandoned !== undefined) return;
     const guildId = DiscordSnowflakeSchema.parse(guild.id);
     void Promise.all(
       Array.from(guildDeleteHandlers, (handler) =>
@@ -163,27 +307,17 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
   });
 
   return {
+    rest: client.rest,
     async start() {
-      if (started) {
-        return;
-      }
-      let gatewayCloseCode: number | undefined;
-      const observeGatewayClose = (event: { code: number }) => {
-        gatewayCloseCode = event.code;
-      };
-      client.on("shardDisconnect", observeGatewayClose);
-      try {
-        await client.login(options.token);
-        started = true;
-      } catch (error) {
-        const classified =
-          gatewayCloseCode === undefined ? undefined : discordGatewayError(gatewayCloseCode, error);
-        throw classified ?? error;
-      } finally {
-        client.off("shardDisconnect", observeGatewayClose);
-      }
+      if (started) return;
+      if (abandoned !== undefined) throw abandoned;
+      startup ??= startClient().finally(() => {
+        startup = undefined;
+      });
+      await startup;
     },
     async stop() {
+      await startup?.catch(() => {});
       if (!started) {
         return;
       }
@@ -229,7 +363,11 @@ export function createDiscordBotClient(options: CreateDiscordBotClientOptions): 
         input.threadId === undefined || input.threadId === null
           ? await resolveReplyDestination(client, input, pendingReplyDestinations)
           : await fetchSendableChannel(client, input.threadId);
-      await channel.send({ content: input.content, allowedMentions: { parse: [] } });
+      await channel.send({
+        content: input.content,
+        allowedMentions: { parse: [] },
+        flags: MessageFlags.SuppressEmbeds,
+      });
     },
     async readMessage(input) {
       const message = await fetchMessage(
@@ -295,9 +433,11 @@ async function resolveReplyDestination(
 
   const resolution = (async () => {
     const message = await fetchMessage(client, channelId, messageId);
-    const thread = message.hasThread
-      ? await fetchSendableChannel(client, messageId)
-      : await message.startThread({ name: createThreadName(message.content) });
+    const thread = await resolveDiscordMessageThread({
+      hasThread: message.hasThread,
+      readThread: () => fetchSendableChannel(client, messageId),
+      createThread: () => message.startThread({ name: createThreadName(message.content) }),
+    });
     if (!isSendableChannel(thread)) throw new Error(`discord channel not sendable: ${thread.id}`);
     return thread;
   })();

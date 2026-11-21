@@ -25,12 +25,14 @@ const weightClass =
 /** `font-title` is the one elevated weight, and it goes on the one title of a surface. */
 const titleTags = ["<h1", "<DialogTitle", "<AlertDialogTitle", "<SheetTitle", "<AuthCard"];
 
-/** The components that own a surface title; inside them `font-title` is not attached to a tag. */
+/** The components that own a surface or section title; inside them `font-title` is not attached to a tag. */
 const titleOwners = new Set([
   "components/ui/dialog.tsx",
   "components/ui/alert-dialog.tsx",
   "components/ui/sheet.tsx",
   "components/app/page.tsx",
+  "components/app/section.tsx",
+  "components/app/card.tsx",
   "components/app/auth-layout.tsx",
 ]);
 

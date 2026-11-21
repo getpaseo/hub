@@ -375,7 +375,6 @@ describe("workflow compiler", () => {
       /filters\.from_users/iu,
     );
   });
-
   it("supports GitHub team trigger allowlists and rejects invalid team filter uses", () => {
     const raw = configuration();
     const trigger = raw.triggers[0]!;
@@ -411,9 +410,68 @@ describe("workflow compiler", () => {
     );
     assert.throws(
       () => compileHubConfig({ ...raw, triggers: [{ ...trigger, on: "github.issue_comment" }] }),
-      /filters\.from_users or filters\.from_teams/iu,
+      /filters\.from_users.*filters\.from_teams/iu,
     );
   });
+
+  it("accepts a GitHub repository association as the audience and keeps it off events that report none", () => {
+    const raw = configuration();
+    const trigger = raw.triggers[0]!;
+    const members = { author_associations: ["OWNER", "MEMBER", "COLLABORATOR"] };
+    const compiled = compileHubConfig({
+      ...raw,
+      triggers: [{ ...trigger, on: "github.issue_comment_created", filters: members }],
+    });
+    assert.deepEqual(compiled.triggers[0]?.filters, members);
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...raw,
+          triggers: [{ ...trigger, on: "github.issue_comment_created", filters: {} }],
+        }),
+      /filters\.from_users.*filters\.author_associations/iu,
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...raw,
+          triggers: [
+            {
+              ...trigger,
+              on: "github.issue_comment_created",
+              filters: { author_associations: ["ADMIN"] },
+            },
+          ],
+        }),
+      /author_associations/iu,
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...raw,
+          triggers: [
+            {
+              ...trigger,
+              on: "github.issue_comment_created",
+              filters: { author_associations: [] },
+            },
+          ],
+        }),
+      /author_associations/iu,
+    );
+    for (const on of ["github.push", "slack.mention", "manual.run"]) {
+      assert.throws(
+        () =>
+          compileHubConfig({
+            ...raw,
+            triggers: [{ ...trigger, on, filters: { ...members, from_users: ["*"] } }],
+          }),
+        /filters\.author_associations is not available/iu,
+        on,
+      );
+    }
+  });
+
   it("requires explicit repositories for non-GitHub authority", () => {
     const raw = configuration();
     const step = raw.triggers[0]!.steps[0]!;

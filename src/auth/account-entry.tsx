@@ -122,8 +122,8 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
       ? failureMessage(
           mutation.data,
           mode === "signIn"
-            ? "Hub did not receive the sign-in result. Check your connection and submit again."
-            : "Hub did not receive the account-creation result. Check your connection and invitation before submitting again.",
+            ? "Hub did not receive the sign-in result. Check your connection and submit again"
+            : "Hub did not receive the account-creation result. Check your connection and invitation before submitting again",
         )
       : undefined;
   const { title, description } = accountEntryPresentation(account, mode, invitationSignup);
@@ -177,13 +177,13 @@ function accountEntryPresentation(
   if (invitationSignup) {
     return {
       title: `Join ${account.invitation?.organization.name}`,
-      description: `${account.invitation?.inviterName} invited you as ${account.invitation?.role}.`,
+      description: `${account.invitation?.inviterName} invited you as ${account.invitation?.role}`,
     };
   }
   if (mode === "signIn") {
-    return { title: "Sign in to Paseo Hub", description: "Your agent operations, in one place." };
+    return { title: "Sign in to Paseo Hub", description: "Your agent operations in one place" };
   }
-  return { title: "Create an account", description: "Get your agent operations in one place." };
+  return { title: "Create an account", description: "Get your agent operations in one place" };
 }
 
 function readInvitationSignInRequest(): boolean {
@@ -248,8 +248,8 @@ function SignedOutFooter({
   }
   const message =
     registration === "invite_only"
-      ? "Accounts are created by invitation. Ask an organization owner to invite you."
-      : "Paseo Hub isn't accepting new accounts.";
+      ? "Accounts are created by invitation. Ask an organization owner to invite you"
+      : "Paseo Hub isn't accepting new accounts";
   return (
     <div className="grid gap-2 text-center text-sm text-muted-foreground">
       <p>{message}</p>
@@ -304,7 +304,7 @@ export function InvitationEntry({
       <AuthCard
         titleId="invitation-heading"
         title={`Join ${invitation.organization.name}`}
-        description={`${invitation.inviterName} invited you as ${invitation.role}.`}
+        description={`${invitation.inviterName} invited you as ${invitation.role}`}
       >
         <ErrorSummary message={message} />
         <AuthForm
@@ -413,7 +413,7 @@ export function OrganizationGate({
           </ul>
         )}
         {account.canCreateOrganization ? null : (
-          <p className="text-sm text-muted-foreground">Ask an organization owner to invite you.</p>
+          <p className="text-sm text-muted-foreground">Ask an organization owner to invite you</p>
         )}
         <FormActions>
           <Button type="button" variant="ghost" disabled={busy} onClick={signOutAccount}>

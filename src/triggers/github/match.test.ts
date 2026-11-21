@@ -433,6 +433,94 @@ describe("GitHub trigger matching", () => {
     );
   });
 
+  it.each([
+    {
+      acceptance: "a member's comment reaches a members-only trigger",
+      event: eventFor("issue_comment", {
+        action: "created",
+        issue: issue(),
+        comment: comment({ author_association: "MEMBER" }),
+      }),
+      expected: 1,
+    },
+    {
+      acceptance: "an outside commenter does not",
+      event: eventFor("issue_comment", {
+        action: "created",
+        issue: issue({ author_association: "OWNER" }),
+        comment: comment({ author_association: "NONE" }),
+      }),
+      expected: 0,
+    },
+    {
+      acceptance: "an event that reports no association does not",
+      event: eventFor("issue_comment", { action: "created", issue: issue(), comment: comment() }),
+      expected: 0,
+    },
+    {
+      acceptance: "an association GitHub does not define does not",
+      event: eventFor("issue_comment", {
+        action: "created",
+        issue: issue(),
+        comment: comment({ author_association: "ADMIN" }),
+      }),
+      expected: 0,
+    },
+    {
+      acceptance: "the item author's association is not the actor's when someone else acts on it",
+      event: eventFor("issues", {
+        action: "closed",
+        issue: issue({ author_association: "OWNER" }),
+      }),
+      on: "github.issues",
+      expected: 0,
+    },
+    {
+      acceptance: "an owner opening their own issue does",
+      event: eventFor("issues", {
+        action: "opened",
+        issue: issue({ user: { login: "boudra" }, author_association: "OWNER" }),
+      }),
+      on: "github.issue_created",
+      expected: 1,
+    },
+    {
+      acceptance: "a collaborator's review does",
+      event: eventFor("pull_request_review", {
+        action: "submitted",
+        pull_request: pullRequest({ author_association: "NONE" }),
+        review: {
+          body: "Looks right",
+          user: { login: "boudra" },
+          author_association: "COLLABORATOR",
+        },
+      }),
+      on: "github.pull_request_review",
+      expected: 1,
+    },
+  ])("gates on the actor's repository association: $acceptance", ({ event, expected, on }) => {
+    const config = configFor(
+      { author_associations: ["OWNER", "MEMBER", "COLLABORATOR"] },
+      on ?? "github.issue_comment",
+    );
+    assert.equal(matchTriggers(config, event).length, expected);
+  });
+
+  it("narrows by association and by name when a trigger declares both", () => {
+    const config = configFor({ author_associations: ["MEMBER"], from_users: ["someone-else"] });
+    const event = eventFor("issue_comment", {
+      action: "created",
+      issue: issue(),
+      comment: comment({ author_association: "MEMBER" }),
+    });
+    assert.equal(matchTriggers(config, event).length, 0);
+    assert.equal(
+      matchTriggers(configFor({ author_associations: ["MEMBER"], from_users: ["boudra"] }), event)
+        .length,
+      1,
+    );
+  });
+
   it("applies the same security filters to pull-request review comments", async () => {
     const config = compileHubConfig({
       environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
@@ -552,6 +640,59 @@ describe("GitHub trigger matching", () => {
     );
     assert.deepEqual(memberships.checks, []);
   });
+
+  it.each([
+    ["an active team member", undefined, "MEMBER", true, [0, 1], 1],
+    ["an inactive team member", undefined, "MEMBER", false, [0, 0], 1],
+    ["a team member outside the repository audience", undefined, "NONE", true, [0, 0], 0],
+    ["a team member without a reported association", undefined, undefined, true, [0, 0], 0],
+    ["a named user outside the repository audience", ["boudra"], "NONE", true, [0, 0], 0],
+    ["a named user inside the repository audience", ["boudra"], "MEMBER", false, [1, 1], 0],
+    ["a team member not named in from_users", ["someone-else"], "MEMBER", true, [0, 1], 1],
+  ] as const)(
+    "combines team and repository restrictions for %s",
+    async (_name, users, association, active, expected, checks) => {
+      const config = configFor({
+        from_teams: ["boudra/maintainers"],
+        author_associations: ["MEMBER"],
+        ...(users === undefined ? {} : { from_users: users }),
+      });
+      const event = eventFor("issue_comment", {
+        action: "created",
+        issue: issue(),
+        comment: comment({ author_association: association }),
+      });
+      const memberships = new TestTeamMemberships(active);
+
+      assert.equal(matchTriggers(config, event).length, expected[0]);
+      assert.equal(
+        (await matchTriggers(config, event, { teamMemberships: memberships })).length,
+        expected[1],
+      );
+      assert.equal(memberships.checks.length, checks);
+    },
+  );
+
+  it.each([
+    { filters: {}, expected: 1 },
+    { filters: { from_users: [] }, expected: 0 },
+    { filters: { from_teams: [] }, expected: 0 },
+  ])("preserves association-only policy with explicit identity filters $filters", async (test) => {
+    const config = configFor({ author_associations: ["MEMBER"], ...test.filters });
+    const event = eventFor("issue_comment", {
+      action: "created",
+      issue: issue(),
+      comment: comment({ author_association: "MEMBER" }),
+    });
+    const memberships = new TestTeamMemberships(false);
+
+    assert.equal(matchTriggers(config, event).length, test.expected);
+    assert.equal(
+      (await matchTriggers(config, event, { teamMemberships: memberships })).length,
+      test.expected,
+    );
+    assert.deepEqual(memberships.checks, []);
+  });
 });
 
 const denyTeams: GitHubTeamMembershipClient = {
@@ -569,13 +710,13 @@ class TestTeamMemberships implements GitHubTeamMembershipClient {
   }
 }
 
-function configFor(filters: Record<string, unknown>) {
+function configFor(filters: Record<string, unknown>, on = "github.issue_comment") {
   return compileHubConfig({
     environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
     triggers: [
       {
         name: "github-comment",
-        on: "github.issue_comment",
+        on,
         max_runtime: "2h",
         filters,
         steps: [

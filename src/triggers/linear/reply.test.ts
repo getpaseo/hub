@@ -4,27 +4,36 @@ import type { LinearApiClient } from "../../providers/linear/client.js";
 import { createLinearReplyExecutor } from "./reply.js";
 
 describe("Linear reply output", () => {
-  it("posts the workflow outcome onto its triggering issue", async () => {
-    const client = new RecordingLinearClient();
-    const execute = createLinearReplyExecutor({ client });
-    await execute({
-      agentExecutionId: "execution-1",
-      toolType: "linear.reply",
-      args: { content: "Draft PR: https://github.com/acme/repo/pull/42" },
-      outputContext: {
-        provider: "linear",
-        linearOrganizationId: "linear-org",
-        issueId: "issue-1",
-      },
-    });
-    assert.deepEqual(client.comments, [
-      {
-        linearOrganizationId: "linear-org",
-        issueId: "issue-1",
-        body: "Draft PR: https://github.com/acme/repo/pull/42",
-      },
-    ]);
-  });
+  it.each([false, true])(
+    "posts the workflow outcome onto its triggering issue (already linked: %s)",
+    async (alreadyLinked) => {
+      const url = "https://hub.example/open/executions/00000000-0000-4000-8000-000000000001";
+      const link = `[Open in Paseo](${url})`;
+      const content = alreadyLinked
+        ? "Existing: " + link
+        : "Draft PR: https://github.com/acme/repo/pull/42";
+      const client = new RecordingLinearClient();
+      const execute = createLinearReplyExecutor({ client });
+      await execute({
+        agentExecutionId: "execution-1",
+        toolType: "linear.reply",
+        args: { content },
+        openInPaseoUrl: url,
+        outputContext: {
+          provider: "linear",
+          linearOrganizationId: "linear-org",
+          issueId: "issue-1",
+        },
+      });
+      assert.deepEqual(client.comments, [
+        {
+          linearOrganizationId: "linear-org",
+          issueId: "issue-1",
+          body: alreadyLinked ? content : `${content}\n\n${link}`,
+        },
+      ]);
+    },
+  );
 
   it("fails closed for an output context from another provider", async () => {
     const client = new RecordingLinearClient();

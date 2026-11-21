@@ -123,7 +123,6 @@ async function fixture(now = Date.now) {
             provider: "codex",
             cwd: "/repo",
             env: intent.github === undefined ? {} : { GH_TOKEN: "scoped-github-token" },
-            toolPolicy: { preapproved: [] },
           }),
         }),
     };
@@ -164,6 +163,36 @@ async function fixture(now = Date.now) {
   }
   return { database, connection, sessions, replies, arrival, execution, call };
 }
+
+test("continuations reuse matching integration grants and reject a different scope", async () => {
+  const f = await fixture();
+  const arrival = (channel: string) =>
+    f.arrival("conversation", "daemon", {}, "reply", {
+      tools: { slack: { connection: "workspace-slack", actions: ["post"], channels: [channel] } },
+    });
+  const first = await arrival("CALLOWED");
+  const followUp = await arrival("CALLOWED");
+  const differentChannel = await arrival("COTHER");
+
+  const agent = await first.dispatch();
+  expect((await followUp.dispatch()).agentId).toBe(agent.agentId);
+  await expect(differentChannel.dispatch()).rejects.toThrow("Continuation settings differ");
+  expect(f.connection.deliveries).toHaveLength(2);
+  expect(f.connection.deliveries.map(({ text }) => text)).toEqual([
+    expect.stringContaining(`https://hub.test/open/executions/${first.executionId}`),
+    expect.stringContaining(`https://hub.test/open/executions/${followUp.executionId}`),
+  ]);
+});
+
+test("a fresh agent with read-only integration tools gets the authored prompt verbatim", async () => {
+  const f = await fixture();
+  const prompt = "Read the latest update.";
+  const run = await f.arrival(false, "daemon", {}, prompt, {
+    tools: { slack: { connection: "workspace-slack", actions: ["read"], channels: ["CALLOWED"] } },
+  });
+  await run.dispatch();
+  expect(f.connection.deliveries.map(({ text }) => text)).toEqual([prompt]);
+});
 
 test("same-key arrivals share an agent; an earlier completion cannot archive newer work", async () => {
   const f = await fixture();

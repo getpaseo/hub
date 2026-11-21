@@ -9,6 +9,7 @@ import type {
   IssueEnrollmentTokenResult,
   ListProjectsResult,
   ListTriggersResult,
+  RotateWebhookSecretResult,
   ListConfigurationResourcesResult,
   ListSetupResourcesResult,
   PublicAuthorization,
@@ -28,6 +29,7 @@ import {
   ProblemSchema,
   ValidatedConfigurationSchema,
   ValidatedTriggerSchema,
+  WebhookSecretSchema,
   type Problem,
 } from "./contracts.js";
 import { publicOpenApiDocument } from "./openapi.js";
@@ -41,6 +43,7 @@ import {
 export type { PublicOperationId } from "./operation-manifest.js";
 
 type PublicOperationResult =
+  | RotateWebhookSecretResult
   | ValidateTriggerResult
   | InstallTriggerResult
   | ListTriggersResult
@@ -229,6 +232,8 @@ function operationResponse(
   result: PublicOperationResult,
 ): Response {
   switch (mapping) {
+    case "webhook-secret":
+      return webhookSecretResponse(requestId, result);
     case "trigger-validation":
       if (!isTriggerValidationResult(result)) throw new Error("invalid trigger validation result");
       return triggerValidationResponse(requestId, result);
@@ -262,6 +267,28 @@ function operationResponse(
       return enrollmentResponse(requestId, result);
   }
   return assertNever(mapping);
+}
+
+function webhookSecretResponse(requestId: string, result: PublicOperationResult): Response {
+  if (result.status === "rotated") {
+    const response = success(requestId, 200, WebhookSecretSchema, {
+      path: result.path,
+      secret: result.secret,
+    });
+    response.headers.set("cache-control", "no-store");
+    return response;
+  }
+  if (result.status === "webhook_not_found") {
+    return problem(
+      requestId,
+      404,
+      "not_found",
+      "Webhook trigger not found",
+      "No webhook trigger with this ID belongs to the organization.",
+    );
+  }
+  if (result.status === "infrastructure_unavailable") return infrastructureProblem(requestId);
+  throw new Error("invalid webhook secret operation result");
 }
 
 function triggersResponse(requestId: string, result: ListTriggersResult): Response {

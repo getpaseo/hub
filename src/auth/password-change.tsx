@@ -41,7 +41,7 @@ export function PasswordChangeEntry({
       const currentPassword = formValue(data, "currentPassword");
       const newPassword = formValue(data, "newPassword");
       if (newPassword !== formValue(data, "confirmPassword")) {
-        setValidationError("New passwords do not match.");
+        setValidationError("New passwords do not match");
         save.reset();
         return;
       }
@@ -54,7 +54,7 @@ export function PasswordChangeEntry({
     save.isError || save.data?.status === "error"
       ? failureMessage(
           save.data,
-          "Hub did not receive the password-change result. Your existing password remains active; check your connection before submitting again.",
+          "Hub did not receive the password-change result. Your existing password remains active, so check your connection before submitting again",
         )
       : validationError;
   const busy = save.isPending || leave.isPending;
@@ -66,7 +66,7 @@ export function PasswordChangeEntry({
       <AuthCard
         titleId="password-change-heading"
         title="Choose a new password"
-        description="Your temporary password must be replaced before you can continue."
+        description="Your temporary password must be replaced before you can continue"
       >
         <p className="text-sm text-muted-foreground">Signed in as {account.email}</p>
         <ErrorSummary message={message} />

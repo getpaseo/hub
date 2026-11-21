@@ -57,7 +57,7 @@ describe("connection return contract", () => {
   it("phrases every outcome with what happened and what to do next", () => {
     assert.deepEqual(connectionReturnCopy({ provider: "github", result: "github_connected" }), {
       tone: "success",
-      message: "GitHub connected.",
+      message: "GitHub connected",
     });
     const unauthenticated = connectionReturnCopy({
       provider: "github",

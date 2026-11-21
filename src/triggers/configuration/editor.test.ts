@@ -1,4 +1,4 @@
-import { EDITOR_EVENTS } from "./events.js";
+import { defaultAudience, EDITOR_EVENTS, eventDefinition } from "./events.js";
 import { describe, expect, test } from "vitest";
 import { parseDocument } from "yaml";
 import { TriggerDocumentSchema } from "./schema.js";
@@ -74,6 +74,53 @@ describe("trigger form YAML bridge", () => {
     }
   });
 
+  const CHAT_GRANT = ADVANCED.replace(
+    "run:",
+    `run:
+  tools:
+    slack:
+      channels: [CDIGEST] # keep the channel comment
+      connection: engineering-slack
+      actions: [post]`,
+  );
+
+  test.each([
+    [
+      "into the grant",
+      CHAT_GRANT.replace("connection: company", "connection: &workspace company").replace(
+        "connection: engineering-slack",
+        "connection: *workspace",
+      ),
+    ],
+    [
+      "out of the grant",
+      CHAT_GRANT.replace(
+        "connection: engineering-slack",
+        "connection: &workspace engineering-slack",
+      ).replace("TEAM: core", "TEAM: core\n    DIGEST_CONNECTION: *workspace"),
+    ],
+  ])("keeps a trigger in YAML when anchors link %s", (_, yaml) => {
+    expect(TriggerDocumentSchema.safeParse(parseDocument(yaml).toJS()).success).toBe(true);
+    const projection = projectTriggerForm(yaml);
+    if (projection.status !== "yaml_only") throw new Error("Expected the form to be unavailable.");
+    expect(projection.reason).toMatch(/integration tool grants.*anchors or aliases/i);
+  });
+
+  test("preserves channel comments when changing unrelated grant fields", () => {
+    const projection = projectTriggerForm(CHAT_GRANT);
+    if (projection.status !== "editable") throw new Error(projection.reason);
+    const saved = patchTriggerYaml(CHAT_GRANT, {
+      ...projection.value,
+      tools: {
+        slack: { ...projection.value.tools.slack!, actions: ["read", "post"] },
+      },
+    });
+    expect(saved).toMatch(/channels: \[\s*CDIGEST\s*\] # keep the channel comment/);
+    const amended = projectTriggerForm(saved);
+    if (amended.status !== "editable") throw new Error(amended.reason);
+    expect(amended.value.tools.slack?.actions).toEqual(["read", "post"]);
+  });
+
   test("patches owned nodes while preserving comments and advanced configuration", () => {
     const projection = projectTriggerForm(ADVANCED);
     if (projection.status !== "editable") throw new Error(projection.reason);
@@ -139,7 +186,7 @@ describe("trigger form YAML bridge", () => {
   test("keeps unsupported shapes in YAML-only mode", () => {
     expect(projectTriggerForm(ADVANCED.replace("slack.mention:", "custom.event:"))).toEqual({
       status: "yaml_only",
-      reason: "The form does not support the custom.event event.",
+      reason: "The form does not support the custom.event event",
     });
     expect(
       projectTriggerForm(
@@ -176,7 +223,8 @@ describe("trigger form YAML bridge", () => {
       enabled: true,
       event: "manual.run",
       connection: "",
-      allowedUsers: "*",
+      audience: "everyone",
+      allowedUsers: "",
       qualifiers: {},
       daemon: "office",
       cwd: "/workspace",
@@ -192,6 +240,7 @@ describe("trigger form YAML bridge", () => {
       githubRepositories: "",
       githubPermissions: "",
       githubDuration: "1h",
+      tools: {},
       prompt: "Handle it.",
     });
     expect(parseDocument(yaml).toJS()).toEqual({
@@ -215,7 +264,8 @@ describe("trigger form YAML bridge", () => {
       enabled: true,
       event: "manual.run",
       connection: "",
-      allowedUsers: "*",
+      audience: "everyone",
+      allowedUsers: "",
       qualifiers: {},
       daemon: "office",
       cwd: "/workspace",
@@ -231,6 +281,7 @@ describe("trigger form YAML bridge", () => {
       githubRepositories: "",
       githubPermissions: "",
       githubDuration: "1h",
+      tools: {},
       prompt: "${{ paseo.prompt }}",
     });
     const projection = projectTriggerForm(initial);
@@ -254,15 +305,15 @@ describe("trigger form YAML bridge", () => {
 
     expect(mergeTriggerForm("", { ...projection.value, daemon: "" })).toEqual({
       status: "incomplete",
-      reason: "Daemon is required.",
+      reason: "Daemon is required",
     });
     expect(mergeTriggerForm("", { ...projection.value, agent: "" })).toEqual({
       status: "incomplete",
-      reason: "Agent is required.",
+      reason: "Agent is required",
     });
     expect(mergeTriggerForm("", { ...projection.value, providerOptions: "{" })).toEqual({
       status: "incomplete",
-      reason: "Provider options must be valid JSON.",
+      reason: "Provider options must be valid JSON",
     });
   });
 
@@ -289,33 +340,33 @@ describe("what the form still needs", () => {
 
   test("names the field, not just the problem", () => {
     expect(triggerFormErrors({ ...editable(), daemon: "" })).toEqual({
-      daemon: "Daemon is required.",
+      daemon: "Daemon is required",
     });
     expect(triggerFormErrors({ ...editable(), cwd: "workspace" })).toEqual({
-      cwd: "Working directory must be an absolute path.",
+      cwd: "Working directory must be an absolute path",
     });
     expect(triggerFormErrors({ ...editable(), agent: "" })).toEqual({
-      agent: "Agent is required.",
+      agent: "Agent is required",
     });
     expect(triggerFormErrors({ ...editable(), providerOptions: "{" })).toEqual({
-      providerOptions: "Provider options must be valid JSON.",
+      providerOptions: "Provider options must be valid JSON",
     });
     expect(triggerFormErrors({ ...editable(), prompt: "  " })).toEqual({
-      prompt: "Instructions are required.",
+      prompt: "Instructions are required",
     });
   });
 
   test("holds the name to the document's own alphabet", () => {
-    expect(triggerFormErrors({ ...editable(), name: "" }).name).toBe("Trigger name is required.");
+    expect(triggerFormErrors({ ...editable(), name: "" }).name).toBe("Trigger name is required");
     expect(triggerFormErrors({ ...editable(), name: "Slack Triage" }).name).toBe(
-      "Use lowercase letters, digits, and hyphens, starting with a letter.",
+      "Use lowercase letters, digits, and hyphens, starting with a letter",
     );
     expect(triggerFormErrors({ ...editable(), name: "slack-triage" }).name).toBeUndefined();
   });
 
   test("asks for a connection only when an event arrives on one", () => {
     expect(triggerFormErrors({ ...editable(), connection: "" }).connection).toBe(
-      "Connection is required.",
+      "Connection is required",
     );
     expect(
       triggerFormErrors({ ...editable(), event: "manual.run", connection: "", allowedUsers: "" })
@@ -331,20 +382,46 @@ describe("what the form still needs", () => {
     expect(
       triggerFormErrors({ ...editable(), githubConnection: "company", githubPermissions: "{" })
         .githubPermissions,
-    ).toBe("GitHub permissions must be valid JSON.");
+    ).toBe("GitHub permissions must be valid JSON");
     expect(
       triggerFormErrors({
         ...editable(),
         githubConnection: "company",
         githubPermissions: '{"a":1}',
       }).githubPermissions,
-    ).toBe('GitHub permissions map a scope to "read", "write", or "admin".');
+    ).toBe('GitHub permissions map a scope to "read", "write", or "admin"');
+  });
+
+  test("refuses an added integration grant whose connection is still blank instead of dropping it", () => {
+    const withBlankSlack = {
+      ...editable(),
+      tools: { slack: { connection: "", actions: ["post" as const], channels: "C12345" } },
+    };
+    expect(triggerFormErrors(withBlankSlack)["tools.slack.connection"]).toBe(
+      "Choose a Slack connection",
+    );
+    expect(mergeTriggerForm("", withBlankSlack)).toEqual({
+      status: "incomplete",
+      reason: "Choose a Slack connection",
+    });
+
+    const withBlankGitHub = {
+      ...editable(),
+      githubEnabled: true,
+      githubConnection: "",
+      githubRepositories: "acme/hub",
+    };
+    expect(triggerFormErrors(withBlankGitHub).githubConnection).toBe("Choose a GitHub connection");
+    expect(mergeTriggerForm("", withBlankGitHub)).toEqual({
+      status: "incomplete",
+      reason: "Choose a GitHub connection",
+    });
   });
 
   test("reports the topmost problem when the document cannot be written at all", () => {
     expect(mergeTriggerForm("", { ...editable(), name: "", daemon: "" })).toEqual({
       status: "incomplete",
-      reason: "Trigger name is required.",
+      reason: "Trigger name is required",
     });
   });
 });
@@ -379,7 +456,7 @@ test("round trips the added label separately from existing item labels", () => {
     labels: ["bug"],
   });
   expect(() => patchTriggerYaml(patched, { ...projection.value, qualifiers: {} })).toThrow(
-    "Added label is required.",
+    "Added label is required",
   );
 });
 
@@ -437,10 +514,10 @@ test.each(["github.issue_label_added", "github.pull_request_label_added"])(
     );
     if (projection.status !== "editable") throw new Error(projection.reason);
     expect(triggerFormErrors({ ...projection.value, qualifiers: { label: "  " } })).toEqual({
-      "qualifiers.label": "Added label is required.",
+      "qualifiers.label": "Added label is required",
     });
     expect(triggerFormErrors({ ...projection.value, qualifiers: {} })).toEqual({
-      "qualifiers.label": "Added label is required.",
+      "qualifiers.label": "Added label is required",
     });
   },
 );
@@ -496,4 +573,201 @@ test("a trigger row names the event kind before what narrows it", () => {
     kind: "Manual run",
   });
   expect(describeTriggerEvent(null, "github.push")).toEqual({ kind: "GitHub push" });
+});
+
+test("a provider with zero modes saves without a mode in the form and YAML", () => {
+  const projected = projectTriggerForm(ADVANCED);
+  if (projected.status !== "editable") throw new Error("expected editable form");
+  const value = { ...projected.value, agent: "pi/test-model", mode: "" };
+  expect(triggerFormErrors(value, []).mode).toBeUndefined();
+  const patched = patchTriggerYaml(ADVANCED, value);
+  expect(TriggerDocumentSchema.parse(parseDocument(patched).toJS()).run.agent).not.toHaveProperty(
+    "mode",
+  );
+  const yaml = createTriggerYaml(value);
+  expect(TriggerDocumentSchema.parse(parseDocument(yaml).toJS()).run.agent).not.toHaveProperty(
+    "mode",
+  );
+});
+
+test("form submission requires concrete model and mode selections without rejecting YAML omissions", () => {
+  const projected = projectTriggerForm(ADVANCED);
+  if (projected.status !== "editable") throw new Error("expected editable form");
+  expect(triggerFormErrors({ ...projected.value, agent: "codex" }).agent).toBe(
+    "Choose a provider and model",
+  );
+  expect(triggerFormErrors({ ...projected.value, mode: "" }, [{ id: "full-access" }]).mode).toBe(
+    "Execution mode is required",
+  );
+  const yaml = ADVANCED.replace("    model: gpt-5.4\n", "").replace("    mode: full-access\n", "");
+  const existing = projectTriggerForm(yaml);
+  expect(existing.status).toBe("editable");
+  if (existing.status !== "editable") throw new Error("expected editable YAML");
+  expect(patchTriggerYaml(yaml, { ...existing.value, prompt: "Updated YAML content" })).toContain(
+    "Updated YAML content",
+  );
+});
+
+test("the form waits to learn that a provider has no modes", () => {
+  const projected = projectTriggerForm(ADVANCED);
+  if (projected.status !== "editable") throw new Error("expected editable form");
+  const value = { ...projected.value, mode: "" };
+  expect(triggerFormErrors(value).mode).toBe(
+    "Load execution modes from the selected daemon or save as YAML",
+  );
+  expect(triggerFormErrors(value, []).mode).toBeUndefined();
+});
+
+describe("who can invoke a trigger", () => {
+  const GITHUB = ADVANCED.replace("slack.mention", "github.issue_comment_created").replace(
+    "channels: [engineering]",
+    'contains: "@paseo"',
+  );
+
+  function filtersOf(yaml: string, event: string) {
+    return TriggerDocumentSchema.parse(parseDocument(yaml).toJS()).on[event]?.filters;
+  }
+
+  function editable(yaml: string) {
+    const projection = projectTriggerForm(yaml);
+    if (projection.status !== "editable") throw new Error(projection.reason);
+    return projection.value;
+  }
+
+  test("GitHub creation events start at members; events where another actor can act start at everyone", () => {
+    for (const event of [
+      "github.issue_created",
+      "github.pull_request_created",
+      "github.issue_comment_created",
+      "github.pull_request_comment_created",
+    ] as const) {
+      expect(defaultAudience(event)).toBe("members");
+      expect(eventDefinition(event).audiences).toEqual([
+        "members",
+        "contributors",
+        "everyone",
+        "specific",
+      ]);
+    }
+    for (const event of [
+      "slack.mention",
+      "discord.mention",
+      "linear.comment_created",
+      // GitHub reports only the original author's association when another user acts on an item.
+      "github.pull_request_ready_for_review",
+      "github.pull_request_synchronized",
+      "github.issue_label_added",
+      "github.pull_request_label_added",
+      "github.issue_comment",
+      "github.issues",
+      "github.pull_request",
+      "github.pull_request_review",
+      "github.pull_request_review_comment",
+      "github.push",
+    ] as const) {
+      expect(defaultAudience(event)).toBe("everyone");
+      expect(eventDefinition(event).audiences).toEqual(["everyone", "specific"]);
+    }
+    expect(eventDefinition("manual.run").audiences).toEqual([]);
+  });
+
+  test("reads an existing allowlist exactly as it was written", () => {
+    expect(editable(GITHUB)).toMatchObject({ audience: "everyone", allowedUsers: "" });
+    const named = GITHUB.replace('from_users: ["*"]', "from_users: [boudra, octocat]");
+    expect(editable(named)).toMatchObject({
+      audience: "specific",
+      allowedUsers: "boudra, octocat",
+    });
+    expect(patchTriggerYaml(named, editable(named))).toBe(named);
+  });
+
+  test.each([
+    ["members", ["OWNER", "MEMBER", "COLLABORATOR"]],
+    ["contributors", ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]],
+  ] as const)("writes %s as GitHub repository associations", (audience, associations) => {
+    const yaml = patchTriggerYaml(GITHUB, { ...editable(GITHUB), audience });
+    expect(filtersOf(yaml, "github.issue_comment_created")).toEqual({
+      author_associations: associations,
+      contains: "@paseo",
+    });
+    expect(yaml).toContain("# keep this heading");
+    expect(editable(yaml)).toMatchObject({ audience, allowedUsers: "" });
+
+    const created = createTriggerYaml({ ...editable(GITHUB), audience });
+    expect(filtersOf(created, "github.issue_comment_created")).toEqual({
+      author_associations: associations,
+    });
+  });
+
+  test("moves between everyone, named people, and members without leaving the old list behind", () => {
+    const members = patchTriggerYaml(GITHUB, { ...editable(GITHUB), audience: "members" });
+    const named = patchTriggerYaml(members, {
+      ...editable(members),
+      audience: "specific",
+      allowedUsers: "boudra, octocat",
+    });
+    expect(filtersOf(named, "github.issue_comment_created")).toEqual({
+      from_users: ["boudra", "octocat"],
+      contains: "@paseo",
+    });
+    const everyone = patchTriggerYaml(named, { ...editable(named), audience: "everyone" });
+    expect(filtersOf(everyone, "github.issue_comment_created")).toEqual({
+      from_users: ["*"],
+      contains: "@paseo",
+    });
+  });
+
+  test("asks for a name only when specific people are chosen", () => {
+    expect(
+      triggerFormErrors({ ...editable(GITHUB), audience: "specific", allowedUsers: " " })
+        .allowedUsers,
+    ).toBe("Name at least one person");
+    expect(
+      triggerFormErrors({ ...editable(GITHUB), audience: "members", allowedUsers: "" }),
+    ).toEqual({});
+  });
+
+  test("leaves an audience the form cannot express to YAML", () => {
+    const custom = GITHUB.replace('from_users: ["*"]', "author_associations: [OWNER]");
+    expect(projectTriggerForm(custom)).toEqual({
+      status: "yaml_only",
+      reason: "Edit this trigger in YAML because its author associations are a custom list",
+    });
+    const both = GITHUB.replace(
+      'from_users: ["*"]',
+      "from_users: [boudra]\n      author_associations: [OWNER, MEMBER, COLLABORATOR]",
+    );
+    expect(projectTriggerForm(both)).toEqual({
+      status: "yaml_only",
+      reason: "Edit this trigger in YAML because it combines named users with author associations",
+    });
+  });
+
+  test("an untouched audience follows the event, and a chosen one is kept where it is offered", () => {
+    const slack = editable(ADVANCED);
+    const comment = changeTriggerEvent(slack, "github.issue_comment_created");
+    expect(comment).toMatchObject({ audience: "members", allowedUsers: "" });
+    expect(changeTriggerEvent(comment, "github.push").audience).toBe("everyone");
+    expect(
+      changeTriggerEvent(changeTriggerEvent(comment, "github.push"), "github.pull_request_created")
+        .audience,
+    ).toBe("members");
+
+    const contributors = { ...comment, audience: "contributors" as const };
+    expect(changeTriggerEvent(contributors, "github.pull_request_created").audience).toBe(
+      "contributors",
+    );
+    expect(changeTriggerEvent(contributors, "github.push").audience).toBe("everyone");
+
+    const named = { ...comment, audience: "specific" as const, allowedUsers: "boudra" };
+    expect(changeTriggerEvent(named, "github.push")).toMatchObject({
+      audience: "specific",
+      allowedUsers: "boudra",
+    });
+    // A GitHub login means nothing to Slack.
+    expect(changeTriggerEvent(named, "slack.mention")).toMatchObject({
+      audience: "everyone",
+      allowedUsers: "",
+    });
+  });
 });

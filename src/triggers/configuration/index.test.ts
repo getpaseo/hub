@@ -127,6 +127,73 @@ describe("self-contained trigger documents", () => {
     );
   });
 
+  it("compiles integration tools independently of the triggering event", () => {
+    const yaml = trigger.replace(
+      "run:",
+      `run:
+  tools:
+    discord:
+      connection: community
+      actions: [read, post]
+      channels: ["123456789012345678"]`,
+    );
+    const compiled = compileTriggerDocument(yaml);
+    assert.deepEqual(
+      compiled.events.map((event) => event.steps[0]?.tools),
+      [
+        {
+          discord: {
+            connection: "community",
+            actions: ["read", "post"],
+            channels: ["123456789012345678"],
+          },
+        },
+        {
+          discord: {
+            connection: "community",
+            actions: ["read", "post"],
+            channels: ["123456789012345678"],
+          },
+        },
+      ],
+    );
+  });
+
+  it("compiles channel IDs and actions as sets while keeping the authored YAML order", () => {
+    const yaml = trigger.replace(
+      "run:",
+      `run:
+  tools:
+    discord:
+      connection: community
+      actions: [post, read]
+      channels: ["456", "123", "456"]`,
+    );
+    const compiled = compileTriggerDocument(yaml);
+    assert.deepEqual(compiled.authored.run.tools?.discord?.channels, ["456", "123", "456"]);
+    assert.deepEqual(compiled.events[0]?.steps[0]?.tools?.discord, {
+      connection: "community",
+      actions: ["read", "post"],
+      channels: ["123", "456"],
+    });
+  });
+
+  it.each(["[]", '["*"]', "[123456789012345678]"])(
+    "rejects invalid Discord allowlist %s",
+    (channels) => {
+      const yaml = trigger.replace(
+        "run:",
+        `run:
+  tools:
+    discord:
+      connection: community
+      actions: [read]
+      channels: ${channels}`,
+      );
+      assert.throws(() => compileTriggerDocument(yaml), /run.tools.discord.channels/);
+    },
+  );
+
   it.each([undefined, false, true])("compiles and round-trips background %s", (background) => {
     const yaml =
       background === undefined
@@ -259,6 +326,39 @@ run:
     assert.deepEqual(compiled.events[0]?.steps[0]?.allowOutputs, [
       { type: "slack.reply", required: false },
     ]);
+  });
+
+  it("compiles a GitHub repository association as the trigger's audience", () => {
+    const members = `
+name: review-comments
+on:
+  github.pull_request_comment_created:
+    connection: getpaseo-github
+    filters:
+      author_associations: [OWNER, MEMBER, COLLABORATOR]
+run:
+  target:
+    daemon: devbox
+    cwd: /workspace/company
+  agent:
+    provider: codex
+  prompt: Review it
+`;
+    assert.deepEqual(compileTriggerDocument(members).events[0]?.filters, {
+      author_associations: ["OWNER", "MEMBER", "COLLABORATOR"],
+      connection: "getpaseo-github",
+    });
+    assert.throws(
+      () => compileTriggerDocument(members.replace("[OWNER, MEMBER, COLLABORATOR]", "[ADMIN]")),
+      TriggerDocumentError,
+    );
+    assert.throws(
+      () =>
+        compileTriggerDocument(
+          members.replace("github.pull_request_comment_created", "slack.mention"),
+        ),
+      /author_associations is not available for slack\.mention/u,
+    );
   });
 
   it("rejects a trigger without events at the document boundary", () => {

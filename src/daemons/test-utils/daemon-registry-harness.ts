@@ -40,12 +40,20 @@ export class DaemonRegistryHarness {
   private didShutdown = false;
   private stopped = false;
 
-  constructor(logger?: Pick<Logger, "warn" | "error">) {
-    this.registry = new ActiveDaemonRegistry(this.presence, undefined, logger);
+  constructor(logger?: Pick<Logger, "warn" | "error">, projectListTimeoutMs?: number) {
+    this.registry = new ActiveDaemonRegistry(
+      this.presence,
+      undefined,
+      logger,
+      projectListTimeoutMs,
+    );
   }
 
-  static async start(logger?: Pick<Logger, "warn" | "error">): Promise<DaemonRegistryHarness> {
-    const harness = new DaemonRegistryHarness(logger);
+  static async start(
+    logger?: Pick<Logger, "warn" | "error">,
+    projectListTimeoutMs?: number,
+  ): Promise<DaemonRegistryHarness> {
+    const harness = new DaemonRegistryHarness(logger, projectListTimeoutMs);
     await harness.serverListening();
     await harness.replaceConnection();
     return harness;
@@ -59,9 +67,6 @@ export class DaemonRegistryHarness {
       cwd: "/workspace",
       env: {},
       providerOptions: { permission: { edit: "ask", bash: "deny" } },
-      toolPolicy: {
-        preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
-      },
     });
     void promise.catch(() => undefined);
     return {
@@ -118,6 +123,39 @@ export class DaemonRegistryHarness {
       promise,
       request: await this.currentSocket().next("refresh_providers_snapshot_request"),
     };
+  }
+
+  listProjects() {
+    return this.connection().listProjects();
+  }
+
+  async pendingProjectList() {
+    const promise = this.listProjects();
+    void promise.catch(() => undefined);
+    return { promise, request: await this.currentSocket().next("project.list.request") };
+  }
+
+  respondProjectList(
+    pending: Awaited<ReturnType<DaemonRegistryHarness["pendingProjectList"]>>,
+    projects: readonly Record<string, unknown>[],
+  ): void {
+    this.currentSocket().send({
+      type: "project.list.response",
+      payload: { requestId: pending.request.requestId, projects },
+    });
+  }
+
+  /** The daemon's own refusal of a request, as it reports one it will not or cannot serve. */
+  rejectRequest(pending: { request: { requestId: string; type: string } }, code: string): void {
+    this.currentSocket().send({
+      type: "rpc_error",
+      payload: {
+        requestId: pending.request.requestId,
+        requestType: pending.request.type,
+        error: "daemon refused",
+        code,
+      },
+    });
   }
 
   respondProviderSnapshot(
