@@ -47,15 +47,20 @@ export class WebhookRepository implements WebhookStore {
     ).rows;
   }
 
-  async rotate(organizationId: string, triggerId: string) {
+  async rotate(
+    organizationId: string,
+    triggerId: string,
+    action: NonNullable<Parameters<WebhookStore["rotate"]>[2]> = "rotate",
+  ) {
     const secret = `whsec_${randomBytes(32).toString("base64url")}`;
     const {
       rows: [endpoint],
     } = await this.runtime.query<{ endpoint_id: string }>(
       `update trigger_webhooks w set secret_hash = $3
        from organization_triggers t where t.id = w.trigger_id and t.id = $1
-         and t.organization_id = $2 returning w.endpoint_id`,
-      [triggerId, organizationId, digest(secret).toString("hex")],
+         and t.organization_id = $2 and ($4 = 'rotate' or w.secret_hash is null)
+       returning w.endpoint_id`,
+      [triggerId, organizationId, digest(secret).toString("hex"), action],
     );
     return endpoint === undefined ? undefined : { endpointId: endpoint.endpoint_id, secret };
   }

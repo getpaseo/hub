@@ -8,6 +8,7 @@ import { parseCompiledHubConfig } from "../config/compiler.js";
 import type { DaemonAgentConfigurationValidator } from "../configuration/store.js";
 import { projectTriggerForm } from "./configuration/editor.js";
 import { configuredTriggerEvents, OrganizationTriggerStore } from "./store.js";
+import type { WebhookSecretAction } from "./webhook/index.js";
 
 export class TriggerDashboard {
   constructor(
@@ -126,14 +127,19 @@ export class TriggerDashboard {
       }));
   }
 
-  async rotateWebhookSecret(request: Request, organizationSlug: string, triggerId: string) {
+  async rotateWebhookSecret(
+    request: Request,
+    organizationSlug: string,
+    triggerId: string,
+    action: WebhookSecretAction = "rotate",
+  ) {
     const { tenant } = await resolveRouteTenant(this.auth, this.database, request, {
       organizationSlug,
     });
     if (!capabilitiesFor(tenant.membership.role).manageResources) {
       throw new ProjectCommandError("forbidden");
     }
-    return this.database.webhooks.rotate(tenant.organization.id, triggerId);
+    return this.database.webhooks.rotate(tenant.organization.id, triggerId, action);
   }
 
   async save(
