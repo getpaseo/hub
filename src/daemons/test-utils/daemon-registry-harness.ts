@@ -40,15 +40,20 @@ export class DaemonRegistryHarness {
   private didShutdown = false;
   private stopped = false;
 
-  constructor(logger?: Pick<Logger, "warn" | "error">, requestTimeoutMs?: number) {
-    this.registry = new ActiveDaemonRegistry(this.presence, undefined, logger, requestTimeoutMs);
+  constructor(logger?: Pick<Logger, "warn" | "error">, projectListTimeoutMs?: number) {
+    this.registry = new ActiveDaemonRegistry(
+      this.presence,
+      undefined,
+      logger,
+      projectListTimeoutMs,
+    );
   }
 
   static async start(
     logger?: Pick<Logger, "warn" | "error">,
-    requestTimeoutMs?: number,
+    projectListTimeoutMs?: number,
   ): Promise<DaemonRegistryHarness> {
-    const harness = new DaemonRegistryHarness(logger, requestTimeoutMs);
+    const harness = new DaemonRegistryHarness(logger, projectListTimeoutMs);
     await harness.serverListening();
     await harness.replaceConnection();
     return harness;

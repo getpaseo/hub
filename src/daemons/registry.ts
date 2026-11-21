@@ -27,28 +27,28 @@ import type { HubProviderSnapshot } from "../hub/protocol.js";
 interface PendingAgentValidationRequest {
   kind: "agent-validation";
   generation: number;
-  timer: ReturnType<typeof setTimeout>;
+  timer?: ReturnType<typeof setTimeout>;
   resolve(value: { valid: true } | { valid: false; issues: readonly AgentValidationIssue[] }): void;
   reject(error: Error): void;
 }
 interface PendingProviderSnapshotRequest {
   kind: "provider-snapshot";
   generation: number;
-  timer: ReturnType<typeof setTimeout>;
+  timer?: ReturnType<typeof setTimeout>;
   resolve(value: HubProviderSnapshot): void;
   reject(error: Error): void;
 }
 interface PendingProviderRefreshRequest {
   kind: "provider-refresh";
   generation: number;
-  timer: ReturnType<typeof setTimeout>;
+  timer?: ReturnType<typeof setTimeout>;
   resolve(): void;
   reject(error: Error): void;
 }
 interface PendingProjectListRequest {
   kind: "project-list";
   generation: number;
-  timer: ReturnType<typeof setTimeout>;
+  timer?: ReturnType<typeof setTimeout>;
   resolve(value: readonly DaemonProject[]): void;
   reject(error: Error): void;
 }
@@ -68,8 +68,12 @@ type PendingRequestInput =
   | Omit<PendingProviderRefreshRequest, "timer">
   | Omit<PendingProjectListRequest, "timer">;
 
-/** How long Hub waits for a daemon RPC answer before failing the request and dropping its entry. */
-const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+/**
+ * How long Hub waits for optional project suggestions before expiring the request.
+ * Provider discovery and refresh operations can legitimately run up to 120s on the daemon, so
+ * this short deadline applies only to project listing.
+ */
+const DEFAULT_PROJECT_LIST_TIMEOUT_MS = 15_000;
 
 /**
  * How a daemon says it will not list its projects for Hub: one that predates sharing them
@@ -108,7 +112,7 @@ export class ActiveDaemonRegistry {
     private readonly database: Pick<Database, "setDaemonPresence" | "touchDaemon">,
     private readonly clock: DaemonClock = systemDaemonClock,
     private readonly failureLogger: Pick<Logger, "warn" | "error"> = defaultLogger,
-    private readonly requestTimeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
+    private readonly projectListTimeoutMs: number = DEFAULT_PROJECT_LIST_TIMEOUT_MS,
   ) {}
 
   accept(
@@ -318,12 +322,17 @@ export class ActiveDaemonRegistry {
     const requestId = randomUUID();
     const request = ProjectListRequestSchema.parse({ type: "project.list.request", requestId });
     return new Promise((resolve, reject) => {
-      this.registerPending(daemonId, requestId, {
-        kind: "project-list",
-        generation: active.generation,
-        resolve,
-        reject,
-      });
+      this.registerPending(
+        daemonId,
+        requestId,
+        {
+          kind: "project-list",
+          generation: active.generation,
+          resolve,
+          reject,
+        },
+        this.projectListTimeoutMs,
+      );
       active.socket.send(JSON.stringify({ type: "session", message: request }));
     });
   }
@@ -511,14 +520,23 @@ export class ActiveDaemonRegistry {
     pending.reject(new Error(payload.error));
   }
 
-  private registerPending(daemonId: string, requestId: string, request: PendingRequestInput): void {
+  private registerPending(
+    daemonId: string,
+    requestId: string,
+    request: PendingRequestInput,
+    timeoutMs?: number,
+  ): void {
     const requests = this.pendingFor(daemonId);
+    if (timeoutMs === undefined) {
+      requests.set(requestId, request);
+      return;
+    }
     const timer = setTimeout(() => {
       const current = requests.get(requestId);
       if (current?.generation !== request.generation) return;
       requests.delete(requestId);
       current.reject(new Error("daemon_request_timeout"));
-    }, this.requestTimeoutMs);
+    }, timeoutMs);
     timer.unref?.();
     requests.set(requestId, { ...request, timer });
   }

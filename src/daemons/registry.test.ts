@@ -272,12 +272,18 @@ describe("daemon socket generations", () => {
     assert.deepEqual(await daemon.listProjects(), []);
   });
 
-  it("expires unanswered daemon requests instead of leaving them pending", async () => {
+  it("expires unanswered project list requests without interrupting slow provider refreshes", async () => {
     const timed = await DaemonRegistryHarness.start(createLogger(stream), 50);
     try {
+      const refresh = await timed.pendingProviderRefresh();
       const unanswered = await timed.pendingProjectList();
 
       await assert.rejects(unanswered.promise, /daemon_request_timeout/u);
+
+      // Provider discovery can run much longer than project suggestions; the refresh still settles.
+      assert.equal(await timed.requestSettled(refresh.promise), false);
+      timed.respondProviderRefresh(refresh);
+      await refresh.promise;
 
       const answered = await timed.pendingProjectList();
       timed.respondProjectList(answered, [
