@@ -5,7 +5,8 @@ import type { SlackSocketInstallationVerifier } from "../providers/slack/install
 import type { SlackDeliveryStatus } from "../triggers/slack/source/index.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 import { parseProviderApplicationConfiguration } from "./internal/store.js";
-import { reportFailure } from "../failures/index.js";
+import { logger } from "../logger.js";
+import { classifyFailure, reportFailure } from "../failures/index.js";
 
 export const PROVIDERS = ["github", "slack", "discord", "linear"] as const;
 export type Provider = (typeof PROVIDERS)[number];
@@ -767,6 +768,7 @@ export async function activateProviderApplicationsAtStartup(options: {
   verifier: ProviderApplicationVerifier;
   inventory: ProviderApplicationInventory;
   callbackOrigin: string;
+  logger?: Pick<typeof logger, "info" | "error">;
 }): Promise<readonly { provider: Provider; error: unknown }[]> {
   const failures: { provider: Provider; error: unknown }[] = [];
   const storedProviders = new Map(
@@ -777,35 +779,40 @@ export async function activateProviderApplicationsAtStartup(options: {
     const stored = storedProviders.get(provider);
     const configuration = environmentConfiguration ?? stored?.configuration;
     if (configuration === undefined) continue;
+    const phase = <T>(
+      name: "identity" | "inventory" | "prepare" | "start" | "activate" | "cleanup",
+      run: () => Promise<T>,
+    ) => logStartupPhase(options.logger ?? logger, provider, name, run);
+
+    let candidate: ProviderRuntimeCandidate | undefined;
     try {
-      const identity = await startupIdentity(
-        provider,
-        environmentConfiguration,
-        stored,
-        options.verifier,
+      const identity = await phase("identity", () =>
+        startupIdentity(provider, environmentConfiguration, stored, options.verifier),
       );
-      const connections = await options.inventory.connectedIdentities(provider);
-      const claimLegacyConnections =
-        stored === undefined &&
-        connections.length > 0 &&
-        connections.every((connection) => connection.applicationId === null);
-      if (
-        identityConflictsWithConnections(identity, stored, connections) &&
-        !claimLegacyConnections
-      ) {
-        throw new ProviderApplicationError("identityConflict", stored?.identity.name);
-      }
-      let candidate: ProviderRuntimeCandidate | undefined;
-      try {
-        const configurationVersion = environmentConfiguration === undefined ? stored!.version : 0;
-        candidate = await options.runtime.prepare(
+      const claimLegacyConnections = await phase("inventory", async () => {
+        const connections = await options.inventory.connectedIdentities(provider);
+        const claim =
+          stored === undefined &&
+          connections.length > 0 &&
+          connections.every((connection) => connection.applicationId === null);
+        if (identityConflictsWithConnections(identity, stored, connections) && !claim) {
+          throw new ProviderApplicationError("identityConflict", stored?.identity.name);
+        }
+        return claim;
+      });
+      const configurationVersion = environmentConfiguration === undefined ? stored!.version : 0;
+      const prepared = await phase("prepare", () =>
+        options.runtime.prepare(
           provider,
           configuration,
           options.callbackOrigin,
           identity,
           configurationVersion,
-        );
-        await candidate.start();
+        ),
+      );
+      candidate = prepared;
+      await phase("start", () => prepared.start());
+      await phase("activate", async () => {
         if (
           claimLegacyConnections &&
           !(await options.inventory.claimLegacyConnections(provider, identity))
@@ -813,17 +820,48 @@ export async function activateProviderApplicationsAtStartup(options: {
           throw new ProviderApplicationError("identityConflict");
         }
         await options.store.activate({ provider, identity, configurationVersion });
-        candidate.publish();
-        candidate = undefined;
-      } catch (error) {
-        await closeCandidate(candidate, provider, "activate_at_startup");
-        throw error;
-      }
+        prepared.publish();
+      });
     } catch (error) {
       failures.push({ provider, error });
+      if (candidate !== undefined) {
+        const failedCandidate = candidate;
+        await phase("cleanup", () => failedCandidate.close()).catch(() => {});
+      }
     }
   }
   return failures;
+}
+
+async function logStartupPhase<T>(
+  log: Pick<typeof logger, "info" | "error">,
+  provider: Provider,
+  phase: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  const operation = "provider_application.activate_at_startup";
+  const context = { operation, provider, phase };
+  const started = performance.now();
+  log.info({ ...context, durationMs: 0, outcome: "started" }, "provider startup phase started");
+  try {
+    const result = await run();
+    log.info(
+      { ...context, durationMs: Math.round(performance.now() - started), outcome: "succeeded" },
+      "provider startup phase finished",
+    );
+    return result;
+  } catch (error) {
+    log.error(
+      {
+        ...context,
+        durationMs: Math.round(performance.now() - started),
+        outcome: "failed",
+        failureKind: classifyFailure(error),
+      },
+      "provider startup phase failed",
+    );
+    throw error;
+  }
 }
 
 async function startupIdentity(

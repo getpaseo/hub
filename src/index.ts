@@ -164,7 +164,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       completionTokenSecret: identity.authSecret,
       close: () => resources.close(),
     });
-    const activationFailures = await activateProviderApplicationsAtStartup({
+    await activateProviderApplicationsAtStartup({
       store: providerStore,
       environment: providerEnvironment,
       runtime: providerRuntime,
@@ -172,13 +172,6 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       inventory: providerInventory,
       callbackOrigin: identity.appUrl,
     });
-    for (const { provider, error } of activationFailures) {
-      reportFailure(error, {
-        operation: "provider_application.activate_at_startup",
-        component: "provider_applications",
-        provider,
-      });
-    }
     const receiptRetention = new ReceiptRetention(runtime);
     resources.own(() => receiptRetention.stop());
     receiptRetention.start();
