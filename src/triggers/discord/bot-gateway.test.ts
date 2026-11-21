@@ -4,7 +4,7 @@ import { createServer, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocketServer, type WebSocket } from "ws";
-import { it } from "vitest";
+import { it, vi } from "vitest";
 import { createDiscordBotClient } from "./bot.js";
 
 it("closes a silent socket and suppresses the SDK's reconnect", async () => {
@@ -54,12 +54,27 @@ it("prevents a connection when discovery completes after cancellation", async ()
 it("starts and stops after a real READY exchange", async () => {
   await withGateway(async (fixture) => {
     const bot = fixture.createBot(2_000);
-    fixture.gateway.on("connection", (socket) => answerIdentify(socket, fixture.gatewayUrl));
+    fixture.gateway.on("connection", fixture.answerIdentify);
     await bot.start();
     assert.equal(bot.getSelfUserId(), "100");
     await bot.stop();
   });
 });
+
+it("allows healthy shards to identify at the advertised concurrency", async () => {
+  vi.stubEnv("SHARD_COUNT", "4");
+  try {
+    await withGateway(async (fixture) => {
+      fixture.gateway.on("connection", fixture.answerIdentify);
+      const bot = fixture.createBot(15_000);
+      await bot.start();
+      assert.equal(fixture.upgrades, 4);
+      await bot.stop();
+    });
+  } finally {
+    vi.unstubAllEnvs();
+  }
+}, 28_000);
 
 it("preserves classification for an unrecoverable gateway close", async () => {
   await withGateway(async (fixture) => {
@@ -137,7 +152,7 @@ async function startGateway(options: { stallDiscovery?: boolean; stallUpgrade?: 
 
   return {
     gateway,
-    gatewayUrl,
+    answerIdentify: (socket: WebSocket) => answerIdentify(socket, gatewayUrl),
     discovery,
     upgrade,
     sendDiscovery,

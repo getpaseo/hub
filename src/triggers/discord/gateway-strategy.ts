@@ -11,10 +11,14 @@ import {
 import { Collection } from "@discordjs/collection";
 import { WebSocket } from "ws";
 
+// The SDK paces Identify requests at five seconds per bucket, plus up to 1.5 seconds of jitter.
+const IDENTIFY_SLOT_MS = 6_500;
+
 /** The SDK's default in-process strategy with cancellation at the shard boundary. */
 export function createDiscordGatewayStrategy(
   manager: WebSocketManager,
   startup: AbortSignal,
+  allowIdentifyDelay: (delayMs: number) => void,
 ): IShardingStrategy {
   const shards = new Collection<number, WebSocketShard>();
   startup.addEventListener(
@@ -38,6 +42,17 @@ export function createDiscordGatewayStrategy(
       startup.throwIfAborted();
       const options = await managerToFetchingStrategyOptions(manager);
       startup.throwIfAborted();
+      const concurrency = options.gatewayInformation.session_start_limit.max_concurrency;
+      const buckets = new Map<number, number>();
+      let longestQueue = 1;
+      for (const id of ids) {
+        const bucket = id % concurrency;
+        const size = (buckets.get(bucket) ?? 0) + 1;
+        buckets.set(bucket, size);
+        longestQueue = Math.max(longestQueue, size);
+      }
+      if (longestQueue > 1) allowIdentifyDelay((longestQueue - 1) * IDENTIFY_SLOT_MS);
+
       const context = new StartupShardContext(manager, options, startup);
       for (const id of ids) {
         const shard = new StartupShard(context, id, startup);

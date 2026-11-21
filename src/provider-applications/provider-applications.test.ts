@@ -352,7 +352,10 @@ describe("provider applications", () => {
       assert.equal(Reflect.get(record, "outcome"), outcome);
       const duration: unknown = Reflect.get(record, "durationMs");
       assert.ok(typeof duration === "number" && duration >= 0);
-      if (outcome === "failed") assert.equal(Reflect.get(record, "failureKind"), "timeout");
+      if (outcome === "failed") {
+        assert.equal(Reflect.get(record, "failureKind"), "timeout");
+        assert.match(JSON.stringify(Reflect.get(record, "err")), /DiscordStartupTimeoutError/u);
+      }
     }
     assert.doesNotMatch(JSON.stringify(records), /test-(?:secret|token)/u);
   }, 1_000);

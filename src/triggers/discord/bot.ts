@@ -124,20 +124,23 @@ class DiscordStartupTimeoutError extends Error {
   }
 }
 
-async function withinDeadline<T>(
-  operation: Promise<T>,
-  timeoutMs: number,
-  error: Error,
-): Promise<T> {
+function createDeadline(timeoutMs: number, createError: (budgetMs: number) => Error) {
+  const startedAt = performance.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(error), timeoutMs);
+  let expire!: (error: Error) => void;
+  const elapsed = new Promise<never>((_resolve, reject) => {
+    expire = reject;
   });
-  try {
-    return await Promise.race([operation, deadline]);
-  } finally {
-    clearTimeout(timer);
+  const clear = () => clearTimeout(timer);
+  function allow(extraMs: number) {
+    clear();
+    const budgetMs = timeoutMs + extraMs;
+    const remainingMs = budgetMs - (performance.now() - startedAt);
+    timer = setTimeout(() => expire(createError(budgetMs)), remainingMs);
   }
+
+  allow(0);
+  return { elapsed, allow, clear };
 }
 
 export interface CreateDiscordBotClientOptions {
@@ -153,13 +156,16 @@ export function createDiscordBotClient(
   options: CreateDiscordBotClientOptions,
 ): DiscordBotClient & { readonly rest: REST } {
   const startupCancellation = new AbortController();
+  let startupDeadline: ReturnType<typeof createDeadline> | undefined;
   const client =
     options.client ??
     new Client({
       ...(options.restOptions === undefined ? {} : { rest: options.restOptions }),
       ws: {
         buildStrategy: (manager) =>
-          createDiscordGatewayStrategy(manager, startupCancellation.signal),
+          createDiscordGatewayStrategy(manager, startupCancellation.signal, (delayMs) => {
+            startupDeadline?.allow(delayMs);
+          }),
       },
       intents: [
         GatewayIntentBits.Guilds,
@@ -176,18 +182,20 @@ export function createDiscordBotClient(
   let abandoned: DiscordStartupTimeoutError | undefined;
 
   async function destroyAfterTimeout() {
+    const deadline = createDeadline(
+      options.cleanupTimeoutMs ?? DISCORD_CLEANUP_TIMEOUT_MS,
+      () => new Error("Discord client destruction exceeded its deadline"),
+    );
     try {
-      await withinDeadline(
-        client.destroy(),
-        options.cleanupTimeoutMs ?? DISCORD_CLEANUP_TIMEOUT_MS,
-        new Error("Discord client destruction exceeded its deadline"),
-      );
+      await Promise.race([client.destroy(), deadline.elapsed]);
     } catch (error) {
       reportFailure(
         error,
         { operation: "discord.startup.cleanup", component: "triggers", provider: "discord" },
         { scrubValues: [options.token] },
       );
+    } finally {
+      deadline.clear();
     }
   }
 
@@ -197,27 +205,31 @@ export function createDiscordBotClient(
       gatewayCloseCode = event.code;
     };
     client.on("shardDisconnect", observeGatewayClose);
-    const timeoutMs = options.startupTimeoutMs ?? DISCORD_STARTUP_TIMEOUT_MS;
-    const timeout = new DiscordStartupTimeoutError(timeoutMs);
+    const deadline = createDeadline(
+      options.startupTimeoutMs ?? DISCORD_STARTUP_TIMEOUT_MS,
+      (budgetMs) => new DiscordStartupTimeoutError(budgetMs),
+    );
+    startupDeadline = deadline;
     try {
-      await withinDeadline(
+      await Promise.race([
         client
           .login(options.token)
           .then(() => (abandoned === undefined ? undefined : destroyAfterTimeout())),
-        timeoutMs,
-        timeout,
-      );
+        deadline.elapsed,
+      ]);
       started = true;
     } catch (error) {
-      if (error === timeout) {
-        abandoned = timeout;
-        startupCancellation.abort(timeout);
+      if (error instanceof DiscordStartupTimeoutError) {
+        abandoned = error;
+        startupCancellation.abort(error);
         await destroyAfterTimeout();
       }
       const classified =
         gatewayCloseCode === undefined ? undefined : discordGatewayError(gatewayCloseCode, error);
       throw classified ?? error;
     } finally {
+      deadline.clear();
+      startupDeadline = undefined;
       client.off("shardDisconnect", observeGatewayClose);
     }
   }

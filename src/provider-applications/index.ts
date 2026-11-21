@@ -5,7 +5,8 @@ import type { SlackSocketInstallationVerifier } from "../providers/slack/install
 import type { SlackDeliveryStatus } from "../triggers/slack/source/index.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 import { parseProviderApplicationConfiguration } from "./internal/store.js";
-import { logger } from "../logger.js";
+import { errorForLog, logger } from "../logger.js";
+import { sensitiveConfigurationValues } from "./internal/configuration-secrets.js";
 import { classifyFailure, reportFailure } from "../failures/index.js";
 
 export const PROVIDERS = ["github", "slack", "discord", "linear"] as const;
@@ -779,10 +780,11 @@ export async function activateProviderApplicationsAtStartup(options: {
     const stored = storedProviders.get(provider);
     const configuration = environmentConfiguration ?? stored?.configuration;
     if (configuration === undefined) continue;
+    const scrubValues = sensitiveConfigurationValues(configuration);
     const phase = <T>(
       name: "identity" | "inventory" | "prepare" | "start" | "activate" | "cleanup",
       run: () => Promise<T>,
-    ) => logStartupPhase(options.logger ?? logger, provider, name, run);
+    ) => logStartupPhase(options.logger ?? logger, provider, name, scrubValues, run);
 
     let candidate: ProviderRuntimeCandidate | undefined;
     try {
@@ -837,6 +839,7 @@ async function logStartupPhase<T>(
   log: Pick<typeof logger, "info" | "error">,
   provider: Provider,
   phase: string,
+  scrubValues: readonly string[],
   run: () => Promise<T>,
 ): Promise<T> {
   const operation = "provider_application.activate_at_startup";
@@ -857,6 +860,7 @@ async function logStartupPhase<T>(
         durationMs: Math.round(performance.now() - started),
         outcome: "failed",
         failureKind: classifyFailure(error),
+        err: error instanceof Error ? errorForLog(error, { scrubValues }) : undefined,
       },
       "provider startup phase failed",
     );
