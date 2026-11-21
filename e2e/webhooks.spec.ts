@@ -24,7 +24,7 @@ test("creates a webhook and reveals each secret only once", async ({ hub, page }
     await home.expectCurrentStep("Run it");
     await home.expectStepText(
       "Run it",
-      "Send a POST to the webhook URL with the secret from the trigger editor.",
+      "Send a POST to the webhook URL with the secret from the trigger editor",
     );
     await triggers.open();
     await triggers.openTrigger("webhook-alert");
@@ -44,7 +44,7 @@ test("creates a webhook and reveals each secret only once", async ({ hub, page }
     await triggers.addScheduleBeforeWebhook();
     await triggers.save("webhook-alert");
     await home.open();
-    await home.expectStepText("Run it", "It runs on its schedule.");
+    await home.expectStepText("Run it", "Runs on its schedule");
     await home.expectStepText("Run it", "Send a POST to the webhook URL");
   });
 });

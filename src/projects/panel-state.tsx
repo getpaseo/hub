@@ -54,7 +54,7 @@ export function queryState<T>(
   if (query.status === "error")
     return {
       ok: false,
-      element: <FailureAlert title={title} error={query.error} fallback={`${title}.`} />,
+      element: <FailureAlert title={title} error={query.error} fallback={title} />,
     };
   return { ok: true, data: query.data };
 }
@@ -88,7 +88,7 @@ export function CommandError({
       standalone
       title="The last action didn't complete"
       error={failed.data}
-      fallback="Hub did not receive the project action result. Check your connection and reload the current project state."
+      fallback="Hub did not receive the project action result. Check your connection and reload the current project state"
     />
   );
 }

@@ -224,6 +224,85 @@ describe("daemon socket generations", () => {
     ]);
   });
 
+  it("lists the projects the daemon has open", async () => {
+    const projects = await daemon.pendingProjectList();
+    daemon.respondProjectList(projects, [
+      {
+        projectId: "project-1",
+        projectDisplayName: "hub",
+        projectCustomName: "Paseo Hub",
+        projectRootPath: "/home/dev/hub",
+        projectKind: "git",
+      },
+      {
+        projectId: "project-2",
+        projectDisplayName: "notes",
+        projectCustomName: null,
+        projectRootPath: "/home/dev/notes",
+        projectKind: "a-kind-added-later",
+      },
+    ]);
+
+    assert.deepEqual(await projects.promise, [
+      { id: "project-1", name: "Paseo Hub", rootPath: "/home/dev/hub" },
+      { id: "project-2", name: "notes", rootPath: "/home/dev/notes" },
+    ]);
+  });
+
+  it.each(["access_denied", "unknown_schema"])(
+    "reads a daemon that answers the project list with %s as offering no projects",
+    async (code) => {
+      const projects = await daemon.pendingProjectList();
+      daemon.rejectRequest(projects, code);
+
+      assert.deepEqual(await projects.promise, []);
+    },
+  );
+
+  it("still fails the project list when the daemon breaks while answering it", async () => {
+    const projects = await daemon.pendingProjectList();
+    daemon.rejectRequest(projects, "handler_error");
+
+    await assert.rejects(projects.promise, /daemon refused/u);
+  });
+
+  it("asks a legacy daemon for nothing and offers no projects", async () => {
+    await daemon.replaceConnection(false, "legacy");
+
+    assert.deepEqual(await daemon.listProjects(), []);
+  });
+
+  it("expires unanswered project list requests without interrupting slow provider refreshes", async () => {
+    const timed = await DaemonRegistryHarness.start(createLogger(stream), 50);
+    try {
+      const refresh = await timed.pendingProviderRefresh();
+      const unanswered = await timed.pendingProjectList();
+
+      await assert.rejects(unanswered.promise, /daemon_request_timeout/u);
+
+      // Provider discovery can run much longer than project suggestions; the refresh still settles.
+      assert.equal(await timed.requestSettled(refresh.promise), false);
+      timed.respondProviderRefresh(refresh);
+      await refresh.promise;
+
+      const answered = await timed.pendingProjectList();
+      timed.respondProjectList(answered, [
+        {
+          projectId: "project-1",
+          projectDisplayName: "hub",
+          projectCustomName: null,
+          projectRootPath: "/home/dev/hub",
+          projectKind: "git",
+        },
+      ]);
+      assert.deepEqual(await answered.promise, [
+        { id: "project-1", name: "hub", rootPath: "/home/dev/hub" },
+      ]);
+    } finally {
+      await timed.stop();
+    }
+  });
+
   it("waits for offline presence before shutdown completes", async () => {
     daemon.holdOfflinePresence();
 

@@ -163,7 +163,7 @@ export function ProviderSection({
         setOutcome({ tone: "error", message: response.error.message });
         return;
       }
-      setOutcome({ tone: "success", message: "Slack is reconnecting." });
+      setOutcome({ tone: "success", message: "Slack is reconnecting" });
       await queryClient.invalidateQueries({ queryKey: ["provider-applications"] });
     },
     onError: () => setOutcome({ tone: "error", message: unreachable("Slack") }),
@@ -294,12 +294,12 @@ const SLACK_TRANSPORTS: readonly SegmentedOption[] = [
   {
     value: "socket",
     label: "Socket Mode",
-    hint: "Connect from this Hub to Slack. No public address or HTTPS needed.",
+    hint: "Connect from this Hub to Slack without a public HTTPS address",
   },
   {
     value: "webhook",
     label: "Webhooks",
-    hint: "Let Slack send events to a public HTTPS address.",
+    hint: "Let Slack send events to a public HTTPS address",
   },
 ];
 
@@ -570,7 +570,7 @@ function PasteForm({
       {...(replacing
         ? {
             description:
-              "Rotating secrets for the same app keeps your connections. Setting up a different app does not.",
+              "Rotating secrets for the same app keeps your connections; setting up a different app does not",
           }
         : {})}
     >
@@ -705,8 +705,8 @@ function EnvironmentNotice({ guide }: { guide: ProviderGuide }) {
     <NoticeAlert tone="neutral" title="Managed by environment">
       <p>
         These credentials come from <VariableList names={guide.environmentVariables} />. Change them
-        where you set Hub's environment and restart Hub; they cannot be edited here. Connecting{" "}
-        {guide.name} still works from this page.
+        in Hub's environment and restart Hub to edit them. Connecting {guide.name} still works from
+        this page
       </p>
     </NoticeAlert>
   );
@@ -891,5 +891,5 @@ function rawValue(form: FormData, name: string): string {
 }
 
 function unreachable(name: string): string {
-  return `Hub did not get an answer while contacting ${name}. Nothing was saved. Check your connection, then try again.`;
+  return `Hub did not get an answer while contacting ${name}. Nothing was saved. Check your connection, then try again`;
 }

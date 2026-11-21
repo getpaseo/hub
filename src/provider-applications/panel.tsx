@@ -66,7 +66,7 @@ function ProviderApplications({
       <FailureAlert
         title="Your apps couldn't be loaded"
         error={query.error}
-        fallback="Hub did not answer. Check your connection, then reload the page."
+        fallback="Hub did not answer. Check your connection, then reload the page"
       />
     );
   }
@@ -143,7 +143,7 @@ export function AppSetupEntry({
     <AuthLayout width="xl">
       <PageHeader
         title="Set up your apps"
-        description="Paseo Hub talks to GitHub, Slack, Discord, and Linear through apps you create and own. Set up the ones you want to use."
+        description="Paseo Hub talks to GitHub, Slack, Discord, and Linear through apps you create and own"
         focusOnMount
       />
       <div className="grid min-w-0 gap-6">
@@ -178,7 +178,7 @@ function ExitFailure({ error, onRetry }: { error: Failure; onRetry: () => void }
     <FailureAlert
       title="Hub couldn't leave app setup"
       error={error}
-      fallback="Hub didn't get the request, so nothing changed. Check your connection, then try again."
+      fallback="Hub didn't get the request, so nothing changed. Check your connection, then try again"
       onRetry={onRetry}
       focusOnArrival
     />
@@ -192,7 +192,7 @@ export function AppsPanel() {
     <>
       <PageHeader
         title="Apps"
-        description="The GitHub, Slack, Discord, and Linear apps Hub uses to reach your workspaces."
+        description="GitHub, Slack, Discord, and Linear apps Hub uses to reach your workspaces"
       />
       <ProviderApplications surface="apps" organizationId={account.organization.id} />
     </>

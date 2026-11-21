@@ -74,10 +74,19 @@ export type AgentValidationVerdict =
   | { valid: true }
   | { valid: false; issues: readonly AgentValidationIssue[] };
 
+/** A project the daemon has open: the name it goes by there, and where it lives on that machine. */
+export interface DaemonProject {
+  id: string;
+  name: string;
+  rootPath: string;
+}
+
 export interface DaemonConnection {
   agents: import("./agents/index.js").AgentConnection;
   getProviderSnapshot(options: { cwd?: string }): Promise<HubProviderSnapshot>;
   refreshProviderSnapshot(options: { cwd?: string; providers?: string[] }): Promise<void>;
+  /** The daemon's open projects. Empty when the daemon does not share them with Hub. */
+  listProjects(): Promise<readonly DaemonProject[]>;
   /** The daemon's own answer about whether it can run this agent as configured. */
   validateAgentConfiguration(agent: CompiledAgent): Promise<AgentValidationVerdict>;
 }

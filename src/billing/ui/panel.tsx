@@ -40,7 +40,7 @@ export function BillingPanel({ openPlans }: { openPlans: boolean }) {
       <FailureAlert
         title="Billing unavailable"
         error={query.error}
-        fallback="Hub did not receive the billing state. Check your connection and reload the page."
+        fallback="Hub did not receive the billing state. Check your connection and reload the page"
       />
     );
   }
@@ -78,7 +78,7 @@ function BillingContent({
     <>
       <PageHeader
         title="Billing"
-        description={`Plan and billing for ${overview.organization.name}.`}
+        description={`Plan and billing for ${overview.organization.name}`}
       >
         <Button variant="outline" size="sm" asChild>
           <Link to={`/o/${slug}/settings/usage` as never}>View usage</Link>
@@ -196,7 +196,7 @@ function PortalBand({ slug }: { slug: string }) {
         <FailureAlert
           title="Billing portal unavailable"
           error={open.data}
-          fallback="Hub could not open the billing portal. Try again in a moment."
+          fallback="Hub could not open the billing portal. Try again in a moment"
         />
       )}
     </div>
@@ -211,7 +211,7 @@ function redirectTo(url: string): void {
 function BillingLoading({ name }: { name: string }) {
   return (
     <>
-      <PageHeader title="Billing" description={`Plan and billing for ${name}.`} />
+      <PageHeader title="Billing" description={`Plan and billing for ${name}`} />
       <Section title="Plan">
         <CardSkeleton lines={4} />
       </Section>

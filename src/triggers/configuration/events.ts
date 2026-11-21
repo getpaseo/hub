@@ -12,59 +12,86 @@ export interface QualifierDefinition {
   required: boolean;
 }
 
+/**
+ * Who may invoke a trigger, as the form offers it. `members` and `contributors` are GitHub
+ * repository associations; `everyone` and `specific` are the allowlist every provider has.
+ */
+export type TriggerAudience = "members" | "contributors" | "everyone" | "specific";
+
 interface EventDefinition {
   provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule" | "webhook";
   label: string;
   origin: "hub" | "provider";
   qualifiers: readonly QualifierDefinition[];
+  /** The audiences the form offers for this event, default first. Empty when Hub is the source. */
+  audiences: readonly TriggerAudience[];
 }
+
+const ALLOWLIST: readonly TriggerAudience[] = ["everyone", "specific"];
+
+/** GitHub reports the actor's repository association on these events, so they start at members. */
+const ASSOCIATION: readonly TriggerAudience[] = ["members", "contributors", ...ALLOWLIST];
 
 const ADDED_LABEL: QualifierDefinition = {
   key: "label",
   kind: "string",
   label: "Added label",
   description:
-    "Match the label added by this event, not labels already on the issue or pull request.",
+    "Match the label added by this event, not labels already on the issue or pull request",
   required: true,
 };
 
 function event(
   provider: EventDefinition["provider"],
   label: string,
-  qualifiers: readonly QualifierDefinition[] = [],
+  { qualifiers = [], audiences }: Partial<Pick<EventDefinition, "qualifiers" | "audiences">> = {},
 ): EventDefinition {
+  const origin =
+    provider === "manual" || provider === "schedule" || provider === "webhook" ? "hub" : "provider";
   return {
     provider,
     label,
     qualifiers,
-    origin:
-      provider === "manual" || provider === "schedule" || provider === "webhook"
-        ? "hub"
-        : "provider",
+    origin,
+    audiences: audiences ?? (origin === "hub" ? [] : ALLOWLIST),
   };
+}
+
+/** A GitHub event where GitHub guarantees the sender authored the created object it carries. */
+function authored(label: string): EventDefinition {
+  return event("github", label, { audiences: ASSOCIATION });
 }
 
 const EVENTS = {
   "slack.mention": event("slack", "Slack mention"),
   "discord.mention": event("discord", "Discord mention"),
-  "github.issue_created": event("github", "GitHub issue created"),
-  "github.pull_request_created": event("github", "GitHub pull request created"),
+  "github.issue_created": authored("GitHub issue created"),
+  "github.pull_request_created": authored("GitHub pull request created"),
+  // A maintainer can mark another author's draft pull request ready or push to their fork branch;
+  // in both cases GitHub reports only the pull request author's association, not the sender's.
   "github.pull_request_ready_for_review": event("github", "GitHub pull request ready for review"),
   "github.pull_request_synchronized": event(
     "github",
     "GitHub pull request updated with new commits",
   ),
-  "github.issue_comment_created": event("github", "GitHub issue comment created"),
-  "github.pull_request_comment_created": event("github", "GitHub pull request comment created"),
-  "github.issue_label_added": event("github", "GitHub issue label added", [ADDED_LABEL]),
-  "github.pull_request_label_added": event("github", "GitHub pull request label added", [
-    ADDED_LABEL,
-  ]),
+  "github.issue_comment_created": authored("GitHub issue comment created"),
+  "github.pull_request_comment_created": authored("GitHub pull request comment created"),
+  // GitHub lets only people with triage access label, and the labeler is rarely the author
+  // whose association the event reports, so these keep the plain allowlist.
+  "github.issue_label_added": event("github", "GitHub issue label added", {
+    qualifiers: [ADDED_LABEL],
+  }),
+  "github.pull_request_label_added": event("github", "GitHub pull request label added", {
+    qualifiers: [ADDED_LABEL],
+  }),
+  // Raw multi-action webhooks also fire when a maintainer acts on another person's issue, pull
+  // request, comment, or review, where GitHub omits the sender's association.
   "github.issue_comment": event("github", "GitHub issue or PR comment webhook"),
   "github.issues": event("github", "GitHub issue webhook"),
   "github.pull_request": event("github", "GitHub pull request webhook"),
   "github.pull_request_review": event("github", "GitHub pull request review webhook"),
   "github.pull_request_review_comment": event("github", "GitHub review comment webhook"),
+  // GitHub restricts pushing to writers and reports no association on a push.
   "github.push": event("github", "GitHub push"),
   "linear.issue_entered_scope": event("linear", "Linear issue entered scope"),
   "linear.issue_assigned": event("linear", "Linear issue assigned"),
@@ -87,4 +114,9 @@ export function parseEditorEvent(value: string): EditorEvent {
 
 export function eventDefinition(eventId: EditorEvent): EventDefinition {
   return EVENTS[eventId];
+}
+
+/** The audience a new trigger for this event starts with. */
+export function defaultAudience(eventId: EditorEvent): TriggerAudience {
+  return EVENTS[eventId].audiences[0] ?? "everyone";
 }

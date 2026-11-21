@@ -64,7 +64,7 @@ function RecurrenceFields({
       setInputError(undefined);
       onChange({ ...value, rule });
     } catch (failure) {
-      setInputError(failure instanceof Error ? failure.message : "Check recurrence inputs.");
+      setInputError(failure instanceof Error ? failure.message : "Check recurrence inputs");
       onChange({ ...value, rule: "" });
     }
   }
@@ -76,7 +76,7 @@ function RecurrenceFields({
         <FormField
           id="schedule-rule"
           label="Custom schedule"
-          description="This YAML rule has no matching preset. You can edit it here; other changes preserve it."
+          description="No matching preset. Edit this YAML rule directly and other changes preserve it"
         >
           {(control) => (
             <Input
@@ -96,7 +96,7 @@ function RecurrenceFields({
                   value={draft.frequency}
                   options={FREQUENCIES}
                   placeholder="Choose frequency"
-                  empty="No frequencies found."
+                  empty="No frequencies found"
                   onChange={(option) => changeDraft({ ...draft, frequency: option.value })}
                 />
               )}
@@ -188,7 +188,7 @@ function RecurrenceFields({
           <FormField
             id="schedule-start"
             label="Starting"
-            description="Local date and time used by the custom rule."
+            description="Local date and time used by the custom rule"
           >
             {(control) => (
               <Input
@@ -212,7 +212,7 @@ function RecurrenceFields({
         <FormField
           id="schedule-timezone"
           label="Timezone"
-          description="Repeats follow the local clock in this timezone."
+          description="Repeats follow the local clock in this timezone"
         >
           {(control) => (
             <Combobox
@@ -220,7 +220,7 @@ function RecurrenceFields({
               value={value.timezone}
               options={TIMEZONES}
               placeholder="Choose timezone"
-              empty="No timezones found."
+              empty="No timezones found"
               onChange={(option) => onChange({ ...value, timezone: option.value })}
             />
           )}
@@ -230,7 +230,7 @@ function RecurrenceFields({
         <p className="text-sm text-muted-foreground" role="status">
           {validation.success
             ? recurrenceSummary(validation.data)
-            : "Complete the recurrence settings."}
+            : "Complete the recurrence settings"}
         </p>
       )}
       {(inputError ?? error) ? (

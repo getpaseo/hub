@@ -100,7 +100,7 @@ test("Socket Mode connects locally while Webhooks preserves OAuth", () => {
   const slack = guideFor("slack");
   assert.equal(slack.savingContinues, false);
   assert.equal(slack.actions.save, "Connect Slack");
-  assert.equal(slack.verifiedMessage, "Slack connected.");
+  assert.equal(slack.verifiedMessage, "Slack connected");
   assert.equal(SLACK_WEBHOOK_GUIDE.savingContinues, true);
   assert.equal(SLACK_WEBHOOK_GUIDE.actions.save, "Save and continue to Slack");
   assert.equal(guideFor("github").actions.save, "Verify and save");
@@ -136,11 +136,11 @@ test("the Slack Webhook choice and Linear treat plain HTTP as a hard gate", () =
   assert.equal(isSecureOrigin(ORIGIN), true);
   assert.equal(
     SLACK_WEBHOOK_GUIDE.httpsRequirement(LOCAL),
-    `Slack only works over HTTPS, and Hub is at ${LOCAL}. Reopen Hub at its public HTTPS address to set up Slack.`,
+    `Slack only works over HTTPS, and Hub is at ${LOCAL}. Reopen Hub at its public HTTPS address to set up Slack`,
   );
   assert.equal(
     guideFor("linear").httpsRequirement(LOCAL),
-    `Linear webhooks need HTTPS, and Hub is at ${LOCAL}. Reopen Hub at its public HTTPS address to set up Linear.`,
+    `Linear webhooks need HTTPS, and Hub is at ${LOCAL}. Reopen Hub at its public HTTPS address to set up Linear`,
   );
 });
 
@@ -181,7 +181,7 @@ test("on plain HTTP GitHub keeps repository access and defers event triggers", (
   assert.deepEqual(events!.fields, []);
   assert.equal(
     events!.unavailable,
-    `GitHub delivers events to a webhook URL, so this part needs a public HTTPS address. Hub is at ${LOCAL}. Repository access works now; reopen Hub at its HTTPS address to add event triggers.`,
+    `GitHub delivers events to a webhook URL, so this part needs a public HTTPS address. Hub is at ${LOCAL}. Repository access works now; reopen Hub at its HTTPS address to add event triggers`,
   );
   // The core credentials still stand alone, so a plain-HTTP operator can finish repository access.
   assert.deepEqual(

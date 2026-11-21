@@ -1,5 +1,10 @@
 import { eventDefinition, isEditorEvent } from "../triggers/configuration/events.js";
 import { ContinuationSchema } from "../triggers/continuation.js";
+import {
+  GitHubAuthorAssociationSchema,
+  reportsAuthorAssociation,
+  type GitHubAuthorAssociation,
+} from "../triggers/github/author-association.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
@@ -110,6 +115,8 @@ const AuthoredTriggerFilterSchema = z
     assignees: z.array(z.string().min(1)).min(1).optional(),
     channels: z.array(z.string().min(1)).optional(),
     from_users: z.array(z.string().min(1)).optional(),
+    /** GitHub repository associations whose holders may invoke the trigger. */
+    author_associations: z.array(GitHubAuthorAssociationSchema).min(1).optional(),
     inputs: z.record(z.string(), InputValueSchema).optional(),
     connection: z
       .string()
@@ -276,10 +283,17 @@ export type CompiledSteps = readonly CompiledStep[];
 export type CompiledTriggerFilter = Readonly<
   Omit<
     AuthoredTriggerFilter,
-    "channels" | "from_users" | "states" | "labels" | "exclude_labels" | "assignees"
+    | "channels"
+    | "from_users"
+    | "author_associations"
+    | "states"
+    | "labels"
+    | "exclude_labels"
+    | "assignees"
   > & {
     channels?: readonly string[] | undefined;
     from_users?: readonly string[] | undefined;
+    author_associations?: readonly GitHubAuthorAssociation[] | undefined;
     states?: readonly string[] | undefined;
     labels?: readonly string[] | undefined;
     exclude_labels?: readonly string[] | undefined;
@@ -1393,6 +1407,12 @@ function validateAuthoredIds(config: AuthoredHubConfig): void {
 }
 
 function validateTriggerLaunchSecurity(trigger: CompiledTrigger): void {
+  const associations = trigger.filters?.author_associations;
+  if (associations !== undefined && !reportsAuthorAssociation(trigger.on)) {
+    throw new Error(
+      `trigger ${trigger.name}: filters.author_associations is not available for ${trigger.on}`,
+    );
+  }
   if (isEditorEvent(trigger.on) && eventDefinition(trigger.on).origin === "hub") return;
   // A project scout is an intentionally autonomous, project-scoped policy. Every other
   // externally-originated Linear action remains actor-allowlisted below.
@@ -1404,9 +1424,15 @@ function validateTriggerLaunchSecurity(trigger: CompiledTrigger): void {
     }
     return;
   }
-  if ((trigger.filters?.from_users?.length ?? 0) === 0) {
+  if ((trigger.filters?.from_users?.length ?? 0) > 0) return;
+  if (!reportsAuthorAssociation(trigger.on)) {
     throw new Error(
       `trigger ${trigger.name} requires a non-empty filters.from_users allowlist for externally sourced events`,
+    );
+  }
+  if (associations === undefined) {
+    throw new Error(
+      `trigger ${trigger.name} requires a non-empty filters.from_users or filters.author_associations allowlist for externally sourced events`,
     );
   }
 }

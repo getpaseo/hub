@@ -37,7 +37,7 @@ export function ForgotPasswordEntry({ onBack }: { onBack: () => void }) {
     request.isError || request.data?.status === "error"
       ? failureMessage(
           request.data,
-          "Hub did not receive the reset request. Check your connection and try again.",
+          "Hub did not receive the reset request. Check your connection and try again",
         )
       : undefined;
   return (
@@ -45,13 +45,13 @@ export function ForgotPasswordEntry({ onBack }: { onBack: () => void }) {
       <AuthCard
         titleId="forgot-password-heading"
         title="Reset your password"
-        description="Enter your account email and we'll send a reset link if the account exists."
+        description="Enter your account email and we'll send a reset link if the account exists"
       >
         <ErrorSummary message={message} />
         {sent ? (
           <>
             <StatusLine>
-              If an account exists for that email, a password reset link is on its way.
+              If an account exists for that email, a password reset link is on its way
             </StatusLine>
             <AuthActions>
               <Button type="button" size="lg" onClick={onBack}>
@@ -105,7 +105,7 @@ export function VerificationPendingEntry({
     resend.isError || resend.data?.status === "error"
       ? failureMessage(
           resend.data,
-          "Hub did not receive the resend result. Check your connection and try again.",
+          "Hub did not receive the resend result. Check your connection and try again",
         )
       : undefined;
   return (
@@ -113,12 +113,12 @@ export function VerificationPendingEntry({
       <AuthCard
         titleId="verification-pending-heading"
         title="Check your email"
-        description={`Check ${email} for a verification link. If you receive one, open it to finish signing in. If you already verified your email, go back to sign in.`}
+        description={`Check ${email} for a verification link. Open it to finish signing in, or go back to sign in if already verified`}
       >
         <ErrorSummary message={message} />
         <StatusLine>
           {resend.data?.status === "ok"
-            ? "If this address still needs verification, a new link is on its way."
+            ? "If this address still needs verification, a new link is on its way"
             : undefined}
         </StatusLine>
         <AuthActions>
@@ -144,14 +144,14 @@ export function EmailVerificationResult({ error }: { error?: string }) {
   const expired = error === "TOKEN_EXPIRED";
   const failed = error !== undefined;
   let title = "Email verified";
-  let description = "Your email address is verified and your account is ready.";
+  let description = "Your email address is verified and your account is ready";
   if (expired) {
     title = "Verification link expired";
-    description = "Request a new verification email from the sign-in screen.";
+    description = "Request a new verification email from the sign-in screen";
   } else if (failed) {
     title = "Verification link invalid";
     description =
-      "This verification link cannot be used. Request a new one from the sign-in screen.";
+      "This verification link cannot be used. Request a new one from the sign-in screen";
   }
   return (
     <AuthLayout>
@@ -191,7 +191,7 @@ export function PasswordResetEntry({
       const confirmation = event.currentTarget.elements.namedItem("confirmPassword");
       if (!(confirmation instanceof HTMLInputElement)) return;
       const matches = newPassword === formValue(data, "confirmPassword");
-      confirmation.setCustomValidity(matches ? "" : "Passwords do not match.");
+      confirmation.setCustomValidity(matches ? "" : "Passwords do not match");
       if (!matches) {
         confirmation.reportValidity();
         return;
@@ -206,7 +206,7 @@ export function PasswordResetEntry({
         <AuthCard
           titleId="password-reset-invalid-heading"
           title="Reset link invalid or expired"
-          description="Request a new password reset link from the sign-in screen."
+          description="Request a new password reset link from the sign-in screen"
         >
           <AuthActions>
             <Button type="button" size="lg" onClick={leaveAuthCallback}>
@@ -223,7 +223,7 @@ export function PasswordResetEntry({
         <AuthCard
           titleId="password-reset-complete-heading"
           title="Password reset"
-          description="Your new password is ready. You can use it to sign in."
+          description="Your new password is ready. You can use it to sign in"
         >
           <AuthActions>
             <Button type="button" size="lg" onClick={leaveAuthCallback}>
@@ -238,7 +238,7 @@ export function PasswordResetEntry({
     reset.isError || reset.data?.status === "error"
       ? failureMessage(
           reset.data,
-          "Hub did not receive the password reset result. Check your connection and try again.",
+          "Hub did not receive the password reset result. Check your connection and try again",
         )
       : undefined;
   return (
@@ -246,7 +246,7 @@ export function PasswordResetEntry({
       <AuthCard
         titleId="password-reset-heading"
         title="Choose a new password"
-        description="Use at least 12 characters."
+        description="Use at least 12 characters"
       >
         <ErrorSummary message={message} />
         <AuthForm

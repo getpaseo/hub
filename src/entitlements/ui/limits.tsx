@@ -47,11 +47,11 @@ export function useEntitlementRemedy(enabled = true): EntitlementRemedy {
   if (billing.data?.configured === true) {
     return {
       href: `${base}/billing?plans=true`,
-      clause: "See the plans available to this organization.",
+      clause: "See the plans available to this organization",
       action: "Upgrade",
     };
   }
-  return { href: `${base}/usage`, clause: "See the Usage page for its limits.", action: null };
+  return { href: `${base}/usage`, clause: "See the Usage page for its limits", action: null };
 }
 
 /**
@@ -96,7 +96,7 @@ export function LockedAction({
         id={reason}
         className="max-w-72 text-xs text-balance text-muted-foreground sm:text-right"
       >
-        {limit} {remedy.clause}
+        {limit} · {remedy.clause}
       </span>
     </span>
   );

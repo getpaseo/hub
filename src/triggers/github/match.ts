@@ -70,7 +70,7 @@ function matchesFilter(
     return false;
   }
 
-  if (filter.from_users === undefined || filter.from_users.length === 0) {
+  if (!admitsActor(classified, filter)) {
     return false;
   }
 
@@ -92,10 +92,6 @@ function matchesFilter(
     return false;
   }
 
-  if (!filter.from_users.includes("*") && !filter.from_users.includes(classified.actor)) {
-    return false;
-  }
-
   const label = readStringFilter(filter, "label");
   if (label !== undefined && !sameLabel(label, classified.changedLabel)) {
     return false;
@@ -110,6 +106,27 @@ function matchesFilter(
   }
 
   return true;
+}
+
+/**
+ * Who may invoke the trigger. A trigger names people, repository associations, or both; each one
+ * it declares narrows the audience, and a trigger that declares neither admits nobody.
+ */
+function admitsActor(
+  classified: ReturnType<typeof classifyGitHubEvent>,
+  filter: TriggerFilter,
+): boolean {
+  const users = filter.from_users;
+  const associations = filter.author_associations;
+  if (users === undefined && associations === undefined) return false;
+  if (users !== undefined && !users.includes("*") && !users.includes(classified.actor)) {
+    return false;
+  }
+  return (
+    associations === undefined ||
+    (classified.actorAssociation !== undefined &&
+      associations.includes(classified.actorAssociation))
+  );
 }
 
 function matchesText(text: string, filter: TriggerFilter): boolean {

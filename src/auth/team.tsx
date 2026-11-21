@@ -44,7 +44,7 @@ import {
 } from "./organization-contract.js";
 
 const INVITE_FAILURE =
-  "Hub did not create the invitation. Check your connection and submit it again.";
+  "Hub did not create the invitation. Check your connection and submit it again";
 
 const EMPTY_INVITATIONS: NonNullable<ActiveAccountState["team"]["invitations"]> = [];
 const INVITATION_ROLE_LABELS = {
@@ -65,7 +65,7 @@ const MEMBER_COLUMNS: readonly DataColumn[] = [
 ];
 const MEMBERS_EMPTY = {
   title: "No members",
-  description: "This organization has no members yet.",
+  description: "This organization has no members yet",
 };
 const INVITATION_COLUMNS: readonly DataColumn[] = [
   { header: "Invitee", fill: true },
@@ -74,7 +74,7 @@ const INVITATION_COLUMNS: readonly DataColumn[] = [
 ];
 const INVITATIONS_EMPTY = {
   title: "No pending invitations",
-  description: "New invitations appear here.",
+  description: "New invitations appear here",
 };
 
 export function Team() {
@@ -91,7 +91,7 @@ export function Team() {
       <PageHeader
         id="team-heading"
         title="Team"
-        description={`People with access to ${account.organization.name}.`}
+        description={`People with access to ${account.organization.name}`}
       >
         {account.capabilities.manageMembers && (
           <LockedAction
@@ -128,10 +128,10 @@ export function Team() {
  * seats.
  */
 function inviteLimit(limits: UsageLimitsView): string | null {
-  if (!limits.canInviteMembers) return "Inviting members isn't enabled for this organization.";
+  if (!limits.canInviteMembers) return "Inviting members isn't enabled for this organization";
   const { seats } = limits;
   if (!atLimit(seats)) return null;
-  return `Seat limit reached — ${seats.used} of ${seats.limit} seats are in use.`;
+  return `Seat limit reached (${seats.used} of ${seats.limit} seats in use)`;
 }
 
 function InvitationDialog({
@@ -203,7 +203,7 @@ function InvitationDialog({
       open={open}
       onOpenChange={onOpenChange}
       title="Invite a team member"
-      description="Create a role-bound invitation link for a teammate."
+      description="Create a role-bound invitation link for a teammate"
       label="Invite team member"
       submitLabel="Create invitation"
       busy={busy || create.isPending}
@@ -315,7 +315,7 @@ function MemberRow({ account, member }: { account: ActiveAccount; member: TeamMe
               destructive
               label={`Remove ${member.name}`}
               title={`Remove ${member.name}?`}
-              description={`${member.name} will immediately lose access to ${account.organization.name}. This action cannot be undone.`}
+              description={`${member.name} will immediately lose access to ${account.organization.name}. This action cannot be undone`}
               cancelLabel="Keep member"
               confirmLabel={`Remove ${member.name}`}
               onConfirm={remove}
@@ -404,10 +404,10 @@ function InvitationActions({
   }, [cancelInvitationMutation, id]);
   const copy = useCallback((): void => {
     void navigator.clipboard.writeText(link).then(
-      () => onCopyStatusChange("Invitation link copied."),
+      () => onCopyStatusChange("Invitation link copied"),
       () =>
         onCopyStatusChange(
-          "Clipboard access was blocked. Open the invitation menu and copy the link manually.",
+          "Clipboard access was blocked. Open the invitation menu and copy the link manually",
         ),
     );
   }, [link, onCopyStatusChange]);
@@ -420,7 +420,7 @@ function InvitationActions({
         destructive
         label="Cancel invitation"
         title={`Cancel invitation for ${email}?`}
-        description={`${email} will no longer be able to use this invitation to join ${organizationName}.`}
+        description={`${email} will no longer be able to use this invitation to join ${organizationName}`}
         cancelLabel="Keep invitation"
         confirmLabel="Cancel invitation"
         onConfirm={cancel}

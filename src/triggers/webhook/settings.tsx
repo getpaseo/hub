@@ -49,7 +49,7 @@ export function WebhookSettings({
     <Card
       icon={WEBHOOK_ICON}
       title="Webhook endpoint"
-      description="Send an authenticated POST request to start this trigger."
+      description="Send an authenticated POST request to start this trigger"
       action={endpoint.hasSecret ? SECRET_ACTIVE_PILL : NO_SECRET_PILL}
     >
       <CopyField label="Webhook URL" value={url} />
@@ -59,8 +59,8 @@ export function WebhookSettings({
             <p className="text-sm text-foreground">Bearer secret</p>
             <p className="text-xs text-muted-foreground">
               {endpoint.hasSecret
-                ? "Active. Rotating replaces the current secret immediately."
-                : "Create a secret to authenticate incoming POST requests."}
+                ? "Active. Rotating replaces the current secret immediately"
+                : "Create a secret to authenticate incoming POST requests"}
             </p>
           </div>
           {canManage ? (
@@ -69,7 +69,7 @@ export function WebhookSettings({
                 <ConfirmAction
                   label="Rotate secret"
                   title="Rotate webhook secret?"
-                  description="The current secret stops working immediately. Update callers with the new secret after rotating."
+                  description="The current secret stops working immediately. Update callers with the new secret after rotating"
                   confirmLabel="Rotate secret"
                   cancelLabel="Cancel"
                   destructive
@@ -95,7 +95,7 @@ export function WebhookSettings({
         {shown === undefined ? null : (
           <>
             <WarningAlert title="Save this secret now">
-              Hub shows this secret only once. Store it before leaving this page.
+              Hub shows this secret only once. Store it before leaving this page
             </WarningAlert>
             <CopyField label="Webhook secret" value={shown} focusOnMount />
           </>
@@ -104,7 +104,7 @@ export function WebhookSettings({
           <FailureAlert
             title="Webhook secret unavailable"
             error={secret.data?.status === "error" ? secret.data.error.message : null}
-            fallback="Try again."
+            fallback="Try again"
           />
         ) : null}
       </div>

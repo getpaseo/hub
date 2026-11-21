@@ -65,7 +65,7 @@ const ROLE_LABELS: Record<Snapshot["members"][number]["role"], string> = {
   member: "Member",
 };
 const AUDIT_TITLE = "Audit trail";
-const AUDIT_DESCRIPTION = "Every provisioning, plan stamp, and override, most recent first.";
+const AUDIT_DESCRIPTION = "Provisioning, plan stamps, and overrides, most recent first";
 const ENTITLEMENT_COLUMNS: readonly DataColumn[] = [
   { header: "Entitlement", fill: true },
   { header: "Granted" },
@@ -83,7 +83,7 @@ const AUDIT_COLUMNS: readonly DataColumn[] = [
 ];
 const AUDIT_EMPTY = {
   title: "No changes yet",
-  description: "Provisioning, plan stamps, and overrides appear here.",
+  description: "Provisioning, plan stamps, and overrides appear here",
 };
 const SOURCE_LABELS: Record<EntitlementChangeSource, string> = {
   provisioning: "Provisioning",
@@ -97,7 +97,7 @@ export function OperatorEntitlementsPage() {
     <>
       <PageHeader
         title="Operator"
-        description="View and edit any organization's entitlements. Instance operators only."
+        description="View and edit any organization's entitlements (instance operators only)"
       />
       <OrganizationPicker slug={slug} onSelect={setSlug} />
       {slug !== null && <OperatorOrganization slug={slug} />}
@@ -135,7 +135,7 @@ function OrganizationPicker({
       <FailureAlert
         title="Operator console unavailable"
         error={query.error}
-        fallback="Hub did not receive the organization list. Check your connection and reload the page."
+        fallback="Hub did not receive the organization list. Check your connection and reload the page"
       />
     );
   }
@@ -150,7 +150,7 @@ function OrganizationPicker({
           onChange={choose}
           placeholder="Select an organization"
           searchPlaceholder="Search by name or ID…"
-          empty="No organizations found."
+          empty="No organizations found"
         />
       </div>
     </Section>
@@ -170,7 +170,7 @@ function OperatorOrganization({ slug }: { slug: string }) {
       <FailureAlert
         title="Entitlements unavailable"
         error={query.error}
-        fallback="Hub did not receive this organization's entitlements. Check your connection and reload the page."
+        fallback="Hub did not receive this organization's entitlements. Check your connection and reload the page"
       />
     );
   }
@@ -227,7 +227,7 @@ function OrganizationContent({ snapshot, slug }: { snapshot: Snapshot; slug: str
       </Section>
       <Section
         title="Entitlements"
-        description={`Effective values for ${snapshot.organization.name}, granted by its plan and adjusted by any manual overrides.`}
+        description={`Effective values for ${snapshot.organization.name}, granted by its plan and adjusted by any manual overrides`}
       >
         <DataTable
           label="Entitlements"
@@ -325,7 +325,7 @@ function OverLimitBanner({ overages }: { overages: Snapshot["overages"] }) {
     <WarningAlert standalone title="This organization is over its limits">
       {overages.map((overage) => (
         <p key={overage.entitlement}>
-          {`${overage.current} seats in use, but the effective limit is ${overage.limit}.`}
+          {`${overage.current} seats in use, but the effective limit is ${overage.limit}`}
         </p>
       ))}
     </WarningAlert>
@@ -397,7 +397,7 @@ function OverrideDialog({
       open
       onOpenChange={handleOpenChange}
       title={overrideTitle(target)}
-      description="Overrides are hand-set and survive plan changes. Every override — and every reset back to the plan default — is recorded in the audit trail with the reason you give."
+      description="Overrides survive plan changes and are recorded in the audit trail with the reason you give"
       label="Override entitlement"
       submitLabel="Save override"
       // "Reset to plan default" is the same form submitted for the opposite outcome: it carries
@@ -425,7 +425,7 @@ function OverrideDialog({
         <FailureAlert
           title="Override not applied"
           error={error}
-          fallback="Hub did not record this change. Try again."
+          fallback="Hub did not record this change. Try again"
         />
       )}
     </FormDialog>

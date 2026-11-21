@@ -284,6 +284,39 @@ run:
     ]);
   });
 
+  it("compiles a GitHub repository association as the trigger's audience", () => {
+    const members = `
+name: review-comments
+on:
+  github.pull_request_comment_created:
+    connection: getpaseo-github
+    filters:
+      author_associations: [OWNER, MEMBER, COLLABORATOR]
+run:
+  target:
+    daemon: devbox
+    cwd: /workspace/company
+  agent:
+    provider: codex
+  prompt: Review it
+`;
+    assert.deepEqual(compileTriggerDocument(members).events[0]?.filters, {
+      author_associations: ["OWNER", "MEMBER", "COLLABORATOR"],
+      connection: "getpaseo-github",
+    });
+    assert.throws(
+      () => compileTriggerDocument(members.replace("[OWNER, MEMBER, COLLABORATOR]", "[ADMIN]")),
+      TriggerDocumentError,
+    );
+    assert.throws(
+      () =>
+        compileTriggerDocument(
+          members.replace("github.pull_request_comment_created", "slack.mention"),
+        ),
+      /author_associations is not available for slack\.mention/u,
+    );
+  });
+
   it("rejects a trigger without events at the document boundary", () => {
     assert.throws(
       () =>

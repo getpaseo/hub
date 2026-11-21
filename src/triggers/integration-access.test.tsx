@@ -11,8 +11,6 @@ import type { TriggerSnapshot } from "./functions.js";
 import {
   activeIntegrationProviders,
   addIntegrationAccess,
-  configuredIntegrationProviders,
-  hasIntegrationAccessError,
   IntegrationAccess,
   removeIntegrationAccess,
 } from "./integration-access.js";
@@ -25,7 +23,8 @@ const BASE_FORM: TriggerFormValue = {
   enabled: true,
   event: "schedule.tick",
   connection: "",
-  allowedUsers: "*",
+  audience: "everyone",
+  allowedUsers: "",
   qualifiers: {},
   daemon: "office",
   cwd: "/workspace/acme",
@@ -75,9 +74,9 @@ const CONNECTIONS: TriggerSnapshot["connections"] = [
 ];
 
 describe("integration access model", () => {
-  test("lists configured providers in canonical order", () => {
-    expect(configuredIntegrationProviders(BASE_FORM)).toEqual([]);
-    const configured: TriggerFormValue = {
+  test("lists granted providers in canonical order", () => {
+    expect(activeIntegrationProviders(BASE_FORM)).toEqual([]);
+    const granted: TriggerFormValue = {
       ...BASE_FORM,
       githubConnection: "acme-github",
       tools: {
@@ -85,7 +84,7 @@ describe("integration access model", () => {
         slack: { connection: "company-slack", actions: ["post"], channels: "C12345" },
       },
     };
-    expect(configuredIntegrationProviders(configured)).toEqual(["github", "slack", "discord"]);
+    expect(activeIntegrationProviders(granted)).toEqual(["github", "slack", "discord"]);
   });
 
   test("auto-selects a single connection when adding an integration and leaves ambiguous choices empty", () => {
@@ -107,7 +106,6 @@ describe("integration access model", () => {
     const ambiguous = addIntegrationAccess(BASE_FORM, "slack", multipleSlack);
     expect(ambiguous.tools.slack?.connection).toBe("");
     expect(activeIntegrationProviders(ambiguous)).toEqual(["slack"]);
-    expect(configuredIntegrationProviders(ambiguous)).toEqual([]);
 
     const multipleGitHub: TriggerSnapshot["connections"] = [
       ...CONNECTIONS,
@@ -117,7 +115,6 @@ describe("integration access model", () => {
     expect(ambiguousGitHub.githubEnabled).toBe(true);
     expect(ambiguousGitHub.githubConnection).toBe("");
     expect(activeIntegrationProviders(ambiguousGitHub)).toEqual(["github"]);
-    expect(configuredIntegrationProviders(ambiguousGitHub)).toEqual([]);
   });
 
   test("removes an integration grant and resets only its fields", () => {
@@ -173,23 +170,10 @@ run:
     const canceled = removeIntegrationAccess(added, "github");
     expect(mergeTriggerForm(anchoredYaml, canceled)).toEqual({ status: "ok", yaml: anchoredYaml });
   });
-
-  test("detects errors across GitHub and integration tool fields", () => {
-    expect(hasIntegrationAccessError({})).toBe(false);
-    expect(hasIntegrationAccessError({ prompt: "Instructions are required." })).toBe(false);
-    expect(hasIntegrationAccessError({ githubConnection: "Choose a GitHub connection." })).toBe(
-      true,
-    );
-    expect(hasIntegrationAccessError({ githubPermissions: "Invalid JSON." })).toBe(true);
-    expect(hasIntegrationAccessError({ "tools.slack.channels": "Use a Slack channel ID." })).toBe(
-      true,
-    );
-    expect(hasIntegrationAccessError({ "tools.discord.actions": "Too small." })).toBe(true);
-  });
 });
 
 describe("integration access rendering", () => {
-  test("renders a collapsed empty state with an add action when no integrations are granted", () => {
+  test("says nothing is granted and offers to add an integration", () => {
     const markup = renderToStaticMarkup(
       <IntegrationAccess
         form={BASE_FORM}
@@ -198,14 +182,11 @@ describe("integration access rendering", () => {
         onChange={NOOP}
       />,
     );
-    expect(markup).toContain("Integration access");
-    expect(markup).toContain("No integrations granted for this run.");
+    expect(markup).toContain("No integrations granted");
     expect(markup).toContain("Add integration");
-    expect(markup).toContain('aria-expanded="false"');
-    expect(markup).not.toContain("configured");
   });
 
-  test("renders GitHub, Slack, and Discord under one expanded section and hides add when all are present", () => {
+  test("renders every granted integration and hides add when all are present", () => {
     const markup = renderToStaticMarkup(
       <IntegrationAccess
         form={ALL_CONFIGURED_FORM}
@@ -214,8 +195,6 @@ describe("integration access rendering", () => {
         onChange={NOOP}
       />,
     );
-    expect(markup).toContain('aria-expanded="true"');
-    expect(markup).toContain("3 configured");
     expect(markup).toContain('aria-labelledby="trigger-access-github-heading"');
     expect(markup).toContain('aria-labelledby="trigger-access-slack-heading"');
     expect(markup).toContain('aria-labelledby="trigger-access-discord-heading"');
@@ -225,7 +204,7 @@ describe("integration access rendering", () => {
     expect(markup).not.toContain("Add integration");
   });
 
-  test("auto-expands and surfaces inline validation errors", () => {
+  test("surfaces inline validation errors", () => {
     const markup = renderToStaticMarkup(
       <IntegrationAccess
         form={INVALID_SLACK_FORM}
@@ -234,8 +213,7 @@ describe("integration access rendering", () => {
         onChange={NOOP}
       />,
     );
-    expect(markup).toContain('aria-expanded="true"');
     expect(markup).toContain("Use a Slack channel ID.");
-    expect(markup).toContain("Select at least one permission.");
+    expect(markup).toContain("Select at least one permission");
   });
 });

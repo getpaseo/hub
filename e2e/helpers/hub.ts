@@ -562,7 +562,7 @@ export class PaseoHub {
       await page.goto(application.origin);
       await expect(page.getByRole("heading", { name: "Sign in to Paseo Hub" })).toBeVisible();
       await expect(page.getByRole("button", { name: "Create an account" })).toHaveCount(0);
-      await expect(page.getByText("Paseo Hub isn't accepting new accounts.")).toBeVisible();
+      await expect(page.getByText("Paseo Hub isn't accepting new accounts")).toBeVisible();
       await expectAccessible(page);
       const response = await page.evaluate(async (origin) => {
         const result = await fetch(`${origin}/api/auth/sign-up/email`, {
@@ -599,7 +599,7 @@ export class PaseoHub {
       });
       await expect(page.getByRole("heading", { name: "Choose an organization" })).toBeVisible();
       await expect(page.getByRole("button", { name: "Create an organization" })).toHaveCount(0);
-      await expect(page.getByText("Ask an organization owner to invite you.")).toBeVisible();
+      await expect(page.getByText("Ask an organization owner to invite you")).toBeVisible();
       await expectAccessible(page);
       const response = await page.evaluate(async (origin) => {
         const result = await fetch(`${origin}/api/auth/paseo/create-organization`, {
@@ -1534,7 +1534,7 @@ export class PaseoHub {
       // GitHub installed on acme-inc before the expired return reached Hub; the next attempt
       // installs on the other account octo owns.
       const replayed = await user.beginProviderConnection("github", "orbit-inc");
-      await user.expectConnectionReturnConnected(replayed, "GitHub connected.");
+      await user.expectConnectionReturnConnected(replayed, "GitHub connected");
       await user.expectConnectionReturnUnavailable(replayed);
     } finally {
       await context.close();
@@ -1595,7 +1595,7 @@ export class PaseoHub {
       await user.createAnotherOrganization("Stale Orbit");
       await user.expectConnectionReturnConnectedForOrganization(
         staleGitHub,
-        "GitHub connected.",
+        "GitHub connected",
         "Stale Acme",
       );
       await user.chooseOrganization("Stale Orbit");
@@ -2082,6 +2082,20 @@ export class PaseoHub {
     const daemon = await this.connectBrowserDaemon(alias, organizationName, "devbox", catalog);
     this.providerDaemons.set(daemon.slug, daemon);
     return daemon.slug;
+  }
+
+  /** The projects a connected daemon has open, which it then reports to the trigger editor. */
+  openDaemonProjects(daemon: string, projects: readonly DaemonProjectFixture[]): void {
+    const connection = this.providerDaemons.get(daemon);
+    if (connection === undefined) throw new Error("Provider daemon is not connected");
+    connection.openProjects(projects);
+  }
+
+  /** Leaves project listing unanswered on this daemon so the editor stays in its loading state. */
+  holdDaemonProjectList(daemon: string): void {
+    const connection = this.providerDaemons.get(daemon);
+    if (connection === undefined) throw new Error("Provider daemon is not connected");
+    connection.holdProjects();
   }
 
   async launchSavedTrigger(name: string, apiKey: string): Promise<void> {
@@ -2847,7 +2861,7 @@ class HubUser {
     await expect(this.page.getByRole("heading", { name: "Check your email" })).toBeVisible();
     await expect(
       this.page.getByText(
-        `Check ${account.email} for a verification link. If you receive one, open it to finish signing in. If you already verified your email, go back to sign in.`,
+        `Check ${account.email} for a verification link. Open it to finish signing in, or go back to sign in if already verified`,
       ),
     ).toBeVisible();
     expect((await this.application.accountEmail(account.email, "verification")).count).toBe(1);
@@ -2903,7 +2917,7 @@ class HubUser {
       await form.getByLabel("Email").fill(email);
       await form.getByRole("button", { name: "Send reset link" }).click();
       await expect(this.page.getByRole("status")).toHaveText(
-        "If an account exists for that email, a password reset link is on its way.",
+        "If an account exists for that email, a password reset link is on its way",
       );
     };
     await requestReset("missing-account@example.test");
@@ -3584,7 +3598,7 @@ class HubUser {
       // The dialog answers for itself and keeps what was typed, so the address is one press
       // away from being submitted again rather than gone.
       await expect(form.getByRole("alert")).toHaveText(
-        "Invitation not sentHub did not create the invitation. Check your connection and submit it again.",
+        "Invitation not sentHub did not create the invitation. Check your connection and submit it again",
       );
       await expect(form.getByLabel("Invitee email")).toHaveValue(invitationEmail);
       // The page behind a modal is out of the accessibility tree, so the team and the
@@ -4048,7 +4062,7 @@ class HubUser {
     const actions = this.invitationRow(email).getByRole("button", { name: `Actions for ${email}` });
     await actions.click();
     await this.page.getByRole("menuitem", { name: "Copy link" }).click();
-    await expect(this.page.getByRole("status")).toHaveText("Invitation link copied.");
+    await expect(this.page.getByRole("status")).toHaveText("Invitation link copied");
     return z
       .string()
       .url()
@@ -4086,7 +4100,7 @@ class HubUser {
     const invitation = this.invitationRow(email);
     await invitation.getByRole("button", { name: `Actions for ${email}` }).click();
     await this.page.getByRole("menuitem", { name: "Copy link" }).click();
-    await expect(this.page.getByRole("status")).toHaveText("Invitation link copied.");
+    await expect(this.page.getByRole("status")).toHaveText("Invitation link copied");
     expect(await this.page.evaluate(() => navigator.clipboard.readText())).toBe(invitationLink);
     await expectAccessible(this.page);
   }
@@ -4515,7 +4529,7 @@ class HubUser {
     // The reason is on the page, not in a tooltip: a touch device never hovers, and the lock is
     // useless without the sentence that says what to do about it.
     await expect(this.lockedInviteReason()).toHaveText(
-      `Seat limit reached — ${expected.current} of ${expected.limit} seats are in use. See the Usage page for its limits.`,
+      `Seat limit reached (${expected.current} of ${expected.limit} seats in use) · See the Usage page for its limits`,
     );
     await expect(this.page.getByRole("button", { name: "Invite member" })).toHaveCount(0);
     await expectAccessible(this.page);
@@ -4757,7 +4771,7 @@ class HubUser {
   async expectInviteLockedByPlan(): Promise<void> {
     await this.refreshOrganizationSection("Team");
     await expect(this.lockedInviteReason()).toHaveText(
-      "Inviting members isn't enabled for this organization. See the plans available to this organization.",
+      "Inviting members isn't enabled for this organization · See the plans available to this organization",
     );
     await expect(this.page.getByRole("button", { name: "Invite member" })).toHaveCount(0);
     await expectAccessible(this.page);
@@ -4919,7 +4933,7 @@ class HubUser {
 
   async expectGitHubConnected(): Promise<void> {
     await expect(this.page).toHaveURL(/\/o\/[^/]+\/integrations$/u);
-    await expect(this.page.getByRole("status")).toHaveText("GitHub connected.");
+    await expect(this.page.getByRole("status")).toHaveText("GitHub connected");
   }
 
   /** Back on Integrations with the reason nothing was connected, and nothing connected. */
@@ -4953,7 +4967,7 @@ class HubUser {
     const connectionsUrl = this.page.url();
     await this.page.getByRole("button", { name: "Connect Discord" }).click();
     await expect(this.page).toHaveURL(connectionsUrl);
-    await expect(this.page.getByRole("status")).toHaveText("Discord connected.");
+    await expect(this.page.getByRole("status")).toHaveText("Discord connected");
   }
 
   /**
@@ -5032,9 +5046,9 @@ class HubUser {
     }
     if (provider === "github") await new GitHubConnectFlow(this.page).connect("acme-inc");
     await expect(this.page).toHaveURL(/\/o\/[^/]+\/integrations$/u);
-    await expect(this.page.getByRole("status")).toHaveText(`${name} connected.`);
+    await expect(this.page.getByRole("status")).toHaveText(`${name} connected`);
     await this.chooseOrganization(destinationOrganization);
-    await expect(this.page.getByText(`${name} connected.`)).toHaveCount(0);
+    await expect(this.page.getByText(`${name} connected`)).toHaveCount(0);
   }
 
   private async holdProviderStartBeforeServer(provider: "github" | "discord"): Promise<{
@@ -5115,7 +5129,7 @@ class HubUser {
       {
         account: "acme-inc",
         explanation:
-          "Connected to another organization on this Hub. Disconnect it there to connect it here.",
+          "Connected to another organization on this Hub. Disconnect it there to connect it here",
         connectable: false,
       },
     ]);
@@ -5130,7 +5144,7 @@ class HubUser {
     await this.page.getByRole("button", { name: "Connect Discord" }).click();
     await expect(this.page).toHaveURL(connectionsUrl);
     await this.expectConnectionFailure(
-      "That account is already connected to another organization. Nothing was connected. Disconnect it there, or pick a different one.",
+      "That account is already connected to another organization. Nothing was connected. Disconnect it there, or pick a different one",
     );
     await this.expectNoConnections();
     await this.expectNoProviderIdentity("Acme Guild");
@@ -5169,7 +5183,7 @@ class HubUser {
     await expect(this.page).toHaveURL(/\/o\/[^/]+\/integrations$/u);
     await expect(this.page.getByRole("heading", { name: "Integrations", level: 1 })).toBeVisible();
     await this.expectConnectionFailure(
-      "That connection link had already been used or had expired, so it was refused. Nothing was connected. Start the connection again from this page.",
+      "That connection link had already been used or had expired, so it was refused. Nothing was connected. Start the connection again from this page",
     );
   }
 
@@ -5199,7 +5213,7 @@ class HubUser {
     await expect(this.page).toHaveURL(/\/o\/[^/]+\/integrations$/u);
     await expect(this.page.getByRole("heading", { name: "Integrations", level: 1 })).toBeVisible();
     await this.expectConnectionFailure(
-      "GitHub sent you back to a Hub address this browser isn't signed in to, so nothing was connected. Sign in there, or ask your Hub operator to check the GitHub app's callback and setup URLs, then start the connection again.",
+      "GitHub sent you back to a Hub address this browser isn't signed in to, so nothing was connected. Sign in there, or ask your Hub operator to check the GitHub app's callback and setup URLs, then start the connection again",
     );
   }
 
@@ -5259,7 +5273,7 @@ class HubUser {
     await expect(dialog).toBeVisible();
     await dialog.getByRole("button", { name: "Revoke connection" }).click();
     await expect(row).toHaveCount(0);
-    await expect(this.page.getByRole("status")).toHaveText(`${provider} disconnected.`);
+    await expect(this.page.getByRole("status")).toHaveText(`${provider} disconnected`);
   }
 
   async proveConnectionDisconnectLocksOrganizationSwitch(
@@ -5309,7 +5323,7 @@ class HubUser {
       await pending.release();
     }
 
-    await expect(this.page.getByRole("status")).toHaveText("GitHub disconnected.");
+    await expect(this.page.getByRole("status")).toHaveText("GitHub disconnected");
     await expect(github).toHaveCount(0);
     await this.chooseOrganization(destinationOrganization);
     await this.openOrganizationSection("Integrations");
@@ -5379,7 +5393,7 @@ class HubUser {
   async expectNotConfiguredConnections(): Promise<void> {
     await this.openOrganizationSection("Integrations");
     await expect(this.page.getByText("No integrations", { exact: true })).toBeVisible();
-    await expect(this.page.getByText(/no provider apps set up yet/u)).toBeVisible();
+    await expect(this.page.getByText(/No provider apps are set up/u)).toBeVisible();
     await expect(this.page.getByRole("button", { name: /Connect|Revoke|Set up the/u })).toHaveCount(
       0,
     );
@@ -5403,7 +5417,7 @@ class HubUser {
     await github.requestFor("acme-inc");
     await expect(this.page).toHaveURL(connectionsUrl);
     await this.expectConnectionFailure(
-      "A GitHub organization owner has to approve this installation. Nothing was connected. Ask an owner to approve the request, then install again.",
+      "A GitHub organization owner has to approve this installation. Nothing was connected. Ask an owner to approve the request, then install again",
     );
   }
 
@@ -5747,8 +5761,19 @@ function roleLabel(role: "owner" | "admin" | "member"): string {
   return role[0]!.toUpperCase() + role.slice(1);
 }
 
+/** A project as the Paseo daemon lists it. */
+export interface DaemonProjectFixture {
+  projectId: string;
+  projectDisplayName: string;
+  projectCustomName?: string | null;
+  projectRootPath: string;
+  projectKind: "git" | "non_git" | "directory";
+}
+
 class ContractDaemon {
   private readonly createdConfigurations: Record<string, unknown>[] = [];
+  /** Unset for a daemon that predates project listing, which rejects the request. */
+  private projects: readonly DaemonProjectFixture[] | "hold" | undefined;
   readonly daemonId = randomUUID();
   readonly slug: string;
   private readonly credential = randomUUID();
@@ -5857,11 +5882,20 @@ class ContractDaemon {
     this.socket?.close();
   }
 
+  openProjects(projects: readonly DaemonProjectFixture[]): void {
+    this.projects = projects;
+  }
+
+  holdProjects(): void {
+    this.projects = "hold";
+  }
+
   private acceptExecution(data: RawData): void {
     const value: unknown = JSON.parse(readSocketData(data));
     if (
       this.acceptHello(value) ||
       this.acceptProviderRequest(value) ||
+      this.acceptProjectList(value) ||
       this.acceptAgentValidation(value)
     ) {
       return;
@@ -6030,6 +6064,23 @@ class ContractDaemon {
         },
       }),
     );
+    return true;
+  }
+
+  private acceptProjectList(value: unknown): boolean {
+    if (this.projects === undefined) return false;
+    const envelope = z
+      .object({
+        type: z.literal("session"),
+        message: z.object({ type: z.literal("project.list.request"), requestId: z.string() }),
+      })
+      .safeParse(value);
+    if (!envelope.success) return false;
+    if (this.projects === "hold") return true;
+    this.sendAgentResponse("project.list.response", {
+      requestId: envelope.data.message.requestId,
+      projects: this.projects,
+    });
     return true;
   }
 

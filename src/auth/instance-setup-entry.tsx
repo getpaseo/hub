@@ -57,7 +57,7 @@ export function InstanceSetupEntry() {
     claim.isError || claim.data?.status === "error"
       ? failureMessage(
           claim.data,
-          "Hub did not receive the account setup result. Check your connection and reload to confirm whether setup completed.",
+          "Hub did not receive the account setup result. Check your connection and reload to confirm whether setup completed",
         )
       : undefined;
   return (
@@ -78,7 +78,7 @@ function Welcome({ onBegin }: { onBegin: () => void }) {
       <AuthCard
         titleId="welcome-heading"
         title="Welcome to Paseo Hub"
-        description="Set up an account to start operating Paseo Hub."
+        description="Set up an account to start operating Paseo Hub"
       >
         <AuthActions>
           <Button type="button" size="lg" onClick={onBegin}>

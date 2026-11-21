@@ -229,6 +229,14 @@ export class HubE2E {
     return this.requireProxy().requestProviderSnapshot(cwd);
   }
 
+  requestProjectList(): Promise<Record<string, unknown>> {
+    return this.requireProxy().requestProjectList();
+  }
+
+  workspacePath(): string {
+    return this.workspace;
+  }
+
   async deployCurrentProjectBundleWithSourceCli(): Promise<SourceCliBundleDeploymentEvidence> {
     const sourceFiles = (await currentProjectConfigurationFiles()).toSorted((left, right) =>
       left.path.localeCompare(right.path),

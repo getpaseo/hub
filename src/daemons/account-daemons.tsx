@@ -43,12 +43,12 @@ const DAEMON_COLUMNS: readonly DataColumn[] = [
   { header: "Registered" },
   { header: "", align: "end" },
 ];
-const DAEMONS_DESCRIPTION = "Stable daemon identities registered to this organization.";
+const DAEMONS_DESCRIPTION = "Stable daemon identities registered to this organization";
 const DAEMON_DOCS_URL = "https://paseo.sh/docs/hub/daemons";
 const DAEMONS_EMPTY = {
   title: "No daemons connected",
   description:
-    "Hub runs your workflows on machines you own. Log in from the machine where your code lives and the CLI offers to connect it.",
+    "Hub runs your workflows on machines you own. Log in from the machine where your code lives and the CLI offers to connect it",
   action: <ConnectDaemonHint />,
 } as const;
 
@@ -131,9 +131,9 @@ export function DaemonsPanel({
         if (result.status === "error") return result.error.message;
         return result.data.state === "complete"
           ? undefined
-          : "The daemon is no longer available in the current organization. Reload the daemon list.";
+          : "The daemon is no longer available in the current organization. Reload the daemon list";
       } catch {
-        return "Hub did not receive the daemon rename result. Check your connection and reload its current name.";
+        return "Hub did not receive the daemon rename result. Check your connection and reload its current name";
       }
     },
     [organizationSlug, rename],
@@ -148,7 +148,7 @@ export function DaemonsPanel({
       <FailureAlert
         title="Daemons unavailable"
         error={snapshot.error}
-        fallback="Hub did not receive the daemon list. Check your connection and reload the page."
+        fallback="Hub did not receive the daemon list. Check your connection and reload the page"
       />
     );
   }
@@ -163,7 +163,7 @@ export function DaemonsPanel({
           standalone
           title="The daemon wasn't revoked"
           error={revoke.data}
-          fallback="Hub did not receive the daemon revocation result. Check your connection and reload its current status."
+          fallback="Hub did not receive the daemon revocation result. Check your connection and reload its current status"
         />
       ) : null}
       <DataTable
@@ -244,7 +244,7 @@ function DaemonRow({
                   destructive
                   label="Revoke"
                   title={`Revoke ${daemon.slug}?`}
-                  description="The daemon will disconnect and its credential cannot reconnect."
+                  description="The daemon will disconnect and its credential cannot reconnect"
                   cancelLabel="Cancel"
                   confirmLabel="Revoke daemon"
                   onConfirm={revoke}
