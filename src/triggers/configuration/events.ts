@@ -57,7 +57,7 @@ function event(
   };
 }
 
-/** A GitHub event whose actor wrote the issue, pull request, comment, or review it carries. */
+/** A GitHub event where GitHub guarantees the sender authored the created object it carries. */
 function authored(label: string): EventDefinition {
   return event("github", label, { audiences: ASSOCIATION });
 }
@@ -67,8 +67,13 @@ const EVENTS = {
   "discord.mention": event("discord", "Discord mention"),
   "github.issue_created": authored("GitHub issue created"),
   "github.pull_request_created": authored("GitHub pull request created"),
-  "github.pull_request_ready_for_review": authored("GitHub pull request ready for review"),
-  "github.pull_request_synchronized": authored("GitHub pull request updated with new commits"),
+  // A maintainer can mark another author's draft pull request ready or push to their fork branch;
+  // in both cases GitHub reports only the pull request author's association, not the sender's.
+  "github.pull_request_ready_for_review": event("github", "GitHub pull request ready for review"),
+  "github.pull_request_synchronized": event(
+    "github",
+    "GitHub pull request updated with new commits",
+  ),
   "github.issue_comment_created": authored("GitHub issue comment created"),
   "github.pull_request_comment_created": authored("GitHub pull request comment created"),
   // GitHub lets only people with triage access label, and the labeler is rarely the author
@@ -79,11 +84,13 @@ const EVENTS = {
   "github.pull_request_label_added": event("github", "GitHub pull request label added", {
     qualifiers: [ADDED_LABEL],
   }),
-  "github.issue_comment": authored("GitHub issue or PR comment webhook"),
-  "github.issues": authored("GitHub issue webhook"),
-  "github.pull_request": authored("GitHub pull request webhook"),
-  "github.pull_request_review": authored("GitHub pull request review webhook"),
-  "github.pull_request_review_comment": authored("GitHub review comment webhook"),
+  // Raw multi-action webhooks also fire when a maintainer acts on another person's issue, pull
+  // request, comment, or review, where GitHub omits the sender's association.
+  "github.issue_comment": event("github", "GitHub issue or PR comment webhook"),
+  "github.issues": event("github", "GitHub issue webhook"),
+  "github.pull_request": event("github", "GitHub pull request webhook"),
+  "github.pull_request_review": event("github", "GitHub pull request review webhook"),
+  "github.pull_request_review_comment": event("github", "GitHub review comment webhook"),
   // GitHub restricts pushing to writers and reports no association on a push.
   "github.push": event("github", "GitHub push"),
   "linear.issue_entered_scope": event("linear", "Linear issue entered scope"),

@@ -157,6 +157,8 @@ test("a GitHub trigger starts at members, waits for a daemon, and runs in one of
   await hub.createOrganization("owner", "Acme");
   const daemon = await hub.connectProviderDaemon("owner", "Acme");
   const olderDaemon = await hub.connectProviderDaemon("owner", "Acme");
+  const silentDaemon = await hub.connectProviderDaemon("owner", "Acme");
+  hub.holdDaemonProjectList(silentDaemon);
   hub.openDaemonProjects(daemon, [
     {
       projectId: "project-hub",
@@ -191,8 +193,10 @@ test("a GitHub trigger starts at members, waits for a daemon, and runs in one of
       ["Members", "Contributors", "Everyone", "Specific people"],
       "Members",
     );
-    // GitHub reports no author association on a push, which only writers can make.
+    // GitHub reports no sender association on pushes or updates another maintainer can push.
     await triggers.chooseEvent("github.push");
+    await triggers.expectAudienceChoices(["Everyone", "Specific people"], "Everyone");
+    await triggers.chooseEvent("github.pull_request_synchronized");
     await triggers.expectAudienceChoices(["Everyone", "Specific people"], "Everyone");
     await triggers.chooseEvent("github.issue_comment_created");
     await triggers.expectAudienceChoices(
@@ -211,6 +215,12 @@ test("a GitHub trigger starts at members, waits for a daemon, and runs in one of
     ]);
     await triggers.capture(`${SHOTS}/10-daemon-projects.png`);
     await triggers.chooseListedProject("store", "/srv/acme/web");
+  });
+
+  await test.step("a daemon whose project list is still loading still takes a typed path with Enter", async () => {
+    await triggers.chooseDaemon(silentDaemon);
+    await triggers.expectWorkingDirectory("");
+    await triggers.chooseWorkingDirectoryWhileLoading("/workspace/pending");
   });
 
   await test.step("a daemon that lists no projects still takes a typed path", async () => {

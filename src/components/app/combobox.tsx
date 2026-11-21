@@ -163,50 +163,84 @@ export function Combobox<T extends ComboboxOption>({
             onValueChange={setSearch}
           />
           <CommandList id={listId}>
-            {loading ? (
-              <div className="flex justify-center py-6">
-                <LoadingLine>Loading…</LoadingLine>
-              </div>
-            ) : (
-              <>
-                {typed === undefined ? <CommandEmpty>{empty}</CommandEmpty> : null}
-                {listed.map((option) => (
-                  <CommandItem
-                    key={option.value}
-                    // cmdk keys its search on `value`, and an empty string makes it fall back to
-                    // the rendered text. Naming the label keeps an explicit "no choice" option
-                    // searchable while the real value still travels back through `onChange`.
-                    value={itemValue(option)}
-                    {...(option.keywords === undefined ? {} : { keywords: [...option.keywords] })}
-                    {...(option.disabled === undefined ? {} : { disabled: option.disabled })}
-                    data-value={option.value}
-                    onSelect={() => choose(option)}
-                  >
-                    <OptionLine option={option} chosen={option.value === value}>
-                      {renderOption?.(option)}
-                    </OptionLine>
-                  </CommandItem>
-                ))}
-                {typed === undefined ? null : (
-                  // The reader's own text is always on offer: `forceMount` keeps it out of the
-                  // search, which would otherwise score what they typed against itself.
-                  <CommandItem
-                    forceMount
-                    value={itemValue(typed)}
-                    data-value={typed.value}
-                    onSelect={() => choose(typed)}
-                  >
-                    <OptionLine option={typed} chosen={false}>
-                      {renderOption?.(typed)}
-                    </OptionLine>
-                  </CommandItem>
-                )}
-              </>
-            )}
+            <ComboboxOptions
+              loading={loading}
+              empty={empty}
+              value={value}
+              listed={listed}
+              typed={typed}
+              onChoose={choose}
+              {...(renderOption === undefined ? {} : { renderOption })}
+            />
           </CommandList>
         </Command>
       </PopoverContent>
     </Popover>
+  );
+}
+
+function ComboboxOptions<T extends ComboboxOption>({
+  loading,
+  empty,
+  value,
+  listed,
+  typed,
+  onChoose,
+  renderOption,
+}: {
+  loading: boolean;
+  empty: string;
+  value: string;
+  listed: readonly T[];
+  typed: T | undefined;
+  onChoose: (option: T) => void;
+  renderOption?: (option: T) => ReactNode;
+}) {
+  return (
+    <>
+      {loading ? null : (
+        <>
+          {typed === undefined ? <CommandEmpty>{empty}</CommandEmpty> : null}
+          {listed.map((option) => (
+            <CommandItem
+              key={option.value}
+              // cmdk keys its search on `value`, and an empty string makes it fall back to
+              // the rendered text. Naming the label keeps an explicit "no choice" option
+              // searchable while the real value still travels back through `onChange`.
+              value={itemValue(option)}
+              {...(option.keywords === undefined ? {} : { keywords: [...option.keywords] })}
+              {...(option.disabled === undefined ? {} : { disabled: option.disabled })}
+              data-value={option.value}
+              onSelect={() => onChoose(option)}
+            >
+              <OptionLine option={option} chosen={option.value === value}>
+                {renderOption?.(option)}
+              </OptionLine>
+            </CommandItem>
+          ))}
+        </>
+      )}
+      {typed === undefined ? null : (
+        // The reader's own text is always on offer, even while suggestions are still loading:
+        // `forceMount` keeps it out of the search, which would otherwise score what they
+        // typed against itself.
+        <CommandItem
+          forceMount
+          value={itemValue(typed)}
+          data-value={typed.value}
+          onSelect={() => onChoose(typed)}
+        >
+          <OptionLine option={typed} chosen={false}>
+            {renderOption?.(typed)}
+          </OptionLine>
+        </CommandItem>
+      )}
+      {loading ? (
+        <div className={cn("flex justify-center", typed === undefined ? "py-6" : "py-3")}>
+          <LoadingLine>Loading…</LoadingLine>
+        </div>
+      ) : null}
+    </>
   );
 }
 

@@ -77,6 +77,19 @@ export class OrganizationTriggers {
     await this.expectWorkingDirectory(path);
   }
 
+  /** Even while project suggestions are still loading, typing an absolute path and pressing Enter selects it. */
+  async chooseWorkingDirectoryWhileLoading(path: string) {
+    await this.page.getByRole("combobox", { name: "Working directory", exact: true }).click();
+    await expect(this.page.getByText("Loading…", { exact: true })).toBeVisible();
+    const search = this.page.getByPlaceholder("Search projects or type a path…");
+    await search.fill(path);
+    await expect(
+      this.page.locator(`[role="option"][data-value=${JSON.stringify(path)}]`),
+    ).toBeVisible();
+    await search.press("Enter");
+    await this.expectWorkingDirectory(path);
+  }
+
   /** The audience sits closed under the event, and its header reads the current answer. */
   async expectAudience(audience: string) {
     await expect(this.audienceDisclosure()).toContainText(`Audience: ${audience}`);

@@ -2091,6 +2091,13 @@ export class PaseoHub {
     connection.openProjects(projects);
   }
 
+  /** Leaves project listing unanswered on this daemon so the editor stays in its loading state. */
+  holdDaemonProjectList(daemon: string): void {
+    const connection = this.providerDaemons.get(daemon);
+    if (connection === undefined) throw new Error("Provider daemon is not connected");
+    connection.holdProjects();
+  }
+
   async launchSavedTrigger(name: string, apiKey: string): Promise<void> {
     const rows = z
       .array(z.object({ slug: z.string() }))
@@ -5766,7 +5773,7 @@ export interface DaemonProjectFixture {
 class ContractDaemon {
   private readonly createdConfigurations: Record<string, unknown>[] = [];
   /** Unset for a daemon that predates project listing, which rejects the request. */
-  private projects: readonly DaemonProjectFixture[] | undefined;
+  private projects: readonly DaemonProjectFixture[] | "hold" | undefined;
   readonly daemonId = randomUUID();
   readonly slug: string;
   private readonly credential = randomUUID();
@@ -5877,6 +5884,10 @@ class ContractDaemon {
 
   openProjects(projects: readonly DaemonProjectFixture[]): void {
     this.projects = projects;
+  }
+
+  holdProjects(): void {
+    this.projects = "hold";
   }
 
   private acceptExecution(data: RawData): void {
@@ -6065,6 +6076,7 @@ class ContractDaemon {
       })
       .safeParse(value);
     if (!envelope.success) return false;
+    if (this.projects === "hold") return true;
     this.sendAgentResponse("project.list.response", {
       requestId: envelope.data.message.requestId,
       projects: this.projects,

@@ -27,24 +27,28 @@ import type { HubProviderSnapshot } from "../hub/protocol.js";
 interface PendingAgentValidationRequest {
   kind: "agent-validation";
   generation: number;
+  timer: ReturnType<typeof setTimeout>;
   resolve(value: { valid: true } | { valid: false; issues: readonly AgentValidationIssue[] }): void;
   reject(error: Error): void;
 }
 interface PendingProviderSnapshotRequest {
   kind: "provider-snapshot";
   generation: number;
+  timer: ReturnType<typeof setTimeout>;
   resolve(value: HubProviderSnapshot): void;
   reject(error: Error): void;
 }
 interface PendingProviderRefreshRequest {
   kind: "provider-refresh";
   generation: number;
+  timer: ReturnType<typeof setTimeout>;
   resolve(): void;
   reject(error: Error): void;
 }
 interface PendingProjectListRequest {
   kind: "project-list";
   generation: number;
+  timer: ReturnType<typeof setTimeout>;
   resolve(value: readonly DaemonProject[]): void;
   reject(error: Error): void;
 }
@@ -57,6 +61,15 @@ type PendingRequest =
   | PendingProviderSnapshotRequest
   | PendingProviderRefreshRequest
   | PendingProjectListRequest;
+
+type PendingRequestInput =
+  | Omit<PendingAgentValidationRequest, "timer">
+  | Omit<PendingProviderSnapshotRequest, "timer">
+  | Omit<PendingProviderRefreshRequest, "timer">
+  | Omit<PendingProjectListRequest, "timer">;
+
+/** How long Hub waits for a daemon RPC answer before failing the request and dropping its entry. */
+const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 
 /**
  * How a daemon says it will not list its projects for Hub: one that predates sharing them
@@ -95,6 +108,7 @@ export class ActiveDaemonRegistry {
     private readonly database: Pick<Database, "setDaemonPresence" | "touchDaemon">,
     private readonly clock: DaemonClock = systemDaemonClock,
     private readonly failureLogger: Pick<Logger, "warn" | "error"> = defaultLogger,
+    private readonly requestTimeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
   ) {}
 
   accept(
@@ -207,7 +221,7 @@ export class ActiveDaemonRegistry {
       providerOptions: agent.options,
     });
     return new Promise((resolve, reject) => {
-      this.pendingFor(daemonId).set(requestId, {
+      this.registerPending(daemonId, requestId, {
         kind: "agent-validation",
         generation: active.generation,
         resolve,
@@ -243,7 +257,10 @@ export class ActiveDaemonRegistry {
     await Promise.all(sockets);
     await Promise.all(this.presenceWrites);
     for (const [daemonId, pending] of this.pendingByDaemon) {
-      for (const request of pending.values()) request.reject(new Error("daemon disconnected"));
+      for (const request of pending.values()) {
+        clearTimeout(request.timer);
+        request.reject(new Error("daemon disconnected"));
+      }
       this.pendingByDaemon.delete(daemonId);
     }
   }
@@ -260,7 +277,7 @@ export class ActiveDaemonRegistry {
       cwd: options.cwd,
     });
     return new Promise((resolve, reject) => {
-      this.pendingFor(daemonId).set(requestId, {
+      this.registerPending(daemonId, requestId, {
         kind: "provider-snapshot",
         generation: active.generation,
         resolve,
@@ -283,7 +300,7 @@ export class ActiveDaemonRegistry {
       providers: options.providers,
     });
     return new Promise((resolve, reject) => {
-      this.pendingFor(daemonId).set(requestId, {
+      this.registerPending(daemonId, requestId, {
         kind: "provider-refresh",
         generation: active.generation,
         resolve,
@@ -301,7 +318,7 @@ export class ActiveDaemonRegistry {
     const requestId = randomUUID();
     const request = ProjectListRequestSchema.parse({ type: "project.list.request", requestId });
     return new Promise((resolve, reject) => {
-      this.pendingFor(daemonId).set(requestId, {
+      this.registerPending(daemonId, requestId, {
         kind: "project-list",
         generation: active.generation,
         resolve,
@@ -426,16 +443,8 @@ export class ActiveDaemonRegistry {
     active: ActiveSocket,
     response: z.infer<typeof HubExecutionAgentValidateResponseSchema>,
   ): void {
-    const requests = this.pendingFor(active.daemon.id);
-    const pending = requests.get(response.payload.requestId);
-    if (
-      !pending ||
-      pending.kind !== "agent-validation" ||
-      pending.generation !== active.generation
-    ) {
-      return;
-    }
-    requests.delete(response.payload.requestId);
+    const pending = this.takePending(active, response.payload.requestId, "agent-validation");
+    if (!pending) return;
     if (response.payload.error !== null) {
       pending.reject(new Error(response.payload.error));
       return;
@@ -449,16 +458,8 @@ export class ActiveDaemonRegistry {
     active: ActiveSocket,
     response: z.infer<typeof GetProvidersSnapshotResponseSchema>,
   ): void {
-    const requests = this.pendingFor(active.daemon.id);
-    const pending = requests.get(response.payload.requestId);
-    if (
-      !pending ||
-      pending.kind !== "provider-snapshot" ||
-      pending.generation !== active.generation
-    ) {
-      return;
-    }
-    requests.delete(response.payload.requestId);
+    const pending = this.takePending(active, response.payload.requestId, "provider-snapshot");
+    if (!pending) return;
     pending.resolve(response.payload);
   }
 
@@ -466,16 +467,8 @@ export class ActiveDaemonRegistry {
     active: ActiveSocket,
     response: z.infer<typeof RefreshProvidersSnapshotResponseSchema>,
   ): void {
-    const requests = this.pendingFor(active.daemon.id);
-    const pending = requests.get(response.payload.requestId);
-    if (
-      !pending ||
-      pending.kind !== "provider-refresh" ||
-      pending.generation !== active.generation
-    ) {
-      return;
-    }
-    requests.delete(response.payload.requestId);
+    const pending = this.takePending(active, response.payload.requestId, "provider-refresh");
+    if (!pending) return;
     if (!response.payload.acknowledged) {
       pending.reject(new Error("daemon provider refresh was not acknowledged"));
       return;
@@ -487,12 +480,8 @@ export class ActiveDaemonRegistry {
     active: ActiveSocket,
     response: z.infer<typeof ProjectListResponseSchema>,
   ): void {
-    const requests = this.pendingFor(active.daemon.id);
-    const pending = requests.get(response.payload.requestId);
-    if (!pending || pending.kind !== "project-list" || pending.generation !== active.generation) {
-      return;
-    }
-    requests.delete(response.payload.requestId);
+    const pending = this.takePending(active, response.payload.requestId, "project-list");
+    if (!pending) return;
     pending.resolve(
       response.payload.projects.map((project) => ({
         id: project.projectId,
@@ -509,6 +498,7 @@ export class ActiveDaemonRegistry {
     const requests = this.pendingFor(active.daemon.id);
     const pending = requests.get(payload.requestId);
     if (pending?.generation !== active.generation) return;
+    clearTimeout(pending.timer);
     requests.delete(payload.requestId);
     if (
       pending.kind === "project-list" &&
@@ -519,6 +509,34 @@ export class ActiveDaemonRegistry {
       return;
     }
     pending.reject(new Error(payload.error));
+  }
+
+  private registerPending(daemonId: string, requestId: string, request: PendingRequestInput): void {
+    const requests = this.pendingFor(daemonId);
+    const timer = setTimeout(() => {
+      const current = requests.get(requestId);
+      if (current?.generation !== request.generation) return;
+      requests.delete(requestId);
+      current.reject(new Error("daemon_request_timeout"));
+    }, this.requestTimeoutMs);
+    timer.unref?.();
+    requests.set(requestId, { ...request, timer });
+  }
+
+  private takePending<K extends PendingRequest["kind"]>(
+    active: ActiveSocket,
+    requestId: string,
+    kind: K,
+  ): Extract<PendingRequest, { kind: K }> | undefined {
+    const requests = this.pendingFor(active.daemon.id);
+    const pending = requests.get(requestId);
+    if (!pending || pending.kind !== kind || pending.generation !== active.generation) {
+      return undefined;
+    }
+    clearTimeout(pending.timer);
+    requests.delete(requestId);
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- narrowed by pending.kind === kind
+    return pending as Extract<PendingRequest, { kind: K }>;
   }
 
   private pendingFor(daemonId: string): Map<string, PendingRequest> {
@@ -533,6 +551,7 @@ export class ActiveDaemonRegistry {
     const pending = this.pendingFor(daemonId);
     for (const [requestId, request] of pending) {
       if (request.generation !== generation) continue;
+      clearTimeout(request.timer);
       pending.delete(requestId);
       request.reject(new Error("daemon disconnected"));
     }

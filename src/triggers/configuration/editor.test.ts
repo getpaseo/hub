@@ -615,23 +615,38 @@ describe("who can invoke a trigger", () => {
     return projection.value;
   }
 
-  test("GitHub events start at members, chat events at everyone, and a push at everyone", () => {
-    expect(defaultAudience("github.issue_comment_created")).toBe("members");
-    expect(eventDefinition("github.pull_request_review").audiences).toEqual([
-      "members",
-      "contributors",
-      "everyone",
-      "specific",
-    ]);
-    for (const event of ["slack.mention", "discord.mention", "linear.comment_created"] as const) {
-      expect(eventDefinition(event).audiences).toEqual(["everyone", "specific"]);
-    }
-    // GitHub lets only writers push or label, and reports no association for either actor.
+  test("GitHub creation events start at members; events where another actor can act start at everyone", () => {
     for (const event of [
-      "github.push",
+      "github.issue_created",
+      "github.pull_request_created",
+      "github.issue_comment_created",
+      "github.pull_request_comment_created",
+    ] as const) {
+      expect(defaultAudience(event)).toBe("members");
+      expect(eventDefinition(event).audiences).toEqual([
+        "members",
+        "contributors",
+        "everyone",
+        "specific",
+      ]);
+    }
+    for (const event of [
+      "slack.mention",
+      "discord.mention",
+      "linear.comment_created",
+      // GitHub reports only the original author's association when another user acts on an item.
+      "github.pull_request_ready_for_review",
+      "github.pull_request_synchronized",
       "github.issue_label_added",
       "github.pull_request_label_added",
+      "github.issue_comment",
+      "github.issues",
+      "github.pull_request",
+      "github.pull_request_review",
+      "github.pull_request_review_comment",
+      "github.push",
     ] as const) {
+      expect(defaultAudience(event)).toBe("everyone");
       expect(eventDefinition(event).audiences).toEqual(["everyone", "specific"]);
     }
     expect(eventDefinition("manual.run").audiences).toEqual([]);

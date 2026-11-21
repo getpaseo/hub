@@ -272,6 +272,31 @@ describe("daemon socket generations", () => {
     assert.deepEqual(await daemon.listProjects(), []);
   });
 
+  it("expires unanswered daemon requests instead of leaving them pending", async () => {
+    const timed = await DaemonRegistryHarness.start(createLogger(stream), 50);
+    try {
+      const unanswered = await timed.pendingProjectList();
+
+      await assert.rejects(unanswered.promise, /daemon_request_timeout/u);
+
+      const answered = await timed.pendingProjectList();
+      timed.respondProjectList(answered, [
+        {
+          projectId: "project-1",
+          projectDisplayName: "hub",
+          projectCustomName: null,
+          projectRootPath: "/home/dev/hub",
+          projectKind: "git",
+        },
+      ]);
+      assert.deepEqual(await answered.promise, [
+        { id: "project-1", name: "hub", rootPath: "/home/dev/hub" },
+      ]);
+    } finally {
+      await timed.stop();
+    }
+  });
+
   it("waits for offline presence before shutdown completes", async () => {
     daemon.holdOfflinePresence();
 
