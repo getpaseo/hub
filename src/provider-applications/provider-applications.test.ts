@@ -262,6 +262,34 @@ describe("provider applications", () => {
     );
   });
 
+  it("preserves the Discord gateway timeout when saving an application", async () => {
+    const fixture = createFixture();
+    const bot = createDiscordBotClient({
+      token: "test-token",
+      client: new SilentDiscordClient({ intents: [] }),
+      startupTimeoutMs: 10,
+    });
+    let timeout: Error | undefined;
+    await assert.rejects(bot.start(), (error: unknown) => {
+      if (!(error instanceof Error)) return false;
+      timeout = error;
+      return error.name === "DiscordStartupTimeoutError";
+    });
+    assert.ok(timeout);
+    fixture.runtime.failNextStart("discord", timeout);
+
+    await assert.rejects(
+      fixture.applications.verifyAndSave(request("POST"), "discord", {
+        provider: "discord",
+        applicationId: "100",
+        clientSecret: "test-secret",
+        botToken: "test-token",
+      }),
+      { code: "timeout" },
+    );
+    assert.equal(fixture.store.values.has("discord"), false);
+  });
+
   it("logs a Discord startup timeout and cleanup before activating Linear", async () => {
     const fixture = createFixture();
     const bot = createDiscordBotClient({
@@ -876,7 +904,7 @@ class MemoryStore implements ProviderApplicationStore {
 class BlockingRuntime implements ProviderRuntimeOwner {
   private readonly candidates = new Map<string, Candidate[]>();
   private readonly activeCandidates = new Map<string, Candidate>();
-  private readonly failures = new Set<string>();
+  private readonly failures = new Map<string, Error>();
   private readonly blocked = new Set<string>();
   private readonly unavailableConnections = new Set<string>();
   private slackInstallationHandler:
@@ -959,8 +987,8 @@ class BlockingRuntime implements ProviderRuntimeOwner {
     return this.unavailableConnections.has(provider);
   }
 
-  failNextStart(provider: string) {
-    this.failures.add(provider);
+  failNextStart(provider: string, error = new Error("candidate failed")) {
+    this.failures.set(provider, error);
   }
 
   block(provider: string) {
@@ -971,8 +999,10 @@ class BlockingRuntime implements ProviderRuntimeOwner {
     return this.blocked.has(provider);
   }
 
-  shouldFail(provider: string) {
-    return this.failures.delete(provider);
+  takeStartFailure(provider: string) {
+    const error = this.failures.get(provider);
+    this.failures.delete(provider);
+    return error;
   }
 
   publish(candidate: Candidate) {
@@ -1007,7 +1037,8 @@ class Candidate implements ProviderRuntimeCandidate {
   }
 
   async start() {
-    if (this.owner.shouldFail(this.provider)) throw new Error("candidate failed");
+    const failure = this.owner.takeStartFailure(this.provider);
+    if (failure !== undefined) throw failure;
     if (!this.owner.shouldBlock(this.provider)) return;
     await new Promise<void>((resolve) => {
       if (this.released) {

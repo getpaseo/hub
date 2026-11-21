@@ -1,3 +1,4 @@
+import { Readable } from "node:stream";
 import {
   Client,
   DefaultRestOptions,
@@ -154,7 +155,18 @@ function gatewayDiscoveryTransport(startup: AbortSignal): RESTOptions["makeReque
     startup.throwIfAborted();
     const signal = init.signal == null ? startup : AbortSignal.any([startup, init.signal]);
     try {
-      return await DefaultRestOptions.makeRequest(url, { ...init, signal });
+      const response = await DefaultRestOptions.makeRequest(url, { ...init, signal });
+      // The REST SDK inspects these statuses without consuming the response body.
+      if (response.status === 429 || response.status >= 500) {
+        const body = response.body;
+        if (body instanceof Readable) {
+          body.once("error", () => {});
+          body.destroy();
+        } else if (body !== null) {
+          await body.cancel();
+        }
+      }
+      return response;
     } catch (error) {
       // The REST SDK retries AbortError. Propagate our startup deadline instead.
       startup.throwIfAborted();

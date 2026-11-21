@@ -1040,7 +1040,12 @@ async function verifyAndActivateProvider(
       identity,
       (input.expectedVersion ?? 0) + 1,
     );
-    await candidate.start();
+    await candidate.start().catch((error: unknown) => {
+      if (provider === "discord" && classifyFailure(error) === "timeout") {
+        throw new ProviderApplicationError("timeout", undefined, { cause: error });
+      }
+      throw error;
+    });
     const saved = await options.store.save({
       provider,
       configuration: withoutExpectedVersion(input),

@@ -59,14 +59,22 @@ it("aborts stalled discovery and skips retries and gateway connections", async (
   );
 });
 
-it("reports a rate-limited discovery without waiting for the REST retry timer", async () => {
+it("releases an incomplete rate-limit response without waiting for the REST retry timer", async () => {
   await withGateway(
     async (fixture) => {
       const start = fixture.createBot(750).start();
       const reply = await fixture.discovery;
+      const closed = once(reply, "close");
       reply.writeHead(429, { "content-type": "application/json", "retry-after": "60" });
-      reply.end(JSON.stringify({ message: "rate limited", retry_after: 60 }));
+      reply.write('{"message":');
       await assert.rejects(start, { name: "RateLimitError[/gateway/bot]" });
+      await Promise.race([
+        closed,
+        delay(1_000, undefined, { ref: false }).then(() => {
+          throw new Error("Rate-limit response stayed open after startup failed");
+        }),
+      ]);
+      assert.equal(reply.writableFinished, false);
       assert.equal(fixture.discoveryRequests, 1);
     },
     { stallDiscovery: true },
