@@ -1,5 +1,6 @@
 import {
   Client,
+  DefaultRestOptions,
   DiscordAPIError,
   GatewayIntentBits,
   MessageFlags,
@@ -8,6 +9,7 @@ import {
   type GuildBasedChannel,
   type Message,
   type REST,
+  type RESTOptions,
   type TextBasedChannel,
 } from "discord.js";
 import { Routes } from "discord-api-types/v10";
@@ -143,11 +145,29 @@ function createDeadline(timeoutMs: number, createError: (budgetMs: number) => Er
   return { elapsed, allow, clear };
 }
 
+function gatewayDiscoveryTransport(startup: AbortSignal): RESTOptions["makeRequest"] {
+  return async (url, init) => {
+    if (!new URL(url).pathname.endsWith(Routes.gatewayBot())) {
+      return DefaultRestOptions.makeRequest(url, init);
+    }
+
+    startup.throwIfAborted();
+    const signal = init.signal == null ? startup : AbortSignal.any([startup, init.signal]);
+    try {
+      return await DefaultRestOptions.makeRequest(url, { ...init, signal });
+    } catch (error) {
+      // The REST SDK retries AbortError. Propagate our startup deadline instead.
+      startup.throwIfAborted();
+      throw error;
+    }
+  };
+}
+
 export interface CreateDiscordBotClientOptions {
   token: string;
   clientId?: string;
   client?: Client;
-  restOptions?: ClientOptions["rest"];
+  restOptions?: Pick<NonNullable<ClientOptions["rest"]>, "api" | "timeout">;
   startupTimeoutMs?: number;
   cleanupTimeoutMs?: number;
 }
@@ -160,7 +180,12 @@ export function createDiscordBotClient(
   const client =
     options.client ??
     new Client({
-      ...(options.restOptions === undefined ? {} : { rest: options.restOptions }),
+      rest: {
+        ...options.restOptions,
+        makeRequest: gatewayDiscoveryTransport(startupCancellation.signal),
+        // The SDK's rate-limit sleep does not observe the startup signal.
+        rejectOnRateLimit: [Routes.gatewayBot()],
+      },
       ws: {
         buildStrategy: (manager) =>
           createDiscordGatewayStrategy(manager, startupCancellation.signal, (delayMs) => {

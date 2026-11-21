@@ -36,16 +36,38 @@ it("cancels an upgrade before the server completes the handshake", async () => {
   );
 });
 
-it("prevents a connection when discovery completes after cancellation", async () => {
+it("aborts stalled discovery and skips retries and gateway connections", async () => {
   await withGateway(
     async (fixture) => {
-      const bot = fixture.createBot(250);
+      const bot = fixture.createBot(250, 500);
       const start = bot.start();
       const reply = await fixture.discovery;
+      const closed = once(reply, "close");
       await assert.rejects(start, { name: "DiscordStartupTimeoutError" });
-      fixture.sendDiscovery(reply);
-      await delay(650);
+      await Promise.race([
+        closed,
+        delay(1_000, undefined, { ref: false }).then(() => {
+          throw new Error("Gateway discovery request stayed open after startup timed out");
+        }),
+      ]);
+      assert.equal(reply.writableFinished, false);
+      await delay(550);
+      assert.equal(fixture.discoveryRequests, 1);
       assert.equal(fixture.upgrades, 0);
+    },
+    { stallDiscovery: true },
+  );
+});
+
+it("reports a rate-limited discovery without waiting for the REST retry timer", async () => {
+  await withGateway(
+    async (fixture) => {
+      const start = fixture.createBot(750).start();
+      const reply = await fixture.discovery;
+      reply.writeHead(429, { "content-type": "application/json", "retry-after": "60" });
+      reply.end(JSON.stringify({ message: "rate limited", retry_after: 60 }));
+      await assert.rejects(start, { name: "RateLimitError[/gateway/bot]" });
+      assert.equal(fixture.discoveryRequests, 1);
     },
     { stallDiscovery: true },
   );
@@ -111,7 +133,9 @@ async function startGateway(options: { stallDiscovery?: boolean; stallUpgrade?: 
   const gateway = new WebSocketServer({ noServer: true });
   const sockets = new Set<Duplex>();
   let upgrades = 0;
+  let discoveryRequests = 0;
   const server = createServer((_request, reply) => {
+    discoveryRequests += 1;
     didDiscover(reply);
     if (!options.stallDiscovery) sendDiscovery(reply);
   });
@@ -155,12 +179,18 @@ async function startGateway(options: { stallDiscovery?: boolean; stallUpgrade?: 
     answerIdentify: (socket: WebSocket) => answerIdentify(socket, gatewayUrl),
     discovery,
     upgrade,
-    sendDiscovery,
+    get discoveryRequests() {
+      return discoveryRequests;
+    },
     get upgrades() {
       return upgrades;
     },
-    createBot: (startupTimeoutMs: number) =>
-      createDiscordBotClient({ token: "test-token", startupTimeoutMs, restOptions: { api } }),
+    createBot: (startupTimeoutMs: number, restTimeoutMs?: number) =>
+      createDiscordBotClient({
+        token: "test-token",
+        startupTimeoutMs,
+        restOptions: { api, ...(restTimeoutMs === undefined ? {} : { timeout: restTimeoutMs }) },
+      }),
     async close() {
       for (const socket of sockets) socket.destroy();
       gateway.close();
