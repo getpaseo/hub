@@ -90,6 +90,24 @@ export class OrganizationTriggers {
     await this.expectWorkingDirectory(path);
   }
 
+  /**
+   * Typing an absolute path that prefixes a suggested project keeps the exact typed path as the
+   * default Enter choice while leaving the matching project on offer for deliberate selection.
+   */
+  async chooseTypedPathOverMatchingProject(typedPath: string, matchingProjectPath: string) {
+    await this.page.getByRole("combobox", { name: "Working directory", exact: true }).click();
+    const search = this.page.getByPlaceholder("Search projects or type a path…");
+    await search.fill(typedPath);
+    await expect(
+      this.page.locator(`[role="option"][data-value=${JSON.stringify(typedPath)}]`),
+    ).toBeVisible();
+    await expect(
+      this.page.locator(`[role="option"][data-value=${JSON.stringify(matchingProjectPath)}]`),
+    ).toBeVisible();
+    await search.press("Enter");
+    await this.expectWorkingDirectory(typedPath);
+  }
+
   /** The audience sits closed under the event, and its header reads the current answer. */
   async expectAudience(audience: string) {
     await expect(this.audienceDisclosure()).toContainText(`Audience: ${audience}`);

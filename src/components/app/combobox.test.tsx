@@ -186,4 +186,13 @@ describe("a combobox that takes a value of the reader's own", () => {
     assert.equal(withCustomOption(CUSTOM_PROJECTS, customPath("/srv/hub")), CUSTOM_PROJECTS);
     assert.equal(withCustomOption(CUSTOM_PROJECTS, customPath("relative")), CUSTOM_PROJECTS);
   });
+
+  it("ranks an exact typed custom value ahead of a matching suggestion", () => {
+    const filter = comboboxFilter(CUSTOM_PROJECTS, "/srv/hu");
+    const customScore = filter("/srv/hu", "/srv/hu");
+    const suggestedScore = filter("/srv/hub", "/srv/hu", ["hub", "/srv/hub"]);
+
+    assert.ok(suggestedScore > 0, "the matching suggestion remains on offer");
+    assert.ok(customScore > suggestedScore);
+  });
 });

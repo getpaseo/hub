@@ -215,6 +215,8 @@ test("a GitHub trigger starts at members, waits for a daemon, and runs in one of
     ]);
     await triggers.capture(`${SHOTS}/10-daemon-projects.png`);
     await triggers.chooseListedProject("store", "/srv/acme/web");
+    // Pressing Enter on an absolute path that prefixes a suggested project keeps the typed path.
+    await triggers.chooseTypedPathOverMatchingProject("/srv/acme/hu", "/srv/acme/hub");
   });
 
   await test.step("a daemon whose project list is still loading still takes a typed path with Enter", async () => {

@@ -98,18 +98,29 @@ export function Combobox<T extends ComboboxOption>({
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [highlighted, setHighlighted] = useState("");
   const listId = useId();
   const listed = useMemo(
     () => withCustomOption(options, custom?.(value)),
     [options, custom, value],
   );
   const typed = unlistedOption(listed, custom?.(search.trim()));
-  const filter = useMemo(() => comboboxFilter(listed), [listed]);
+  const typedValue = typed === undefined ? undefined : itemValue(typed);
+  const filter = useMemo(() => comboboxFilter(listed, typedValue), [listed, typedValue]);
   // A search belongs to one opening of the list: the next one starts from every option.
   const toggle = useCallback((next: boolean) => {
     setOpen(next);
     setSearch("");
+    setHighlighted("");
   }, []);
+  const handleSearch = useCallback(
+    (next: string) => {
+      setSearch(next);
+      const nextTyped = unlistedOption(listed, custom?.(next.trim()));
+      if (nextTyped !== undefined) setHighlighted(itemValue(nextTyped));
+    },
+    [listed, custom],
+  );
   const choose = useCallback(
     (option: T) => {
       onChange(option);
@@ -156,11 +167,11 @@ export function Combobox<T extends ComboboxOption>({
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-(--radix-popper-anchor-width) p-0" align="start">
-        <Command filter={filter}>
+        <Command filter={filter} value={highlighted} onValueChange={setHighlighted}>
           <CommandInput
             placeholder={searchPlaceholder ?? `${placeholder}…`}
             value={search}
-            onValueChange={setSearch}
+            onValueChange={handleSearch}
           />
           <CommandList id={listId}>
             <ComboboxOptions
@@ -198,6 +209,20 @@ function ComboboxOptions<T extends ComboboxOption>({
 }) {
   return (
     <>
+      {typed === undefined ? null : (
+        // The reader's own text stays first and active for Enter once valid, even while
+        // suggestions load or partially match what they typed.
+        <CommandItem
+          key={typed.value}
+          value={itemValue(typed)}
+          data-value={typed.value}
+          onSelect={() => onChoose(typed)}
+        >
+          <OptionLine option={typed} chosen={false}>
+            {renderOption?.(typed)}
+          </OptionLine>
+        </CommandItem>
+      )}
       {loading ? null : (
         <>
           {typed === undefined ? <CommandEmpty>{empty}</CommandEmpty> : null}
@@ -219,21 +244,6 @@ function ComboboxOptions<T extends ComboboxOption>({
             </CommandItem>
           ))}
         </>
-      )}
-      {typed === undefined ? null : (
-        // The reader's own text is always on offer, even while suggestions are still loading:
-        // `forceMount` keeps it out of the search, which would otherwise score what they
-        // typed against itself.
-        <CommandItem
-          forceMount
-          value={itemValue(typed)}
-          data-value={typed.value}
-          onSelect={() => onChoose(typed)}
-        >
-          <OptionLine option={typed} chosen={false}>
-            {renderOption?.(typed)}
-          </OptionLine>
-        </CommandItem>
       )}
       {loading ? (
         <div className={cn("flex justify-center", typed === undefined ? "py-6" : "py-3")}>
@@ -309,6 +319,7 @@ function itemValue(option: ComboboxOption): string {
  */
 export function comboboxFilter(
   options: readonly ComboboxOption[],
+  typedValue?: string,
 ): (value: string, search: string, keywords?: string[]) => number {
   const byIdentifier = new Map<string, ComboboxOption & { identifier: string }>();
   for (const option of options) {
@@ -317,6 +328,7 @@ export function comboboxFilter(
     }
   }
   return (value, search, keywords) => {
+    if (typedValue !== undefined && value === typedValue) return CUSTOM_TYPED_SCORE;
     const option = byIdentifier.get(value);
     if (option === undefined) return defaultFilter(value, search, keywords);
     const score = defaultFilter(option.label, search, keywords);
@@ -326,6 +338,9 @@ export function comboboxFilter(
     return IDENTIFIER_ONLY_SCORE;
   };
 }
+
+/** Strictly above cmdk's [0, 1] match scores so an exact typed custom value stays first on Enter. */
+const CUSTOM_TYPED_SCORE = 2;
 
 /** Below any score cmdk gives a word match, so an ID-only hit never outranks a named one. */
 const IDENTIFIER_ONLY_SCORE = 1e-6;
