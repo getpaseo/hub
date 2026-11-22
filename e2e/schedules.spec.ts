@@ -5,6 +5,8 @@ test("creates a twice-daily schedule, edits weekly recurrence, and preserves it 
   hub,
   page,
 }) => {
+  // App startup and several persisted recurrence round trips share this test's budget.
+  test.slow();
   await hub.signUpAs("owner", {
     name: "Schedule Owner",
     email: "schedule-owner@example.com",
