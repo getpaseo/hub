@@ -7,7 +7,11 @@ import type {
   LinearIssueCommentHistory,
 } from "../../providers/linear/client.js";
 import { createMemoryDatabase } from "../../db/memory.js";
-import type { Database, ProviderEventReceiptRecord } from "../../db/types.js";
+import type {
+  Database,
+  LinearConnectionRecord,
+  ProviderEventReceiptRecord,
+} from "../../db/types.js";
 import type { TriggerProviderExecutionControl } from "../../providers/registration.js";
 import { createActiveProjectConfiguration } from "../../test-utils/project-configuration.js";
 import { DurableWorkflowEngine } from "../../workflows/engine.js";
@@ -1124,17 +1128,22 @@ describe("Linear trigger provider", () => {
     assert.equal(stops.length, 1);
     assert.equal(stops[0]?.projectId, project.id);
     assert.equal(stops[0]?.reason, "stopped_by_user");
-    const matches = (outputContext: unknown) =>
-      stops[0]!.matches({ outputContext, triggerRunId: null });
-    assert.equal(
-      matches({
-        provider: "linear",
-        linearOrganizationId: "linear-org",
-        issueId: "issue-1",
-        agentSessionId: "session-1",
-      }),
-      true,
-    );
+    const matches = (outputContext: unknown, occurredAt?: string) =>
+      stops[0]!.matches({
+        outputContext,
+        triggerContext:
+          occurredAt === undefined ? undefined : { event: { linear: { occurred_at: occurredAt } } },
+        triggerRunId: null,
+      });
+    const matchingOutput = {
+      provider: "linear",
+      linearOrganizationId: "linear-org",
+      issueId: "issue-1",
+      agentSessionId: "session-1",
+    };
+    assert.equal(matches(matchingOutput), true);
+    assert.equal(matches(matchingOutput, "2026-01-02T00:01:00.000Z"), true);
+    assert.equal(matches(matchingOutput, "2026-01-02T00:02:00.000Z"), false);
     assert.equal(
       matches({
         provider: "linear",
@@ -1316,6 +1325,101 @@ describe("Linear trigger provider", () => {
     assert.deepEqual(results, ["agent_session_stopped", "agent_session_stopped"]);
     assert.deepEqual(stoppedProjects.sort(), ["project-first", "project-second"]);
     assert.equal(client.createdActivities.length, 1);
+  });
+
+  it("replays every Stop route when one project fails the first handoff", async () => {
+    const database = createMemoryDatabase();
+    const fixtures = await Promise.all(
+      ["linear-stop-first", "linear-stop-second"].map((projectSlug) =>
+        createActiveProjectConfiguration(database, agentSessionConfiguration(), {
+          organizationId: "hub-org",
+          projectSlug,
+        }),
+      ),
+    );
+    const connection: LinearConnectionRecord = {
+      id: "00000000-0000-4000-8000-000000000010",
+      organizationId: "hub-org",
+      slug: "linear",
+      providerApplicationId: "linear-app",
+      linearOrganizationId: "linear-org",
+      linearOrganizationName: "Linear",
+      appUserId: "linear-app-user",
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+      accessTokenExpiresAt: null,
+      scopes: ["read", "write", "app:assignable", "app:mentionable"],
+    };
+    database.findLinearConnection = async (linearOrganizationId) =>
+      linearOrganizationId === connection.linearOrganizationId ? connection : undefined;
+    for (const { project, revision } of fixtures) {
+      await database.activateProjectConfigurationRevision(project.id, revision.id, [
+        {
+          provider: "linear",
+          connectionId: connection.id,
+          resourceId: "linear-project",
+          triggerName: "agent-session",
+        },
+      ]);
+    }
+    const stores = new Map(fixtures.map(({ project, store }) => [project.id, store]));
+    const attempts = new Map<string, number>();
+    const failingProjectId = fixtures[1]!.project.id;
+    let failSecondProject = true;
+    const provider = createLinearTriggerProvider({
+      configurationStoreForProject: (projectId) => {
+        const store = stores.get(projectId);
+        if (store === undefined) throw new Error(`missing store for ${projectId}`);
+        return store;
+      },
+      database,
+      executions: {
+        stopActive: async ({ projectId }) => {
+          attempts.set(projectId, (attempts.get(projectId) ?? 0) + 1);
+          if (projectId === failingProjectId && failSecondProject) {
+            throw new Error("second project unavailable");
+          }
+          return { stopped: 1 };
+        },
+      },
+    });
+    const engine = new DurableWorkflowEngine({
+      database,
+      entitlements: null,
+      providers: [provider],
+    });
+    const input = {
+      linearOrganizationId: connection.linearOrganizationId,
+      projectId: "linear-project",
+      deliveryId: "multi-route-stop-retry",
+      source: "linear.agent_session" as const,
+      payload: stopSignalEvent(),
+      receivedAt: new Date("2026-01-02T00:01:00.000Z"),
+    };
+    const accepted = await database.acceptLinearEvent(input);
+    assert.equal(accepted.status, "accepted");
+    if (accepted.status !== "accepted") throw new Error("expected accepted Stop");
+
+    const firstAttempt = await Promise.allSettled(
+      accepted.events.map((routeEvent) => engine.enqueue(routeEvent)),
+    );
+
+    assert.equal(firstAttempt.filter(({ status }) => status === "fulfilled").length, 1);
+    assert.equal(firstAttempt.filter(({ status }) => status === "rejected").length, 1);
+    failSecondProject = false;
+    const replay = await database.acceptLinearEvent(input);
+    assert.equal(replay.status, "accepted");
+    if (replay.status !== "accepted") throw new Error("expected replayed Stop routes");
+    await Promise.all(replay.events.map((routeEvent) => engine.enqueue(routeEvent)));
+
+    assert.deepEqual(
+      fixtures.map(({ project }) => attempts.get(project.id)),
+      [2, 2],
+    );
+    assert.equal(
+      (await database.findProviderEventReceiptById(replay.receiptId))?.droppedReason,
+      null,
+    );
   });
 
   it("claims one stop confirmation across concurrent delivery retries", async () => {

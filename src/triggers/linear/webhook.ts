@@ -124,10 +124,14 @@ async function handoffLinearEvent(
     const hasCompleteTeamRoute =
       eventTeamId(event) !== undefined &&
       hasExplicitNullLinearProject(verified.payload, verified.eventName);
+    const isAgentSessionStop =
+      event.type === "agent_session" && event.agentActivity?.signal === "stop";
     // Issue webhooks carry their filter fields directly. Comment and Agent Session issue
-    // relations can be compact even when they already identify a project or team.
+    // relations can be compact even when they already identify a project or team. Stop only
+    // cancels local work and must remain available when Linear API access is unavailable.
     const needsIssueHydration =
-      event.type !== "issue" || (eventProjectId(event) === undefined && !hasCompleteTeamRoute);
+      !isAgentSessionStop &&
+      (event.type !== "issue" || (eventProjectId(event) === undefined && !hasCompleteTeamRoute));
     if (needsIssueHydration && options.resolveIssue !== undefined) {
       const source = linearEventSource(event);
       if (

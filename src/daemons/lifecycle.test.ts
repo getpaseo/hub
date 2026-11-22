@@ -410,7 +410,7 @@ describe("durable Hub action acknowledgement state", () => {
         configuredTriggerName: "agent-session",
         prompt: "raw",
         inputs: {},
-        triggerContext: { provider: "test" },
+        triggerContext: { provider: "test", stopEligible: true },
         outputContext: { provider: "linear", agentSessionId: "session-1" },
         deadlineAt: new Date("2099-01-01T00:00:00.000Z"),
         stepIds: ["step"],
@@ -457,7 +457,7 @@ describe("durable Hub action acknowledgement state", () => {
         configuredTriggerName: "agent-session",
         prompt: "raw",
         inputs: {},
-        triggerContext: { provider: "test" },
+        triggerContext: { provider: "test", stopEligible: true },
         outputContext: { provider: "linear", agentSessionId: "session-1" },
         deadlineAt: new Date("2099-01-01T00:00:00.000Z"),
         stepIds: ["step"],
@@ -482,7 +482,9 @@ describe("durable Hub action acknowledgement state", () => {
     const result = await lifecycle.stopAgentExecutions({
       projectId: run.projectId,
       reason: "stopped_by_user",
-      matches: (execution) => agentSessionIdOf(execution.outputContext) === "session-1",
+      matches: (execution) =>
+        agentSessionIdOf(execution.outputContext) === "session-1" &&
+        stopEligible(execution.triggerContext),
     });
 
     assert.deepEqual(
@@ -516,7 +518,9 @@ describe("durable Hub action acknowledgement state", () => {
       await lifecycle.stopAgentExecutions({
         projectId: run.projectId,
         reason: "stopped_by_user",
-        matches: (execution) => agentSessionIdOf(execution.outputContext) === "session-1",
+        matches: (execution) =>
+          agentSessionIdOf(execution.outputContext) === "session-1" &&
+          stopEligible(execution.triggerContext),
       }),
       { executions: [], runs: [] },
     );
@@ -1100,6 +1104,15 @@ function agentSessionIdOf(outputContext: unknown): unknown {
     "agentSessionId" in outputContext
     ? outputContext.agentSessionId
     : undefined;
+}
+
+function stopEligible(triggerContext: unknown): boolean {
+  return (
+    typeof triggerContext === "object" &&
+    triggerContext !== null &&
+    "stopEligible" in triggerContext &&
+    triggerContext.stopEligible === true
+  );
 }
 
 async function attachTestAgentSession(

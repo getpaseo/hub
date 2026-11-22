@@ -1197,13 +1197,17 @@ export class DaemonDispatchLifecycle {
    * linked after the first scan are transitioned atomically, closing that handoff race. The pass
    * queries active runs directly so an authoritative stop cannot miss older work in a busy project.
    *
-   * `matches` selects on the work's output context or on its workflow run id, which is
+   * `matches` selects on the work's trigger/output context or on its workflow run id, which is
    * resolved through the execution's step run (null outside a workflow run).
    */
   async stopAgentExecutions(input: {
     projectId: string;
     reason: string;
-    matches: (work: { outputContext: unknown; triggerRunId: string | null }) => boolean;
+    matches: (work: {
+      outputContext: unknown;
+      triggerContext?: unknown;
+      triggerRunId: string | null;
+    }) => boolean;
   }): Promise<{ executions: AgentExecutionRecord[]; runs: AcceptedTriggerRunRecord[] }> {
     const pending = (await this.options.database.findPendingAgentExecutions()).filter(
       (execution) => execution.projectId === input.projectId,
@@ -1213,6 +1217,7 @@ export class DaemonDispatchLifecycle {
         pending.map(async (execution) =>
           input.matches({
             outputContext: execution.outputContext,
+            triggerContext: execution.triggerContext,
             triggerRunId: await this.triggerRunIdOf(execution),
           })
             ? execution
@@ -1228,7 +1233,13 @@ export class DaemonDispatchLifecycle {
     );
     const undispatched = (
       await this.options.database.listRunningTriggerRunsForProject(input.projectId)
-    ).filter((run) => input.matches({ outputContext: run.outputContext, triggerRunId: run.id }));
+    ).filter((run) =>
+      input.matches({
+        outputContext: run.outputContext,
+        triggerContext: run.triggerContext,
+        triggerRunId: run.id,
+      }),
+    );
     const failedRuns = await Promise.all(
       undispatched.map(async (run) => {
         const failed = await this.options.database.failWorkflowRun(run.id, "failed", input.reason);

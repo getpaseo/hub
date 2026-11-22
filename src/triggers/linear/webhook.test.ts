@@ -281,6 +281,56 @@ describe("Linear webhook", () => {
     assert.deepEqual(event.issue?.labelIds, ["label-1"]);
   });
 
+  it("accepts a Stop signal without checking or hydrating its issue", async () => {
+    const accepted: Array<
+      Parameters<Parameters<typeof createLinearWebhookSource>[0]["accept"]>[0]
+    > = [];
+    let hydrationChecks = 0;
+    let issueReads = 0;
+    const endpoint = createLinearWebhookSource({
+      signingSecret: SECRET,
+      now: () => NOW,
+      canHydrateIssue: async () => {
+        hydrationChecks += 1;
+        return true;
+      },
+      resolveIssue: async () => {
+        issueReads += 1;
+        throw new Error("Stop must not depend on Linear API access");
+      },
+      accept: async (input) => {
+        accepted.push(input);
+        return { status: "duplicate", receiptId: input.deliveryId };
+      },
+    });
+    const envelope = agentSessionEnvelope();
+
+    const response = await endpoint.handle(
+      request(
+        {
+          ...envelope,
+          action: "prompted",
+          agentActivity: {
+            id: "stop-activity",
+            signal: "stop",
+            createdAt: new Date(NOW).toISOString(),
+            content: { type: "prompt" },
+          },
+        },
+        "AgentSessionEvent",
+      ),
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(hydrationChecks, 0);
+    assert.equal(issueReads, 0);
+    assert.equal(accepted[0]?.source, "linear.agent_session");
+    assert.equal(
+      NormalizedLinearAgentSessionEventSchema.parse(accepted[0]?.payload).agentActivity?.signal,
+      "stop",
+    );
+  });
+
   it("hydrates a compact projectless team Agent Session before matching", async () => {
     const accepted: Array<
       Parameters<Parameters<typeof createLinearWebhookSource>[0]["accept"]>[0]

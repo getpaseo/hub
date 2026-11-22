@@ -19,11 +19,9 @@ describe("Linear event acceptance", () => {
       accessTokenExpiresAt: null,
       scopes: ["read", "write", "app:assignable", "app:mentionable"],
     };
-    let connected = true;
+    let activeConnection: LinearConnectionRecord | undefined = connection;
     database.findLinearConnection = async (linearOrganizationId) =>
-      connected && linearOrganizationId === connection.linearOrganizationId
-        ? connection
-        : undefined;
+      linearOrganizationId === connection.linearOrganizationId ? activeConnection : undefined;
     const project = await database.createProject({
       organizationId: connection.organizationId,
       name: "Linear session",
@@ -203,7 +201,7 @@ describe("Linear event acceptance", () => {
     assert.equal(unrelated.status, "dropped");
     if (unrelated.status === "dropped") assert.equal(unrelated.reason, "no_project_route");
 
-    connected = false;
+    activeConnection = undefined;
     const stoppedAfterDisconnect = await database.acceptLinearEvent({
       linearOrganizationId: connection.linearOrganizationId,
       projectId: "linear-project",
@@ -236,12 +234,48 @@ describe("Linear event acceptance", () => {
     if (unknownAfterDisconnect.status === "dropped") {
       assert.equal(unknownAfterDisconnect.reason, "linear_unbound");
     }
+
+    const reconnected: LinearConnectionRecord = {
+      ...connection,
+      id: "00000000-0000-4000-8000-000000000002",
+      slug: "linear-reconnected",
+      accessToken: "replacement-access-token",
+      refreshToken: "replacement-refresh-token",
+    };
+    activeConnection = reconnected;
+    const stoppedAfterReconnect = await database.acceptLinearEvent({
+      linearOrganizationId: connection.linearOrganizationId,
+      projectId: "linear-project",
+      deliveryId: "linear-session-stopped-after-reconnect",
+      source: "linear.agent_session",
+      payload: stopPayload("session-1"),
+      receivedAt: new Date("2026-01-01T00:05:00.000Z"),
+    });
+    assert.equal(stoppedAfterReconnect.status, "accepted");
+    if (stoppedAfterReconnect.status !== "accepted") {
+      throw new Error("expected reconnected session stop event to be accepted");
+    }
+    assert.deepEqual(
+      stoppedAfterReconnect.events.map((event) => ({
+        projectId: event.projectId,
+        configurationRevisionId: event.configurationRevisionId,
+        connectionId: event.connectionId,
+      })),
+      [
+        {
+          projectId: project.id,
+          configurationRevisionId: revision.id,
+          connectionId: reconnected.id,
+        },
+      ],
+    );
   });
 });
 
 function sessionPayload(agentSessionId: string) {
   return {
     type: "agent_session",
+    organizationId: "linear-org",
     agentSession: { id: agentSessionId },
   };
 }

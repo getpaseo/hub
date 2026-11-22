@@ -584,12 +584,12 @@ async function findLinearStopRoutes(
       and(
         eq(schema.providerEventReceipts.organizationId, organizationId),
         eq(schema.providerEventReceipts.provider, "linear"),
-        eq(schema.providerEventReceipts.connectionId, connectionId),
         eq(schema.providerEventReceipts.source, "linear.agent_session"),
         isNull(schema.providerEventReceipts.droppedReason),
         isNotNull(schema.providerEventReceipts.acceptedRoutes),
         lte(schema.providerEventReceipts.receivedAt, stoppedAt),
         sql`${schema.providerEventReceipts.payload} ->> 'type' = 'agent_session'`,
+        sql`${schema.providerEventReceipts.payload} ->> 'organizationId' = ${linearOrganizationId}`,
         sql`${schema.providerEventReceipts.payload} -> 'agentSession' ->> 'id' = ${agentSessionId}`,
       ),
     )

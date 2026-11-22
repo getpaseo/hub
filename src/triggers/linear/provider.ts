@@ -713,7 +713,9 @@ async function stopLinearAgentSession(
   await options.executions?.stopActive({
     projectId: trigger.projectId,
     reason: LINEAR_STOPPED_BY_USER_REASON,
-    matches: (execution) => readLinearAgentSessionId(execution.outputContext) === agentSessionId,
+    matches: (execution) =>
+      readLinearAgentSessionId(execution.outputContext) === agentSessionId &&
+      !linearTriggerOccurredAfter(execution.triggerContext, event.occurredAt),
   });
   const client = options.client;
   if (client === undefined) return;
@@ -753,6 +755,20 @@ function readLinearAgentSessionId(outputContext: unknown): string | null {
   const context = outputContext as Partial<LinearOutputContext>;
   if (context.provider !== "linear") return null;
   return typeof context.agentSessionId === "string" ? context.agentSessionId : null;
+}
+
+/** Unknown timestamps stay cancellable; only a verified later turn survives an older Stop. */
+function linearTriggerOccurredAfter(triggerContext: unknown, stoppedAt: string): boolean {
+  if (typeof triggerContext !== "object" || triggerContext === null) return false;
+  const event = (triggerContext as { event?: unknown }).event;
+  if (typeof event !== "object" || event === null) return false;
+  const linear = (event as { linear?: unknown }).linear;
+  if (typeof linear !== "object" || linear === null) return false;
+  const occurredAt = (linear as { occurred_at?: unknown }).occurred_at;
+  if (typeof occurredAt !== "string") return false;
+  const candidate = Date.parse(occurredAt);
+  const stop = Date.parse(stoppedAt);
+  return Number.isFinite(candidate) && Number.isFinite(stop) && candidate > stop;
 }
 
 async function notifyLinearAgentFailure(

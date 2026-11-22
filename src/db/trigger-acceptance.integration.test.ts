@@ -702,6 +702,38 @@ describe("trigger acceptance persistence", () => {
       })),
       [{ projectId, configurationRevisionId: revision.id }],
     );
+
+    const replacementConnectionId = "50000000-0000-4000-8000-000000000003";
+    const reconnectClient = await createPostgresQueryRuntime(databaseUrl);
+    await reconnectClient.query(`
+      insert into linear_connections
+        (id, organization_id, linear_organization_id, provider_application_id, slug,
+         linear_organization_name, app_user_id, access_token, refresh_token, scopes)
+      values
+        ('${replacementConnectionId}', '${organizationId}', 'linear-stop-workspace', 'linear-app',
+         'linear-stop-reconnected', 'Linear Stop', 'linear-app-user', 'replacement-access-token',
+         'replacement-refresh-token', '["read", "write", "app:assignable", "app:mentionable"]'::jsonb);
+    `);
+    await reconnectClient.close();
+    const stoppedAfterReconnect = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-stop-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-stop-session-stopped-after-reconnect",
+      source: "linear.agent_session",
+      payload: stopPayload("session-1"),
+      receivedAt: new Date("2026-01-01T00:04:00.000Z"),
+    });
+    assert.equal(stoppedAfterReconnect.status, "accepted");
+    if (stoppedAfterReconnect.status !== "accepted") {
+      throw new Error("expected reconnected session stop event to be accepted");
+    }
+    assert.deepEqual(
+      stoppedAfterReconnect.events.map((event) => ({
+        projectId: event.projectId,
+        configurationRevisionId: event.configurationRevisionId,
+      })),
+      [{ projectId, configurationRevisionId: revision.id }],
+    );
     await database.close();
   }, 120_000);
 });
@@ -709,6 +741,7 @@ describe("trigger acceptance persistence", () => {
 function sessionPayload(agentSessionId: string) {
   return {
     type: "agent_session",
+    organizationId: "linear-stop-workspace",
     agentSession: { id: agentSessionId },
   };
 }

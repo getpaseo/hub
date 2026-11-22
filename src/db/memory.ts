@@ -3792,10 +3792,11 @@ class MemoryDatabase implements Database {
             ...Array.from(this.providerEventReceipts.values()).flatMap((candidate) =>
               candidate.organizationId === organizationId &&
               candidate.provider === "linear" &&
-              candidate.connectionId === connectionId &&
               candidate.source === "linear.agent_session" &&
               candidate.droppedReason === null &&
               candidate.receivedAt.getTime() <= input.receivedAt.getTime() &&
+              isRecord(candidate.payload) &&
+              candidate.payload["organizationId"] === input.linearOrganizationId &&
               linearAgentSessionId(candidate) === stopSessionId
                 ? (candidate.acceptedRoutes ?? []).filter((route) =>
                     this.projects.has(route.projectId),

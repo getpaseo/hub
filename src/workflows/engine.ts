@@ -134,10 +134,16 @@ export class DurableWorkflowEngine {
       trigger,
     );
     if (matches.length === 0) {
-      await this.options.database.markProviderEventDropped(
-        trigger.providerEventReceiptId,
-        dropReason,
-      );
+      // A Stop receipt is also its retry journal. One Linear delivery can route to multiple
+      // projects, so marking the shared receipt dropped after the first successful route would
+      // prevent a failed sibling route from being replayed. Stop handling is idempotent; leave
+      // the accepted routes replayable until the whole webhook handoff succeeds.
+      if (dropReason !== "agent_session_stopped") {
+        await this.options.database.markProviderEventDropped(
+          trigger.providerEventReceiptId,
+          dropReason,
+        );
+      }
       logProviderEventRouting({
         source: trigger.source,
         deliveryId: trigger.deliveryId,
