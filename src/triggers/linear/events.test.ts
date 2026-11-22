@@ -273,7 +273,12 @@ describe("Linear event normalization", () => {
     const event = normalizeLinearEvent(
       agentSessionEnvelope({
         action: "prompted",
-        agentActivity: { signal: "stop", content: { type: "prompt", body: "" } },
+        agentActivity: {
+          signal: "stop",
+          content: { type: "prompt", body: "" },
+          user: undefined,
+          userId: undefined,
+        },
       }),
       "AgentSessionEvent",
       hydratedIssue(),
@@ -281,6 +286,7 @@ describe("Linear event normalization", () => {
 
     assert.equal(event?.type, "agent_session");
     if (event?.type !== "agent_session") throw new Error("expected an agent session event");
+    assert.equal(event.actor, null);
     assert.equal(event.agentActivity?.signal, "stop");
     assert.equal(event.prompt, "Stop");
   });

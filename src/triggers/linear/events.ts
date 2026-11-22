@@ -281,7 +281,7 @@ function normalizeAgentSessionEvent(
     action,
     id: turn.activity?.id ?? sessionId,
     organizationId,
-    actor: turn.actor,
+    actor: turn.actor ?? null,
     agentSession: {
       id: sessionId,
       appUserId,
