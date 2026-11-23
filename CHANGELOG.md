@@ -12,6 +12,10 @@
 
 - Unhandled provider event receipts expire automatically after seven days on every instance. Receipts routed to a trigger or still referenced by a run or attachment remain available.
 
+### Fixed
+
+- Discord `${{ paseo.context }}` keeps the embeds of referenced messages and thread messages: each embed's title, description, URL, author, fields, and footer. An embed-only bot notification no longer reaches the agent as an empty message.
+
 ## 0.11.0 - 2026-10-25
 
 ### Added
