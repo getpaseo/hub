@@ -514,10 +514,10 @@ async function resolveCompiledConfiguration(
       environment.kind === "daemon"
         ? {
             environment,
-            daemon: await database.findDaemonBySlugForOrganization(
-              organizationId,
-              environment.daemon,
-            ),
+            daemon:
+              environment.daemonId === undefined
+                ? await database.findDaemonBySlugForOrganization(organizationId, environment.daemon)
+                : daemons.find(({ id }) => id === environment.daemonId),
           }
         : { environment, daemon: undefined },
     ),

@@ -30,6 +30,27 @@ describe("startup project trigger migration", () => {
     assert.equal(environment?.kind === "daemon" ? environment.daemonId : undefined, TEST_DAEMON_ID);
   });
 
+  it("preserves a saved daemon binding for a legacy multi-step trigger after a slug change", async () => {
+    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    await enrollMigrationDaemon(database);
+    await activeProject(
+      database,
+      "legacy",
+      [workflow("check", "manual.run", twoSteps())],
+      [],
+      TEST_DAEMON_ID,
+    );
+    await database.renameDaemonForOrganization("org", TEST_DAEMON_ID, "renamed-devbox");
+
+    await migrateLegacyProjectTriggers(database);
+
+    const trigger = (await database.listOrganizationTriggers("org"))[0]!;
+    const revision = await database.findActiveProjectConfiguration(trigger.runtimeProjectId);
+    assert.notEqual(revision, undefined);
+    const environment = parseProjectConfiguration(revision!).environments[0];
+    assert.equal(environment?.kind === "daemon" ? environment.daemonId : undefined, TEST_DAEMON_ID);
+  });
+
   it("leaves the legacy project active when its daemon target cannot be compiled", async () => {
     const database = createMemoryDatabase({ organizationIds: ["org"] });
     const project = await activeProject(database, "legacy", [
@@ -202,6 +223,7 @@ async function activeProject(
   slug: string,
   workflows: readonly HubBundleFile[],
   routes: readonly import("../db/types.js").ProjectTriggerRoute[] = [],
+  daemonId?: string,
 ): Promise<ProjectRecord> {
   const project = await database.createProject({
     organizationId: "org",
@@ -211,6 +233,15 @@ async function activeProject(
   });
   const files = [{ path: ".paseo/hub.yml", content: hub }, ...workflows];
   const bundle = compileHubBundle(files);
+  const normalizedConfiguration =
+    daemonId === undefined
+      ? bundle.configuration
+      : {
+          ...bundle.configuration,
+          environments: bundle.configuration.environments.map((environment) =>
+            environment.kind === "daemon" ? { ...environment, daemonId } : environment,
+          ),
+        };
   const revision = await database.insertProjectConfigurationRevision({
     projectId: project.id,
     sourceKind: "manual",
@@ -218,7 +249,7 @@ async function activeProject(
       kind: "manual",
       bundle: { authoredHash: bundle.authoredHash, files: bundle.files },
     },
-    normalizedConfiguration: bundle.configuration,
+    normalizedConfiguration,
     contentHash: bundle.authoredHash,
   });
   await database.activateProjectConfigurationRevision(project.id, revision.id, routes);
