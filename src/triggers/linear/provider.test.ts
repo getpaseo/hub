@@ -990,6 +990,43 @@ describe("Linear trigger provider", () => {
     assert.equal(stops, 0);
   });
 
+  it("retries an agent session before launching it when comment-run cancellation fails", async () => {
+    const database = createMemoryDatabase();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      agentSessionConfiguration(),
+      { organizationId: "hub-org" },
+    );
+    await database.createAcceptedTriggerRun(
+      linearCommentRun(project.id, revision.id, "comment-1", "receipt-comment-run"),
+    );
+    let stopAttempts = 0;
+    const provider = createLinearTriggerProvider({
+      configurationStoreForProject: () => store,
+      client: new RecordingHistoryClient({ complete: true, comments: [] }),
+      database: linearRunLookupDatabase(database),
+      executions: {
+        stopActive: async () => {
+          stopAttempts += 1;
+          if (stopAttempts === 1) throw new Error("execution control unavailable");
+          return { stopped: 1 };
+        },
+      },
+    });
+    const created = agentSessionEvent({ action: "created" });
+    const session = externalAgentSession(project.id, revision.id, {
+      ...created,
+      agentSession: { ...created.agentSession, rootCommentId: "comment-1" },
+    });
+
+    await assert.rejects(provider.match(session), /execution control unavailable/u);
+    const retried = await provider.match(session);
+
+    if (typeof retried === "string") throw new Error(`expected a match, got ${retried}`);
+    assert.equal(retried.length, 1);
+    assert.equal(stopAttempts, 2);
+  });
+
   it.each(["created", "prompted"] as const)(
     "suppresses a delayed comment run after its %s Agent Session was accepted",
     async (action) => {

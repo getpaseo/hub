@@ -622,8 +622,8 @@ async function hydrateLinearCommentThread(
  * run is stopped so the user is not answered twice. For a new session the mention may sit in a
  * reply, so the comment that created it is checked as well as the thread's root; a prompt is tied
  * to the one comment behind it. The association is persisted before the scan so a delayed
- * comment run cannot start afterward; a failure while stopping already-running work is reported
- * but does not hold back the session.
+ * comment run cannot start afterward. A failure while finding or stopping already-running work
+ * rejects this delivery so Linear retries it before the session workflow can launch.
  */
 async function supersedeLinearCommentRuns(
   options: Pick<LinearTriggerProviderOptions, "database" | "executions">,
@@ -664,6 +664,7 @@ async function supersedeLinearCommentRuns(
       },
       { diagnostic: { projectId, agentSessionId: event.agentSession.id, commentIds } },
     );
+    throw error;
   }
 }
 
