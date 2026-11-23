@@ -149,6 +149,8 @@ export class AgentSessions {
         session = { ...session, agentId: agent.id, workspaceId: agent.workspaceId };
         await this.database.saveAgentSession(session);
         action = "created";
+        // A retry after a lost daemon response finds this agent; the first recorded action stays.
+        await this.database.attachExecutionToSession(input.executionId, id, action);
       }
       if (session.agentId === null || session.workspaceId === null)
         throw new Error("Session agent is missing");
