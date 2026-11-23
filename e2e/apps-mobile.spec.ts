@@ -51,14 +51,14 @@ test("the whole app setup journey completes at phone width", async ({ hub }) => 
 
     await github.fill({ ...WORKING_CREDENTIALS.GitHub, ...GITHUB_EVENT_CREDENTIALS });
     await github.save();
-    await github.expectFocusedResult("GitHub accepted this App.");
+    await github.expectFocusedResult("GitHub accepted this App");
     await github.expectStatus("Verified");
     await github.expectSummary({ App: "Paseo Hub", Owner: "acme-inc", Installations: "None yet" });
     await github.expectSetupStepsRetired();
     await surface.expectNothingClipped();
     await surface.shoot(SHOTS, "apps-03-github-verified.mobile");
 
-    await github.action("Install on GitHub").click();
+    await github.connectGitHub();
     await github.expectStatus("Connected");
     await github.expectSummary({
       Installations: "acme-inc",
@@ -190,7 +190,7 @@ test("mobile evidence covers skipping and later environment-managed apps", async
     await managed.openManagement();
     await managed.surface.github.expand();
     await expect(managed.surface.github.form()).toHaveCount(0);
-    await expect(managed.surface.github.body().getByRole("alert")).toContainText(
+    await expect(managed.surface.github.environmentNotice()).toContainText(
       "GITHUB_APP_PRIVATE_KEY",
     );
     await managed.surface.expectNothingClipped();

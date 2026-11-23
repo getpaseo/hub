@@ -1,35 +1,93 @@
 import assert from "node:assert/strict";
-import { describe, it, vi } from "vitest";
-import { createGitHubReplyExecutor, githubReplyAvailable } from "./reply.js";
+import { describe, it } from "vitest";
+import {
+  createGitHubReplyExecutor,
+  githubReplyAvailable,
+  type GitHubReplyClient,
+} from "./reply.js";
 
 describe("GitHub reply output", () => {
-  it("posts a comment to the originating issue or pull request", async () => {
-    const createIssueComment = vi.fn(() => Promise.resolve());
-    const outputContext = {
-      provider: "github",
-      target: { installationId: 42, repository: "getpaseo/hub" },
-      event: { github: { item: { number: 92 } } },
-    };
+  it.each([
+    "missing",
+    "linked",
+    "bare",
+    "reference",
+    "quoted",
+    "indented",
+    "image",
+    "label",
+  ] as const)(
+    "posts a comment to the originating issue or pull request (%s URL)",
+    async (urlForm) => {
+      const url = "https://hub.example/open/executions/00000000-0000-4000-8000-000000000001";
+      const link = `[Open in Paseo](${url})`;
+      const content = {
+        missing: "Shipped.",
+        linked: "Existing: " + link,
+        quoted: "Log: `" + url + "`",
+        bare: "Session: " + url,
+        indented: "Log excerpt:\n\n    " + url,
+        image: "!" + link,
+        reference: `[Run][launch]\n\n[launch]: <${url}>`,
+        label: `[${url}](https://paseo.sh)`,
+      }[urlForm];
+      const comments: Parameters<GitHubReplyClient["createIssueComment"]>[0][] = [];
+      const client: GitHubReplyClient = {
+        async createIssueComment(comment) {
+          comments.push(comment);
+        },
+      };
+      const outputContext = {
+        provider: "github",
+        target: { installationId: 42, repository: "getpaseo/hub" },
+        event: { github: { item: { number: 92 } } },
+      };
 
-    assert.equal(githubReplyAvailable(outputContext), true);
-    await createGitHubReplyExecutor({ client: { createIssueComment } })({
-      agentExecutionId: "execution-1",
-      toolType: "github.reply",
-      args: { content: "Shipped." },
-      outputContext,
-    });
+      assert.equal(githubReplyAvailable(outputContext), true);
+      await createGitHubReplyExecutor({ client })({
+        agentExecutionId: "execution-1",
+        toolType: "github.reply",
+        args: { content },
+        openInPaseoUrl: url,
+        outputContext,
+      });
 
-    assert.deepEqual(createIssueComment.mock.calls, [
-      [
+      assert.deepEqual(comments, [
         {
           installationId: 42,
           owner: "getpaseo",
           repo: "hub",
           issueNumber: 92,
-          body: "Shipped.",
+          body: ["linked", "bare", "reference"].includes(urlForm)
+            ? content
+            : `${content}\n\n${link}`,
         },
-      ],
-    ]);
+      ]);
+    },
+  );
+
+  it("delivers the original comment when a footer would exceed GitHub's byte limit", async () => {
+    const content = "🙂".repeat(65_536);
+    const comments: string[] = [];
+    await createGitHubReplyExecutor({
+      client: {
+        async createIssueComment(comment) {
+          comments.push(comment.body);
+        },
+      },
+    })({
+      agentExecutionId: "execution-1",
+      toolType: "github.reply",
+      args: { content },
+      openInPaseoUrl: "https://hub.example/open/executions/00000000-0000-4000-8000-000000000001",
+      outputContext: {
+        provider: "github",
+        target: { installationId: 42, repository: "getpaseo/hub" },
+        event: { github: { item: { number: 92 } } },
+      },
+    });
+
+    assert.equal(comments[0], content);
   });
 
   it("does not advertise reply when the event has no conversation item", () => {

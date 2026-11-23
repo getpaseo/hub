@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { describe, it } from "vitest";
 import type { AuthServer } from "../../auth/server.js";
-import type { OrganizationAccessValue } from "../../auth/organization-access.js";
+import {
+  ProductRequestError,
+  type OrganizationAccessValue,
+} from "../../auth/organization-access.js";
 import { createMemoryDatabase } from "../../db/memory.js";
 import {
   createActiveProjectConfiguration,
@@ -10,7 +13,7 @@ import {
   TEST_DAEMON_SLUG,
 } from "../../test-utils/project-configuration.js";
 import type { ProjectRecord, StartConnectionAttemptInput } from "../../db/types.js";
-import type { GitHubConnectionClient } from "./client.js";
+import { FakeGitHub, fakeGitHubConnectionClient } from "../../test-utils/fake-github.js";
 import { createGitHubRegistration } from "./index.js";
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
@@ -91,7 +94,7 @@ describe("GitHub registration", () => {
       publicBaseUrl: "https://hub.test",
       configuration: githubConfiguration(),
       appAuth: githubAuth(),
-      connectionClient: new GitHubClientFake(),
+      connectionClient: githubConnectionClient(),
       configurationProvider: configuration,
       reactionClient: {
         createReaction: () => Promise.resolve({ id: 1 }),
@@ -158,14 +161,15 @@ describe("GitHub registration", () => {
       appAuth: {
         getInstallation: () => Promise.resolve(undefined),
         getInstallationToken: () => Promise.resolve("token"),
-        mintInstallationToken: () => Promise.resolve("token"),
+        mintInstallationToken: () =>
+          Promise.resolve({ token: "token", expiresAt: Date.now() + 3600_000 }),
         mintInstallationAccessToken: () =>
           Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 }),
         getAppBotIdentity: () => Promise.resolve({ id: 123, login: "paseo[bot]" }),
         revokeInstallationToken: () => Promise.resolve(),
         createInstallationOctokit: () => Promise.reject(new Error("unused")),
       },
-      connectionClient: new GitHubClientFake(),
+      connectionClient: githubConnectionClient(),
       reactionClient: {
         createReaction: () => Promise.resolve({ id: 1 }),
         deleteReaction: () => Promise.resolve(),
@@ -192,7 +196,7 @@ describe("GitHub registration", () => {
     const body: unknown = await response.json();
     assert(body !== null && typeof body === "object" && "url" in body);
     assert(typeof body.url === "string");
-    assert.match(body.url, /^https:\/\/github\.test\/setup/u);
+    assert.match(body.url, /^https:\/\/github\.test\/login\/oauth\/authorize\?/u);
   });
 
   it("reports readiness without constructing partial provider behavior", () => {
@@ -248,7 +252,10 @@ describe("GitHub registration", () => {
         getInstallationToken: () => Promise.reject(new Error("unused")),
         mintInstallationToken: (installationId) => {
           installations.push(installationId);
-          return Promise.resolve("test-installation-token");
+          return Promise.resolve({
+            token: "test-installation-token",
+            expiresAt: Date.now() + 3600_000,
+          });
         },
         mintInstallationAccessToken: () =>
           Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 }),
@@ -256,7 +263,7 @@ describe("GitHub registration", () => {
         revokeInstallationToken: () => Promise.resolve(),
         createInstallationOctokit: () => Promise.reject(new Error("unused")),
       },
-      connectionClient: new GitHubClientFake(),
+      connectionClient: githubConnectionClient(),
       reactionClient: {
         createReaction: () => Promise.resolve({ id: 1 }),
         deleteReaction: () => Promise.resolve(),
@@ -310,7 +317,8 @@ describe("GitHub registration", () => {
       appAuth: {
         getInstallation: () => Promise.resolve(undefined),
         getInstallationToken: () => Promise.resolve("token"),
-        mintInstallationToken: () => Promise.resolve("token"),
+        mintInstallationToken: () =>
+          Promise.resolve({ token: "token", expiresAt: Date.now() + 3600_000 }),
         mintInstallationAccessToken: (input) => {
           requests.push(input);
           return Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 });
@@ -327,7 +335,7 @@ describe("GitHub registration", () => {
         },
         createInstallationOctokit: () => Promise.reject(new Error("unused")),
       },
-      connectionClient: new GitHubClientFake(),
+      connectionClient: githubConnectionClient(),
       reactionClient: {
         createReaction: () => Promise.resolve({ id: 1 }),
         deleteReaction: () => Promise.resolve(),
@@ -413,6 +421,34 @@ describe("GitHub registration", () => {
     );
   });
 
+  it("returns a setup callback that carries no session to the integrations landing", async () => {
+    const registration = createGitHubRegistration({
+      database: createMemoryDatabase(),
+      auth: new SignedOutAuth(),
+      applicationBaseUrl: "https://hub.test",
+      publicBaseUrl: "https://hub.test",
+      configuration: githubConfiguration(),
+      appAuth: githubAuth(),
+      connectionClient: githubConnectionClient(),
+      reactionClient: {
+        createReaction: () => Promise.resolve({ id: 1 }),
+        deleteReaction: () => Promise.resolve(),
+      },
+    });
+
+    const response = await registration.connection.actions["setup"]!(
+      new Request(
+        "https://hub.test/api/integrations/github/setup?state=s&setup_action=install&installation_id=42",
+      ),
+    );
+
+    assert.equal(response.status, 303);
+    assert.equal(
+      response.headers.get("location"),
+      "https://hub.test/integrations?app=github&result=connection_unauthenticated",
+    );
+  });
+
   it("keeps provider runtime active without browser authentication", async () => {
     const registration = createGitHubRegistration({
       database: createMemoryDatabase(),
@@ -421,7 +457,7 @@ describe("GitHub registration", () => {
       publicBaseUrl: "https://hub.test",
       configuration: githubConfiguration(),
       appAuth: githubAuth(),
-      connectionClient: new GitHubClientFake(),
+      connectionClient: githubConnectionClient(),
       reactionClient: {
         createReaction: () => Promise.resolve({ id: 1 }),
         deleteReaction: () => Promise.resolve(),
@@ -452,83 +488,6 @@ describe("GitHub registration", () => {
 
     assert.equal(response.status, 503);
     assert.deepEqual(await response.json(), { error: "database_unavailable" });
-  });
-
-  it("claims lifecycle replay before provider I/O and applies verified evidence afterward", async () => {
-    const database = createMemoryDatabase();
-    const order: string[] = [];
-    database.claimGitHubLifecycleReceipt = (input) => {
-      order.push(`claim:${input.deliveryId}`);
-      return Promise.resolve({
-        status: "claimed",
-        providerEventReceiptId: "lifecycle-trigger",
-        installationId: 42,
-      });
-    };
-    database.applyGitHubLifecycle = (_claim, result) => {
-      order.push(`apply:${result.status}`);
-      return Promise.resolve();
-    };
-    const client = new GitHubClientFake();
-    client.getInstallation = () => {
-      order.push("verify");
-      return Promise.resolve({
-        status: "present" as const,
-        identity: {
-          installationId: 42,
-          accountId: "account-42",
-          accountLogin: "acme",
-          accountType: "Organization",
-          status: "suspended" as const,
-        },
-      });
-    };
-    const registration = createGitHubRegistration({
-      database,
-      auth: new RegistrationAuth(),
-      applicationBaseUrl: "https://hub.test",
-      publicBaseUrl: "https://hub.test",
-      configuration: {
-        appId: "42",
-        appSlug: "paseo",
-        clientId: "client",
-        clientSecret: "secret",
-        webhookSecret: "webhook-secret",
-        privateKey: "test-private-key",
-      },
-      appAuth: {
-        getInstallation: () => Promise.resolve(undefined),
-        getInstallationToken: () => Promise.resolve("token"),
-        mintInstallationToken: () => Promise.resolve("token"),
-        mintInstallationAccessToken: () =>
-          Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 }),
-        getAppBotIdentity: () => Promise.resolve({ id: 123, login: "paseo[bot]" }),
-        revokeInstallationToken: () => Promise.resolve(),
-        createInstallationOctokit: () => Promise.reject(new Error("unused")),
-      },
-      connectionClient: client,
-      reactionClient: {
-        createReaction: () => Promise.resolve({ id: 1 }),
-        deleteReaction: () => Promise.resolve(),
-      },
-    });
-    const body = JSON.stringify({ action: "suspend", installation: { id: 42 } });
-    const signature = "sha256=" + createHmac("sha256", "webhook-secret").update(body).digest("hex");
-    const response = await registration.requests[0]!.handle(
-      new Request("https://hub.test/webhook", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-github-delivery": "lifecycle-1",
-          "x-github-event": "installation",
-          "x-hub-signature-256": signature,
-        },
-        body,
-      }),
-    );
-
-    assert.equal(response.status, 200);
-    assert.deepEqual(order, ["claim:lifecycle-1", "verify", "apply:present"]);
   });
 });
 
@@ -598,19 +557,11 @@ class RegistrationConfigurationFake implements GitHubConfigurationProvider {
   }
 }
 
-class GitHubClientFake implements GitHubConnectionClient {
-  setupUrl(state: string): string {
-    return `https://github.test/setup?state=${state}`;
-  }
-  authorizationUrl({ state }: { state: string; challenge: string }): string {
-    return `https://github.test/authorize?state=${state}`;
-  }
-  verifyUserInstallation() {
-    return Promise.resolve(undefined);
-  }
-  getInstallation(): ReturnType<GitHubConnectionClient["getInstallation"]> {
-    return Promise.resolve({ status: "absent" as const });
-  }
+function githubConnectionClient() {
+  return fakeGitHubConnectionClient(
+    new FakeGitHub({ webBaseUrl: "https://github.test", hubOrigin: () => "https://hub.test" }),
+    "https://hub.test",
+  );
 }
 
 class RegistrationAuth implements AuthServer {
@@ -645,6 +596,13 @@ class RegistrationAuth implements AuthServer {
   }
 }
 
+/** The browser that came back from GitHub carries no Hub session at all. */
+class SignedOutAuth extends RegistrationAuth {
+  override resolveAccount(): Promise<never> {
+    return Promise.reject(new ProductRequestError(401, "unauthenticated"));
+  }
+}
+
 function githubConfiguration() {
   return {
     appId: "42",
@@ -676,7 +634,8 @@ function githubAuth() {
   return {
     getInstallation: () => Promise.resolve(undefined),
     getInstallationToken: () => Promise.resolve("token"),
-    mintInstallationToken: () => Promise.resolve("token"),
+    mintInstallationToken: () =>
+      Promise.resolve({ token: "token", expiresAt: Date.now() + 3600_000 }),
     mintInstallationAccessToken: () =>
       Promise.resolve({ token: "scoped-token", expiresAt: Date.now() + 3_600_000 }),
     getAppBotIdentity: () => Promise.resolve({ id: 123, login: "paseo[bot]" }),

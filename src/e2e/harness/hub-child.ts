@@ -1,3 +1,10 @@
+import { REST } from "discord.js";
+import { createSlackRegistration } from "../../providers/slack/index.js";
+import { createDiscordRegistration } from "../../providers/discord/index.js";
+import { chat, localChatFetch, seedChatConnections } from "../../test-utils/fake-chat.js";
+import { randomUUID } from "node:crypto";
+import { createExecutionAuthority } from "../../execution-authority/index.js";
+import { z } from "zod";
 import { appendFile, writeFile } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
@@ -143,19 +150,83 @@ async function main(): Promise<void> {
   });
   await configuration.activate(config.id);
   const resources = new OrganizationResources(database);
+  const executionAuthority = createExecutionAuthority({
+    database,
+    connectionsForProject: () => async () => {
+      throw new Error("Unexpected E2E connection value");
+    },
+    isExecutionActive: async (id) => {
+      const execution = await database.findAgentExecutionById(id);
+      return execution?.status === "running" || execution?.status === "spawning";
+    },
+    githubAuthority: {
+      mint: async () => {
+        const token = randomUUID();
+        await appendFile(
+          `${outputFile}.authority`,
+          `${JSON.stringify({ action: "mint", token })}\n`,
+        );
+        return { token, expiresAt: Date.now() + 3600_000, botUserId: 123, botLogin: "paseo[bot]" };
+      },
+      revoke: async (token) => {
+        await appendFile(
+          `${outputFile}.authority`,
+          `${JSON.stringify({ action: "revoke", token })}\n`,
+        );
+      },
+    },
+  });
+  const fakeChatOrigin = process.env["HUB_E2E_FAKE_CHAT_ORIGIN"];
+  const integrationTools = {};
+  if (fakeChatOrigin) {
+    await seedChatConnections(runtime, organizationId, "hub-e2e");
+    const baseUrl = requiredEnvironment("PASEO_HUB_APP_URL");
+    const shared = {
+      database,
+      auth,
+      applicationBaseUrl: baseUrl,
+      publicBaseUrl: baseUrl,
+      fetch: localChatFetch(fakeChatOrigin),
+    };
+    const slack = createSlackRegistration({
+      ...shared,
+      configuration: {
+        transport: "webhook",
+        appId: chat.slack.appId,
+        clientId: "slack-client",
+        clientSecret: "slack-secret",
+        signingSecret: "slack-signing-secret",
+      },
+    });
+    const discord = createDiscordRegistration({
+      ...shared,
+      integrationRest: new REST({ api: `${fakeChatOrigin}/api`, retries: 0 }).setToken(
+        chat.discord.token,
+      ),
+      configuration: {
+        clientId: chat.discord.appId,
+        clientSecret: "discord-secret",
+        botToken: chat.discord.token,
+      },
+    });
+    Object.assign(integrationTools, slack.integrationTools, discord.integrationTools);
+  }
   const application = createHubApplication({
     database,
+    executionAuthority,
     entitlements: entitlements.service,
     publicApi:
       auth.publicCredentials === undefined
         ? { status: "unavailable" }
         : { status: "enabled", authenticator: auth.publicCredentials },
     outputRegistry: outputs,
+    integrationTools,
     providers: [
       {
         name: "discord",
         eventNames: ["e2e.discord"],
         async match(trigger) {
+          const payload = z.object({ conversation: z.string().optional() }).parse(trigger.payload);
           const activeConfiguration = await database.findActiveProjectConfiguration(E2E_PROJECT_ID);
           const compiledConfiguration =
             activeConfiguration === undefined
@@ -178,12 +249,17 @@ async function main(): Promise<void> {
                 provider: "discord",
                 guildId: "guild-original",
                 channelId: "channel-original",
-                threadId: "thread-original",
-                messageId: "message-original",
+                threadId: payload.conversation ?? "thread-original",
+                messageId:
+                  payload.conversation === undefined ? "message-original" : trigger.deliveryId,
               },
               configurationRevisionId: activeConfiguration.id,
               projectId: E2E_PROJECT_ID,
               hubConfig: compiledConfiguration,
+              conversation:
+                payload.conversation === undefined
+                  ? null
+                  : { key: `e2e:${payload.conversation}`, label: payload.conversation },
               invocation: {
                 status: "accepted",
                 prompt: "Deploy mcp-capability for phase-five-operator",

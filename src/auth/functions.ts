@@ -18,6 +18,7 @@ const credentialsSchema = z.object({
   email: z.string().email(),
   password: z.string().min(PASSWORD_MIN_LENGTH),
 });
+const signInSchema = credentialsSchema.extend({ invitation: z.string().min(1).optional() });
 const signUpSchema = credentialsSchema.extend({
   name: z.string().trim().min(1),
   invitation: z.string().min(1).optional(),
@@ -30,7 +31,7 @@ const resetPasswordSchema = z.object({
   token: z.string().min(1),
   newPassword: z.string().min(PASSWORD_MIN_LENGTH),
 });
-const invitationSchema = z.object({ invitation: z.string().optional() });
+const accountEntrySchema = z.object({ invitation: z.string().optional() });
 const initialOperatorSchema = credentialsSchema.strip();
 const createOrganizationSchema = z.object({ name: z.string().trim().min(1).max(100) });
 const selectOrganizationSchema = z.object({ organizationId: z.string().min(1) });
@@ -69,7 +70,7 @@ const apiKeyCreateResultSchema = z.object({
 });
 
 export const accountState = createServerFn({ method: "GET" })
-  .validator(invitationSchema)
+  .validator(accountEntrySchema)
   .handler(async ({ data }): Promise<Result<z.infer<typeof accountStateSchema>>> => {
     const request = getRequest();
     const url = new URL("/api/auth/paseo/state", request.url);
@@ -101,7 +102,7 @@ export const accountState = createServerFn({ method: "GET" })
   });
 
 export const signIn = createServerFn({ method: "POST" })
-  .validator(credentialsSchema)
+  .validator(signInSchema)
   .handler(async ({ data }): Promise<Result<{ state: "complete" | "verificationRequired" }>> => {
     try {
       const application = await getApplication();

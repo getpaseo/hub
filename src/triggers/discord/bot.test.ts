@@ -1,10 +1,58 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { DiscordAPIError, RESTJSONErrorCodes, type Client } from "discord.js";
+import { DiscordAPIError, MessageFlags, RESTJSONErrorCodes, Client } from "discord.js";
+import { setTimeout as delay } from "node:timers/promises";
 import { describe, it } from "vitest";
 import { createDiscordBotClient } from "./bot.js";
 
 describe("Discord bot client", () => {
+  it("abandons a silent login, bounds destruction, and cleans up a late login", async () => {
+    const client = new ControlledLoginClient({ hangOnDestroy: true });
+    const bot = createDiscordBotClient({
+      token: "token",
+      client,
+      startupTimeoutMs: 10,
+      cleanupTimeoutMs: 10,
+    });
+    const stopping = bot.start();
+
+    await assert.rejects(
+      Promise.race([
+        stopping,
+        delay(500, undefined, { ref: false }).then(() => {
+          throw new Error("startup remained pending");
+        }),
+      ]),
+      { name: "DiscordStartupTimeoutError", code: "timeout" },
+    );
+    assert.equal(client.destructions, 1);
+    await bot.stop();
+
+    client.finishLogin("token");
+    await delay(0);
+    assert.equal(client.destructions, 2);
+    await assert.rejects(bot.start(), { name: "DiscordStartupTimeoutError" });
+    assert.equal(client.logins, 1);
+  });
+
+  it("shares a responsive login and stops the client normally", async () => {
+    const client = new ControlledLoginClient();
+    const bot = createDiscordBotClient({ token: "token", client, startupTimeoutMs: 100 });
+    const first = bot.start();
+    const second = bot.start();
+    client.finishLogin("token");
+    await Promise.all([first, second]);
+    assert.equal(client.logins, 1);
+    assert.equal(client.destructions, 0);
+    await bot.stop();
+    assert.equal(client.destructions, 1);
+  });
+
+  it("preserves the SDK invalid-token error", async () => {
+    const bot = createDiscordBotClient({ token: "", client: new Client({ intents: [] }) });
+    await assert.rejects(bot.start(), { code: "TokenInvalid" });
+  });
+
   it("classifies a disallowed-intents gateway close from its structured code", async () => {
     const canary = "gateway-login-secret-3f72";
     const client = new FakeGatewayClient(4014, new Error(canary));
@@ -119,9 +167,17 @@ describe("Discord bot client", () => {
     const createdThread = channel.message?.thread;
     assert.ok(createdThread);
     assert.deepEqual(createdThread.sentPayloads, [
-      { content: "done", allowedMentions: { parse: [] } },
-      { content: "more detail", allowedMentions: { parse: [] } },
-      { content: "final detail", allowedMentions: { parse: [] } },
+      { content: "done", allowedMentions: { parse: [] }, flags: MessageFlags.SuppressEmbeds },
+      {
+        content: "more detail",
+        allowedMentions: { parse: [] },
+        flags: MessageFlags.SuppressEmbeds,
+      },
+      {
+        content: "final detail",
+        allowedMentions: { parse: [] },
+        flags: MessageFlags.SuppressEmbeds,
+      },
     ]);
   });
 
@@ -144,7 +200,11 @@ describe("Discord bot client", () => {
 
     assert.deepEqual(message.startedThreads, []);
     assert.deepEqual(existingThread.sentPayloads, [
-      { content: "existing thread reply", allowedMentions: { parse: [] } },
+      {
+        content: "existing thread reply",
+        allowedMentions: { parse: [] },
+        flags: MessageFlags.SuppressEmbeds,
+      },
     ]);
   });
 
@@ -172,8 +232,16 @@ describe("Discord bot client", () => {
 
     assert.deepEqual(channel.sentPayloads, []);
     assert.deepEqual(thread.sentPayloads, [
-      { content: "thread reply", allowedMentions: { parse: [] } },
-      { content: "second thread reply", allowedMentions: { parse: [] } },
+      {
+        content: "thread reply",
+        allowedMentions: { parse: [] },
+        flags: MessageFlags.SuppressEmbeds,
+      },
+      {
+        content: "second thread reply",
+        allowedMentions: { parse: [] },
+        flags: MessageFlags.SuppressEmbeds,
+      },
     ]);
   });
 
@@ -353,6 +421,32 @@ function contextMessage(
     attachments: new Map<string, never>(),
     reference: null,
   };
+}
+
+class ControlledLoginClient extends Client {
+  finishLogin!: (token: string) => void;
+  private readonly pendingLogin = new Promise<string>((resolve) => {
+    this.finishLogin = resolve;
+  });
+  logins = 0;
+  destructions = 0;
+
+  constructor(private readonly behavior: { hangOnDestroy?: boolean } = {}) {
+    super({ intents: [] });
+  }
+
+  override login(): Promise<string> {
+    this.logins += 1;
+    return this.pendingLogin;
+  }
+
+  override async destroy(): Promise<void> {
+    this.destructions += 1;
+    if (this.behavior.hangOnDestroy && this.destructions === 1) {
+      await new Promise<void>(() => {});
+    }
+    await super.destroy();
+  }
 }
 
 class FakeGatewayClient extends EventEmitter {

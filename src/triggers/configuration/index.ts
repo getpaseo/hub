@@ -7,6 +7,7 @@ import {
   type CompiledEnvironment,
   type CompiledTrigger,
 } from "../../config/compiler.js";
+import { templateInsertsPrompt } from "../../workflows/expression.js";
 import { TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
 
 export { TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
@@ -52,9 +53,16 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
     allowOutputs.push(grant);
   }
   const triggers: AuthoredTrigger[] = [];
-  for (const [index, [event, definition]] of Object.entries(authored.on).entries()) {
+  const events = Object.entries(authored.on);
+  // A manual dispatch addresses the trigger by its name, so `manual.run` carries it wherever it
+  // is declared; otherwise the first event does.
+  const named = Math.max(
+    0,
+    events.findIndex(([event]) => event === "manual.run"),
+  );
+  for (const [index, [event, definition]] of events.entries()) {
     const compiledTrigger: AuthoredTrigger = {
-      name: internalEventName(authored.name, index),
+      name: internalEventName(authored.name, index, named),
       on: event,
       max_runtime: authored.max_runtime ?? authored.run.max_runtime,
       filters: authoredFilters(event, definition),
@@ -64,13 +72,19 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
           environment: "target",
           max_runtime: authored.run.max_runtime,
           idle_timeout: authored.run.idle_timeout,
+          ...(authored.run.startup_timeout === undefined
+            ? {}
+            : { startup_timeout: authored.run.startup_timeout }),
           agent,
+          ...(authored.run.title === undefined ? {} : { title: authored.run.title }),
           prompt: [{ text: authored.run.prompt }],
           ...(authored.run.env === undefined ? {} : { env: authored.run.env }),
           ...(authored.run.github === undefined ? {} : { github: authored.run.github }),
+          tools: authored.run.tools,
           ...(authored.run.output === undefined ? {} : { output: authored.run.output }),
           ...(allowOutputs.length === 0 ? {} : { allow_outputs: allowOutputs }),
           auto_archive: authored.run.auto_archive,
+          background: authored.run.background,
         },
       ],
     };
@@ -98,12 +112,33 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
   return {
     authored,
     environment: compiledEnvironment,
-    events: compiled.triggers.map(withAutomaticReply),
+    events: compiled.triggers.map((trigger) =>
+      withEventDefaults(
+        {
+          ...trigger,
+          steps: trigger.steps.map((step) => ({
+            ...step,
+            continuation: authored.run.continuation,
+          })),
+        },
+        authored.run.prompt,
+      ),
+    ),
     authoredHash: createHash("sha256").update(yaml).digest("hex"),
   };
 }
 
-function withAutomaticReply(trigger: CompiledTrigger): CompiledTrigger {
+function withEventDefaults(trigger: CompiledTrigger, instructions: string): CompiledTrigger {
+  if (trigger.on === "webhook.received") {
+    if (templateInsertsPrompt(instructions)) return trigger;
+    return {
+      ...trigger,
+      steps: trigger.steps.map((step) => ({
+        ...step,
+        prompt: [...step.prompt, { kind: "text", value: "${{ paseo.prompt }}" }],
+      })),
+    };
+  }
   const replyType = automaticReplyType(trigger.on);
   if (replyType === undefined) return trigger;
   return {
@@ -167,6 +202,6 @@ export function serializeTriggerDocument(trigger: TriggerDocument): string {
   return dump(trigger, { noRefs: true, lineWidth: -1, sortKeys: false });
 }
 
-function internalEventName(name: string, index: number): string {
-  return index === 0 ? name : `${name}-event-${String(index + 1)}`;
+function internalEventName(name: string, index: number, named: number): string {
+  return index === named ? name : `${name}-event-${String(index + 1)}`;
 }

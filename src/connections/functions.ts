@@ -1,9 +1,16 @@
 import { createServerFn } from "@tanstack/react-start";
-import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
 import { respondOk, type Result } from "../contract/respond.js";
 import { respondWithFailure } from "../failures/index.js";
 import { handleConnections } from "../server/runtime.js";
+import { connectionOperationRequest } from "./operation-request.server.js";
+import {
+  CONNECTION_PROVIDERS,
+  connectionProviderName,
+  type ConnectionProvider,
+} from "./result-contract.js";
+
+export type { ConnectionProvider } from "./result-contract.js";
 
 const githubStatusSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("notConfigured") }),
@@ -45,13 +52,12 @@ const scopeSchema = z.object({
   projectSlug: z.string().min(1).optional(),
 });
 const providerSchema = scopeSchema.extend({
-  provider: z.enum(["github", "discord", "slack", "linear"]),
+  provider: z.enum(CONNECTION_PROVIDERS),
 });
 const disconnectSchema = providerSchema.extend({ connectionId: z.string().uuid() });
 const startSchema = z.object({ url: z.string().url() });
 
 export type ConnectionStatus = z.infer<typeof connectionStatusSchema>;
-export type ConnectionProvider = z.infer<typeof providerSchema>["provider"];
 export type ConnectionDisconnectResult = `${ConnectionProvider}_disconnected`;
 
 export const connectionStatus = createServerFn({ method: "GET" })
@@ -81,7 +87,7 @@ export const connectionStatus = createServerFn({ method: "GET" })
 export const startConnection = createServerFn({ method: "POST" })
   .validator(providerSchema)
   .handler(async ({ data }): Promise<Result<{ url: string }>> => {
-    const name = providerName(data.provider);
+    const name = connectionProviderName(data.provider);
     try {
       const operation = CONNECTION_OPERATIONS[data.provider].start;
       const response = await handleConnections(
@@ -115,7 +121,7 @@ export const startConnection = createServerFn({ method: "POST" })
 export const disconnectConnection = createServerFn({ method: "POST" })
   .validator(disconnectSchema)
   .handler(async ({ data }): Promise<Result<{ result: ConnectionDisconnectResult }>> => {
-    const name = providerName(data.provider);
+    const name = connectionProviderName(data.provider);
     try {
       const operation = CONNECTION_OPERATIONS[data.provider].disconnect;
       const response = await handleConnections(
@@ -152,12 +158,6 @@ const CONNECTION_OPERATIONS = {
   slack: { start: "slackStart", disconnect: "slackDisconnect" },
   linear: { start: "linearStart", disconnect: "linearDisconnect" },
 } as const;
-
-function providerName(provider: ConnectionProvider): string {
-  if (provider === "github") return "GitHub";
-  if (provider === "discord") return "Discord";
-  return provider === "slack" ? "Slack" : "Linear";
-}
 
 function connectionContext(
   operation: string,
@@ -207,16 +207,9 @@ function operationRequest(
   scope: { organizationSlug: string; projectSlug?: string | undefined },
   connectionId?: string,
 ): Request {
-  const incoming = getRequest();
-  const headers = new Headers(incoming.headers);
-  headers.delete("content-length");
-  const url = new URL(path, incoming.url);
-  url.searchParams.set("organizationSlug", scope.organizationSlug);
-  if (scope.projectSlug !== undefined) url.searchParams.set("projectSlug", scope.projectSlug);
-  if (connectionId !== undefined) url.searchParams.set("connectionId", connectionId);
-  return new Request(url, {
-    method,
-    headers,
-    ...(method === "POST" ? { body: "{}" } : {}),
+  return connectionOperationRequest(method, path, {
+    organizationSlug: scope.organizationSlug,
+    ...(scope.projectSlug === undefined ? {} : { projectSlug: scope.projectSlug }),
+    ...(connectionId === undefined ? {} : { connectionId }),
   });
 }

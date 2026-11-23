@@ -20,6 +20,7 @@ import type { BillingPlanPriceInterval } from "../db/types.js";
 import type { StripeBillingClient, StripeSubscriptionState } from "./stripe-billing-client.js";
 import { selectActivePlanPrice } from "./plan-prices.js";
 import { publicBillingPlans, type PublicBillingPlan } from "./public-catalog.js";
+import { HUB_PLAN_PRESENTATIONS, type BillingPlanPresentations } from "./plan-presentation.js";
 
 /** The organization's live seat count (members + pending invitations). Injected by the
  * composition root — the count reads Better Auth tables the `Database` interface does not model,
@@ -36,7 +37,12 @@ export type {
 } from "./stripe-catalog-source.js";
 export type { StripeBillingClient, StripeSubscriptionState } from "./stripe-billing-client.js";
 export { selectActivePlanPrice, AmbiguousPlanPriceError } from "./plan-prices.js";
-export type { PublicBillingPlan, PublicBillingPlanPrice } from "./public-catalog.js";
+export type {
+  PublicBillingPlan,
+  PublicBillingPlanFeature,
+  PublicBillingPlanIncluded,
+  PublicBillingPlanPrice,
+} from "./public-catalog.js";
 
 /**
  * The four Stripe events that mean "the plan catalog may have changed" — see the plan's
@@ -82,30 +88,32 @@ function billingLockKey(organizationId: string): string {
 }
 
 /**
- * The internal entitlement record a hosted organization is stamped with before it pays and again
- * after it cancels. Identified by its `paseo_plan_slug` metadata, mirrored as `billing_plans.slug`
- * — so which product carries the floor is set in the Stripe dashboard, not hardcoded here (the
- * plan's "Stripe is the source of truth" rule).
+ * The Free plan: what a hosted organization is provisioned with, what it keeps until it
+ * subscribes, and what a terminal cancellation returns it to. Identified by its
+ * `paseo_plan_slug` metadata and mirrored as `billing_plans.slug`, so its seats, invitations, and
+ * monthly execution allowance are authored in the Stripe dashboard rather than hardcoded here.
  *
- * It is not an offer. Nothing customer-facing may present it as the organization's plan or as
- * something to buy: `publicCatalog` withholds it from the catalog, and `subscriptionSnapshot`
- * reports an organization stamped with it as having no plan. Enforcing both here is what keeps
- * consumers from having to know this slug exists.
+ * It never expires and carries no Stripe subscription: an organization on Free has nothing for
+ * the billing portal to manage, which is why `manageable` and the portal both answer no for it.
  */
 const FREE_PLAN_SLUG = "free";
 
 /**
- * The conservative floor used only when billing is configured but the mirror has no active Free
- * plan — a first boot before the sync lands, or a Stripe account with no Free product. Not a
- * mirror of any Stripe plan: it fails closed (one seat, no invites, a small execution cap) so a
- * new organization can never get everything for free, while `provisioningEntitlement` logs loudly
- * so an operator notices and fixes the catalog. A misconfigured Stripe is recoverable — every
- * organization stamped from this floor re-stamps to the real Free plan the moment it subscribes.
+ * The floor used only when billing is configured but the mirror has no active Free plan — a first
+ * boot before the sync lands, or a Stripe account with no Free product. It fails closed (one seat,
+ * no invites) rather than open to unlimited, and carries the same execution allowance the Free
+ * product is authored with so a new organization is not silently worse off than the catalog says.
+ * Keep the number in step with `ent_executions_monthly_limit` on the live Free product; the E2E
+ * fixture (`src/e2e/harness/browser-billing.ts`) mirrors the same value.
+ *
+ * `provisioningEntitlement` logs loudly when it lands here so an operator fixes the catalog; the
+ * next catalog sync re-stamps every organization the mirror can account for (see
+ * `catalog-sync.ts`).
  */
 const FREE_TIER_FALLBACK: EntitlementTemplate = {
   seats: { max: 1 },
   canInviteMembers: false,
-  meters: { "executions.monthly": { limit: 0 } },
+  meters: { "executions.monthly": { limit: 50 } },
 };
 
 export interface ComposeBillingOptions {
@@ -117,6 +125,8 @@ export interface ComposeBillingOptions {
   billingClient: StripeBillingClient;
   /** Reads an organization's live seat count for post-paid quantity reporting. */
   seatUsage: SeatUsageReader;
+  /** Hub-owned customer-facing plan copy. Production uses the built-in catalog. */
+  presentations?: BillingPlanPresentations;
 }
 
 export interface CreateCheckoutInput {
@@ -129,23 +139,50 @@ export interface CreateCheckoutInput {
   accountName: string | null;
 }
 
+/** Who a Stripe customer is created for, when checkout or the portal first needs one. */
+interface CustomerIdentity {
+  organizationId: string;
+  accountEmail: string | null;
+  accountName: string | null;
+}
+
 export interface CreatePortalInput {
   organizationId: string;
   returnUrl: string;
 }
 
-/** The organization's current subscription, resolved against the plan mirror for display. */
+/** The organization's current plan, resolved against the plan mirror for display. Free is a plan
+ * like any other here; what it lacks is a Stripe subscription, so `status` is null and nothing is
+ * manageable. */
 export interface CurrentSubscriptionView {
   planSlug: string | null;
   planName: string | null;
   status: string | null;
   cancelAtPeriodEnd: boolean;
   currentPeriodEnd: string | null;
-  trialEnd: string | null;
-  trialEligible: boolean;
   /** True when a subscription exists, so "Manage billing" (the Stripe portal) can be opened. */
   manageable: boolean;
 }
+
+/** What an instance operator needs to find an organization's billing during support: its plan,
+ * the Stripe customer to look up, and the live subscription. */
+export interface OperatorBillingView {
+  planName: string | null;
+  stripeCustomerId: string | null;
+  subscription: OperatorSubscriptionView;
+}
+
+/** The live Stripe subscription. Plan and customer come from Hub's own records, so a Stripe
+ * outage marks only this part unavailable. */
+export type OperatorSubscriptionView =
+  | { kind: "unavailable" }
+  | {
+      kind: "loaded";
+      /** Stripe's status, or null when there is no live subscription. */
+      status: string | null;
+      cancelAtPeriodEnd: boolean;
+      currentPeriodEnd: string | null;
+    };
 
 /** Thrown when a checkout is requested for a plan/interval that is not in the mirror. */
 export class BillingRequestError extends Error {
@@ -184,30 +221,33 @@ export class BillingRuntime {
     private readonly catalogSource: StripeCatalogSource,
     private readonly billingClient: StripeBillingClient,
     private readonly seatUsage: SeatUsageReader,
+    private readonly presentations: BillingPlanPresentations,
   ) {
     this.stripe = new StripeSDK(config.stripeSecretKey);
   }
 
   async syncCatalog(): Promise<void> {
-    await syncBillingCatalog(this.catalogSource, this.database);
+    await syncBillingCatalog(this.catalogSource, this.database, this.presentations);
   }
 
   /**
-   * The plans a customer may buy, derived from the catalog mirror. Everything that renders an
-   * offer — the public plans endpoint, the billing overview, the picker — reads this and nothing
-   * else, so "what Hub sells" is decided once, here.
+   * The plans Hub offers, derived from the catalog mirror. Everything that renders an offer — the
+   * public plans endpoint, the billing overview, the picker — reads this and nothing else, so
+   * "what Hub offers" is decided once, here.
    */
   async publicCatalog(): Promise<PublicBillingPlan[]> {
-    return publicBillingPlans(await this.database.listBillingPlans(), FREE_PLAN_SLUG);
+    return publicBillingPlans(await this.database.listBillingPlans());
   }
 
   /**
    * What a hosted organization is stamped with at provisioning: the Free plan's template resolved
-   * from the catalog mirror. When no active Free plan is mirrored yet — a first boot before the
-   * sync, or a misconfigured Stripe account — it falls back to a conservative floor and logs
-   * loudly rather than failing open to unlimited or bricking organization creation. The
-   * composition root wires this into the auth server's provisioning resolver; self-hosted
-   * (no billing) never reaches here and keeps stamping unlimited.
+   * from the catalog mirror. No Stripe call, no subscription, no card — a new organization is on
+   * Free from its first request and stays there until someone buys a plan. When no active Free
+   * plan is mirrored yet — a first boot before the sync, or a misconfigured Stripe account — it
+   * falls back to a conservative floor and logs loudly rather than failing open to unlimited or
+   * bricking organization creation. The composition root wires this into the auth server's
+   * provisioning resolver; self-hosted (no billing) never reaches here and keeps stamping
+   * unlimited.
    */
   async provisioningEntitlement(): Promise<ProvisioningEntitlement> {
     return this.freeEntitlement();
@@ -216,8 +256,8 @@ export class BillingRuntime {
   /**
    * The Free plan's template from the catalog mirror — what both provisioning and a terminal
    * cancellation stamp. When no active Free plan is mirrored yet (a first boot before the sync,
-   * or a Stripe account missing the product) it falls back to the conservative floor and logs
-   * loudly rather than failing open to unlimited.
+   * or a Stripe account missing the product) it falls back to the floor above and logs loudly
+   * rather than failing open to unlimited.
    */
   private async freeEntitlement(): Promise<{ planId: string | null; granted: Entitlements }> {
     const plans = await this.database.listBillingPlans();
@@ -267,7 +307,6 @@ export class BillingRuntime {
       quantity: await this.seatUsage(input.organizationId),
       successUrl: input.successUrl,
       cancelUrl: input.cancelUrl,
-      trial: subscriptions.length === 0,
     });
     this.invalidateSubscriptions(customerId);
     return checkout;
@@ -317,13 +356,9 @@ export class BillingRuntime {
   /**
    * The organization's current plan and subscription status, for the billing section. The plan
    * shown is the plan enforced: it is derived from what the organization was last *stamped* with
-   * (its entitlements provenance), not from the Stripe subscription, so a trialing organization
-   * reads the plan it is trialing. The subscription mirror only decides whether there is a live
-   * subscription to manage.
-   *
-   * A stamp of the internal free record is not a plan. An organization that has not subscribed —
-   * or has cancelled back down to it — reports no plan at all, which is what makes the billing
-   * page a paywall rather than an advert for a tier nobody sells.
+   * (its entitlements provenance), not from the Stripe subscription. An organization that never
+   * subscribed, or cancelled back down, reads Free — the plan it is actually on — and only the
+   * Stripe status, the dates, and "Manage billing" fall away with the subscription.
    */
   async subscriptionSnapshot(organizationId: string): Promise<CurrentSubscriptionView> {
     const [customer, plans, entitlements] = await Promise.all([
@@ -332,23 +367,66 @@ export class BillingRuntime {
       this.database.getOrganizationEntitlements(organizationId),
     ]);
     const stamped = plans.find((plan) => plan.id === entitlements?.planId);
-    const purchased = stamped?.slug === FREE_PLAN_SLUG ? undefined : stamped;
-    const subscriptions =
-      customer === undefined ? [] : await this.customerSubscriptions(customer.stripeCustomerId);
-    const subscription = subscriptions.find(
-      (candidate) => !TERMINAL_SUBSCRIPTION_STATUSES.has(candidate.status),
-    );
+    const subscription =
+      customer === undefined ? undefined : await this.liveSubscription(customer.stripeCustomerId);
     const live = subscription !== undefined;
     return {
-      planSlug: purchased?.slug ?? null,
-      planName: purchased?.name ?? null,
+      planSlug: stamped?.slug ?? null,
+      planName: stamped?.name ?? null,
       status: live ? subscription.status : null,
       cancelAtPeriodEnd: live ? subscription.cancelAtPeriodEnd : false,
       currentPeriodEnd: live ? (subscription.currentPeriodEnd?.toISOString() ?? null) : null,
-      trialEnd: live ? (subscription.trialEnd?.toISOString() ?? null) : null,
-      trialEligible: subscriptions.length === 0,
       manageable: live,
     };
+  }
+
+  /**
+   * What an instance operator sees beside an organization. Stripe being unreachable must not take
+   * the operator console down with it — entitlements are the reason the operator is there, and an
+   * override that already committed must not read as failed — so a failed subscription read is
+   * reported and comes back as `unavailable`, next to the plan and customer Hub stores itself.
+   */
+  async operatorBilling(organizationId: string): Promise<OperatorBillingView> {
+    const [customer, plans, entitlements] = await Promise.all([
+      this.database.getOrganizationBillingCustomer(organizationId),
+      this.database.listBillingPlans(),
+      this.database.getOrganizationEntitlements(organizationId),
+    ]);
+    return {
+      planName: plans.find((plan) => plan.id === entitlements?.planId)?.name ?? null,
+      stripeCustomerId: customer?.stripeCustomerId ?? null,
+      subscription: await this.operatorSubscription(customer?.stripeCustomerId),
+    };
+  }
+
+  private async operatorSubscription(
+    customerId: string | undefined,
+  ): Promise<OperatorSubscriptionView> {
+    try {
+      const live =
+        customerId === undefined
+          ? undefined
+          : await withTimeout(this.liveSubscription(customerId), OPERATOR_SUBSCRIPTION_TIMEOUT_MS);
+      return {
+        kind: "loaded",
+        status: live?.status ?? null,
+        cancelAtPeriodEnd: live?.cancelAtPeriodEnd ?? false,
+        currentPeriodEnd: live?.currentPeriodEnd?.toISOString() ?? null,
+      };
+    } catch (error) {
+      reportFailure(error, {
+        operation: "billing.operator.subscription",
+        component: "billing",
+        provider: "stripe",
+      });
+      return { kind: "unavailable" };
+    }
+  }
+
+  private async liveSubscription(customerId: string): Promise<StripeSubscriptionState | undefined> {
+    return (await this.customerSubscriptions(customerId)).find(
+      (candidate) => !TERMINAL_SUBSCRIPTION_STATUSES.has(candidate.status),
+    );
   }
 
   async handleWebhook(request: Request): Promise<Response> {
@@ -501,7 +579,9 @@ export class BillingRuntime {
     return planStamp(entitlementsSchema.parse(plan.template), plan.id);
   }
 
-  private async resolveCustomer(input: CreateCheckoutInput): Promise<string> {
+  /** The organization's Stripe customer, created on first use. Only checkout and the portal
+   * reach here — a Free organization never acquires a Stripe customer. */
+  private async resolveCustomer(input: CustomerIdentity): Promise<string> {
     const existing = await this.database.getOrganizationBillingCustomer(input.organizationId);
     if (existing !== undefined) return existing.stripeCustomerId;
     return this.billingClient.ensureCustomer({
@@ -596,5 +676,23 @@ export function composeBilling(options: ComposeBillingOptions): BillingRuntime {
     options.catalogSource,
     options.billingClient,
     options.seatUsage,
+    options.presentations ?? HUB_PLAN_PRESENTATIONS,
   );
+}
+
+/**
+ * The operator page and the response to a saved override both wait on the subscription read, and
+ * Stripe's own timeout is 80 seconds with retries. A slow Stripe reads as unavailable instead.
+ */
+const OPERATOR_SUBSCRIPTION_TIMEOUT_MS = 5_000;
+
+function withTimeout<T>(work: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(Object.assign(new Error("Stripe did not answer in time"), { code: "timeout" })),
+      milliseconds,
+    );
+  });
+  return Promise.race([work, expired]).finally(() => clearTimeout(timer));
 }

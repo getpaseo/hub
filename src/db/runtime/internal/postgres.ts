@@ -2,10 +2,11 @@ import { basename } from "node:path";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { reportFailure } from "../../../failures/index.js";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
-import { Pool } from "pg";
-import type { PoolClient, PoolConfig, QueryResultRow } from "pg";
+import type { PoolClient } from "pg";
+import { createPool, type PostgresPool } from "./pool.js";
+export { createPool } from "./pool.js";
 import * as schema from "../../schema.js";
-import { DatabaseUnavailableError, toDatabaseError } from "../../errors.js";
+import { toDatabaseError } from "../../errors.js";
 import { TransactionRollback } from "../index.js";
 import type {
   DatabaseRuntime,
@@ -19,7 +20,6 @@ import type {
 import { postgresLocks } from "../locks/index.js";
 import { runtimeFile } from "../../../runtime-files.js";
 
-const QUERY_DEADLINE_MS = 3_000;
 const MIGRATIONS_FOLDER = runtimeFile("drizzle");
 const DEFAULT_POSTGRES_DATABASE = "postgres";
 
@@ -38,7 +38,7 @@ export async function createPostgresRuntime(
 class PostgresRuntime implements DatabaseRuntime {
   private readonly database;
 
-  constructor(private readonly pool: Pool) {
+  constructor(private readonly pool: PostgresPool) {
     this.database = drizzle(pool, { schema });
   }
 
@@ -48,7 +48,7 @@ class PostgresRuntime implements DatabaseRuntime {
 
   async transaction<T>(operation: (transaction: TransactionHandle) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
-    const connection = new PostgresTransactionHandle(client);
+    const connection = new PostgresTransactionHandle(client, this.pool);
     try {
       await connection.query("begin");
       try {
@@ -92,7 +92,7 @@ class PostgresRuntime implements DatabaseRuntime {
   async withConnection<T>(operation: (connection: QueryHandle) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
     try {
-      return await operation(new PostgresQueryHandle(client));
+      return await operation(new PostgresQueryHandle(client, this.pool));
     } finally {
       client.release();
     }
@@ -100,10 +100,13 @@ class PostgresRuntime implements DatabaseRuntime {
 }
 
 class PostgresQueryHandle implements TransactionHandle {
-  constructor(private readonly client: PoolClient) {}
+  constructor(
+    private readonly client: PoolClient,
+    private readonly pool: PostgresPool,
+  ) {}
 
   query<Row extends QueryRow = QueryRow>(sql: string, params: readonly unknown[] = []) {
-    return query<Row>(this.client, sql, params);
+    return query<Row>(this.pool, sql, params, this.client);
   }
 
   drizzle() {
@@ -151,45 +154,14 @@ function isMissingDatabaseError(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "3D000";
 }
 
-/** @package */
-export function createPool(connectionString: string): Pool {
-  const config: PoolConfig = {
-    connectionString,
-    connectionTimeoutMillis: QUERY_DEADLINE_MS,
-    query_timeout: QUERY_DEADLINE_MS,
-    statement_timeout: QUERY_DEADLINE_MS,
-  };
-  const pool = new Pool(config);
-  pool.on("error", (error) =>
-    reportFailure(error, { operation: "database.postgres.pool", component: "database" }),
-  );
-  return pool;
-}
-
 async function query<Row extends QueryRow>(
-  handle: Pick<Pool, "query"> | Pick<PoolClient, "query">,
+  pool: PostgresPool,
   sql: string,
   params: readonly unknown[],
+  client?: PoolClient,
 ): Promise<QueryResult<Row>> {
-  const result = await withDatabaseDeadline(handle.query<Row & QueryResultRow>(sql, [...params]));
+  const result = await pool.runQuery<Row>(client, sql, params);
   return { rows: result.rows, rowCount: result.rowCount ?? 0 };
-}
-
-async function withDatabaseDeadline<T>(promise: Promise<T>): Promise<T> {
-  let timeout: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timeout = setTimeout(
-          () => reject(new DatabaseUnavailableError("database query timed out")),
-          QUERY_DEADLINE_MS,
-        );
-      }),
-    ]);
-  } finally {
-    if (timeout !== undefined) clearTimeout(timeout);
-  }
 }
 
 function quoteIdentifier(value: string): string {

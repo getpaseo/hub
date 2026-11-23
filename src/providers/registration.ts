@@ -1,9 +1,9 @@
+import type { IntegrationToolHandlers } from "../integration-tools/index.js";
 import type { ProjectConfigurationStore } from "../configuration/store.js";
 import type { ConnectionResolutionContext, ConnectionResolver } from "../config/connections.js";
 import type { OrganizationConnectionUsage } from "../db/types.js";
 import type { OutputExecutor, OutputToolDefinition } from "../execution-capabilities/outputs.js";
 import type { TriggerProvider, TriggerSource } from "../triggers/index.js";
-import type { GitHubConfigurationProvider } from "../configuration/github-sync.js";
 import type {
   AttachmentCapabilityRegistry,
   AttachmentProvider,
@@ -76,8 +76,8 @@ export interface ProviderRegistration {
   triggerProviders: readonly TriggerProviderFactory[];
   sources: readonly TriggerSource[];
   outputs: readonly ProviderOutputRegistration[];
+  integrationTools?: IntegrationToolHandlers;
   requests: readonly ProviderRequestRegistration[];
   attachment?: ProviderAttachmentRegistration;
-  githubConfiguration?: GitHubConfigurationProvider;
   slackDelivery?: { status(): SlackDeliveryStatus; retry(): Promise<void> };
 }

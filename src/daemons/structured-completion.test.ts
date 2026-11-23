@@ -43,6 +43,7 @@ describe("structured daemon completion", () => {
       agent: { provider: "codex", mode: "default" },
       allowOutputs: [],
       autoArchive: false,
+      background: false,
       triggerContext: { provider: "manual" },
       outputContext: { provider: "manual" },
       outputSchema: schema,

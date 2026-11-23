@@ -150,6 +150,7 @@ function matchingProvider(configuration: CompiledHubConfig, revisionId: string):
           outputContext: { provider: "manual" },
           configurationRevisionId: revisionId,
           hubConfig: configuration,
+          conversation: null,
           invocation: {
             status: "accepted",
             prompt: "run",

@@ -1,5 +1,10 @@
 import type { AccountAccessValue } from "../auth/organization-access.js";
-import type { Database, EntitlementChangeSource, OperatorOrganizationRecord } from "../db/types.js";
+import type {
+  Database,
+  EntitlementChangeSource,
+  OperatorMemberRecord,
+  OperatorOrganizationRecord,
+} from "../db/types.js";
 import type {
   Entitlements,
   EntitlementOverrides,
@@ -23,6 +28,44 @@ const HISTORY_LIMIT = 20;
  */
 export interface OperatorAccountResolver {
   resolveAccount(request: Request): Promise<AccountAccessValue>;
+}
+
+/**
+ * The billing facts the console shows beside an organization, from the hosted billing feature.
+ * The composition root passes the billing runtime here, or null on a self-hosted instance, so the
+ * console never imports `src/billing/`.
+ */
+export interface OperatorBillingReader {
+  operatorBilling(organizationId: string): Promise<OperatorBilling>;
+}
+
+export interface OperatorBilling {
+  /** Null when the catalog cannot name the stamped plan. */
+  planName: string | null;
+  stripeCustomerId: string | null;
+  subscription: OperatorSubscription;
+}
+
+/**
+ * The live Stripe subscription. Stripe being unreachable must not fail the snapshot — entitlements
+ * are why the operator is here, and an override that already committed must not read as failed —
+ * so an `OperatorBillingReader` reports that as `unavailable` instead of rejecting.
+ */
+export type OperatorSubscription =
+  | { kind: "unavailable" }
+  | {
+      kind: "loaded";
+      /** Stripe's status, or null when there is no live subscription. */
+      status: string | null;
+      cancelAtPeriodEnd: boolean;
+      currentPeriodEnd: string | null;
+    };
+
+export interface OperatorOrganization {
+  id: string;
+  name: string;
+  slug: string;
+  createdAt: string;
 }
 
 export interface OperatorRouteScope {
@@ -76,8 +119,19 @@ export interface OperatorHistoryEntry {
   createdAt: string;
 }
 
+export interface OperatorMember {
+  id: string;
+  name: string;
+  email: string;
+  role: OperatorMemberRecord["role"];
+  joinedAt: string;
+}
+
 export interface OperatorSnapshot {
-  organization: OperatorOrganizationRecord;
+  organization: OperatorOrganization;
+  /** Null on an instance without billing. */
+  billing: OperatorBilling | null;
+  members: OperatorMember[];
   entitlements: OperatorEntitlementsView;
   seatsInUse: number;
   usage: MeterUsage;
@@ -97,11 +151,12 @@ export class OperatorConsole {
     private readonly database: Database,
     private readonly accounts: OperatorAccountResolver,
     private readonly entitlements: EntitlementsService,
+    private readonly billing: OperatorBillingReader | null,
   ) {}
 
-  async listOrganizations(request: Request): Promise<OperatorOrganizationRecord[]> {
+  async listOrganizations(request: Request): Promise<OperatorOrganization[]> {
     await this.requireOperator(request);
-    return this.database.listOrganizationsForOperator();
+    return (await this.database.listOrganizationsForOperator()).map(organizationView);
   }
 
   async snapshot(request: Request, scope: OperatorRouteScope): Promise<OperatorSnapshot> {
@@ -150,7 +205,9 @@ export class OperatorConsole {
   }
 
   private async buildSnapshot(organization: OperatorOrganizationRecord): Promise<OperatorSnapshot> {
-    const [record, seats, usage, overages, history] = await Promise.all([
+    const [billing, members, record, seats, usage, overages, history] = await Promise.all([
+      this.billing === null ? null : this.billing.operatorBilling(organization.id),
+      this.database.listOrganizationMembersForOperator(organization.id),
       this.entitlements.read(organization.id),
       this.entitlements.capUsage(organization.id, "seats"),
       this.entitlements.usage(organization.id, "executions.monthly"),
@@ -158,7 +215,9 @@ export class OperatorConsole {
       this.entitlements.history(organization.id, HISTORY_LIMIT),
     ]);
     return {
-      organization,
+      organization: organizationView(organization),
+      billing,
+      members: members.map(memberView),
       entitlements: entitlementsView(record),
       seatsInUse: seats.used,
       usage,
@@ -166,6 +225,25 @@ export class OperatorConsole {
       history: history.map(historyView),
     };
   }
+}
+
+function organizationView(organization: OperatorOrganizationRecord): OperatorOrganization {
+  return {
+    id: organization.id,
+    name: organization.name,
+    slug: organization.slug,
+    createdAt: organization.createdAt.toISOString(),
+  };
+}
+
+function memberView(member: OperatorMemberRecord): OperatorMember {
+  return {
+    id: member.id,
+    name: member.name,
+    email: member.email,
+    role: member.role,
+    joinedAt: member.joinedAt.toISOString(),
+  };
 }
 
 function entitlementsView(record: OrganizationEntitlements): OperatorEntitlementsView {

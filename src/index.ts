@@ -5,6 +5,7 @@ import type { Duplex } from "node:stream";
 import type { Logger } from "pino";
 import type { RuntimeConfig } from "./config/index.js";
 import { createDatabase } from "./db/pg.js";
+import { ReceiptRetention } from "./receipt-retention/index.js";
 import type { Database } from "./db/types.js";
 import {
   embeddedDatabaseRuntime,
@@ -163,7 +164,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       completionTokenSecret: identity.authSecret,
       close: () => resources.close(),
     });
-    const activationFailures = await activateProviderApplicationsAtStartup({
+    await activateProviderApplicationsAtStartup({
       store: providerStore,
       environment: providerEnvironment,
       runtime: providerRuntime,
@@ -171,13 +172,9 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       inventory: providerInventory,
       callbackOrigin: identity.appUrl,
     });
-    for (const { provider, error } of activationFailures) {
-      reportFailure(error, {
-        operation: "provider_application.activate_at_startup",
-        component: "provider_applications",
-        provider,
-      });
-    }
+    const receiptRetention = new ReceiptRetention(runtime);
+    resources.own(() => receiptRetention.stop());
+    receiptRetention.start();
     return application;
   } catch (error) {
     await resources.close();
@@ -206,8 +203,8 @@ function createProductionAuthServer(
     ...(trustedClientIpHeader === undefined ? {} : { trustedClientIpHeader }),
     ...(invitationMailer === undefined ? {} : { invitationMailer }),
     ...(accountMailer === undefined ? {} : { accountMailer }),
-    // Hosted: new organizations start on the Free plan from the catalog mirror. Self-hosted
-    // (billing null) keeps the createAuthServer default, which stamps unlimited.
+    // Hosted: new organizations are stamped with the Free plan and stay on it until someone buys
+    // a plan. Self-hosted keeps the unlimited default and never touches Stripe.
     ...(billing === null
       ? {}
       : {

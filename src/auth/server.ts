@@ -43,7 +43,10 @@ import type { AccountMailer } from "./account-emails.js";
 export interface AuthServer {
   handle(request: Request): Promise<Response>;
   browserAccount?(request: Request): Promise<Response>;
-  signInEmail?(data: { email: string; password: string }, headers: Headers): Promise<"complete">;
+  signInEmail?(
+    data: { email: string; password: string; invitation?: string | undefined },
+    headers: Headers,
+  ): Promise<"complete">;
   signUpEmail?(
     data: { name: string; email: string; password: string },
     headers: Headers,
@@ -74,7 +77,7 @@ export interface AuthServer {
   close(): Promise<void>;
 }
 
-interface AuthServerOptions {
+export interface AuthServerOptions {
   database: DatabaseRuntime;
   locks: Locks;
   /** Owned by the composition root, injected here — auth consumes entitlements, never owns them. */
@@ -86,6 +89,8 @@ interface AuthServerOptions {
   /** How a new organization is provisioned. Defaults to unlimited (self-hosted); the composition
    * root passes a billing-backed resolver when Stripe is configured. */
   provisioningEntitlements?: ProvisioningEntitlementResolver;
+  /** Post-commit hook awaited after organization creation. Integration failures must never fail
+   * or roll back the successfully created organization. Undefined self-hosted. */
   /** Post-commit hook fired when a membership change alters an organization's seat count. The
    * composition root wires billing's seat-quantity reporter here; undefined self-hosted. */
   onMembershipChanged?: (organizationId: string) => Promise<void>;
@@ -175,6 +180,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
       : {
           emailVerification: {
             autoSignInAfterVerification: true,
+            sendOnSignIn: true,
             sendVerificationEmail: (email: Parameters<AccountMailer["sendVerificationEmail"]>[0]) =>
               accountMailer.sendVerificationEmail(email),
           },
@@ -284,7 +290,14 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     },
     async signInEmail(data, headers) {
       requireBrowserOrigin(headers, headersBrowserOrigin(headers, browserOrigin));
-      await auth.api.signInEmail({ body: data, headers });
+      await auth.api.signInEmail({
+        body: {
+          email: data.email,
+          password: data.password,
+          callbackURL: accountCallback(options.baseURL, data.invitation),
+        },
+        headers,
+      });
       return "complete";
     },
     async signUpEmail(data, headers, invitationId) {

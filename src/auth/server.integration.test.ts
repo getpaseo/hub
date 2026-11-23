@@ -1,3 +1,4 @@
+import { createExecutionLauncher } from "../agent-executions/launcher.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, it } from "vitest";
@@ -19,6 +20,11 @@ import {
 } from "./organization-contract.js";
 import { createAuthServer, type AuthServer } from "./server.js";
 import { composeEntitlements, type ComposedEntitlements } from "./entitlements.js";
+import { OrganizationCliCredentials, cliCredentialParts } from "./cli-credentials.js";
+import { createGitHubRegistration } from "../providers/github/index.js";
+import type { ProviderConnectionRegistration } from "../providers/registration.js";
+import { FakeGitHub, fakeGitHubConnectionClient } from "../test-utils/fake-github.js";
+import { API_KEY_SCOPES } from "./api-key-contract.js";
 import type { InvitationEmail, InvitationMailer } from "../invitations/index.js";
 
 type ActiveState = ActiveAccountState;
@@ -60,6 +66,39 @@ describe("account and organization boundary", () => {
       { name: "Default", slug: "default", createdByEmail: "alice@example.com" },
     ]);
     assert.equal(await alice.createOrganizationWithMetadata(), 400);
+  });
+
+  it("opens a recorded agent only for a member of the execution's organization", async () => {
+    const hub = await startAccounts(postgres);
+    const owner = await hub.signUp("Owner", "launcher-owner@example.com");
+    const studio = await owner.createOrganization("Private Studio");
+    const resources = await hub.seedResources(studio, "launcher");
+    await owner.createOrganization("Other Studio");
+    const outsider = await hub.signUp("Outsider", "launcher-outsider@example.com");
+    await outsider.createOrganization("Outsider Studio");
+    const path = `/open/executions/${resources.execution}`;
+    const anonymous = await hub.openExecution(new Request(`http://localhost:3000${path}`));
+    assert.equal(anonymous.status, 303);
+    assert.equal(anonymous.headers.get("location"), `/?openExecution=${resources.execution}`);
+    assert.equal(await anonymous.text(), "");
+
+    for (const target of [path, `/open/executions/${randomUUID()}`]) {
+      const denied = await hub.openExecution(outsider.request(target));
+      assert.equal(denied.status, 404);
+      assert.equal(denied.headers.get("cache-control"), "no-store");
+      assert.equal(await denied.text(), "Not Found");
+    }
+
+    assert.equal((await hub.openExecution(owner.request(path))).status, 404);
+    await hub.attachAgent(resources, "agent/launcher");
+    const allowed = await hub.openExecution(owner.request(path));
+    assert.equal(allowed.status, 200);
+    assert.equal(allowed.headers.get("cache-control"), "no-store");
+    const page = await allowed.text();
+    assert.match(page, /href="paseo:\/\/h\/server-launcher\/agent\/agent%2Flauncher"/u);
+    assert.match(page, /href=".*[?]view=run"/u);
+    const run = await hub.openExecution(owner.request(`${path}?view=run`));
+    assert.match(await run.text(), /Execution details/u);
   });
 
   it("requires an explicit valid active membership and fails closed when it goes stale", async () => {
@@ -118,6 +157,71 @@ describe("account and organization boundary", () => {
     assert.equal((await team.admin.state()).status, "organizationRequired");
     assert.equal(await team.owner.removeMember(team.owner.memberId), 409);
   });
+
+  for (const transition of ["remove", "demote", "direct-remove", "direct-demote"] as const) {
+    it(`rejects an admin's CLI credential immediately after ${transition}`, async () => {
+      const hub = await startAccounts(postgres);
+      const team = await hub.createThreePersonTeam();
+      const organizationId = (await team.owner.requireActiveState()).organization.id;
+      const credential = await hub.cliCredential(team.admin.email, organizationId);
+      await hub.assertCliCredential(credential, "authorized");
+
+      if (transition === "remove") {
+        assert.equal(await team.owner.removeMember(team.admin.memberId), 200);
+      } else if (transition === "demote") {
+        assert.equal(await team.owner.changeRole(team.admin.memberId, "member"), 200);
+      } else if (transition === "direct-remove") {
+        await hub.removeMembership(team.admin.email, organizationId);
+      } else {
+        await hub.setMembershipRole(team.admin.email, organizationId, "member");
+      }
+      await hub.assertCliCredential(credential, "unauthorized");
+
+      if (transition === "remove" || transition === "demote") {
+        // Restoring membership must not revive a credential explicitly revoked by the transition.
+        if (transition === "remove") {
+          await hub.addMembership(team.admin.email, organizationId, "admin");
+        } else {
+          assert.equal(await team.owner.changeRole(team.admin.memberId, "admin"), 200);
+        }
+        await hub.assertCliCredential(credential, "unauthorized");
+      }
+    });
+  }
+
+  it("preserves CLI credentials across roles that can manage resources", async () => {
+    const hub = await startAccounts(postgres);
+    const team = await hub.createThreePersonTeam();
+    const organizationId = (await team.owner.requireActiveState()).organization.id;
+    const credential = await hub.cliCredential(team.admin.email, organizationId);
+    assert.equal(await team.owner.changeRole(team.admin.memberId, "owner"), 200);
+    await hub.assertCliCredential(credential, "authorized");
+    assert.equal(await team.owner.changeRole(team.admin.memberId, "admin"), 200);
+    await hub.assertCliCredential(credential, "authorized");
+  });
+
+  // `mona` is a plain member of acme-inc on GitHub; `octo` is its admin.
+  for (const login of ["mona", "octo"] as const) {
+    it(`binds an installed GitHub organization only for its active admin (${login})`, async () => {
+      const hub = await startAccounts(postgres);
+      const owner = await hub.signUp("Alice", "alice@example.com");
+      const organizationId = await owner.createOrganization("Acme");
+      const github = new FakeGitHub({
+        webBaseUrl: "https://github.test",
+        hubOrigin: () => "http://localhost:3000",
+      });
+      github.command({ op: "install", account: "acme-inc" });
+      github.command({ op: "signIn", login });
+      const connection = await hub.githubConnection(github);
+      const result = await owner.chooseGitHubInstallation(connection, github, 42);
+      const bound = await hub.githubInstallationOrganization(42);
+      assert.equal(bound, login === "octo" ? organizationId : undefined);
+      assert.equal(
+        new URL(result.headers.get("location")!).searchParams.get("result"),
+        login === "octo" ? "github_connected" : "github_verification_rejected",
+      );
+    });
+  }
 
   it("cancels invitations and reuses exactly one live invitation credential", async () => {
     const hub = await startAccounts(postgres);
@@ -499,6 +603,71 @@ class PaseoAccounts {
     );
   }
 
+  async githubConnection(github: FakeGitHub): Promise<ProviderConnectionRegistration> {
+    await this.query(
+      `insert into runtime_provider_activation (provider, provider_application_id, configuration_version)
+       values ('github', '42', 0)`,
+    );
+    return createGitHubRegistration({
+      database: this.database,
+      auth: this.auth,
+      applicationBaseUrl: "http://localhost:3000",
+      publicBaseUrl: "http://localhost:3000",
+      configuration: {
+        appId: "42",
+        appSlug: "paseo",
+        clientId: "client",
+        clientSecret: "secret",
+        privateKey: "test-key",
+      },
+      appAuth: github.appAuth,
+      connectionClient: fakeGitHubConnectionClient(github, "http://localhost:3000"),
+      configurationProvider: {
+        listInstallationRepositories: () => Promise.resolve([]),
+        readDefaultBranchHead: () => Promise.reject(new Error("unused")),
+        listFilesAtCommit: () => Promise.reject(new Error("unused")),
+        readFileAtCommit: () => Promise.reject(new Error("unused")),
+      },
+    }).connection;
+  }
+
+  async githubInstallationOrganization(installationId: number): Promise<string | undefined> {
+    return (await this.database.findGitHubConnection(installationId))?.organizationId;
+  }
+
+  async cliCredential(email: string, organizationId: string): Promise<string> {
+    const token = `paseo_cli_${randomUUID().replaceAll("-", "").slice(0, 12)}_secret`;
+    const parts = cliCredentialParts(token);
+    await this.query(
+      `insert into organization_cli_credentials
+         (id, organization_id, prefix, verifier, created_by_user_id)
+       select $1, $2, $3, $4, id from "user" where email = $5`,
+      [randomUUID(), organizationId, parts.prefix, parts.verifier, email],
+    );
+    return token;
+  }
+
+  async assertCliCredential(token: string, status: "authorized" | "unauthorized"): Promise<void> {
+    const credentials = new OrganizationCliCredentials(testDatabaseRuntime(this.database));
+    for (const scope of API_KEY_SCOPES) {
+      const result = await credentials.authorize(
+        new Request("http://localhost:3000/api/v1/projects", {
+          headers: { authorization: `Bearer ${token}` },
+        }),
+        scope,
+      );
+      assert.equal(result.status, status, scope);
+    }
+  }
+
+  async setMembershipRole(email: string, organizationId: string, role: string): Promise<void> {
+    await this.query(
+      `update member set role = $3 from "user"
+       where member.user_id = "user".id and "user".email = $1 and member.organization_id = $2`,
+      [email, organizationId, role],
+    );
+  }
+
   async addMembership(
     email: string,
     organizationId: string,
@@ -610,6 +779,17 @@ class PaseoAccounts {
     );
   }
 
+  openExecution(request: Request): Promise<Response> {
+    return createExecutionLauncher(this.database, this.auth)(
+      request,
+      new URL(request.url).pathname.split("/").at(-1)!,
+    );
+  }
+
+  async attachAgent(ids: ResourceIds, agentId: string): Promise<void> {
+    await this.database.attachAgentToExecution(ids.execution, ids.daemon, agentId);
+  }
+
   async seedResources(organizationId: string, suffix: string): Promise<ResourceIds> {
     const projectId = randomUUID();
     await this.query(
@@ -712,6 +892,42 @@ class AccountBrowser {
     });
     assert.equal(response.status, 200);
     this.rememberCookie(response);
+  }
+
+  /**
+   * Starts a GitHub connection, authorizes on GitHub, and asks the chooser to connect one
+   * installation, whether or not the chooser offered it. Returns the chooser's answer.
+   */
+  async chooseGitHubInstallation(
+    connection: ProviderConnectionRegistration,
+    github: FakeGitHub,
+    installationId: number,
+  ): Promise<Response> {
+    const request = (url: string | URL, method = "GET") =>
+      new Request(new URL(url, "http://localhost:3000"), {
+        method,
+        headers: { cookie: this.cookie, origin: "http://localhost:3000" },
+      });
+    const start = await connection.actions["start"]!(
+      request(
+        `/api/integrations/github/start?organizationSlug=${(await this.requireActiveState()).organization.slug}`,
+        "POST",
+      ),
+    );
+    assert.equal(start.status, 200);
+    const authorization = z.object({ url: z.string() }).parse(await start.json()).url;
+    const callback = await connection.actions["callback"]!(
+      request(github.authorize(authorization)),
+    );
+    assert.equal(callback.status, 303);
+    const chooser = new URL(callback.headers.get("location")!);
+    assert.equal(chooser.pathname, "/integrations/github");
+    return connection.actions["choose"]!(
+      request(
+        `/api/integrations/github/choose?state=${chooser.searchParams.get("state")}&installationId=${installationId}`,
+        "POST",
+      ),
+    );
   }
 
   async createOrganizationWithMetadata(): Promise<number> {
@@ -934,7 +1150,7 @@ class AccountBrowser {
       .join("; ");
   }
 
-  private request(path: string): Request {
+  request(path: string): Request {
     return new Request(`http://localhost:3000${path}`, {
       headers: this.cookie.length === 0 ? {} : { cookie: this.cookie },
     });

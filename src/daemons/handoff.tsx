@@ -1,14 +1,13 @@
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- the generated route type cannot express a server-resolved organization slug */
-import { useQuery } from "@tanstack/react-query";
+import { useSnapshotQuery, type Snapshot } from "../queries/index.js";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { TriangleAlert } from "lucide-react";
 import { useCallback } from "react";
 import { AuthCard, AuthLayout } from "../components/app/auth-layout.js";
 import { CopyField } from "../components/app/copy-field.js";
-import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
+import { FailureAlert } from "../components/app/failure-alert.js";
+import { LoadingLine } from "../components/app/loading.js";
 import { Button } from "../components/ui/button.js";
-import type { Result } from "../contract/respond.js";
 import { daemonList, type BrowserDaemonList } from "./functions.js";
 import { daemonsQueryKey } from "./status.js";
 
@@ -21,17 +20,23 @@ const POLL_INTERVAL_MS = 2_000;
  */
 const HOSTED_HUB_ORIGIN = "https://hub.paseo.sh";
 
+/**
+ * What a daemon enrolled without `hub.execute` needs run on it before Hub can launch anything.
+ * The CLI's login asks for that permission with a default of No, so this is the common case.
+ */
+export const GRANT_EXECUTE_COMMAND = "paseo hub permissions grant hub.execute";
+
 /** The exact command to paste into a terminal on the machine that will run the agents. */
 export function daemonLoginCommand(origin: string): string {
   return origin === HOSTED_HUB_ORIGIN ? "paseo hub login" : `paseo hub login ${origin}`;
 }
 
 /**
- * Where both ways out of the handoff land: the organization's trigger list, where connecting a
- * daemon becomes useful. Projects are a legacy runtime detail and are not part of onboarding.
+ * Where both ways out of the handoff land: the organization's Home, whose checklist carries on
+ * from here. Projects are a legacy runtime detail and are not part of onboarding.
  */
-export function organizationTriggersRoute(organizationSlug: string): string {
-  return `/o/${organizationSlug}/triggers`;
+export function organizationHomeRoute(organizationSlug: string): string {
+  return `/o/${organizationSlug}/home`;
 }
 
 /**
@@ -45,29 +50,17 @@ export type DaemonLink =
   | { state: "failed"; message: string }
   | { state: "linked"; slug: string };
 
-export function daemonLink(snapshot: {
-  isPending: boolean;
-  isError: boolean;
-  data: Result<BrowserDaemonList> | undefined;
-}): DaemonLink {
-  const connected =
-    snapshot.data?.status === "ok"
-      ? snapshot.data.data.daemons.find(
-          (daemon) => daemon.status === "active" && daemon.presence === "connected",
-        )
-      : undefined;
-  if (connected !== undefined) return { state: "linked", slug: connected.slug };
-  if (snapshot.data?.status === "error") {
-    return { state: "failed", message: snapshot.data.error.message };
-  }
-  if (snapshot.isError) {
+export function daemonLink(snapshot: Snapshot<BrowserDaemonList>): DaemonLink {
+  if (snapshot.status === "pending") return { state: "checking" };
+  if (snapshot.status === "error")
     return {
       state: "failed",
-      message: "Hub didn't answer. Check your connection, then check again.",
+      message: snapshot.error ?? "Hub didn't answer. Check your connection, then check again",
     };
-  }
-  if (snapshot.isPending) return { state: "checking" };
-  return { state: "waiting" };
+  const connected = snapshot.data.daemons.find(
+    (daemon) => daemon.status === "active" && daemon.presence === "connected",
+  );
+  return connected === undefined ? { state: "waiting" } : { state: "linked", slug: connected.slug };
 }
 
 /**
@@ -87,22 +80,21 @@ export function DaemonHandoffEntry({
   onContinue: () => void;
 }) {
   const load = useServerFn(daemonList);
-  const snapshot = useQuery({
+  const snapshot = useSnapshotQuery({
     queryKey: daemonsQueryKey(accountId, organizationId),
     queryFn: () => load({ data: { organizationSlug } }),
     refetchInterval: POLL_INTERVAL_MS,
   });
-  const refetch = snapshot.refetch;
-  const retry = useCallback(() => void refetch(), [refetch]);
+  const retry = snapshot.refetch;
   const navigate = useNavigate();
   /**
-   * Connecting and skipping end the same way: at organization triggers. The route has to be
+   * Connecting and skipping end the same way: at organization Home. The route has to be
    * committed before the phase is dropped — dropping it first would render the dashboard at
    * whatever URL onboarding happens to be standing on, and flash the project list on the way.
    */
   const leave = useCallback(() => {
     void (async () => {
-      await navigate({ to: organizationTriggersRoute(organizationSlug) as never });
+      await navigate({ to: organizationHomeRoute(organizationSlug) as never });
       onContinue();
     })();
   }, [navigate, onContinue, organizationSlug]);
@@ -134,7 +126,7 @@ export function DaemonHandoffView({
       <AuthLayout width="md">
         <AuthCard
           title="Daemon connected"
-          description={`${link.slug} is connected to this Hub. Finish the starter workflow in your terminal whenever you're ready.`}
+          description={`${link.slug} is connected to this Hub. Finish the starter workflow in your terminal whenever you're ready`}
           descriptionRole="status"
         >
           <Button onClick={onContinue}>Continue</Button>
@@ -150,7 +142,7 @@ export function DaemonHandoffView({
       >
         <CopyField label="Command" value={command} />
         <p className="text-sm text-muted-foreground">
-          Your terminal signs you in, connects this daemon, and offers to set up a starter workflow.
+          Your terminal signs you in, connects this daemon, and offers to set up a starter workflow
         </p>
         <LinkProgress link={link} onRetry={onRetry} />
         <Button variant="ghost" onClick={onContinue}>
@@ -169,21 +161,17 @@ export function DaemonHandoffView({
 function LinkProgress({ link, onRetry }: { link: DaemonLink; onRetry: () => void }) {
   if (link.state === "failed") {
     return (
-      <Alert variant="destructive">
-        <TriangleAlert />
-        <AlertTitle>Hub couldn't check for daemons</AlertTitle>
-        <AlertDescription>
-          <p>{link.message}</p>
-          <Button type="button" size="sm" variant="outline" onClick={onRetry}>
-            Check again
-          </Button>
-        </AlertDescription>
-      </Alert>
+      <FailureAlert
+        title="Hub couldn't check for daemons"
+        error={link.message}
+        fallback="Hub didn't answer. Check your connection, then check again"
+        onRetry={onRetry}
+      />
     );
   }
   return (
-    <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
+    <LoadingLine>
       {link.state === "checking" ? "Checking for daemons…" : "Waiting for a daemon to connect…"}
-    </p>
+    </LoadingLine>
   );
 }

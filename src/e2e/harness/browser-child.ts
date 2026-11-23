@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { createApplicationRuntime } from "../../application-runtime.js";
-import { createAuthServer, type AuthServer } from "../../auth/server.js";
+import { createAuthServer, type AuthServer, type AuthServerOptions } from "../../auth/server.js";
 import { composeBilling, type BillingConfig, type BillingRuntime } from "../../billing/index.js";
 import { composeEntitlements } from "../../auth/entitlements.js";
 import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
@@ -19,8 +19,6 @@ import { createLinearRegistration } from "../../providers/linear/index.js";
 import {
   BrowserDiscordBot,
   BrowserDiscordConnections,
-  BrowserGitHubAuth,
-  BrowserGitHubConnections,
   BrowserGitHubConfiguration,
   BrowserGitHubReactions,
   BrowserSlackBot,
@@ -55,6 +53,11 @@ import { compileHubConfig, compiledConfigurationHash } from "../../config/compil
 import { ProjectConfigurationStore } from "../../configuration/store.js";
 import type { HubBundleFile } from "../../config/bundle.js";
 import { BrowserAccountEmails, type BrowserAccountEmailKind } from "./browser-account-emails.js";
+import {
+  FakeGitHub,
+  fakeGitHubConnectionClient,
+  type FakeGitHubCommand,
+} from "../../test-utils/fake-github.js";
 
 interface DiscordCommand {
   id: string;
@@ -140,7 +143,6 @@ interface InstallProviderDispatchFixtureCommand {
   id: string;
   type: "install-provider-dispatch-fixture";
   organizationId: string;
-  repositoryId: number;
   repository: string;
   guildId: string;
   files: readonly HubBundleFile[];
@@ -205,6 +207,10 @@ async function main(): Promise<void> {
   const slackSocket = new BrowserSlackSocketFixture(scenario);
   await slackSocket.start();
   const githubConfiguration = new BrowserGitHubConfiguration();
+  const github = new FakeGitHub({
+    webBaseUrl: `${publicBaseUrl}/e2e/github`,
+    hubOrigin: (request) => request.headers.get(TRUSTED_REQUEST_ORIGIN_HEADER) ?? publicBaseUrl,
+  });
   const githubConfigured = hasBrowserGitHub(scenario);
   const slackConfigured = scenario === "slack-only";
   const registrations =
@@ -228,8 +234,8 @@ async function main(): Promise<void> {
               : null,
             ...(githubConfigured
               ? {
-                  appAuth: new BrowserGitHubAuth(),
-                  connectionClient: new BrowserGitHubConnections(publicBaseUrl, scenario),
+                  appAuth: github.appAuth,
+                  connectionClient: fakeGitHubConnectionClient(github, publicBaseUrl),
                   configurationProvider: githubConfiguration,
                   reactionClient: new BrowserGitHubReactions(),
                 }
@@ -287,6 +293,7 @@ async function main(): Promise<void> {
     slackBot,
     slackSocket,
     githubConfiguration,
+    github,
   });
   const runtime = await createApplicationRuntime({
     database,
@@ -318,7 +325,10 @@ async function main(): Promise<void> {
   const start = await loadBuiltStartServer();
   await start.startApplication(() => runtime);
   const server = createFetchServer(
-    (request) => browserProviderPage(request, publicBaseUrl) ?? start.default.fetch(request),
+    (request) =>
+      github.page(request) ??
+      browserProviderPage(request, publicBaseUrl) ??
+      start.default.fetch(request),
     await testServerOptions(),
   );
   server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
@@ -337,6 +347,7 @@ async function main(): Promise<void> {
       database,
       databaseRuntime,
       githubConfiguration,
+      github,
       billingCatalog,
       billingClient: billingFixtureClient,
       accountSetupFaults,
@@ -457,10 +468,11 @@ function browserProviderPage(request: Request, publicBaseUrl: string): Response 
   );
 }
 
-/** Hosted harness: new organizations start on the Free plan and membership changes re-report
- * seats to Stripe; self-hosted keeps the unlimited default and no reporting. Kept out of `main` so
- * its branch does not push that function past the complexity cap. */
-function billingAuthOptions(billing: BillingRuntime | null) {
+/** Hosted harness: new organizations stamp the Free plan; membership changes re-report seats.
+ * Self-hosted keeps unlimited and no Stripe hooks. */
+function billingAuthOptions(
+  billing: BillingRuntime | null,
+): Partial<Pick<AuthServerOptions, "provisioningEntitlements" | "onMembershipChanged">> {
   if (billing === null) return {};
   return {
     provisioningEntitlements: () => billing.provisioningEntitlement(),
@@ -511,6 +523,7 @@ async function seedMachineAuthTargetIfRequired(
 }
 
 interface CommandFixtures {
+  github: FakeGitHub;
   bot: BrowserDiscordBot;
   slackSocket: BrowserSlackSocketFixture;
   database: Database;
@@ -527,6 +540,11 @@ async function acceptCommand(message: unknown, fixtures: CommandFixtures): Promi
   const { bot, githubConfiguration, billingCatalog, billingClient } = fixtures;
   if (isGitHubConfigurationCommand(message)) {
     githubConfiguration.setRevision(message);
+    process.send?.({ id: message.id, ok: true });
+    return;
+  }
+  if (isFakeGitHubCommand(message)) {
+    fixtures.github.command(message.command);
     process.send?.({ id: message.id, ok: true });
     return;
   }
@@ -636,21 +654,21 @@ async function acceptInstallProviderDispatchFixture(
       )
     ).rows;
     if (owner === undefined) throw new Error("organization owner unavailable");
-    const github = await database.findGitHubConnection(message.repositoryId);
+    const repository = await database.findGitHubRepositoryForOrganization(
+      message.organizationId,
+      message.repository,
+    );
+    if (repository === undefined) throw new Error("GitHub repository unavailable");
+    const github = (await database.organizationConnectionUsage(message.organizationId)).github.find(
+      (connection) => connection.id === repository.connectionId,
+    );
     if (github === undefined || github.organizationId !== message.organizationId) {
       throw new Error("GitHub connection unavailable");
     }
-    await database.upsertGitHubRepositories(message.organizationId, github.id, [
-      {
-        repositoryId: message.repositoryId,
-        fullName: message.repository,
-        defaultBranch: "main",
-      },
-    ]);
     await database.setProjectGitHubConfigurationSource({
       projectId: project.id,
       githubConnectionId: github.id,
-      githubRepositoryId: message.repositoryId,
+      githubRepositoryId: repository.repositoryId,
       githubRepositoryFullName: message.repository,
       githubDefaultBranch: "main",
       automaticDeploymentEnabled: true,
@@ -865,6 +883,18 @@ function acceptBillingCommand(
   return false;
 }
 
+function isFakeGitHubCommand(
+  value: unknown,
+): value is { id: string; type: "fake-github"; command: FakeGitHubCommand } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Reflect.get(value, "type") === "fake-github" &&
+    typeof Reflect.get(value, "id") === "string" &&
+    typeof Reflect.get(value, "command") === "object"
+  );
+}
+
 function isGitHubConfigurationCommand(value: unknown): value is GitHubConfigurationCommand {
   return (
     typeof value === "object" &&
@@ -954,7 +984,6 @@ function isInstallProviderDispatchFixtureCommand(
     Reflect.get(value, "type") === "install-provider-dispatch-fixture" &&
     typeof Reflect.get(value, "id") === "string" &&
     typeof Reflect.get(value, "organizationId") === "string" &&
-    typeof Reflect.get(value, "repositoryId") === "number" &&
     typeof Reflect.get(value, "repository") === "string" &&
     typeof Reflect.get(value, "guildId") === "string" &&
     isBundleFileList(Reflect.get(value, "files"))
@@ -1169,6 +1198,7 @@ async function composeProviderApplications(input: {
   slackBot: BrowserSlackBot;
   slackSocket: BrowserSlackSocketFixture;
   githubConfiguration: BrowserGitHubConfiguration;
+  github: FakeGitHub;
 }): Promise<{
   capability: ProviderApplications;
   registrations: readonly ProviderRegistration[];
@@ -1191,6 +1221,7 @@ async function composeProviderApplications(input: {
       slackBot: input.slackBot,
       slackSocket: input.slackSocket,
       githubConfiguration: input.githubConfiguration,
+      github: input.github,
     }),
   });
   const failures = await activateProviderApplicationsAtStartup({

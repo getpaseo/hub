@@ -1,14 +1,21 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useSnapshotQuery } from "../queries/index.js";
+import { useMutation } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useCallback, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { AuthCard } from "../components/app/auth-layout.js";
-import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert.js";
+import { FailureAlert, WarningAlert } from "../components/app/failure-alert.js";
+import { FormActions } from "../components/app/form-actions.js";
+import { FormField } from "../components/app/form-field.js";
+import { RelativeTime } from "../components/app/relative-time.js";
+import { SummaryPanel, type SummaryRow } from "../components/app/summary-panel.js";
 import { Button } from "../components/ui/button.js";
-import { Field, FieldDescription, FieldLabel } from "../components/ui/field.js";
-import { Input } from "../components/ui/input.js";
 import { Skeleton } from "../components/ui/skeleton.js";
 import type { Result } from "../contract/respond.js";
 import { decideCliAuthorization, inspectCliAuthorization } from "./functions.js";
+
+/** What the reader is deciding about: who gets in, and how long they have to decide. */
+const RECIPIENT_LABEL = "Organization receiving access";
+const EXPIRY_LABEL = "Request expires";
 
 export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity) {
   const [code, setCode] = useState(() =>
@@ -17,7 +24,7 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
       : (new URLSearchParams(window.location.search).get("code") ?? undefined),
   );
   const inspect = useServerFn(inspectCliAuthorization);
-  const snapshot = useQuery({
+  const snapshot = useSnapshotQuery({
     queryKey: ["cli-authorization", accountId, organizationId, code],
     queryFn: () => inspect({ data: { userCode: code! } }),
     enabled: code !== undefined,
@@ -31,7 +38,7 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
   const submitDecision = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
-      if (snapshot.data?.status !== "ok" || code === undefined) return;
+      if (snapshot.status !== "success" || code === undefined) return;
       const submitter = "submitter" in event.nativeEvent ? event.nativeEvent.submitter : undefined;
       const decision =
         submitter instanceof HTMLButtonElement && submitter.value === "deny" ? "deny" : "approve";
@@ -39,25 +46,40 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
         data: {
           userCode: code,
           decision,
-          organizationId: snapshot.data.data.organization.id,
+          organizationId: snapshot.data.organization.id,
         },
       });
     },
-    [code, decide, snapshot.data],
+    [code, decide, snapshot.data, snapshot.status],
+  );
+  const resolved = snapshot.status === "success" ? snapshot.data : undefined;
+  const organizationName = resolved?.organization.name;
+  const expiresAt = resolved?.expiresAt;
+  const facts = useMemo<SummaryRow[]>(
+    () => [
+      { label: RECIPIENT_LABEL, value: organizationName ?? <Skeleton className="h-5 w-40" /> },
+      {
+        label: EXPIRY_LABEL,
+        value:
+          expiresAt === undefined ? (
+            <Skeleton className="h-5 w-24" />
+          ) : (
+            <RelativeTime value={expiresAt} />
+          ),
+      },
+    ],
+    [expiresAt, organizationName],
   );
 
-  if (code !== undefined && snapshot.isPending) return <Loading />;
-  if (snapshot.isError || snapshot.data?.status === "error") {
+  if (code !== undefined && snapshot.status === "pending") return <Loading rows={facts} />;
+  if (snapshot.status === "error") {
     return (
       <Centered>
-        <Alert variant="destructive">
-          <AlertTitle>CLI login unavailable</AlertTitle>
-          <AlertDescription>
-            {snapshot.data?.status === "error"
-              ? snapshot.data.error.message
-              : "This CLI login request is unavailable or expired."}
-          </AlertDescription>
-        </Alert>
+        <FailureAlert
+          title="CLI login unavailable"
+          error={snapshot.error}
+          fallback="This CLI login request is unavailable or expired"
+        />
       </Centered>
     );
   }
@@ -65,44 +87,40 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
     return (
       <Centered>
         <AuthCard
+          titleId="approval-outcome-heading"
           title={`CLI login ${decide.data.data.decision}`}
-          description="You can close this window and return to the terminal."
+          description="You can close this window and return to the terminal"
         >
-          <p role="status">The terminal has received the decision.</p>
+          <p role="status">The terminal has received the decision</p>
         </AuthCard>
       </Centered>
     );
   }
   if (code === undefined || snapshot.data === undefined) return <CodeEntry onCode={setCode} />;
-  const request = snapshot.data.data;
-  let message: string | undefined;
-  if (decide.data?.status === "error") message = decide.data.error.message;
-  else if (decide.isError)
-    message =
-      "Hub did not receive this CLI login decision. Check your connection and confirm the request is still active.";
+  const request = snapshot.data;
+  const failed = decide.isError || decide.data?.status === "error";
   return (
     <Centered>
       <AuthCard
         titleId="approval-heading"
         title="Approve CLI login"
-        description="Grant this terminal durable access to one organization."
+        description="Grant this terminal durable access to one organization"
       >
-        <div className="grid gap-1 rounded-md border px-3 py-2.5 text-sm">
-          <span className="text-muted-foreground">Organization receiving access</span>
-          <span className="text-foreground">{request.organization.name}</span>
-        </div>
+        <SummaryPanel label="CLI login" rows={facts} />
         {request.canManage ? (
           <form className="grid gap-6" onSubmit={submitDecision} aria-label="Approve CLI login">
-            <p className="text-muted-foreground text-sm">
+            <p className="text-sm text-muted-foreground">
               The credential can list projects, validate and install configuration, enroll daemons,
-              and dispatch manual runs for this organization until revoked.
+              and dispatch manual runs for this organization until revoked
             </p>
-            {message === undefined ? null : (
-              <Alert variant="destructive">
-                <AlertDescription>{message}</AlertDescription>
-              </Alert>
-            )}
-            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            {failed ? (
+              <FailureAlert
+                title="Decision not recorded"
+                error={decide.data}
+                fallback="Hub did not receive this CLI login decision. Check your connection and confirm the request is still active"
+              />
+            ) : null}
+            <FormActions>
               <Button
                 type="submit"
                 name="decision"
@@ -115,15 +133,12 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
               <Button type="submit" name="decision" value="approve" disabled={decide.isPending}>
                 Approve CLI login
               </Button>
-            </div>
+            </FormActions>
           </form>
         ) : (
-          <Alert>
-            <AlertTitle>Approval required</AlertTitle>
-            <AlertDescription>
-              Switch to an organization where you are an owner or admin, then reopen the login URL.
-            </AlertDescription>
-          </Alert>
+          <WarningAlert title="Approval required">
+            Switch to an organization where you are an owner or admin, then reopen the login URL
+          </WarningAlert>
         )}
       </AuthCard>
     </Centered>
@@ -148,29 +163,57 @@ function CodeEntry({ onCode }: { onCode: (code: string) => void }) {
   );
   return (
     <Centered>
-      <AuthCard title="Log in the Paseo CLI" description="Enter the code shown in your terminal.">
-        <form className="grid gap-6" onSubmit={submit}>
-          <Field>
-            <FieldLabel htmlFor="cli-login-code">Verification code</FieldLabel>
-            <Input id="cli-login-code" name="code" autoComplete="one-time-code" required />
-            <FieldDescription>Only approve a code you requested yourself.</FieldDescription>
-          </Field>
-          <Button type="submit">Continue</Button>
+      <AuthCard
+        titleId="cli-login-code-heading"
+        title="Log in the Paseo CLI"
+        description="Enter the code shown in your terminal"
+      >
+        <form className="grid gap-6" onSubmit={submit} aria-label="Log in the Paseo CLI">
+          <FormField
+            kind="text"
+            id="cli-login-code"
+            name="code"
+            label="Verification code"
+            description="Only approve a code you requested yourself"
+            autoComplete="one-time-code"
+            required
+          />
+          <FormActions>
+            <Button type="submit">Continue</Button>
+          </FormActions>
         </form>
       </AuthCard>
     </Centered>
   );
 }
 
-function Loading() {
+/**
+ * The approval card before the request is known. The card, its heading, and the label on the one
+ * fact it is waiting for are already known, so only that fact and the decision buttons are
+ * placeholders.
+ */
+function Loading({ rows }: { rows: readonly SummaryRow[] }) {
   return (
-    <section aria-label="Loading CLI login" className="grid gap-6">
-      <Skeleton className="h-12 w-64" />
-      <Skeleton className="h-64 w-full" />
-    </section>
+    <Centered>
+      <div aria-busy="true">
+        <AuthCard
+          titleId="approval-loading-heading"
+          title="Approve CLI login"
+          description="Grant this terminal durable access to one organization"
+        >
+          <SummaryPanel label="CLI login" rows={rows} />
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-3/4" />
+          <FormActions>
+            <Skeleton className="h-8 w-20" />
+            <Skeleton className="h-8 w-40" />
+          </FormActions>
+        </AuthCard>
+      </div>
+    </Centered>
   );
 }
 
 function Centered({ children }: { children: ReactNode }) {
-  return <div className="mx-auto w-full max-w-lg py-8">{children}</div>;
+  return <div className="mx-auto w-full max-w-lg">{children}</div>;
 }

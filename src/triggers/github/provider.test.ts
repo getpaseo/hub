@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import { Octokit } from "octokit";
 import { createMemoryDatabase } from "../../db/memory.js";
 import type { DurableProviderEvent } from "../../db/types.js";
@@ -13,6 +13,124 @@ import { isAcceptedTriggerProviderMatch } from "../index.js";
 import { createUnlimitedEntitlementsService } from "../../entitlements/test-utils.js";
 
 describe("GitHub Phase 1 trigger provider", () => {
+  it("retries reaction cleanup before posting an execution-limit notice", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    let deletions = 0;
+    let comments = 0;
+    class RecoveringReactions extends TestReactions {
+      override async deleteReaction(input: Parameters<GitHubReactionClient["deleteReaction"]>[0]) {
+        deletions += 1;
+        if (deletions === 1) throw new Error("GitHub temporarily unavailable");
+        await super.deleteReaction(input);
+      }
+    }
+    const provider = createGitHubTriggerProvider({
+      configurationStoreForProject: () => store,
+      reactions: new RecoveringReactions(),
+      billingUrlForOrganization: async () => "https://example.com/billing",
+      comments: {
+        createIssueComment: async () => {
+          comments += 1;
+        },
+      },
+    });
+    const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    const deliver = () =>
+      provider.onAgentExecutionFailed!(
+        match.triggerContext,
+        match.outputContext,
+        JSON.stringify({
+          error: "entitlement_denied",
+          entitlement: "executions.monthly",
+          kind: "meter",
+          limit: 50,
+          current: 50,
+        }),
+        { reactionId: 1 },
+      );
+    await assert.rejects(deliver, /GitHub temporarily unavailable/);
+    assert.equal(comments, 0);
+    assert.equal(await deliver(), null);
+    assert.equal(comments, 1);
+    assert.equal(deletions, 2);
+  });
+
+  it("comments with the monthly execution denial on the issue", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-28T23:00:00Z"));
+    try {
+      const { project, revision, store } = await activeConfiguration();
+      const reactions = new TestReactions();
+      const comments: Array<{
+        installationId: number;
+        owner: string;
+        repo: string;
+        issueNumber: number;
+        body: string;
+      }> = [];
+      const provider = createGitHubTriggerProvider({
+        configurationStoreForProject: () => store,
+        reactions,
+        billingUrlForOrganization: async () => "https://hub.paseo.sh/o/acme/settings/billing",
+        comments: {
+          createIssueComment: async (input) => {
+            comments.push(input);
+          },
+        },
+      });
+      const match = (await provider.match(external(project.id, revision.id, createEvent())))[0];
+      if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+      const reactionState =
+        (await provider.onDispatchAccepted?.(match.triggerContext, match.outputContext)) ?? null;
+      await provider.onAgentExecutionFailed?.(
+        match.triggerContext,
+        match.outputContext,
+        JSON.stringify({
+          error: "entitlement_denied",
+          entitlement: "executions.monthly",
+          kind: "meter",
+          limit: 50,
+          current: 236,
+        }),
+        reactionState,
+      );
+      assert.deepEqual(comments, [
+        {
+          installationId: 42,
+          owner: "boudra",
+          repo: "faro",
+          issueNumber: 211,
+          body: "This org has used its 50 free runs for September. Runs reset on October 1, or upgrade to Pro under Billing: https://hub.paseo.sh/o/acme/settings/billing",
+        },
+      ]);
+      assert.deepEqual(
+        reactions.created.map((call) => call.content),
+        ["eyes"],
+      );
+      assert.deepEqual(
+        reactions.deleted.map((call) => call.reactionId),
+        [1],
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("keeps the issue conversation identity stable across comments", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    const provider = createProvider(store, new TestReactions());
+    const first = (await provider.match(external(project.id, revision.id, createEvent())))[0];
+    const next = (
+      await provider.match(
+        external(project.id, revision.id, createEvent({ body: "another @paseo request" })),
+      )
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(first) || !isAcceptedTriggerProviderMatch(next))
+      throw new Error("expected accepted matches");
+    assert.equal(first.conversation?.key, JSON.stringify(["github", 7, 211]));
+    assert.equal(next.conversation?.key, first.conversation?.key);
+  });
+
   it("normalizes typed inputs identically at the provider boundary", async () => {
     const { project, revision, store } = await activeConfiguration(inputConfiguration());
     const provider = createProvider(store, new TestReactions());
@@ -86,6 +204,41 @@ describe("GitHub Phase 1 trigger provider", () => {
     assert.equal(wrongActor, "trigger_filters_rejected");
   });
 
+  it("admits a repository member and turns away an outside commenter on a members-only trigger", async () => {
+    const configuration = githubConfiguration();
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      createMemoryDatabase(),
+      {
+        ...configuration,
+        triggers: configuration.triggers.map((trigger) =>
+          Object.assign({}, trigger, {
+            filters: {
+              repo: "boudra/faro",
+              contains: "@paseo",
+              author_associations: ["OWNER", "MEMBER", "COLLABORATOR"] as const,
+            },
+          }),
+        ),
+      },
+    );
+    const provider = createProvider(store, new TestReactions());
+
+    const member = await provider.match(
+      external(project.id, revision.id, createEvent({ actor: "teammate", association: "MEMBER" })),
+    );
+    if (!isAcceptedTriggerProviderMatch(member[0])) throw new Error("expected accepted match");
+
+    const outsider = await provider.match(
+      external(project.id, revision.id, createEvent({ actor: "passerby", association: "NONE" })),
+    );
+    assert.equal(outsider, "trigger_filters_rejected");
+
+    const unreported = await provider.match(
+      external(project.id, revision.id, createEvent({ actor: "teammate" })),
+    );
+    assert.equal(unreported, "trigger_filters_rejected");
+  });
+
   it("routes a semantic trigger from the legacy GitHub webhook source", async () => {
     const configuration = githubConfiguration();
     const trigger = configuration.triggers[0]!;
@@ -120,6 +273,7 @@ describe("GitHub Phase 1 trigger provider", () => {
     ["issues", "opened", "github.issue_created", 211],
     ["issues", "labeled", "github.issue_label_added", 211],
     ["pull_request", "opened", "github.pull_request_created", 312],
+    ["pull_request", "ready_for_review", "github.pull_request_ready_for_review", 312],
     ["pull_request", "labeled", "github.pull_request_label_added", 312],
   ] as const)("derives an item reaction target for %s %s", async (type, action, source, number) => {
     const configuration = githubConfiguration();
@@ -134,6 +288,36 @@ describe("GitHub Phase 1 trigger provider", () => {
     assert.deepEqual(matches[0]?.triggerContext.reactionSubject, {
       kind: "item",
       issueNumber: number,
+    });
+  });
+
+  it("passes the ready event head and draft status into the reviewer context", async () => {
+    const configuration = githubConfiguration();
+    configuration.triggers[0] = {
+      ...configuration.triggers[0]!,
+      on: "github.pull_request_ready_for_review",
+    };
+    const { project, revision, store } = await activeConfiguration(configuration);
+    const provider = createProvider(store, new TestReactions());
+    const event = createItemEvent("pull_request", "ready_for_review", 312);
+    event.payload["pull_request"] = {
+      body: "Review @paseo",
+      number: 312,
+      draft: false,
+      head: { sha: "event-head", ref: "topic" },
+    };
+    const matches = await provider.match(external(project.id, revision.id, event));
+    if (typeof matches === "string") throw new Error("expected ready match");
+    const context = await provider.materializeContext!({
+      executionId: "ready-context",
+      organizationId: "org_1",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111111",
+      triggerContext: matches[0]!.triggerContext,
+    });
+    assert.deepEqual(Reflect.get(Reflect.get(context!, "github"), "pull_request"), {
+      draft: false,
+      head_sha: "event-head",
     });
   });
 
@@ -255,6 +439,7 @@ describe("GitHub Phase 1 trigger provider", () => {
       github: {
         delivery_id: "github-delivery-1",
         event_name: "issue_comment",
+        pull_request: null,
         repository: { full_name: "boudra/faro" },
         received_at: "2026-05-19T00:00:00.000Z",
         item: {
@@ -346,71 +531,84 @@ describe("GitHub Phase 1 trigger provider", () => {
     });
   });
 
-  it("hands every matching configured GitHub trigger to the durable fan-out boundary", async () => {
-    const database = createMemoryDatabase();
-    const { project, revision, store } = await activeFanoutConfiguration(database);
-    const provider = createProvider(store, new TestReactions());
-    const matches = await provider.match(external(project.id, revision.id, createEvent()));
-    if (typeof matches === "string") throw new Error("expected matches");
-    assert.deepEqual(
-      matches.map((match) => match.triggerName),
-      ["github-mention", "github-mention-secondary"],
-    );
+  it.each([false, true])(
+    "deduplicates durable GitHub dispatch (ready transition=%s)",
+    async (ready) => {
+      const database = createMemoryDatabase();
+      const configuration = githubConfiguration();
+      configuration.triggers[0] = {
+        ...configuration.triggers[0]!,
+        on: "github.pull_request_ready_for_review",
+      };
+      const { project, revision, store } = ready
+        ? await createActiveProjectConfiguration(database, configuration)
+        : await activeFanoutConfiguration(database);
+      const event = ready
+        ? createItemEvent("pull_request", "ready_for_review", 312)
+        : createEvent();
+      const provider = createProvider(store, new TestReactions());
+      const matches = await provider.match(external(project.id, revision.id, event));
+      if (typeof matches === "string") throw new Error("expected matches");
+      assert.deepEqual(
+        matches.map((match) => match.triggerName),
+        ready ? ["github-mention"] : ["github-mention", "github-mention-secondary"],
+      );
 
-    let dispatches = 0;
-    const { handler, engine } = createDurableWorkflowHandler({
-      database,
-      entitlements: createUnlimitedEntitlementsService(),
-      providers: [provider],
-      dispatchLaunchMachineIntent: async (intent) => {
-        dispatches += 1;
-        if (intent.workflowStepRunId === undefined) throw new Error("workflow step is required");
-        const execution = await database.findAgentExecutionByWorkflowStepRunId(
-          intent.workflowStepRunId,
-        );
-        if (execution === undefined) throw new Error("workflow execution was not persisted");
-        return {
-          execution,
-        };
-      },
-    });
-    const trigger = {
-      providerEventReceiptId: "github-fanout-trigger",
-      organizationId: "org_1",
-      projectId: project.id,
-      configurationRevisionId: revision.id,
-      source: "github.issue_comment",
-      deliveryId: "github-fanout-delivery",
-      receivedAt: new Date(),
-      payload: createEvent(),
-      connectionId: null,
-      resourceId: null,
-    } satisfies DurableProviderEvent;
+      let dispatches = 0;
+      const { handler, engine } = createDurableWorkflowHandler({
+        database,
+        entitlements: createUnlimitedEntitlementsService(),
+        providers: [provider],
+        dispatchLaunchMachineIntent: async (intent) => {
+          dispatches += 1;
+          if (intent.workflowStepRunId === undefined) throw new Error("workflow step is required");
+          const execution = await database.findAgentExecutionByWorkflowStepRunId(
+            intent.workflowStepRunId,
+          );
+          if (execution === undefined) throw new Error("workflow execution was not persisted");
+          return {
+            execution,
+          };
+        },
+      });
+      const trigger = {
+        providerEventReceiptId: "github-fanout-trigger",
+        organizationId: "org_1",
+        projectId: project.id,
+        configurationRevisionId: revision.id,
+        source: ready ? "github.pull_request" : "github.issue_comment",
+        deliveryId: "github-fanout-delivery",
+        receivedAt: new Date(),
+        payload: event,
+        connectionId: null,
+        resourceId: null,
+      } satisfies DurableProviderEvent;
 
-    await handler(trigger);
-    await handler(trigger);
-    await engine.processAvailable();
+      await handler(trigger);
+      await handler(trigger);
+      await engine.processAvailable();
 
-    const runs = await database.findTriggerRunsByProviderEventReceiptId(
-      trigger.providerEventReceiptId,
-    );
-    assert.equal(runs.length, 2);
-    assert.equal(dispatches, 2);
-    assert.equal(
-      new Set(
-        await Promise.all(
-          runs.map(async (run) => {
-            const step = await database.findWorkflowStepRunByTriggerRun(run.id);
-            assert.ok(step);
-            const execution = await database.findAgentExecutionByWorkflowStepRunId(step.id);
-            assert.ok(execution);
-            return execution.id;
-          }),
-        ),
-      ).size,
-      2,
-    );
-  });
+      const runs = await database.findTriggerRunsByProviderEventReceiptId(
+        trigger.providerEventReceiptId,
+      );
+      assert.equal(runs.length, ready ? 1 : 2);
+      assert.equal(dispatches, ready ? 1 : 2);
+      assert.equal(
+        new Set(
+          await Promise.all(
+            runs.map(async (run) => {
+              const step = await database.findWorkflowStepRunByTriggerRun(run.id);
+              assert.ok(step);
+              const execution = await database.findAgentExecutionByWorkflowStepRunId(step.id);
+              assert.ok(execution);
+              return execution.id;
+            }),
+          ),
+        ).size,
+        ready ? 1 : 2,
+      );
+    },
+  );
 });
 
 function createProvider(
@@ -514,7 +712,7 @@ function external(
 }
 
 function createEvent(
-  overrides: { actor?: string; body?: string; pullRequest?: boolean } = {},
+  overrides: { actor?: string; association?: string; body?: string; pullRequest?: boolean } = {},
 ): NormalizedGitHubEvent {
   const actor = overrides.actor ?? "boudra";
   return {
@@ -537,6 +735,9 @@ function createEvent(
         body: overrides.body ?? "hello @paseo",
         html_url: "https://github.com/boudra/faro/issues/211#issuecomment-123",
         user: { login: actor },
+        ...(overrides.association === undefined
+          ? {}
+          : { author_association: overrides.association }),
         credential: "comment-credential",
       },
       sender: { login: actor },
@@ -547,7 +748,7 @@ function createEvent(
 
 function createItemEvent(
   type: "issues" | "pull_request",
-  action: "opened" | "labeled",
+  action: "opened" | "labeled" | "ready_for_review",
   number: number,
 ): NormalizedGitHubEvent {
   return {

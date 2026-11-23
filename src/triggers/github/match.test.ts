@@ -175,6 +175,82 @@ describe("GitHub trigger matching", () => {
     assert.equal(matchTriggers(configured, event, connectionId).length, expected);
   });
 
+  it.each([
+    ["ready_for_review", false, "boudra", 1],
+    ["opened", true, "boudra", 0],
+    ["opened", false, "boudra", 0],
+    ["synchronize", true, "boudra", 0],
+    ["synchronize", false, "boudra", 0],
+    ["converted_to_draft", true, "boudra", 0],
+    ["ready_for_review", false, "stranger", 0],
+  ])("ready-for-review matches %s draft=%s actor=%s", (action, draft, actor, expected) => {
+    const config = configFor({ from_users: ["boudra"], repo: "boudra/faro" });
+    const configured = {
+      ...config,
+      triggers: [{ ...config.triggers[0]!, on: "github.pull_request_ready_for_review" }],
+    };
+    const event = eventFor("pull_request", {
+      action,
+      pull_request: pullRequest({ draft, head: { sha: "head-sha", ref: "topic" } }),
+    });
+    event.payload["sender"] = { login: actor };
+    assert.equal(matchTriggers(configured, event).length, expected);
+  });
+
+  it.each([
+    ["synchronize", 1],
+    ["opened", 0],
+    ["ready_for_review", 0],
+    ["labeled", 0],
+    ["edited", 0],
+  ])("pull_request_synchronized matches %s", (action, expected) => {
+    const config = configFor({ from_users: ["boudra"], repo: "boudra/faro" });
+    const configured = {
+      ...config,
+      triggers: [{ ...config.triggers[0]!, on: "github.pull_request_synchronized" }],
+    };
+    const event = eventFor("pull_request", {
+      action,
+      pull_request: pullRequest({ draft: false, head: { sha: "new-head", ref: "topic" } }),
+    });
+    assert.equal(matchTriggers(configured, event).length, expected);
+  });
+
+  it.each([
+    ["@paseo-bot review", "reviewer"],
+    ["@paseo-bot rebase this", "general"],
+  ])("routes %s to the %s trigger only", (body, expected) => {
+    const general = configFor({ from_users: ["boudra"], contains: "@paseo-bot" });
+    const reviewer = configFor({
+      from_users: ["boudra"],
+      contains: "@paseo-bot review",
+    });
+    const configured = {
+      ...general,
+      triggers: [
+        {
+          ...general.triggers[0]!,
+          name: "general",
+          filters: { ...general.triggers[0]!.filters, exclude_contains: "@paseo-bot review" },
+        },
+        {
+          ...reviewer.triggers[0]!,
+          name: "reviewer",
+          on: "github.pull_request_comment_created",
+        },
+      ],
+    };
+    const event = eventFor("issue_comment", {
+      action: "created",
+      issue: { ...issue(), pull_request: {} },
+      comment: comment({ body }),
+    });
+    assert.deepEqual(
+      matchTriggers(configured, event).map((match) => match.trigger.name),
+      [expected],
+    );
+  });
+
   it("allows every actor only when the wildcard is explicit", () => {
     const config = configFor({ from_users: ["*"] });
     const event = createEvent({
@@ -320,6 +396,94 @@ describe("GitHub trigger matching", () => {
     );
   });
 
+  it.each([
+    {
+      acceptance: "a member's comment reaches a members-only trigger",
+      event: eventFor("issue_comment", {
+        action: "created",
+        issue: issue(),
+        comment: comment({ author_association: "MEMBER" }),
+      }),
+      expected: 1,
+    },
+    {
+      acceptance: "an outside commenter does not",
+      event: eventFor("issue_comment", {
+        action: "created",
+        issue: issue({ author_association: "OWNER" }),
+        comment: comment({ author_association: "NONE" }),
+      }),
+      expected: 0,
+    },
+    {
+      acceptance: "an event that reports no association does not",
+      event: eventFor("issue_comment", { action: "created", issue: issue(), comment: comment() }),
+      expected: 0,
+    },
+    {
+      acceptance: "an association GitHub does not define does not",
+      event: eventFor("issue_comment", {
+        action: "created",
+        issue: issue(),
+        comment: comment({ author_association: "ADMIN" }),
+      }),
+      expected: 0,
+    },
+    {
+      acceptance: "the item author's association is not the actor's when someone else acts on it",
+      event: eventFor("issues", {
+        action: "closed",
+        issue: issue({ author_association: "OWNER" }),
+      }),
+      on: "github.issues",
+      expected: 0,
+    },
+    {
+      acceptance: "an owner opening their own issue does",
+      event: eventFor("issues", {
+        action: "opened",
+        issue: issue({ user: { login: "boudra" }, author_association: "OWNER" }),
+      }),
+      on: "github.issue_created",
+      expected: 1,
+    },
+    {
+      acceptance: "a collaborator's review does",
+      event: eventFor("pull_request_review", {
+        action: "submitted",
+        pull_request: pullRequest({ author_association: "NONE" }),
+        review: {
+          body: "Looks right",
+          user: { login: "boudra" },
+          author_association: "COLLABORATOR",
+        },
+      }),
+      on: "github.pull_request_review",
+      expected: 1,
+    },
+  ])("gates on the actor's repository association: $acceptance", ({ event, expected, on }) => {
+    const config = configFor(
+      { author_associations: ["OWNER", "MEMBER", "COLLABORATOR"] },
+      on ?? "github.issue_comment",
+    );
+    assert.equal(matchTriggers(config, event).length, expected);
+  });
+
+  it("narrows by association and by name when a trigger declares both", () => {
+    const config = configFor({ author_associations: ["MEMBER"], from_users: ["someone-else"] });
+    const event = eventFor("issue_comment", {
+      action: "created",
+      issue: issue(),
+      comment: comment({ author_association: "MEMBER" }),
+    });
+    assert.equal(matchTriggers(config, event).length, 0);
+    assert.equal(
+      matchTriggers(configFor({ author_associations: ["MEMBER"], from_users: ["boudra"] }), event)
+        .length,
+      1,
+    );
+  });
+
   it("applies the same security filters to pull-request review comments", () => {
     const config = compileHubConfig({
       environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
@@ -355,13 +519,13 @@ describe("GitHub trigger matching", () => {
   });
 });
 
-function configFor(filters: Record<string, unknown>) {
+function configFor(filters: Record<string, unknown>, on = "github.issue_comment") {
   return compileHubConfig({
     environments: [{ name: "runner", kind: "daemon", daemon: "runner", cwd: "/repo" }],
     triggers: [
       {
         name: "github-comment",
-        on: "github.issue_comment",
+        on,
         max_runtime: "2h",
         filters,
         steps: [

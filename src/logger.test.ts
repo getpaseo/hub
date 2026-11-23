@@ -4,7 +4,7 @@ import { describe, it } from "vitest";
 import { z } from "zod";
 
 import { reportFailure } from "./failures/index.js";
-import { createLogger } from "./logger.js";
+import { createLogger, errorForLog } from "./logger.js";
 
 class CaptureStream extends Writable {
   chunks: string[] = [];
@@ -37,8 +37,16 @@ describe("logger redaction", () => {
       explicit: "random-explicit-scrub-3794030d",
     };
     const cause = new Error(`upstream rejected ${canaries.cause}`);
+    errorForLog(cause, {
+      diagnosticMessage: `upstream rejected ${canaries.cause} ${canaries.explicit}`,
+      scrubValues: [canaries.cause],
+    });
     const error = new ProviderTransportError(`provider failed with ${canaries.message}`, {
       cause,
+    });
+    errorForLog(error, {
+      diagnosticMessage: `provider failed with ${canaries.message}`,
+      scrubValues: [canaries.message],
     });
     Object.assign(error, { code: "ECONNRESET" });
     error.stack = [
@@ -80,11 +88,14 @@ describe("logger redaction", () => {
     const diagnostic = logRecordSchema.parse(record["err"]);
     assert.equal(diagnostic["type"], "ProviderTransportError");
     assert.equal(diagnostic["code"], "ECONNRESET");
+    assert.equal(diagnostic["message"], "provider failed with [Redacted]");
     assert.equal(
       diagnostic["stack"],
       "    at verifyProvider (/safe/provider-client.js:42:7)\n    at https://provider.test/callback\n    at [Redacted] (/unsafe/path.js:9:3)",
     );
-    assert.equal(logRecordSchema.parse(diagnostic["cause"])["type"], "Error");
+    const serializedCause = logRecordSchema.parse(diagnostic["cause"]);
+    assert.equal(serializedCause["type"], "Error");
+    assert.equal(serializedCause["message"], "upstream rejected [Redacted] [Redacted]");
   });
 
   it("does not write token-shaped or secret-keyed values verbatim", () => {

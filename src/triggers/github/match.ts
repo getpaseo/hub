@@ -70,7 +70,7 @@ function matchesFilter(
     return false;
   }
 
-  if (filter.from_users === undefined || filter.from_users.length === 0) {
+  if (!admitsActor(classified, filter)) {
     return false;
   }
 
@@ -88,17 +88,7 @@ function matchesFilter(
     return false;
   }
 
-  const pattern = readStringFilter(filter, "pattern");
-  if (pattern !== undefined && !classified.text.startsWith(pattern)) {
-    return false;
-  }
-
-  const contains = readStringFilter(filter, "contains");
-  if (contains !== undefined && !classified.text.includes(contains)) {
-    return false;
-  }
-
-  if (!filter.from_users.includes("*") && !filter.from_users.includes(classified.actor)) {
+  if (!matchesText(classified.text, filter)) {
     return false;
   }
 
@@ -118,9 +108,39 @@ function matchesFilter(
   return true;
 }
 
+/**
+ * Who may invoke the trigger. A trigger names people, repository associations, or both; each one
+ * it declares narrows the audience, and a trigger that declares neither admits nobody.
+ */
+function admitsActor(
+  classified: ReturnType<typeof classifyGitHubEvent>,
+  filter: TriggerFilter,
+): boolean {
+  const users = filter.from_users;
+  const associations = filter.author_associations;
+  if (users === undefined && associations === undefined) return false;
+  if (users !== undefined && !users.includes("*") && !users.includes(classified.actor)) {
+    return false;
+  }
+  return (
+    associations === undefined ||
+    (classified.actorAssociation !== undefined &&
+      associations.includes(classified.actorAssociation))
+  );
+}
+
+function matchesText(text: string, filter: TriggerFilter): boolean {
+  const pattern = readStringFilter(filter, "pattern");
+  if (pattern !== undefined && !text.startsWith(pattern)) return false;
+  const contains = readStringFilter(filter, "contains");
+  if (contains !== undefined && !text.includes(contains)) return false;
+  const excluded = readStringFilter(filter, "exclude_contains");
+  return excluded === undefined || !text.includes(excluded);
+}
+
 function readStringFilter(
   filter: TriggerFilter,
-  key: "pattern" | "contains" | "label",
+  key: "pattern" | "contains" | "exclude_contains" | "label",
 ): string | undefined {
   const value = filter[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;

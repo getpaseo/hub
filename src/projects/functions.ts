@@ -1,18 +1,13 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
-import {
-  MAX_PROMPT_PARTIAL_CONTENT_BYTES,
-  MAX_PROMPT_PARTIAL_COUNT,
-  MAX_PROMPT_PARTIAL_PATH_LENGTH,
-} from "../config/prompt-partial-limits.js";
 import { respondOk, type Result } from "../contract/respond.js";
 import { getApplication } from "../server/runtime.js";
 import { respondWithFailure } from "../failures/index.js";
 import { projectSlugSchema } from "../project-slug.js";
 import { isTenantRouteNotFoundError } from "./access.js";
 import { ProjectCommandError, projectCommandErrorCode } from "./command-error.js";
-import { type ManualConfigurationSaveResult, type ProjectDashboard } from "./dashboard.js";
+import type { ProjectDashboard } from "./dashboard.js";
 
 const organizationScopeSchema = z
   .object({ organizationSlug: z.string().trim().min(1).max(100) })
@@ -28,21 +23,6 @@ const createProjectSchema = organizationScopeSchema.extend({
 const projectUpdateSchema = projectScopeSchema.extend({
   slug: projectSlugSchema,
 });
-const configurationRepositorySchema = projectScopeSchema.extend({
-  connectionId: z.string().uuid(),
-  repositoryId: z.number().int().positive(),
-});
-const manualConfigurationSchema = projectScopeSchema.extend({
-  files: z
-    .array(
-      z.object({
-        path: z.string().min(1).max(MAX_PROMPT_PARTIAL_PATH_LENGTH),
-        content: z.string().max(MAX_PROMPT_PARTIAL_CONTENT_BYTES),
-      }),
-    )
-    .max(MAX_PROMPT_PARTIAL_COUNT),
-});
-
 export const tenantContext = createServerFn({ method: "GET" })
   .validator(
     organizationScopeSchema.extend({ projectSlug: z.string().trim().min(1).max(100).optional() }),
@@ -95,44 +75,6 @@ export const updateProjectSlug = createServerFn({ method: "POST" })
   .validator(projectUpdateSchema)
   .handler(async ({ data }) =>
     command(data, (dashboard) => dashboard.updateProjectSlug(getRequest(), data, data.slug)),
-  );
-
-export const availableGitHubRepositories = createServerFn({ method: "GET" })
-  .validator(projectScopeSchema)
-  .handler(async ({ data }) =>
-    read(data, (dashboard) => dashboard.availableGitHubRepositories(getRequest(), data)),
-  );
-
-export const useGitHubConfiguration = createServerFn({ method: "POST" })
-  .validator(configurationRepositorySchema)
-  .handler(async ({ data }) =>
-    command(data, (dashboard) =>
-      dashboard.useGitHubConfiguration(getRequest(), data, {
-        connectionId: data.connectionId,
-        repositoryId: data.repositoryId,
-      }),
-    ),
-  );
-
-export const switchConfigurationToManual = createServerFn({ method: "POST" })
-  .validator(projectScopeSchema)
-  .handler(async ({ data }) =>
-    command(data, (dashboard) => dashboard.switchConfigurationToManual(getRequest(), data)),
-  );
-
-export const saveManualConfiguration = createServerFn({ method: "POST" })
-  .validator(manualConfigurationSchema)
-  .handler(
-    async ({ data }): Promise<Result<ManualConfigurationSaveResult>> =>
-      commandResult(data, (dashboard) =>
-        dashboard.saveManualConfiguration(getRequest(), data, { files: data.files }),
-      ),
-  );
-
-export const syncProjectConfiguration = createServerFn({ method: "POST" })
-  .validator(projectScopeSchema)
-  .handler(async ({ data }) =>
-    command(data, (dashboard) => dashboard.syncConfiguration(getRequest(), data)),
   );
 
 async function read<T>(

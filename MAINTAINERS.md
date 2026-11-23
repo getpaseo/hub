@@ -30,19 +30,34 @@ uses Oxfmt, not Prettier.
 
 ## Publish a release
 
-Hub releases contain a multi-architecture container image and a GitHub Release. There are no
-separate binary assets.
+A Hub release is three artifacts: the `@getpaseo/hub` npm package, a multi-architecture
+container image, and a GitHub Release. npm is published locally; the tag publishes the other two.
+A release is not done until all three are out.
 
 1. Update the version in `package.json` and `package-lock.json`.
-2. Add a matching `## <version> - YYYY-MM-DD` section to `CHANGELOG.md`.
-3. Run the release metadata test:
+2. Add a matching `## <version> - YYYY-MM-DD` section to `CHANGELOG.md`. The changelog describes
+   the self-hosted release, so leave out changes that only affect the hosted service: plans,
+   pricing, trials, billing, and hosted usage limits.
+3. Run the release checks. `release:check` verifies release metadata, types, lint, formatting, the
+   production build, and the npm package contents.
 
    ```sh
-   npm run test:release
+   npm run release:check
    ```
 
-4. Commit the release preparation to `main`.
-5. Create an annotated tag on the intended release commit and push it:
+4. Commit the release preparation to `main` and push it.
+5. Publish npm from that clean `main` checkout, then verify the public package from a directory
+   outside the repository. Open the URL Hub prints, and stop it with Ctrl+C once the first-run
+   page loads.
+
+   ```sh
+   npm whoami
+   npm publish --access public
+   npm view @getpaseo/hub version
+   cd "$(mktemp -d)" && npx @getpaseo/hub@<version>
+   ```
+
+6. Create an annotated tag on the release commit and push it:
 
    ```sh
    git tag -a v<version> <commit> -m "Paseo Hub v<version>"
@@ -55,12 +70,17 @@ workflow publishes `ghcr.io/getpaseo/hub:<version>`, updates `latest` for stable
 creates or updates the GitHub Release from the matching changelog section. Prereleases do not
 move `latest`.
 
-Verify the GitHub Release and anonymous access to both image tags before announcing the release.
-Later changes to the current changelog section update the existing release notes through
+Before announcing the release, verify the GitHub Release, anonymous access to both image tags, and
+that `npm view @getpaseo/hub dist-tags` shows the new version as `latest`. Later changes to the
+current changelog section update the existing release notes through
 [Release Notes Sync](.github/workflows/release-notes-sync.yml).
 
 ## Update public documentation
 
-Public Hub documentation lives in `getpaseo/paseo` under `public-docs/`. Externally visible Hub
-changes require a companion Paseo pull request. Keep task guides progressive and examples
-complete; keep exhaustive field documentation in reference pages.
+Public Hub documentation lives in `getpaseo/paseo` under `public-docs/`. Open a companion PR
+when an API, interface, or user-facing workflow change affects what users need to know or do.
+Internal changes and fixes that restore expected behavior do not require new public docs.
+If existing documentation becomes inaccurate, correct it with the smallest necessary edit.
+
+Document the intended public experience, not internal architecture or maintainer process.
+Keep each addition tied to a reader’s task; omit details that do not help them complete it.

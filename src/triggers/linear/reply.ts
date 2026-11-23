@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { withExecutionLink } from "../../agent-executions/reply-link.js";
 import type { OutputExecutor } from "../../execution-capabilities/outputs.js";
 import type { LinearApiClient } from "../../providers/linear/client.js";
 
@@ -17,7 +18,7 @@ export function createLinearReplyExecutor(options: { client: LinearApiClient }):
     await options.client.createComment({
       linearOrganizationId: context.linearOrganizationId,
       issueId: context.issueId,
-      body: args.content,
+      body: withExecutionLink(args.content, input.openInPaseoUrl),
     });
   };
 }

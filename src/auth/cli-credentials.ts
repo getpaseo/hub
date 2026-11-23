@@ -1,10 +1,13 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { DatabaseRuntime, QueryHandle, QueryRow } from "../db/runtime/index.js";
 import { API_KEY_SCOPES, type ApiKeyScope } from "./api-key-contract.js";
+import { ORGANIZATION_ROLES } from "./organization-contract.js";
+import { capabilitiesFor } from "./organization-policy.js";
 import type { OperationAuthorizationResult } from "./api-keys.js";
 
 export const CLI_CREDENTIAL_PREFIX = "paseo_cli_";
 const CLI_CREDENTIAL_PREFIX_LENGTH = 12;
+const credentialRoles = ORGANIZATION_ROLES.filter((role) => capabilitiesFor(role).manageResources);
 
 interface CliCredentialRow extends QueryRow {
   id: string;
@@ -19,7 +22,7 @@ export class OrganizationCliCredentials {
 
   async authorize(
     request: Request,
-    _requiredScope: ApiKeyScope,
+    requiredScope: ApiKeyScope,
   ): Promise<OperationAuthorizationResult> {
     const token = bearerToken(request.headers.get("authorization"));
     const parsed = token === undefined ? undefined : parseCliCredential(token);
@@ -37,11 +40,17 @@ export class OrganizationCliCredentials {
     ) {
       return { status: "unauthorized" };
     }
+    if (!API_KEY_SCOPES.includes(requiredScope)) return { status: "forbidden" };
     const used = await this.pool.query(
-      `update organization_cli_credentials
-       set last_used_at = greatest(coalesce(last_used_at, to_timestamp(0)), now())
-       where id = $1 and revoked_at is null returning id`,
-      [row.id],
+      `update organization_cli_credentials as credential
+       set last_used_at = greatest(coalesce(credential.last_used_at, to_timestamp(0)), now())
+       from member
+       where credential.id = $1 and credential.revoked_at is null
+         and member.organization_id = credential.organization_id
+         and member.user_id = credential.created_by_user_id
+         and member.role = any($2::text[])
+       returning credential.id`,
+      [row.id, credentialRoles],
     );
     if (used.rowCount !== 1) return { status: "unauthorized" };
     return {
@@ -53,6 +62,18 @@ export class OrganizationCliCredentials {
         scopes: API_KEY_SCOPES,
       },
     };
+  }
+
+  async revokeForMember(
+    organizationId: string,
+    userId: string,
+    client: QueryHandle,
+  ): Promise<void> {
+    await client.query(
+      `update organization_cli_credentials set revoked_at = now()
+       where organization_id = $1 and created_by_user_id = $2 and revoked_at is null`,
+      [organizationId, userId],
+    );
   }
 
   async list(organizationId: string): Promise<CliCredentialSummary[]> {

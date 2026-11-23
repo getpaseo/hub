@@ -1,3 +1,4 @@
+import type { IntegrationToolGrants } from "../integration-tools/grants.js";
 import type { JsonValue } from "../config/compiler.js";
 import type { ToolPolicy } from "../daemons/protocol.js";
 import {
@@ -12,6 +13,7 @@ export function executionToolPolicy(input: {
   allowOutputs: readonly AllowedOutput[];
   outputContext: unknown;
   outputSchema?: JsonValue;
+  tools?: IntegrationToolGrants;
   capabilities: OutputExecutorRegistry;
 }): ToolPolicy {
   const materializedOutputs = input.capabilities.materialize(
@@ -19,10 +21,12 @@ export function executionToolPolicy(input: {
     input.outputContext,
   );
   return {
-    preapproved: executionToolDefinitions(input.outputSchema, materializedOutputs).map((tool) => ({
-      kind: "mcp" as const,
-      server: HUB_MCP_SERVER,
-      tool: tool.name,
-    })),
+    preapproved: executionToolDefinitions(input.outputSchema, materializedOutputs, input.tools).map(
+      (tool) => ({
+        kind: "mcp" as const,
+        server: HUB_MCP_SERVER,
+        tool: tool.name,
+      }),
+    ),
   };
 }

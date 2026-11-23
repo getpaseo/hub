@@ -126,6 +126,23 @@ it("runs the bootstrap, credential lock, and lease claim flows on embedded stora
     });
     const wakeup = await database.claimWorkflowWakeup(new Date(), 30_000);
     assert.equal(wakeup?.triggerRunId, run.run.id);
+    const execution = await database.insertAgentExecution({
+      organizationId: identity.organization_id,
+      projectId: identity.project_id,
+      machineId: null,
+      configurationRevisionId: revision.id,
+      triggerContext: {},
+      outputContext: {},
+      idleDeadlineAt: new Date(Date.now() + 60_000),
+    });
+    const started = await database.transitionAgentExecution(execution.id, "running");
+    assert.equal(started.execution.status, "running");
+    assert.equal(started.execution.completedAt, null);
+    assert.ok(started.execution.idleDeadlineAt);
+    const finished = await database.transitionAgentExecution(execution.id, "succeeded");
+    assert.equal(finished.execution.status, "succeeded");
+    assert.ok(finished.execution.completedAt);
+    assert.equal(finished.execution.idleDeadlineAt, null);
     assert.ok(application.hub);
   } finally {
     await application.stop();

@@ -10,7 +10,6 @@ export interface FixtureBillingProduct {
   name: string;
   active: boolean;
   metadata: Record<string, string>;
-  marketingFeatures: string[];
 }
 
 export interface FixtureBillingPrice {
@@ -27,12 +26,13 @@ export interface FixtureBillingPrice {
  * A deterministic mirror of the catalog Hub actually publishes, not an invented price list. Two
  * products, because that is what Stripe carries:
  *
- * - `free` is the internal entitlement record. It exists so provisioning and cancellation have a
- *   template to stamp; it is not an offer, and `BillingRuntime.publicCatalog` withholds it. Its
- *   zero execution limit is the enforcement floor a customer without a subscription lands on —
- *   E2E asserts it is never rendered as a plan.
- * - `hosted` is the one purchasable plan: Paseo Hub, €15 per user per month, monthly only. There
- *   is no annual price, so the picker has no interval to switch between.
+ * - `free` is the plan every hosted organization is provisioned on and returns to after
+ *   cancellation: one seat, no invitations, and a monthly execution allowance. The allowance is
+ *   authored in Stripe metadata, so this number and `ent_executions_monthly_limit` on the live
+ *   Free product have to agree.
+ * - `hosted` is the one purchasable plan: Pro, $15 per seat per month, monthly only. There is no
+ *   annual price, so the picker has no interval to switch between. The slug stays `hosted`; the
+ *   customer-facing name is Hub's, in `src/billing/plan-presentation.ts`.
  *
  * Keep this in step with the live Stripe catalog. A test that needs several plans to exercise
  * generic catalog behaviour builds its own synthetic products (see `src/billing/reconcile.test.ts`)
@@ -48,9 +48,8 @@ export const FIXTURE_BILLING_PRODUCTS: readonly FixtureBillingProduct[] = [
       paseo_plan_slug: "free",
       ent_seats_max: "1",
       ent_can_invite: "false",
-      ent_executions_monthly_limit: "0",
+      ent_executions_monthly_limit: "50",
     },
-    marketingFeatures: [],
   },
   {
     id: "prod_fixture_hosted",
@@ -63,12 +62,6 @@ export const FIXTURE_BILLING_PRODUCTS: readonly FixtureBillingProduct[] = [
       ent_can_invite: "true",
       ent_executions_monthly_limit: "unlimited",
     },
-    marketingFeatures: [
-      "Unlimited daemons",
-      "GitHub, Linear, Slack, and Discord triggers",
-      "Versioned workflows and activity",
-      "Bring your own agents and inference",
-    ],
   },
 ];
 
@@ -78,7 +71,7 @@ export const FIXTURE_BILLING_PRICES: readonly FixtureBillingPrice[] = [
     productId: "prod_fixture_free",
     lookupKey: "free_monthly",
     active: true,
-    currency: "eur",
+    currency: "usd",
     unitAmount: 0,
     interval: "month",
   },
@@ -87,7 +80,7 @@ export const FIXTURE_BILLING_PRICES: readonly FixtureBillingPrice[] = [
     productId: "prod_fixture_hosted",
     lookupKey: "hosted_monthly",
     active: true,
-    currency: "eur",
+    currency: "usd",
     unitAmount: 1500,
     interval: "month",
   },
@@ -132,7 +125,6 @@ export interface FixtureSubscriptionState {
   quantity: number;
   status: string;
   currentPeriodEnd: Date | null;
-  trialEnd: Date | null;
   cancelAtPeriodEnd: boolean;
 }
 
@@ -182,24 +174,10 @@ export class FixtureStripeBillingClient {
     priceId: string;
     quantity: number;
     successUrl: string;
-    trial: boolean;
   }): Promise<{ url: string }> {
-    const id = fixtureSubscriptionId(input.organizationId);
     // Idempotent initial subscription: if one already exists, checkout does not open a second or
     // rewrite its price. A price change must go through changeSubscriptionPrice.
-    if (!this.subscriptions.has(id)) {
-      this.subscriptions.set(id, {
-        id,
-        customerId: input.customerId,
-        organizationId: input.organizationId,
-        priceId: input.priceId,
-        quantity: input.quantity,
-        status: input.trial ? "trialing" : "active",
-        currentPeriodEnd: new Date(Date.now() + FIXTURE_SUBSCRIPTION_PERIOD_MS),
-        trialEnd: input.trial ? new Date(Date.now() + 14 * 24 * 60 * 60 * 1000) : null,
-        cancelAtPeriodEnd: false,
-      });
-    }
+    this.createSubscription(input);
     return { url: `/test/stripe-checkout?success=${encodeURIComponent(input.successUrl)}` };
   }
 
@@ -256,5 +234,28 @@ export class FixtureStripeBillingClient {
       if (state.id === subscriptionId) return state;
     }
     return undefined;
+  }
+
+  private createSubscription(input: {
+    organizationId: string;
+    customerId: string;
+    priceId: string;
+    quantity: number;
+  }): FixtureSubscriptionState {
+    const id = fixtureSubscriptionId(input.organizationId);
+    const existing = this.subscriptions.get(id);
+    if (existing !== undefined) return existing;
+    const subscription = {
+      id,
+      customerId: input.customerId,
+      organizationId: input.organizationId,
+      priceId: input.priceId,
+      quantity: input.quantity,
+      status: "active",
+      currentPeriodEnd: new Date(Date.now() + FIXTURE_SUBSCRIPTION_PERIOD_MS),
+      cancelAtPeriodEnd: false,
+    };
+    this.subscriptions.set(id, subscription);
+    return subscription;
   }
 }

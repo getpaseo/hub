@@ -56,6 +56,30 @@ function legacyCompiledConfiguration(compiled: CompiledHubConfig): unknown {
 }
 
 describe("workflow compiler", () => {
+  it("round-trips the ready-for-review event and its actor allowlist", () => {
+    const authored = configuration();
+    authored.triggers[0]!.on = "github.pull_request_ready_for_review";
+    Reflect.set(authored.triggers[0]!, "filters", {
+      repo: "owner/repo",
+      from_users: ["maintainer"],
+    });
+    const compiled = compileHubConfig(authored);
+    assert.equal(compiled.triggers[0]?.on, "github.pull_request_ready_for_review");
+    assert.deepEqual(compiled.triggers[0]?.filters, {
+      repo: "owner/repo",
+      from_users: ["maintainer"],
+    });
+    assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+  });
+
+  it("preserves an authored startup timeout in stored compiled configurations", () => {
+    const authored = configuration();
+    Reflect.set(authored.triggers[0]!.steps[0]!, "startup_timeout", "3m");
+    const compiled = compileHubConfig(authored);
+    assert.equal(compiled.triggers[0]?.steps[0]?.startupTimeoutMs, 180_000);
+    assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+  });
+
   it.each([
     "paseo.event.github.delivery_id",
     "paseo.prompt",
@@ -111,6 +135,37 @@ describe("workflow compiler", () => {
       }),
     );
   });
+
+  it("accepts the execution id in a step title and stores the template", () => {
+    const authored = configuration();
+    Reflect.set(authored.triggers[0]!.steps[0]!, "title", "Intake · ${{ paseo.execution.id }}");
+    const compiled = compileHubConfig(authored);
+    assert.equal(compiled.triggers[0]?.steps[0]?.title, "Intake · ${{ paseo.execution.id }}");
+    assert.deepEqual(parseCompiledHubConfig(compiled), compiled);
+  });
+
+  it.each(["paseo.prompt", "paseo.context", "paseo.inputs.repo", "values.branch"])(
+    "rejects %s in a step title with field provenance",
+    (expression) => {
+      const authored = configuration();
+      Reflect.set(authored.triggers[0]!.steps[0]!, "title", "Intake ${{ " + expression + " }}");
+      assert.throws(
+        () => compileHubConfig(authored),
+        (error) => {
+          assert.ok(error instanceof Error);
+          assert.deepEqual(Reflect.get(error, "path"), [
+            "triggers",
+            "run",
+            "steps",
+            "work",
+            "title",
+          ]);
+          assert.match(error.message, /supports only paseo\.execution\.id/u);
+          return true;
+        },
+      );
+    },
+  );
 
   it("preserves opaque provider options and leaves an omitted mode omitted", () => {
     const sourceOptions = {
@@ -320,6 +375,64 @@ describe("workflow compiler", () => {
       /filters\.from_users/iu,
     );
   });
+  it("accepts a GitHub repository association as the audience and keeps it off events that report none", () => {
+    const raw = configuration();
+    const trigger = raw.triggers[0]!;
+    const members = { author_associations: ["OWNER", "MEMBER", "COLLABORATOR"] };
+    const compiled = compileHubConfig({
+      ...raw,
+      triggers: [{ ...trigger, on: "github.issue_comment_created", filters: members }],
+    });
+    assert.deepEqual(compiled.triggers[0]?.filters, members);
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...raw,
+          triggers: [{ ...trigger, on: "github.issue_comment_created", filters: {} }],
+        }),
+      /filters\.from_users or filters\.author_associations/iu,
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...raw,
+          triggers: [
+            {
+              ...trigger,
+              on: "github.issue_comment_created",
+              filters: { author_associations: ["ADMIN"] },
+            },
+          ],
+        }),
+      /author_associations/iu,
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...raw,
+          triggers: [
+            {
+              ...trigger,
+              on: "github.issue_comment_created",
+              filters: { author_associations: [] },
+            },
+          ],
+        }),
+      /author_associations/iu,
+    );
+    for (const on of ["github.push", "slack.mention", "manual.run"]) {
+      assert.throws(
+        () =>
+          compileHubConfig({
+            ...raw,
+            triggers: [{ ...trigger, on, filters: { ...members, from_users: ["*"] } }],
+          }),
+        /filters\.author_associations is not available/iu,
+        on,
+      );
+    }
+  });
+
   it("requires explicit repositories for non-GitHub authority", () => {
     const raw = configuration();
     const step = raw.triggers[0]!.steps[0]!;

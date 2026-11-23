@@ -12,7 +12,12 @@ import {
   testDatabaseRuntime,
 } from "../db/test-utils/runtime.js";
 import type { Database } from "../db/types.js";
-import { OperatorConsole, OperatorForbiddenError } from "./console.js";
+import {
+  OperatorConsole,
+  OperatorForbiddenError,
+  type OperatorBilling,
+  type OperatorBillingReader,
+} from "./console.js";
 
 // The operator guard is the real authorization: hiding the nav is presentation, this refuses
 // server-side. These tests build a real Better Auth server over real Postgres so the
@@ -87,6 +92,14 @@ describe("OperatorConsole authorization", () => {
       organizationSlug: customerSlug,
     });
     assert.equal(before.entitlements.effective.seats.max, null);
+    assert.equal(before.organization.slug, customerSlug);
+    assert.ok(!Number.isNaN(Date.parse(before.organization.createdAt)));
+    assert.equal(before.billing, null);
+    // The members tell two same-named organizations apart during support.
+    assert.deepEqual(
+      before.members.map(({ name, email, role }) => ({ name, email, role })),
+      [{ name: "Cyril", email: "cyril-operator@example.com", role: "owner" }],
+    );
 
     const after = await hub.console.override(
       operator.request(),
@@ -105,12 +118,30 @@ describe("OperatorConsole authorization", () => {
     assert.equal(reread.history[0]?.actorName, "Ada");
     assert.equal(reread.history[0]?.reason, "Pilot seat cap");
   });
+
+  it("carries the billing facts when billing answers", async () => {
+    const facts: OperatorBilling = {
+      planName: "Pro",
+      stripeCustomerId: "cus_123",
+      subscription: { kind: "unavailable" },
+    };
+    const hub = await startHarness(postgres, { operatorBilling: () => Promise.resolve(facts) });
+    const operator = await hub.signUp("Bo", "bo-billing-up@example.com");
+    const slug = await operator.createOrganization("Bo Co");
+    await hub.grantOperator(operator.email);
+
+    const snapshot = await hub.console.snapshot(operator.request(), { organizationSlug: slug });
+    assert.deepEqual(snapshot.billing, facts);
+  });
 });
 
 const activeHarnesses: OperatorHarness[] = [];
 
-async function startHarness(postgres: StartedPostgreSqlContainer): Promise<OperatorHarness> {
-  const harness = await OperatorHarness.start(postgres);
+async function startHarness(
+  postgres: StartedPostgreSqlContainer,
+  billing: OperatorBillingReader | null = null,
+): Promise<OperatorHarness> {
+  const harness = await OperatorHarness.start(postgres, billing);
   activeHarnesses.push(harness);
   return harness;
 }
@@ -127,11 +158,15 @@ class OperatorHarness {
     private readonly database: Database,
     private readonly entitlements: ComposedEntitlements,
     private readonly auth: AuthServer,
+    billing: OperatorBillingReader | null,
   ) {
-    this.console = new OperatorConsole(database, auth, entitlements.service);
+    this.console = new OperatorConsole(database, auth, entitlements.service, billing);
   }
 
-  static async start(postgres: StartedPostgreSqlContainer): Promise<OperatorHarness> {
+  static async start(
+    postgres: StartedPostgreSqlContainer,
+    billing: OperatorBillingReader | null,
+  ): Promise<OperatorHarness> {
     const url = isolatedDatabaseUrl(postgres);
     const database = await createDatabase(url);
     const entitlements = composeEntitlements(database, testDatabaseRuntime(database));
@@ -143,7 +178,7 @@ class OperatorHarness {
       baseURL: "http://localhost:3000",
       policy: { registrationMode: "open", organizationCreation: "open", bootstrap: undefined },
     });
-    return new OperatorHarness(url, database, entitlements, auth);
+    return new OperatorHarness(url, database, entitlements, auth, billing);
   }
 
   async signUp(name: string, email: string): Promise<OperatorAccount> {

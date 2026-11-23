@@ -670,6 +670,13 @@ export class OrganizationAccess {
       }
       await protectLastOwner(client, access.organization.id, currentRole, input.role);
       await client.query(`update member set role = $2 where id = $1`, [target.id, input.role]);
+      if (!capabilitiesFor(input.role).manageResources) {
+        await this.options.cliCredentials.revokeForMember(
+          access.organization.id,
+          target.user_id,
+          client,
+        );
+      }
     });
     return Response.json({ memberId: input.memberId, role: input.role });
   }
@@ -696,6 +703,11 @@ export class OrganizationAccess {
       }
       await protectLastOwner(client, access.organization.id, targetRole, undefined);
       await client.query(`delete from member where id = $1`, [target.id]);
+      await this.options.cliCredentials.revokeForMember(
+        access.organization.id,
+        target.user_id,
+        client,
+      );
       await client.query(
         `update session set active_organization_id = null
          where user_id = $1 and active_organization_id = $2`,

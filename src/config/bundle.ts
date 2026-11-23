@@ -103,7 +103,7 @@ export function compileHubBundle(input: readonly HubBundleFile[]): CompiledHubBu
   const sourceFiles: Record<string, string> = {};
   for (const file of workflowFiles) {
     const trigger = parseYamlRecord(file);
-    rejectWorkflowComposition(trigger, file.path);
+    validateWorkflowFile(trigger, file.path);
     workflowSourceFiles.push(file.path);
     const name = trigger["name"];
     if (typeof name === "string") {
@@ -298,7 +298,13 @@ function namedAgents(value: unknown): Readonly<Record<string, CompiledAgent>> {
   return agents;
 }
 
-function rejectWorkflowComposition(workflow: Record<string, unknown>, sourceFile: string): void {
+function validateWorkflowFile(workflow: Record<string, unknown>, sourceFile: string): void {
+  if (workflow["on"] === "webhook.received") {
+    throw issue(
+      [sourceFile, "on"],
+      "Define webhook.received in .paseo/triggers/<trigger>.yml and use paseo hub deploy.",
+    );
+  }
   for (const field of ["uses", "workflow", "workflows", "call", "environment", "agent"]) {
     if (Object.hasOwn(workflow, field)) {
       throw issue(

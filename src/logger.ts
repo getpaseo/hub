@@ -38,7 +38,7 @@ const SENSITIVE_KEYS = new Set([
   "message",
 ]);
 const SENSITIVE_KEY_PARTS = ["credential", "password", "privatekey", "signingsecret"];
-const SAFE_ERROR_CODE = /^[A-Za-z][A-Za-z0-9_.:_-]{0,63}$/u;
+const SAFE_ERROR_CODE = /^[A-Za-z0-9][A-Za-z0-9_.:_-]{0,63}$/u;
 const STACK_FRAME = /^\s+at\s+/u;
 const ABSOLUTE_URL = /https?:\/\/[^\s"'<>]+/giu;
 const errorRedaction = new WeakMap<Error, RedactionOptions>();
@@ -47,6 +47,10 @@ const safeErrorDiagnostics = new WeakSet<object>();
 export interface RedactionOptions {
   /** Values already known to be sensitive at the boundary. Never serialized into the record. */
   scrubValues?: readonly string[];
+  /** A message sanitized by the owning boundary; arbitrary Error messages stay private. */
+  diagnosticMessage?: string;
+  /** Structured diagnostics supplied by the owning boundary, redacted before serialization. */
+  diagnostic?: Record<string, unknown>;
 }
 
 export function createLogger(destination?: pino.DestinationStream): pino.Logger {
@@ -87,7 +91,13 @@ export function redact(value: unknown, options: RedactionOptions = {}): unknown 
 
 /** Associates scrub provenance with an Error without putting the sensitive values on the record. */
 export function errorForLog(error: Error, options: RedactionOptions = {}): Error {
-  if (options.scrubValues !== undefined) errorRedaction.set(error, options);
+  const previous = errorRedaction.get(error);
+  const scrubValues = [...(previous?.scrubValues ?? []), ...(options.scrubValues ?? [])];
+  errorRedaction.set(error, {
+    ...previous,
+    ...options,
+    ...(scrubValues.length === 0 ? {} : { scrubValues }),
+  });
   return error;
 }
 
@@ -103,11 +113,28 @@ export function serializeError(
   const scrubValues = normalizedScrubValues(options.scrubValues);
   const code = safeErrorCode(value, scrubValues);
   const frames = safeStackFrames(value.stack, scrubValues);
+  const causeOptions = errorRedactionOptions(value.cause);
   return safeErrorDiagnostic({
     type: safeErrorType(value),
     ...(code === undefined ? {} : { code }),
+    ...(options.diagnosticMessage === undefined
+      ? {}
+      : {
+          message: redactString(options.diagnosticMessage, undefined, scrubValues),
+          code: code ?? null,
+        }),
+    ...(options.diagnostic === undefined
+      ? {}
+      : { diagnostic: redact(options.diagnostic, options) }),
     ...(frames === undefined ? {} : { stack: frames }),
-    ...(value.cause === undefined ? {} : { cause: serializeError(value.cause, options) }),
+    ...(value.cause === undefined
+      ? {}
+      : {
+          cause: serializeError(value.cause, {
+            ...causeOptions,
+            scrubValues: [...scrubValues, ...(causeOptions.scrubValues ?? [])],
+          }),
+        }),
   });
 }
 

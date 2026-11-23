@@ -1,3 +1,7 @@
+import { ExecutionAuthorityRepository } from "../execution-authority/index.js";
+import { WebhookRepository } from "../triggers/webhook/index.js";
+import { ScheduleRepository } from "../triggers/schedule/index.js";
+import { acceptWorkflowRun } from "./workflow-intake.js";
 import { randomUUID } from "node:crypto";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { parseCompiledHubConfig, type JsonValue } from "../config/compiler.js";
@@ -20,6 +24,7 @@ import {
   toProjectRecord,
   toProviderEventReceiptSummary,
   toProviderEventReceiptRecord,
+  launchedAgent,
 } from "./mappers.js";
 import type { AgentExecutionStatus, MachineSource, MachineStatus } from "./schema.js";
 import type { DatabaseRuntime, QueryHandle, QueryRow } from "./runtime/index.js";
@@ -42,6 +47,8 @@ import type {
   TransitionAgentExecutionResult,
   ProviderEventReceiptRecord,
   ProviderEventReceiptSummary,
+  OrganizationRunRecord,
+  UnroutedProviderEventCount,
   EnrollDaemonInput,
   EnrollmentTokenRecord,
   DaemonRecord,
@@ -69,9 +76,10 @@ import type {
   AcceptSlackEventInput,
   UpdateLinearConnectionTokensInput,
   LinearConnectionRefreshOperation,
-  GitHubLifecycleReceiptClaim,
+  GitHubInstallationSyncOwner,
+  GitHubInstallationSyncClaim,
   GitHubLifecycleReceiptClaimInput,
-  GitHubLifecycleResult,
+  GitHubInstallationSyncResult,
   PersistManualEventInput,
   ProjectConfigurationReadModel,
   ProjectConfigurationRevisionRecord,
@@ -101,6 +109,7 @@ import type {
   ProjectActivityRunRecord,
   OrganizationEntitlementsRecord,
   OperatorOrganizationRecord,
+  OperatorMemberRecord,
   StampOrganizationEntitlementsInput,
   OverrideOrganizationEntitlementsInput,
   ClearOrganizationEntitlementsOverrideInput,
@@ -131,6 +140,9 @@ export function createDatabase(runtime: DatabaseRuntime, locks: Locks): Database
 }
 
 class PgDatabase implements Database {
+  readonly webhooks;
+  readonly schedules;
+  readonly executionAuthority;
   private readonly connections;
   private readonly triggerAcceptance;
 
@@ -138,9 +150,15 @@ class PgDatabase implements Database {
     private readonly pool: DatabaseRuntime,
     private readonly locks: Locks,
   ) {
-    const database = this.pool.drizzle();
+    this.webhooks = new WebhookRepository(this.pool);
+    this.schedules = new ScheduleRepository(this.pool);
+    this.executionAuthority = new ExecutionAuthorityRepository(this.pool);
     this.connections = new ConnectionRepository(this.pool, locks);
-    this.triggerAcceptance = new ProviderEventAcceptanceRepository(database, this.connections);
+    this.triggerAcceptance = new ProviderEventAcceptanceRepository(
+      this.pool,
+      locks,
+      this.connections,
+    );
   }
 
   acceptGitHubEvent(input: AcceptGitHubEventInput) {
@@ -163,19 +181,34 @@ class PgDatabase implements Database {
     return this.triggerAcceptance.persistManual(input);
   }
 
+  synchronizeGitHubInstallation<T>(
+    installationId: number,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return this.locks.withLock(
+      JSON.stringify(["github-installation-sync", installationId]),
+      operation,
+    );
+  }
+
+  pendingGitHubInstallationSyncs(owner: GitHubInstallationSyncOwner) {
+    return this.triggerAcceptance.pendingGitHubInstallationSyncs(owner);
+  }
+
   claimGitHubLifecycleReceipt(input: GitHubLifecycleReceiptClaimInput) {
     return this.triggerAcceptance.claimGitHubLifecycleReceipt(input);
   }
 
-  applyGitHubLifecycle(
-    claim: Extract<GitHubLifecycleReceiptClaim, { status: "claimed" }>,
-    result: GitHubLifecycleResult,
+  applyGitHubInstallationSync(
+    owner: GitHubInstallationSyncOwner,
+    claim: Extract<GitHubInstallationSyncClaim, { status: "claimed" }>,
+    result: GitHubInstallationSyncResult,
   ) {
-    return this.triggerAcceptance.applyGitHubLifecycle(claim, result);
+    return this.triggerAcceptance.applyGitHubInstallationSync(owner, claim, result);
   }
 
-  releaseGitHubLifecycleReceipt(providerEventReceiptId: string) {
-    return this.triggerAcceptance.releaseGitHubLifecycleReceipt(providerEventReceiptId);
+  retryGitHubInstallationSync(owner: GitHubInstallationSyncOwner, installationSyncId: string) {
+    return this.triggerAcceptance.retryGitHubInstallationSync(owner, installationSyncId);
   }
 
   async markProviderEventDropped(
@@ -478,57 +511,12 @@ class PgDatabase implements Database {
   ): Promise<{ run: AcceptedTriggerRunRecord; created: boolean }> {
     try {
       return await this.pool.transaction(async (client) => {
-        const inserted = await client.query<TriggerRunRow>(
-          `insert into trigger_runs
-           (id, organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
-           configured_trigger_name, outcome, status,
-            prompt, inputs, values, trigger_context, output_context, deadline_at, deadline_kind, rejection, created_at)
-         values (coalesce($1, gen_random_uuid()), $2, $3, $4, $5, $6, 'accepted', 'running', $7, $8, '{}'::jsonb, $9, $10, $11, null, null, $12)
-         on conflict (provider_event_receipt_id, project_id, configured_trigger_name) do nothing
-         returning *`,
-          [
-            input.id ?? null,
-            input.organizationId,
-            input.projectId,
-            input.configurationRevisionId,
-            input.providerEventReceiptId,
-            input.configuredTriggerName,
-            input.prompt,
-            input.inputs,
-            input.triggerContext,
-            input.outputContext,
-            input.deadlineAt,
-            input.createdAt ?? new Date(),
-          ],
+        const { id, created } = await acceptWorkflowRun(client, input);
+        const selected = await client.query<TriggerRunRow>(
+          "select * from trigger_runs where id = $1",
+          [id],
         );
-        let run = inserted.rows[0];
-        const created = run !== undefined;
-        if (run === undefined) {
-          const existing = await client.query<TriggerRunRow>(
-            `select * from trigger_runs
-           where provider_event_receipt_id = $1 and project_id = $2 and configured_trigger_name = $3
-           for update`,
-            [input.providerEventReceiptId, input.projectId, input.configuredTriggerName],
-          );
-          run = existing.rows[0];
-        }
-        if (run === undefined) throw new Error("trigger run insert returned no row");
-        if (run.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
-        for (const [ordinal, stepId] of input.stepIds.entries()) {
-          await client.query(
-            `insert into workflow_step_runs
-             (trigger_run_id, step_id, ordinal, status, deadline_kind, deadline_at, idle_deadline_at)
-           values ($1, $2, $3, 'pending', null, null, null)
-           on conflict (trigger_run_id, ordinal) do nothing`,
-            [run.id, stepId, ordinal],
-          );
-        }
-        await client.query(
-          `insert into workflow_wakeups (trigger_run_id, available_at, lease_expires_at)
-         values ($1, $2, null)
-         on conflict (trigger_run_id) do nothing`,
-          [run.id, input.createdAt ?? new Date()],
-        );
+        const run = selected.rows[0]!;
         const record = toTriggerRunRecord(run);
         if (record.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
         return { run: record, created };
@@ -656,16 +644,24 @@ class PgDatabase implements Database {
     return rows.rows[0] === undefined ? undefined : toAgentExecutionRecord(rows.rows[0]);
   }
 
-  async claimWorkflowWakeup(now: Date, leaseMs: number) {
+  async releaseWorkflowWakeup(triggerRunId: string, now: Date, claimedLease: Date) {
+    await query(
+      this.pool,
+      "update workflow_wakeups set lease_expires_at = $2 where trigger_run_id = $1 and lease_expires_at = $3",
+      [triggerRunId, now, claimedLease],
+    );
+  }
+
+  async claimWorkflowWakeup(now: Date, leaseMs: number, excludedRunIds: readonly string[] = []) {
     try {
       return await this.pool.transaction(async (client) => {
         const selected = await client.query<WorkflowWakeupRow>(
           `select * from workflow_wakeups
-         where available_at <= $1
+         where available_at <= $1 and not (trigger_run_id = any($2::uuid[]))
            and (lease_expires_at is null or lease_expires_at <= $1)
          order by available_at, trigger_run_id
          for update skip locked limit 1`,
-          [now],
+          [now, excludedRunIds],
         );
         const wakeup = selected.rows[0];
         if (wakeup === undefined) {
@@ -1771,6 +1767,38 @@ class PgDatabase implements Database {
     return toAgentExecutionRecord(rows.rows[0]);
   }
 
+  async limitAgentExecutionDeadline(executionId: string, deadlineAt: Date): Promise<void> {
+    await this.pool.transaction(async (client) => {
+      // Match completion and deadline recovery: lock the run, then step, then execution.
+      const association = await client.query<{ id: string; trigger_run_id: string }>(
+        `select s.id, s.trigger_run_id from workflow_step_runs s
+         join agent_executions e on e.workflow_step_run_id = s.id where e.id = $1`,
+        [executionId],
+      );
+      const step = association.rows[0];
+      if (step) {
+        await client.query("select id from trigger_runs where id = $1 for update", [
+          step.trigger_run_id,
+        ]);
+        await client.query("select id from workflow_step_runs where id = $1 for update", [step.id]);
+      }
+      await client.query(
+        `with bounded as (
+         update agent_executions
+         set deadline_at = least(deadline_at, $2::timestamptz),
+             idle_deadline_at = case when idle_deadline_at is null then null
+               else least(idle_deadline_at, deadline_at, $2::timestamptz) end
+         where id = $1 and status in ('spawning', 'running')
+         returning workflow_step_run_id, deadline_at, idle_deadline_at
+       )
+       update workflow_step_runs s
+       set deadline_at = bounded.deadline_at, idle_deadline_at = bounded.idle_deadline_at
+       from bounded where s.id = bounded.workflow_step_run_id`,
+        [executionId, deadlineAt],
+      );
+    });
+  }
+
   async setAgentExecutionIdleDeadline(
     executionId: string,
     idleDeadlineAt: Date | null,
@@ -2187,7 +2215,7 @@ class PgDatabase implements Database {
           set
             status = $2,
             completed_at = case
-              when $2 = any($3::agent_execution_status[]) then now()
+              when $3::boolean then now()
               else completed_at
             end,
             result = case when $4::boolean then $5 else result end,
@@ -2196,7 +2224,7 @@ class PgDatabase implements Database {
               else completed_by_agent_at
             end,
             idle_deadline_at = case
-              when $2 = any($3::agent_execution_status[]) then null
+              when $3::boolean then null
               else idle_deadline_at
             end,
             hub_action = case when $10::boolean then $11 else hub_action end,
@@ -2217,7 +2245,7 @@ class PgDatabase implements Database {
         [
           id,
           toStatus,
-          TERMINAL_AGENT_EXECUTION_STATUSES,
+          isTerminalAgentExecutionStatus(toStatus),
           fields.result !== undefined,
           fields.result ?? null,
           fields.completedByAgent === true,
@@ -2580,10 +2608,20 @@ class PgDatabase implements Database {
     return rows.rows.map(toEntitlementChangeRecord);
   }
 
+  async listOrganizationsOffPlanTemplate(planId: string, templateHash: string): Promise<string[]> {
+    const rows = await query<{ organization_id: string }>(
+      this.pool,
+      `select organization_id from organization_entitlements
+       where plan_id = $1 and plan_version is distinct from $2`,
+      [planId, templateHash],
+    );
+    return rows.rows.map((row) => row.organization_id);
+  }
+
   async listOrganizationsForOperator(): Promise<OperatorOrganizationRecord[]> {
     const rows = await query<OperatorOrganizationRow>(
       this.pool,
-      `select id, name, slug from organization order by lower(name), id`,
+      `select id, name, slug, created_at from organization order by lower(name), id`,
     );
     return rows.rows.map(toOperatorOrganizationRecord);
   }
@@ -2591,10 +2629,35 @@ class PgDatabase implements Database {
   async findOrganizationForOperator(slug: string): Promise<OperatorOrganizationRecord | undefined> {
     const rows = await query<OperatorOrganizationRow>(
       this.pool,
-      `select id, name, slug from organization where slug = $1 limit 1`,
+      `select id, name, slug, created_at from organization where slug = $1 limit 1`,
       [slug],
     );
     return rows.rows[0] === undefined ? undefined : toOperatorOrganizationRecord(rows.rows[0]);
+  }
+
+  async listOrganizationMembersForOperator(
+    organizationId: string,
+  ): Promise<OperatorMemberRecord[]> {
+    const rows = await query<OperatorMemberRow>(
+      this.pool,
+      `select member.id, member.user_id, "user".name, "user".email, member.role, member.created_at
+       from member
+       join "user" on "user".id = member.user_id
+       where member.organization_id = $1
+       order by case member.role when 'owner' then 0 when 'admin' then 1 else 2 end,
+         lower("user".name), member.id`,
+      [organizationId],
+    );
+    return rows.rows.map(toOperatorMemberRecord);
+  }
+
+  async findOrganizationSlugById(organizationId: string): Promise<string | undefined> {
+    const rows = await query<{ slug: string }>(
+      this.pool,
+      `select slug from organization where id = $1 limit 1`,
+      [organizationId],
+    );
+    return rows.rows[0]?.slug;
   }
 
   async consumeOrganizationUsage(
@@ -2736,6 +2799,56 @@ class PgDatabase implements Database {
     } catch (error) {
       throw toDatabaseError(error);
     }
+  }
+
+  async findAgentSession(id: string) {
+    const result = await this.pool.query<{
+      data: import("../agent-sessions/index.js").AgentSessionRecord;
+    }>("select data from agent_sessions where id = $1", [id]);
+    return result.rows[0]?.data;
+  }
+
+  async saveAgentSession(
+    session: import("../agent-sessions/index.js").AgentSessionRecord,
+  ): Promise<void> {
+    await this.pool.query(
+      `insert into agent_sessions (id, organization_id, project_id, continuation_key, data)
+       values ($1, $2, $3, $4, $5) on conflict (id) do update set data = excluded.data, continuation_key = excluded.continuation_key`,
+      [session.id, session.organizationId, session.projectId, session.continuationKey, session],
+    );
+  }
+
+  async findAgentSessionByKey(projectId: string, key: string) {
+    const result = await this.pool.query<{
+      data: import("../agent-sessions/index.js").AgentSessionRecord;
+    }>("select data from agent_sessions where project_id = $1 and continuation_key = $2", [
+      projectId,
+      key,
+    ]);
+    return result.rows[0]?.data;
+  }
+
+  async attachExecutionToSession(
+    executionId: string,
+    sessionId: string,
+    action?: import("../agent-sessions/index.js").AgentSessionAction,
+  ): Promise<void> {
+    const result = await this.pool.query(
+      `update agent_executions e set agent_session_id = s.id, agent_session_action = coalesce(e.agent_session_action, $3) from agent_sessions s
+       where e.id = $1 and s.id = $2 and e.project_id = s.project_id
+       and e.organization_id = s.organization_id
+       and (e.agent_session_id is null or e.agent_session_id = s.id)`,
+      [executionId, sessionId, action ?? null],
+    );
+    if (result.rowCount !== 1) throw new Error("Agent session does not belong to this execution");
+  }
+
+  async listAgentSessionExecutions(sessionId: string): Promise<AgentExecutionRecord[]> {
+    const result = await this.pool.query<AgentExecutionRow>(
+      "select * from agent_executions where agent_session_id = $1",
+      [sessionId],
+    );
+    return result.rows.map(toAgentExecutionRecord);
   }
 
   async withAdvisoryLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
@@ -3180,6 +3293,13 @@ class PgDatabase implements Database {
          set active_revision_id = $2, updated_at = clock_timestamp()
          where id = $1 returning *`,
         [trigger.id, revision.id],
+      );
+      const recurrence = input.enabled ? input.recurrence : undefined;
+      await ScheduleRepository.synchronize(client, trigger.id, recurrence, new Date());
+      await WebhookRepository.synchronize(
+        client,
+        trigger.id,
+        configuration.triggers.some(({ on }) => on === "webhook.received"),
       );
       return toOrganizationTriggerRecord(activated.rows[0]!);
     });
@@ -3941,34 +4061,6 @@ class PgDatabase implements Database {
     return rows.rows[0] === undefined ? undefined : toGitHubRepositoryRecord(rows.rows[0]);
   }
 
-  async upsertGitHubRepositories(
-    organizationId: string,
-    connectionId: string,
-    repositories: Array<
-      Pick<GitHubRepositoryRecord, "repositoryId" | "fullName" | "defaultBranch">
-    >,
-  ): Promise<void> {
-    for (const repository of repositories) {
-      await query(
-        this.pool,
-        `insert into github_repositories
-           (organization_id, connection_id, repository_id, full_name, default_branch)
-         values ($1, $2, $3, $4, $5)
-         on conflict (connection_id, repository_id) do update
-           set full_name = excluded.full_name,
-               default_branch = excluded.default_branch,
-               updated_at = clock_timestamp()`,
-        [
-          organizationId,
-          connectionId,
-          repository.repositoryId,
-          repository.fullName,
-          repository.defaultBranch,
-        ],
-      );
-    }
-  }
-
   async findGitHubConfigurationTarget(
     projectId: string,
     repositoryId?: number,
@@ -4067,6 +4159,66 @@ class PgDatabase implements Database {
       [organizationId],
     );
     return rows.rows.map(toProviderEventReceiptSummary);
+  }
+
+  async listOrganizationRunsSince(
+    organizationId: string,
+    since: Date,
+    limit: number,
+  ): Promise<OrganizationRunRecord[]> {
+    const rows = await query<OrganizationRunRow>(
+      this.pool,
+      `select runs.id, coalesce(triggers.name, runs.configured_trigger_name) as trigger_name,
+              runs.status, receipts.provider, receipts.source, receipts.received_at,
+              (select executions.launch_intent -> 'agent'
+                 from workflow_step_runs steps
+                 join agent_executions executions on executions.id = steps.agent_execution_id
+                where steps.trigger_run_id = runs.id
+                order by steps.ordinal
+                limit 1) as agent
+       from trigger_runs runs
+       join provider_event_receipts receipts
+         on receipts.id = runs.provider_event_receipt_id
+        and receipts.organization_id = runs.organization_id
+       left join organization_triggers triggers
+         on triggers.runtime_project_id = runs.project_id
+        and triggers.organization_id = runs.organization_id
+       where runs.organization_id = $1 and runs.created_at >= $2
+       order by runs.created_at desc, runs.id desc
+       limit $3`,
+      [organizationId, since, limit],
+    );
+    return rows.rows.map((row) => ({
+      id: row.id,
+      triggerName: row.trigger_name,
+      provider: row.provider,
+      source: row.source,
+      status: row.status,
+      receivedAt: row.received_at,
+      agent: launchedAgent(row.agent),
+    }));
+  }
+
+  async countUnroutedProviderEventsSince(
+    organizationId: string,
+    since: Date,
+  ): Promise<UnroutedProviderEventCount[]> {
+    const rows = await query<{ provider: ProviderEventReceiptRecord["provider"]; count: number }>(
+      this.pool,
+      `select receipts.provider, count(*)::int as count
+       from provider_event_receipts receipts
+       where receipts.organization_id = $1
+         and receipts.received_at >= $2
+         and receipts.dropped_reason in ('no_project_route', 'no_trigger_for_source')
+         and not exists (
+           select 1 from trigger_runs runs
+           where runs.provider_event_receipt_id = receipts.id
+         )
+       group by receipts.provider
+       order by count desc, receipts.provider`,
+      [organizationId, since],
+    );
+    return rows.rows.map((row) => ({ provider: row.provider, count: row.count }));
   }
 
   async isOrganizationMember(userId: string, organizationId: string): Promise<boolean> {
@@ -4362,7 +4514,9 @@ async function insertAgentExecutionOnClient(
   return execution;
 }
 
-const TERMINAL_AGENT_EXECUTION_STATUSES = ["succeeded", "failed"] satisfies AgentExecutionStatus[];
+function isTerminalAgentExecutionStatus(status: AgentExecutionStatus): boolean {
+  return status === "succeeded" || status === "failed";
+}
 
 export interface ProviderEventReceiptRow extends QueryRow {
   id: string;
@@ -4383,6 +4537,7 @@ export interface ProviderEventReceiptRow extends QueryRow {
 }
 
 interface TriggerRunRow extends QueryRow {
+  conversation: import("../triggers/continuation.js").Conversation | null;
   id: string;
   organization_id: string;
   project_id: string;
@@ -4424,6 +4579,16 @@ interface ProjectActivityRunRow extends TriggerRunRow {
   accepted_routes: unknown;
 }
 
+interface OrganizationRunRow extends QueryRow {
+  id: string;
+  trigger_name: string;
+  status: TriggerRunRecord["status"];
+  provider: ProviderEventReceiptRecord["provider"];
+  source: string;
+  received_at: Date;
+  agent: unknown;
+}
+
 interface ProjectActivityRunListRow extends TriggerRunRow {
   provider: ProviderEventReceiptRecord["provider"];
   connection_id: string | null;
@@ -4461,6 +4626,7 @@ interface WorkflowWakeupRow extends QueryRow {
 
 function toTriggerRunRecord(row: TriggerRunRow): TriggerRunRecord {
   const evidence = {
+    conversation: row.conversation,
     id: row.id,
     organizationId: row.organization_id,
     projectId: row.project_id,
@@ -4552,6 +4718,8 @@ export interface MachineRow extends QueryRow {
 }
 
 export interface AgentExecutionRow extends QueryRow {
+  agent_session_id: string | null;
+  agent_session_action: import("../agent-sessions/index.js").AgentSessionAction | null;
   id: string;
   organization_id: string;
   project_id: string;
@@ -4770,10 +4938,31 @@ interface OperatorOrganizationRow extends QueryRow {
   id: string;
   name: string;
   slug: string;
+  created_at: Date;
 }
 
 function toOperatorOrganizationRecord(row: OperatorOrganizationRow): OperatorOrganizationRecord {
-  return { id: row.id, name: row.name, slug: row.slug };
+  return { id: row.id, name: row.name, slug: row.slug, createdAt: row.created_at };
+}
+
+interface OperatorMemberRow extends QueryRow {
+  id: string;
+  user_id: string;
+  name: string;
+  email: string;
+  role: "owner" | "admin" | "member";
+  created_at: Date;
+}
+
+function toOperatorMemberRecord(row: OperatorMemberRow): OperatorMemberRecord {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    email: row.email,
+    role: row.role,
+    joinedAt: row.created_at,
+  };
 }
 
 export interface EntitlementChangeRow extends QueryRow {

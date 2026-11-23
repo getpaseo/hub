@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { parseProjectConfiguration } from "../../configuration/store.js";
+import type { ProjectConfigurationRevisionRecord } from "../../db/types.js";
 import { describe, it } from "vitest";
 import {
   compileTriggerDocument,
@@ -13,6 +15,22 @@ function reportsMissingEvent(error: unknown): boolean {
     error.issues.some(
       ({ path, message }) => path.join(".") === "on" && /at least one event/u.test(message),
     )
+  );
+}
+
+function reportsScheduledRequiredInput(error: unknown): boolean {
+  return (
+    error instanceof TriggerDocumentError &&
+    error.issues.some(
+      ({ path, message }) => path.join(".") === "inputs.focus" && /schedule/u.test(message),
+    )
+  );
+}
+
+function reportsEmptyTitle(error: unknown): boolean {
+  return (
+    error instanceof TriggerDocumentError &&
+    error.issues.some(({ path }) => path.join(".") === "run.title")
   );
 }
 
@@ -65,6 +83,142 @@ run:
 `;
 
 describe("self-contained trigger documents", () => {
+  it("compiles integration tools independently of the triggering event", () => {
+    const yaml = trigger.replace(
+      "run:",
+      `run:
+  tools:
+    discord:
+      connection: community
+      actions: [read, post]
+      channels: ["123456789012345678"]`,
+    );
+    const compiled = compileTriggerDocument(yaml);
+    assert.deepEqual(
+      compiled.events.map((event) => event.steps[0]?.tools),
+      [
+        {
+          discord: {
+            connection: "community",
+            actions: ["read", "post"],
+            channels: ["123456789012345678"],
+          },
+        },
+        {
+          discord: {
+            connection: "community",
+            actions: ["read", "post"],
+            channels: ["123456789012345678"],
+          },
+        },
+      ],
+    );
+  });
+
+  it("compiles channel IDs and actions as sets while keeping the authored YAML order", () => {
+    const yaml = trigger.replace(
+      "run:",
+      `run:
+  tools:
+    discord:
+      connection: community
+      actions: [post, read]
+      channels: ["456", "123", "456"]`,
+    );
+    const compiled = compileTriggerDocument(yaml);
+    assert.deepEqual(compiled.authored.run.tools?.discord?.channels, ["456", "123", "456"]);
+    assert.deepEqual(compiled.events[0]?.steps[0]?.tools?.discord, {
+      connection: "community",
+      actions: ["read", "post"],
+      channels: ["123", "456"],
+    });
+  });
+
+  it.each(["[]", '["*"]', "[123456789012345678]"])(
+    "rejects invalid Discord allowlist %s",
+    (channels) => {
+      const yaml = trigger.replace(
+        "run:",
+        `run:
+  tools:
+    discord:
+      connection: community
+      actions: [read]
+      channels: ${channels}`,
+      );
+      assert.throws(() => compileTriggerDocument(yaml), /run.tools.discord.channels/);
+    },
+  );
+
+  it.each([undefined, false, true])("compiles and round-trips background %s", (background) => {
+    const yaml =
+      background === undefined
+        ? trigger
+        : trigger.replace(
+            "run:",
+            `run:
+  background: ${background}`,
+          );
+    const compiled = compileTriggerDocument(yaml);
+    assert.equal(compiled.authored.run.background, background ?? false);
+    assert.equal(compiled.events[0]?.steps[0]?.background, background ?? false);
+    assert.equal(
+      parseTriggerDocument(serializeTriggerDocument(compiled.authored)).run.background,
+      background ?? false,
+    );
+  });
+
+  it("rejects a non-boolean background value", () => {
+    assert.throws(
+      () => parseTriggerDocument(trigger.replace("run:", 'run:\n  background: "true"')),
+      /run.background/,
+    );
+  });
+
+  it("compiles and preserves a configurable startup timeout", () => {
+    const yaml = trigger.replace("  max_runtime: 90m", "  max_runtime: 90m\n  startup_timeout: 3m");
+    const compiled = compileTriggerDocument(yaml);
+    assert.equal(compiled.events[0]?.steps[0]?.startupTimeoutMs, 180_000);
+    assert.equal(
+      parseTriggerDocument(serializeTriggerDocument(compiled.authored)).run.startup_timeout,
+      "3m",
+    );
+  });
+
+  it("compiles an authored title template and preserves it through canonical YAML", () => {
+    const title = "Intake · ${{ paseo.execution.id }}";
+    const yaml = trigger.replace("  max_runtime: 90m", `  max_runtime: 90m\n  title: "${title}"`);
+    const compiled = compileTriggerDocument(yaml);
+    assert.equal(compiled.events[0]?.steps[0]?.title, title);
+    assert.equal(
+      parseTriggerDocument(serializeTriggerDocument(compiled.authored)).run.title,
+      title,
+    );
+  });
+
+  it("rejects an empty title at the document boundary", () => {
+    assert.throws(
+      () =>
+        parseTriggerDocument(
+          trigger.replace("  max_runtime: 90m", '  max_runtime: 90m\n  title: ""'),
+        ),
+      reportsEmptyTitle,
+    );
+  });
+
+  it.each(["0s", "25h", "invalid"])("rejects invalid startup timeout %s", (duration) => {
+    assert.throws(
+      () =>
+        compileTriggerDocument(
+          trigger.replace(
+            "  max_runtime: 90m",
+            `  max_runtime: 90m\n  startup_timeout: ${duration}`,
+          ),
+        ),
+      /startup_timeout/,
+    );
+  });
+
   it("compiles every input event to one launch against the inline target and agent choices", () => {
     const compiled = compileTriggerDocument(trigger);
 
@@ -130,6 +284,39 @@ run:
     ]);
   });
 
+  it("compiles a GitHub repository association as the trigger's audience", () => {
+    const members = `
+name: review-comments
+on:
+  github.pull_request_comment_created:
+    connection: getpaseo-github
+    filters:
+      author_associations: [OWNER, MEMBER, COLLABORATOR]
+run:
+  target:
+    daemon: devbox
+    cwd: /workspace/company
+  agent:
+    provider: codex
+  prompt: Review it
+`;
+    assert.deepEqual(compileTriggerDocument(members).events[0]?.filters, {
+      author_associations: ["OWNER", "MEMBER", "COLLABORATOR"],
+      connection: "getpaseo-github",
+    });
+    assert.throws(
+      () => compileTriggerDocument(members.replace("[OWNER, MEMBER, COLLABORATOR]", "[ADMIN]")),
+      TriggerDocumentError,
+    );
+    assert.throws(
+      () =>
+        compileTriggerDocument(
+          members.replace("github.pull_request_comment_created", "slack.mention"),
+        ),
+      /author_associations is not available for slack\.mention/u,
+    );
+  });
+
   it("rejects a trigger without events at the document boundary", () => {
     assert.throws(
       () =>
@@ -144,4 +331,67 @@ run:
       reportsMissingEvent,
     );
   });
+
+  it("refuses a schedule beside an input that a tick cannot supply", () => {
+    const scheduled = (input: string) => `
+name: watch
+inputs:
+  focus: ${input}
+on:
+  schedule.tick:
+    recurrence: { start: "2026-01-01T09:00:00", rule: "FREQ=DAILY", timezone: UTC }
+  manual.run: {}
+run:
+  target: { daemon: local, cwd: /workspace }
+  agent: { provider: codex }
+  prompt: run
+`;
+    assert.equal(
+      Object.keys(parseTriggerDocument(scheduled("{ type: string, default: everything }")).on)
+        .length,
+      2,
+    );
+    assert.throws(
+      () => parseTriggerDocument(scheduled("{ type: string, required: true }")),
+      reportsScheduledRequiredInput,
+    );
+  });
+});
+
+it("applies the continuation default when reading old trigger revisions without rewriting their evidence", () => {
+  const compiled = compileTriggerDocument(trigger);
+  const stored = structuredClone({
+    environments: [{ ...compiled.environment, daemonId: "daemon" }],
+    triggers: compiled.events,
+  });
+  for (const event of stored.triggers) for (const step of event.steps) delete step.continuation;
+  const revision: ProjectConfigurationRevisionRecord = {
+    id: "revision",
+    projectId: "project",
+    organizationId: "org",
+    version: 1,
+    sourceKind: "manual",
+    sourceEvidence: { kind: "organization_trigger_adapter" },
+    rawYaml: trigger,
+    normalizedConfiguration: stored,
+    validationErrors: null,
+    contentHash: "original",
+    createdByUserId: "user",
+    receivedAt: null,
+    createdAt: new Date(),
+    validatedAt: new Date(),
+  };
+  const loaded = parseProjectConfiguration(revision);
+  assert.deepEqual(loaded.triggers[0]?.steps[0]?.continuation, { mode: "conversation" });
+  assert.equal(stored.triggers[0]?.steps[0]?.continuation, undefined);
+  const legacy = parseProjectConfiguration({ ...revision, sourceEvidence: { kind: "manual" } });
+  assert.equal(legacy.triggers[0]?.steps[0]?.continuation, undefined);
+  const migratedLegacy = parseProjectConfiguration({
+    ...revision,
+    rawYaml: JSON.stringify({
+      name: "preserved-workflow",
+      legacy_multistep: { trigger: stored.triggers[0], environments: stored.environments },
+    }),
+  });
+  assert.deepEqual(migratedLegacy, legacy);
 });

@@ -1,12 +1,13 @@
 import type { AuthServer } from "../../auth/server.js";
 import { createHash } from "node:crypto";
-import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import type { Database } from "../../db/types.js";
-import { outputContextProvider, replyOutputTool } from "../../execution-capabilities/outputs.js";
+import { replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { logger } from "../../logger.js";
 import { reportFailure } from "../../failures/index.js";
+import { IntegrationToolError, type IntegrationToolCall } from "../../integration-tools/index.js";
 import { createDiscordRegistration } from "../../providers/discord/index.js";
 import { createGitHubRegistration } from "../../providers/github/index.js";
+import { GITHUB_CONNECTION_ACTIONS } from "../../providers/github/connection.js";
 import { createLinearRegistration } from "../../providers/linear/index.js";
 import type {
   ProviderRegistration,
@@ -399,26 +400,42 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         },
       ],
       sources: [source],
-      outputs:
-        provider === "github"
-          ? []
-          : [
-              {
-                type: `${provider}.reply`,
-                tool: replyOutputTool,
-                available: outputContextProvider(provider),
-                execute: (input) => {
-                  const active = slot.active;
-                  const output = active?.registration.outputs.find(
-                    (candidate) => candidate.type === `${provider}.reply`,
-                  );
-                  if (active === undefined || output === undefined) {
-                    throw unavailable(`${provider}_output_unavailable`);
-                  }
-                  return this.withLease(active, () => output.execute(input));
-                },
+      ...(provider === "slack" || provider === "discord"
+        ? {
+            integrationTools: {
+              [provider]: (input: IntegrationToolCall) => {
+                const active = slot.active;
+                const handler = active?.registration.integrationTools?.[provider];
+                if (active === undefined || handler === undefined) {
+                  throw new IntegrationToolError("The integration is unavailable.");
+                }
+                return this.withLease(active, () => handler(input));
               },
-            ],
+            },
+          }
+        : {}),
+      outputs: [
+        {
+          type: `${provider}.reply`,
+          tool: replyOutputTool,
+          available: (context) => {
+            const output = slot.active?.registration.outputs.find(
+              (candidate) => candidate.type === `${provider}.reply`,
+            );
+            return output !== undefined && (output.available?.(context) ?? true);
+          },
+          execute: (input) => {
+            const active = slot.active;
+            const output = active?.registration.outputs.find(
+              (candidate) => candidate.type === `${provider}.reply`,
+            );
+            if (active === undefined || output === undefined) {
+              throw unavailable(`${provider}_output_unavailable`);
+            }
+            return this.withLease(active, () => output.execute(input));
+          },
+        },
+      ],
       requests:
         provider === "discord"
           ? []
@@ -434,9 +451,6 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
                 },
               },
             ],
-      ...(provider === "github"
-        ? { githubConfiguration: this.dynamicGitHubConfiguration(slot) }
-        : {}),
       ...(provider === "slack" || provider === "discord"
         ? {
             attachment: {
@@ -531,26 +545,6 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     };
   }
 
-  private dynamicGitHubConfiguration(slot: Slot): GitHubConfigurationProvider {
-    const invoke = <T>(operation: (configuration: GitHubConfigurationProvider) => Promise<T>) => {
-      const active = slot.active;
-      const configuration = active?.registration.githubConfiguration;
-      if (active === undefined || configuration === undefined) {
-        throw unavailable("github_configuration_unavailable");
-      }
-      return this.withLease(active, () => operation(configuration));
-    };
-    return {
-      listInstallationRepositories: (input) =>
-        invoke((configuration) => configuration.listInstallationRepositories(input)),
-      readDefaultBranchHead: (input) =>
-        invoke((configuration) => configuration.readDefaultBranchHead(input)),
-      listFilesAtCommit: (input) =>
-        invoke((configuration) => configuration.listFilesAtCommit(input)),
-      readFileAtCommit: (input) => invoke((configuration) => configuration.readFileAtCommit(input)),
-    };
-  }
-
   private async withLease<T>(active: ActiveRegistration, operation: () => Promise<T>): Promise<T> {
     active.leases += 1;
     try {
@@ -575,7 +569,8 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     action: string,
     request: Request,
   ): Promise<ActiveRegistration | undefined> {
-    if (action !== "callback" && action !== "setup") return slot.active;
+    // An action that continues an attempt carries its state, and belongs to the registration
+    // that started it, even if the operator has saved a new configuration since.
     const state = new URL(request.url).searchParams.get("state");
     if (state === null) return slot.active;
     const snapshot = await this.options.database.findConnectionAttemptConfiguration(
@@ -633,7 +628,7 @@ function emptySlot(): Slot {
 }
 
 function actionNames(provider: Provider): readonly string[] {
-  if (provider === "github") return ["start", "disconnect", "setup", "callback"];
+  if (provider === "github") return GITHUB_CONNECTION_ACTIONS;
   return ["start", "disconnect", "callback"];
 }
 

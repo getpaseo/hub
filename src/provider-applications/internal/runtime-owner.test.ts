@@ -12,8 +12,78 @@ import type {
   SlackProviderApplicationConfiguration,
 } from "../index.js";
 import { DynamicProviderRuntime } from "./runtime-owner.js";
+import { OutputExecutorRegistry, replyOutputTool } from "../../execution-capabilities/outputs.js";
+import { createGitHubReplyExecutor, githubReplyAvailable } from "../../triggers/github/reply.js";
 
 describe("dynamic provider runtime", () => {
+  it("exposes and delivers GitHub replies through the hosted provider registration", async () => {
+    const comments: unknown[] = [];
+    const runtime = new DynamicProviderRuntime({
+      database: createMemoryDatabase(),
+      auth: testAuth(),
+      applicationBaseUrl: "https://hub.test",
+      registrationFactory: () => ({
+        ...connectionRegistration("github", "A1"),
+        outputs: [
+          {
+            type: "github.reply",
+            tool: replyOutputTool,
+            available: githubReplyAvailable,
+            execute: createGitHubReplyExecutor({
+              client: {
+                createIssueComment: async (comment) => {
+                  comments.push(comment);
+                },
+              },
+            }),
+          },
+        ],
+      }),
+    });
+    const registry = new OutputExecutorRegistry();
+    for (const registration of runtime.registrations()) {
+      for (const output of registration.outputs) registry.register(output);
+    }
+    const candidate = await runtime.prepare(
+      "github",
+      providerConfiguration("github", "A1"),
+      "https://hub.test",
+      providerIdentity("github", "A1"),
+      1,
+    );
+    await candidate.start();
+    candidate.publish();
+    const outputContext = {
+      provider: "github",
+      target: { installationId: 42, repository: "acme/repo" },
+      event: { github: { item: { number: 7 } } },
+    };
+    const grants = [{ type: "github.reply", required: false }];
+    assert.equal(registry.materialize(grants, outputContext).length, 1);
+    assert.equal(
+      registry.materialize(grants, {
+        ...outputContext,
+        event: { github: { item: null } },
+      }).length,
+      0,
+    );
+    await registry.execute({
+      agentExecutionId: "execution-1",
+      toolType: "github.reply",
+      args: { content: "remembered" },
+      outputContext,
+    });
+    assert.deepEqual(comments, [
+      {
+        installationId: 42,
+        owner: "acme",
+        repo: "repo",
+        issueNumber: 7,
+        body: "remembered",
+      },
+    ]);
+  });
+
   it.each([
     "github.issues",
     "github.issue_comment",
@@ -284,24 +354,15 @@ describe("dynamic provider runtime", () => {
     );
   });
 
-  it("drains in-flight configuration calls while later GitHub capabilities use the replacement", async () => {
+  it("uses replacement GitHub capabilities after registration retirement", async () => {
     const used: string[] = [];
     const stopped: string[] = [];
-    let releaseConfiguration: (() => void) | undefined;
-    const configurationGate = new Promise<void>((resolve) => {
-      releaseConfiguration = resolve;
-    });
     const runtime = new DynamicProviderRuntime({
       database: createMemoryDatabase(),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
       registrationFactory: ({ configuration }) =>
-        downstreamRegistration(
-          providerConfigurationId(configuration),
-          used,
-          stopped,
-          configurationGate,
-        ),
+        downstreamRegistration(providerConfigurationId(configuration), used, stopped),
     });
     const stable = runtime
       .registrations()
@@ -334,13 +395,6 @@ describe("dynamic provider runtime", () => {
       triggerContext: match.triggerContext,
     });
 
-    const pendingConfiguration = stable.githubConfiguration!.readFileAtCommit({
-      installationId: 1,
-      repositoryId: 2,
-      commitSha: "sha",
-      path: ".paseo/hub.yml",
-    });
-    await new Promise((resolve) => setImmediate(resolve));
     const second = await runtime.prepare(
       "github",
       providerConfiguration("github", "A2"),
@@ -352,8 +406,6 @@ describe("dynamic provider runtime", () => {
     second.publish();
 
     assert.deepEqual(stopped, ["A1"]);
-    releaseConfiguration?.();
-    await pendingConfiguration;
     await stable.integration!.resolve("project", "github", "token", {
       executionId: "execution-1",
     });
@@ -365,12 +417,7 @@ describe("dynamic provider runtime", () => {
     });
     await new Promise((resolve) => setImmediate(resolve));
 
-    assert.deepEqual(used, [
-      "launch:A1",
-      "configuration:A1",
-      "integration:A2",
-      "authority-mint:A2",
-    ]);
+    assert.deepEqual(used, ["launch:A1", "integration:A2", "authority-mint:A2"]);
     assert.deepEqual(stopped, ["A1"]);
     await trigger.onAgentExecutionTerminal?.("execution-1", match.triggerContext);
     await new Promise((resolve) => setImmediate(resolve));
@@ -683,6 +730,7 @@ function fakeRegistration(
           triggerContext: { id },
           outputContext: { id },
           hubConfig: {},
+          conversation: null,
           invocation: { status: "accepted", prompt: "", inputs: {} },
         },
       ]),
@@ -722,7 +770,6 @@ function downstreamRegistration(
   id: string,
   used: string[],
   stopped: string[],
-  configurationGate: Promise<void> = Promise.resolve(),
 ): ProviderRegistration {
   const trigger: TriggerProvider = {
     name: id.startsWith("A") ? "github" : "slack",
@@ -734,6 +781,7 @@ function downstreamRegistration(
           triggerContext: { id },
           outputContext: { provider: "slack", id },
           hubConfig: {},
+          conversation: null,
           invocation: { status: "accepted", prompt: "", inputs: {} },
         },
       ]),
@@ -795,16 +843,6 @@ function downstreamRegistration(
       resolve: () => {
         used.push(`attachment:${id}`);
         return Promise.resolve(new Response(id));
-      },
-    },
-    githubConfiguration: {
-      listInstallationRepositories: () => Promise.resolve([]),
-      readDefaultBranchHead: () => Promise.resolve(id),
-      listFilesAtCommit: () => Promise.resolve([]),
-      readFileAtCommit: async () => {
-        used.push(`configuration:${id}`);
-        await configurationGate;
-        return { kind: "file", content: id };
       },
     },
   };

@@ -1,4 +1,5 @@
-import { dump } from "js-yaml";
+import { parseTriggerDocument } from "../triggers/configuration/index.js";
+import { dump, load } from "js-yaml";
 import { z } from "zod";
 import {
   compiledConfigurationHash,
@@ -308,7 +309,46 @@ export async function validateHubBundleForOrganization(
 export function parseProjectConfiguration(
   revision: ProjectConfigurationRevisionRecord,
 ): CompiledProjectConfiguration {
-  return toProjectConfiguration(parseCompiledHubConfig(revision.normalizedConfiguration));
+  const configuration = parseCompiledHubConfig(revision.normalizedConfiguration);
+  // Migrate the newly introduced default at the authored-document boundary. Existing
+  // execution launch intents remain untouched and finish with their original contract.
+  const document = triggerDocument(revision);
+  if (document !== undefined) {
+    const policy = document.run.continuation;
+    return toProjectConfiguration({
+      ...configuration,
+      triggers: configuration.triggers.map((trigger) => ({
+        ...trigger,
+        steps: trigger.steps.map((step) => ({
+          ...step,
+          continuation: step.continuation ?? policy,
+        })),
+      })),
+    });
+  }
+  return toProjectConfiguration(configuration);
+}
+
+/**
+ * The name the user gave the trigger a revision was compiled from. A trigger document compiles
+ * each of its events under an internal name that only the store uses. Undefined when the compiled
+ * trigger names are the authored ones: a project's own configuration, or a preserved legacy workflow.
+ */
+export function triggerDocumentName(revision: ProjectConfigurationRevisionRecord) {
+  return triggerDocument(revision)?.name;
+}
+
+function triggerDocument(revision: ProjectConfigurationRevisionRecord) {
+  const adapter = z
+    .object({ kind: z.literal("organization_trigger_adapter") })
+    .safeParse(revision.sourceEvidence);
+  if (!adapter.success) return undefined;
+  if (revision.rawYaml === null)
+    throw new Error("Trigger revision is missing its authored document");
+  // Preserved legacy workflows share the adapter but retain their original run policy.
+  const legacy = z.object({ legacy_multistep: z.object({}) }).safeParse(load(revision.rawYaml));
+  if (legacy.success) return undefined;
+  return parseTriggerDocument(revision.rawYaml);
 }
 
 function toProjectConfiguration(configuration: CompiledHubConfig): CompiledProjectConfiguration {

@@ -3,6 +3,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Logger } from "pino";
 import { respondError, type Err } from "../contract/respond.js";
 import { errorForLog, logger as defaultLogger, redact } from "../logger.js";
+import { withReference } from "./reference.js";
+
+export { withReference } from "./reference.js";
 
 export type FailureKind =
   | "validation"
@@ -139,17 +142,8 @@ export function respondWithFailure(
   });
 }
 
-/**
- * Appends the correlation ID, after the copy that is actually useful and with the one instruction
- * that makes it worth reading. A bare identifier at the end of a sentence tells the reader
- * nothing about what they are supposed to do with it.
- */
-export function withReference(message: string, requestId: string): string {
-  return `${message} If it happens again, quote reference ${requestId} when reporting it.`;
-}
-
 export function classifyFailure(error: unknown, status?: number): FailureKind {
-  const statusKind = classifyStatus(status);
+  const statusKind = classifyStatus(status ?? errorStatus(error));
   if (statusKind !== undefined) return statusKind;
   const code = errorProperty(error, "code") ?? errorProperty(error, "reason");
   const codeKind = code === undefined ? undefined : FAILURE_CODES.get(code);
@@ -166,6 +160,7 @@ const FAILURE_CODES = new Map<string, FailureKind>([
   ["invalidOrigin", "validation"],
   ["invalid_request", "validation"],
   ["authentication", "authentication"],
+  ["unauthenticated", "authentication"],
   ["unauthorized", "authentication"],
   ["forbidden", "forbidden"],
   ["notFound", "notFound"],
@@ -236,6 +231,13 @@ function errorProperty(error: unknown, property: string): string | undefined {
   if (typeof error !== "object" || error === null) return undefined;
   const value: unknown = Reflect.get(error, property);
   return typeof value === "string" ? value : undefined;
+}
+
+/** Product and upstream request errors carry the HTTP status they answered with. */
+function errorStatus(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const value: unknown = Reflect.get(error, "status");
+  return typeof value === "number" ? value : undefined;
 }
 
 function errorCode(error: unknown): string | undefined {

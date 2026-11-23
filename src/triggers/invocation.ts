@@ -131,6 +131,15 @@ export function parseInvocation(
   };
 }
 
+/** The inputs of an invocation that carries none, such as a schedule tick: each declared default. */
+export function defaultInputs(definitions: InvocationInputDefinitions): InvocationInputs {
+  const inputs: Record<string, JsonPrimitive> = {};
+  for (const [name, definition] of Object.entries(definitions)) {
+    if (definition.default !== undefined) inputs[name] = definition.default;
+  }
+  return freezeInputs(inputs);
+}
+
 export function matchesInputFilters(
   inputs: InvocationInputs,
   filters: Readonly<Record<string, JsonPrimitive>> | undefined,

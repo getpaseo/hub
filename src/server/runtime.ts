@@ -16,16 +16,23 @@ import type { TriggerDashboard } from "../triggers/dashboard.js";
 import type { PublicApi } from "../public-api/index.js";
 import type { UsageDashboard } from "../usage/dashboard.js";
 import type { ProviderApplications } from "../provider-applications/index.js";
+import type { DaemonCatalog } from "../daemons/catalog.js";
+import type { HomeDashboard } from "../home/dashboard.js";
 
 /**
  * The public plan catalog shape is billing's own: `src/billing/public-catalog.ts` decides which
- * plans are an offer and what a consumer may see of them. Re-exported here so the rest of the app
+ * plans Hub offers and what a consumer may see of them. Re-exported here so the rest of the app
  * names it without importing across the billing boundary.
  */
-export type { PublicBillingPlan, PublicBillingPlanPrice } from "../billing/index.js";
+export type {
+  PublicBillingPlan,
+  PublicBillingPlanFeature,
+  PublicBillingPlanIncluded,
+  PublicBillingPlanPrice,
+} from "../billing/index.js";
 
-/** The dashboard billing section: the organization's current plan plus the catalog to upgrade
- * into. Only ever built on a billing-configured instance; the route guards on that. */
+/** The dashboard billing section: the organization's current plan plus the catalog it can move
+ * within. Only ever built on a billing-configured instance; the route guards on that. */
 export interface BillingOverviewView {
   organization: { name: string; slug: string };
   /** Whether the caller may open checkout or the Stripe portal (the manage-resources capability,
@@ -63,6 +70,9 @@ export interface ApplicationRuntime {
   billing: BillingRuntime | null;
   projectDashboard: ProjectDashboard | null;
   triggerDashboard?: TriggerDashboard | null;
+  daemonCatalog?: DaemonCatalog | null;
+  /** The organization landing: checklist facts and a recent-window overview. */
+  homeDashboard?: HomeDashboard | null;
   /** Org-scoped, read-only limits and usage. Present whenever database + browser auth are; no
    * billing dependency, so it renders on self-hosted and hosted alike. */
   usageDashboard: UsageDashboard | null;
@@ -73,7 +83,10 @@ export interface ApplicationRuntime {
   testTriggerRoutes: boolean;
   auth(request: Request): Promise<Response>;
   browserAccount?(request: Request): Promise<Response>;
-  signInEmail?(data: { email: string; password: string }, headers: Headers): Promise<"complete">;
+  signInEmail?(
+    data: { email: string; password: string; invitation?: string | undefined },
+    headers: Headers,
+  ): Promise<"complete">;
   signUpEmail?(
     data: { name: string; email: string; password: string },
     headers: Headers,
@@ -193,6 +206,9 @@ export async function handleConnections(
     | "githubDisconnect"
     | "githubSetup"
     | "githubCallback"
+    | "githubChoices"
+    | "githubChoose"
+    | "githubAddAccount"
     | "discordStart"
     | "discordDisconnect"
     | "discordCallback"
@@ -214,6 +230,9 @@ const CONNECTION_ACTIONS = {
   githubDisconnect: { provider: "github", name: "disconnect" },
   githubSetup: { provider: "github", name: "setup" },
   githubCallback: { provider: "github", name: "callback" },
+  githubChoices: { provider: "github", name: "choices" },
+  githubChoose: { provider: "github", name: "choose" },
+  githubAddAccount: { provider: "github", name: "addAccount" },
   discordStart: { provider: "discord", name: "start" },
   discordDisconnect: { provider: "discord", name: "disconnect" },
   discordCallback: { provider: "discord", name: "callback" },

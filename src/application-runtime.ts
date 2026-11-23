@@ -1,3 +1,4 @@
+import type { IntegrationToolHandlers } from "./integration-tools/index.js";
 import { createHubApplication } from "./app.js";
 import type { AuthServer } from "./auth/server.js";
 import type { BillingRuntime } from "./billing/index.js";
@@ -27,6 +28,9 @@ import { ProjectDashboard } from "./projects/dashboard.js";
 import { CompositionResources } from "./composition-resources.js";
 import { TriggerDashboard } from "./triggers/dashboard.js";
 import type { ProviderApplications } from "./provider-applications/index.js";
+import { DaemonCatalog } from "./daemons/catalog.js";
+import { HomeDashboard } from "./home/dashboard.js";
+import type { ProviderConnectionRegistration } from "./providers/registration.js";
 
 export interface ApplicationCompositionOptions {
   database: Database | null;
@@ -80,9 +84,11 @@ async function createOwnedApplicationRuntime(
     connectionsForProject,
     integrations,
   );
+  const integrationTools: IntegrationToolHandlers = {};
   const outputRegistry = new OutputExecutorRegistry();
-  for (const output of registrations.flatMap((registration) => registration.outputs)) {
-    outputRegistry.register(output);
+  for (const registration of registrations) {
+    for (const output of registration.outputs) outputRegistry.register(output);
+    Object.assign(integrationTools, registration.integrationTools);
   }
 
   const application = createHubApplication({
@@ -108,6 +114,7 @@ async function createOwnedApplicationRuntime(
       ? {}
       : { completionTokenSecret: options.completionTokenSecret }),
     outputRegistry,
+    integrationTools,
     ...(options.daemonConnectionForId === undefined
       ? {}
       : { daemonConnectionForId: options.daemonConnectionForId }),
@@ -123,12 +130,6 @@ async function createOwnedApplicationRuntime(
     }
     requests.set(request.name, (incoming) => request.handle(incoming));
   }
-  const githubConfigurations = registrations.flatMap((registration) =>
-    registration.githubConfiguration === undefined ? [] : [registration.githubConfiguration],
-  );
-  if (githubConfigurations.length > 1) {
-    throw new Error("GitHub configuration registrations must be unique");
-  }
   return {
     hub: application.hub,
     operations: application.operations,
@@ -139,13 +140,10 @@ async function createOwnedApplicationRuntime(
     projectDashboard:
       options.database === null || options.auth === null
         ? null
-        : new ProjectDashboard(
-            options.database,
-            options.auth,
-            githubConfigurations[0],
-            (projectId) => application.configurationForProject(projectId),
-          ),
-    triggerDashboard: triggerDashboardFor(options),
+        : new ProjectDashboard(options.database, options.auth),
+    triggerDashboard: triggerDashboardFor(options, application.hub),
+    daemonCatalog: daemonCatalogFor(options, application.hub),
+    homeDashboard: homeDashboardFor(options, connections),
     ...entitlementSurfaces(options),
     testTriggerRoutes: options.testTriggerRoutes ?? false,
     auth: (request) => {
@@ -344,10 +342,48 @@ async function createOwnedApplicationRuntime(
   };
 }
 
-function triggerDashboardFor(options: ApplicationCompositionOptions): TriggerDashboard | null {
-  return options.database === null || options.auth === null
+function triggerDashboardFor(
+  options: ApplicationCompositionOptions,
+  hub: import("./app.js").HubRuntime,
+): TriggerDashboard | null {
+  return options.database === null || options.auth === null || hub.agentValidator === null
     ? null
-    : new TriggerDashboard(options.database, options.auth);
+    : new TriggerDashboard(
+        options.database,
+        options.auth,
+        hub.agentValidator,
+        options.publicBaseUrl,
+      );
+}
+
+function homeDashboardFor(
+  options: ApplicationCompositionOptions,
+  connections: ReadonlyMap<string, ProviderConnectionRegistration>,
+): HomeDashboard | null {
+  if (options.database === null || options.auth === null) return null;
+  // The same registrations `connectionStatus` answers from: a provider whose status is anything
+  // but "not configured" has an app behind it.
+  return new HomeDashboard(options.database, options.auth, (bindings) =>
+    [...connections.values()].some((connection) => isConfigured(connection.status(bindings))),
+  );
+}
+
+function isConfigured(status: unknown): boolean {
+  return (
+    typeof status === "object" &&
+    status !== null &&
+    Reflect.get(status, "status") !== "notConfigured"
+  );
+}
+
+function daemonCatalogFor(
+  options: ApplicationCompositionOptions,
+  hub: import("./app.js").HubRuntime,
+): DaemonCatalog | null {
+  if (options.database === null || options.auth === null) return null;
+  return new DaemonCatalog(options.database, options.auth, (daemonId) =>
+    hub.connectionForDaemon(daemonId),
+  );
 }
 
 function providerApplicationsFor(
@@ -397,6 +433,7 @@ function createRuntimeExecutionAuthority(
     (integration) => integration.githubAuthority !== undefined,
   )?.githubAuthority;
   return createExecutionAuthority({
+    database,
     connectionsForProject,
     ...(githubAuthority === undefined ? {} : { githubAuthority }),
     isExecutionActive: async (executionId) => {
@@ -428,9 +465,10 @@ function requireAuth(options: ApplicationCompositionOptions): AuthServer {
 
 /**
  * The two org/instance entitlement surfaces, present together whenever a database, browser auth,
- * and the core entitlements service all exist. Neither depends on billing — Usage renders on
+ * and the core entitlements service all exist. Neither requires billing — Usage renders on
  * self-hosted and hosted alike, and the operator console is gated by its own server-side flag,
- * not by Stripe.
+ * not by Stripe. When billing is mounted the operator console also shows each organization's
+ * plan and Stripe customer.
  */
 function entitlementSurfaces(options: ApplicationCompositionOptions): {
   usageDashboard: UsageDashboard | null;
@@ -442,7 +480,7 @@ function entitlementSurfaces(options: ApplicationCompositionOptions): {
   }
   return {
     usageDashboard: new UsageDashboard(database, auth, entitlements),
-    operatorConsole: new OperatorConsole(database, auth, entitlements),
+    operatorConsole: new OperatorConsole(database, auth, entitlements, options.billing),
   };
 }
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { createMemoryDatabase } from "../db/memory.js";
+import { acceptingAgentValidator } from "../test-utils/agent-validator.js";
 import { enrollTestDaemon } from "../test-utils/project-configuration.js";
 import { OrganizationTriggerStore } from "../triggers/store.js";
 import { createDatabasePublicOperationRepository } from "./database-adapter.js";
@@ -15,7 +16,11 @@ describe("public manual-run project resolution", () => {
       slug: "default",
       createdByUserId: null,
     });
-    const trigger = await new OrganizationTriggerStore(database, "org").save({
+    const trigger = await new OrganizationTriggerStore(
+      database,
+      "org",
+      acceptingAgentValidator(),
+    ).save({
       yaml: triggerYaml(true),
       userId: null,
     });
@@ -40,7 +45,7 @@ describe("public manual-run project resolution", () => {
       slug: "default",
       createdByUserId: null,
     });
-    await new OrganizationTriggerStore(database, "org").save({
+    await new OrganizationTriggerStore(database, "org", acceptingAgentValidator()).save({
       yaml: triggerYaml(false),
       userId: null,
     });
@@ -63,7 +68,7 @@ on:
   manual.run: {}
 run:
   target: { daemon: daemon-10000000, cwd: /workspace }
-  agent: { provider: test, mode: full-access }
+  agent: { provider: codex, mode: full-access }
   prompt: Handle it
 `;
 }

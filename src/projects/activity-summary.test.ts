@@ -3,6 +3,18 @@ import { describe, it } from "vitest";
 import { summarizeTrigger } from "./activity-summary.js";
 
 describe("summarizeTrigger", () => {
+  it("identifies clock occurrences as scheduled runs in Activity", () => {
+    assert.deepEqual(
+      summarizeTrigger("schedule.tick", {
+        schedule: {
+          trigger_id: "periodic-scan",
+          scheduled_at: "2026-09-09T09:00:00.000Z",
+          timezone: "UTC",
+        },
+      }),
+      { provider: "schedule", headline: "Scheduled run", actor: null, externalUrl: null },
+    );
+  });
   it("summarizes a GitHub issue comment with the issue number and commenter", () => {
     const summary = summarizeTrigger("github.issue_comment", {
       id: "1",
@@ -50,8 +62,11 @@ describe("summarizeTrigger", () => {
     });
   });
 
-  it("summarizes a created pull request with its number and title", () => {
-    const summary = summarizeTrigger("github.pull_request_created", {
+  it.each([
+    ["opened", "github.pull_request_created", "created"],
+    ["ready_for_review", "github.pull_request_ready_for_review", "ready for review"],
+  ])("summarizes a pull request %s with its number and title", (action, source, description) => {
+    const summary = summarizeTrigger(source, {
       id: "1",
       type: "pull_request",
       repo: "acme/widgets",
@@ -59,7 +74,7 @@ describe("summarizeTrigger", () => {
       installationId: 1,
       createdAt: new Date().toISOString(),
       payload: {
-        action: "opened",
+        action,
         pull_request: {
           number: 42,
           title: "Ship semantic events",
@@ -71,7 +86,7 @@ describe("summarizeTrigger", () => {
 
     assert.deepEqual(summary, {
       provider: "github",
-      headline: "Pull request #42 created: Ship semantic events",
+      headline: `Pull request #42 ${description}: Ship semantic events`,
       actor: "alice",
       externalUrl: "https://github.com/acme/widgets/pull/42",
     });

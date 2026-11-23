@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { Client } from "discord.js";
+import { createLogger } from "../logger.js";
+import { createDiscordBotClient } from "../triggers/discord/bot.js";
 import { describe, it } from "vitest";
 import type { AccountAccessValue } from "../auth/organization-access.js";
 import {
@@ -258,6 +261,132 @@ describe("provider applications", () => {
       },
     );
   });
+
+  it("preserves the Discord gateway timeout when saving an application", async () => {
+    const fixture = createFixture();
+    const bot = createDiscordBotClient({
+      token: "test-token",
+      client: new SilentDiscordClient({ intents: [] }),
+      startupTimeoutMs: 10,
+    });
+    let timeout: Error | undefined;
+    await assert.rejects(bot.start(), (error: unknown) => {
+      if (!(error instanceof Error)) return false;
+      timeout = error;
+      return error.name === "DiscordStartupTimeoutError";
+    });
+    assert.ok(timeout);
+    fixture.runtime.failNextStart("discord", timeout);
+
+    await assert.rejects(
+      fixture.applications.verifyAndSave(request("POST"), "discord", {
+        provider: "discord",
+        applicationId: "100",
+        clientSecret: "test-secret",
+        botToken: "test-token",
+      }),
+      { code: "timeout" },
+    );
+    assert.equal(fixture.store.values.has("discord"), false);
+  });
+
+  it("logs a Discord startup timeout and cleanup before activating Linear", async () => {
+    const fixture = createFixture();
+    const bot = createDiscordBotClient({
+      token: "test-token",
+      client: new SilentDiscordClient({ intents: [] }),
+      startupTimeoutMs: 10,
+    });
+    const records: unknown[] = [];
+    const failures = await activateProviderApplicationsAtStartup({
+      store: fixture.store,
+      environment: {
+        discord: {
+          provider: "discord",
+          applicationId: "100",
+          clientSecret: "test-secret",
+          botToken: "test-token",
+        },
+        linear: linearConfiguration,
+      },
+      runtime: {
+        prepare: async (provider, config, origin, identity, version) => {
+          const candidate = await fixture.runtime.prepare(
+            provider,
+            config,
+            origin,
+            identity,
+            version,
+          );
+          if (provider !== "discord") return candidate;
+          return {
+            start: () => bot.start(),
+            publish: () => candidate.publish(),
+            close: async () => {
+              await bot.stop();
+              await candidate.close();
+            },
+          };
+        },
+      },
+      verifier: {
+        verify: (provider) =>
+          Promise.resolve(
+            identityFor(provider, {
+              provider: "github",
+              id: "42",
+              name: "Paseo",
+              ownerLogin: "acme",
+            }),
+          ),
+      },
+      inventory: connectedInventory("42"),
+      callbackOrigin: "https://hub.test",
+      logger: createLogger({
+        write: (line) => {
+          records.push(JSON.parse(line));
+        },
+      }),
+    });
+
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0]?.provider, "discord");
+    assert.ok(failures[0]?.error instanceof Error);
+    assert.equal(failures[0].error.name, "DiscordStartupTimeoutError");
+    assert.equal(fixture.runtime.active("discord"), undefined);
+    assert.equal(fixture.runtime.latestCandidate("discord")?.closeCount, 1);
+    assert.equal(fixture.runtime.active("linear")?.configurationId, "linear-client");
+
+    const phases = [
+      ["discord", "identity", "succeeded"],
+      ["discord", "inventory", "succeeded"],
+      ["discord", "prepare", "succeeded"],
+      ["discord", "start", "failed"],
+      ["discord", "cleanup", "succeeded"],
+      ["linear", "identity", "succeeded"],
+      ["linear", "inventory", "succeeded"],
+      ["linear", "prepare", "succeeded"],
+      ["linear", "start", "succeeded"],
+      ["linear", "activate", "succeeded"],
+    ];
+    assert.equal(records.length, phases.length * 2);
+    for (const [index, [provider, phase, outcome]] of phases.entries()) {
+      assert.match(JSON.stringify(records[index * 2]), /"durationMs":0/u);
+      assert.match(JSON.stringify(records[index * 2]), /"outcome":"started"/u);
+      const record = records[index * 2 + 1];
+      assert.ok(typeof record === "object" && record !== null);
+      assert.equal(Reflect.get(record, "provider"), provider);
+      assert.equal(Reflect.get(record, "phase"), phase);
+      assert.equal(Reflect.get(record, "outcome"), outcome);
+      const duration: unknown = Reflect.get(record, "durationMs");
+      assert.ok(typeof duration === "number" && duration >= 0);
+      if (outcome === "failed") {
+        assert.equal(Reflect.get(record, "failureKind"), "timeout");
+        assert.match(JSON.stringify(Reflect.get(record, "err")), /DiscordStartupTimeoutError/u);
+      }
+    }
+    assert.doesNotMatch(JSON.stringify(records), /test-(?:secret|token)/u);
+  }, 1_000);
 
   it("refuses a changed environment-managed identity when restarting with existing connections", async () => {
     const fixture = createFixture();
@@ -775,7 +904,7 @@ class MemoryStore implements ProviderApplicationStore {
 class BlockingRuntime implements ProviderRuntimeOwner {
   private readonly candidates = new Map<string, Candidate[]>();
   private readonly activeCandidates = new Map<string, Candidate>();
-  private readonly failures = new Set<string>();
+  private readonly failures = new Map<string, Error>();
   private readonly blocked = new Set<string>();
   private readonly unavailableConnections = new Set<string>();
   private slackInstallationHandler:
@@ -858,8 +987,8 @@ class BlockingRuntime implements ProviderRuntimeOwner {
     return this.unavailableConnections.has(provider);
   }
 
-  failNextStart(provider: string) {
-    this.failures.add(provider);
+  failNextStart(provider: string, error = new Error("candidate failed")) {
+    this.failures.set(provider, error);
   }
 
   block(provider: string) {
@@ -870,8 +999,10 @@ class BlockingRuntime implements ProviderRuntimeOwner {
     return this.blocked.has(provider);
   }
 
-  shouldFail(provider: string) {
-    return this.failures.delete(provider);
+  takeStartFailure(provider: string) {
+    const error = this.failures.get(provider);
+    this.failures.delete(provider);
+    return error;
   }
 
   publish(candidate: Candidate) {
@@ -906,7 +1037,8 @@ class Candidate implements ProviderRuntimeCandidate {
   }
 
   async start() {
-    if (this.owner.shouldFail(this.provider)) throw new Error("candidate failed");
+    const failure = this.owner.takeStartFailure(this.provider);
+    if (failure !== undefined) throw failure;
     if (!this.owner.shouldBlock(this.provider)) return;
     await new Promise<void>((resolve) => {
       if (this.released) {
@@ -968,4 +1100,10 @@ function linearBinding() {
     accessTokenExpiresAt: null,
     scopes: ["read", "comments:create"],
   };
+}
+
+class SilentDiscordClient extends Client {
+  override login(): Promise<string> {
+    return new Promise(() => {});
+  }
 }

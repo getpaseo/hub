@@ -1,8 +1,22 @@
+import { eventDefinition, isEditorEvent } from "../triggers/configuration/events.js";
+import { ContinuationSchema } from "../triggers/continuation.js";
+import {
+  GitHubAuthorAssociationSchema,
+  reportsAuthorAssociation,
+  type GitHubAuthorAssociation,
+} from "../triggers/github/author-association.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
+  CompiledIntegrationToolGrantsSchema,
+  IntegrationToolGrantsSchema,
+  normalizeIntegrationToolGrants,
+  type IntegrationToolGrants,
+} from "../integration-tools/grants.js";
+import {
   expressionPaths,
   parseExpression,
+  expressionPathsInTemplate,
   validateExecutionTemplate,
   type Expression,
   type ExpressionPath,
@@ -84,6 +98,8 @@ const AuthoredTriggerFilterSchema = z
   .object({
     pattern: z.string().optional(),
     contains: z.string().optional(),
+    /** GitHub text which makes an event ineligible, such as a command another trigger owns. */
+    exclude_contains: z.string().optional(),
     label: z.string().min(1).optional(),
     labels: z.array(z.string().min(1)).min(1).optional(),
     repo: z.string().min(1).optional(),
@@ -99,6 +115,8 @@ const AuthoredTriggerFilterSchema = z
     assignees: z.array(z.string().min(1)).min(1).optional(),
     channels: z.array(z.string().min(1)).optional(),
     from_users: z.array(z.string().min(1)).optional(),
+    /** GitHub repository associations whose holders may invoke the trigger. */
+    author_associations: z.array(GitHubAuthorAssociationSchema).min(1).optional(),
     inputs: z.record(z.string(), InputValueSchema).optional(),
     connection: z
       .string()
@@ -166,14 +184,18 @@ const StepSchema = z
     environment: z.string().min(1),
     max_runtime: z.string().min(1),
     idle_timeout: z.string().min(1),
+    startup_timeout: z.string().min(1).optional(),
     agent: AuthoredAgentSelectionSchema,
+    title: z.string().min(1).optional(),
     prompt: z.array(PromptBlockSchema).min(1),
     env: z.record(z.string().min(1), z.string()).optional(),
     github: AuthoredGitHubAuthoritySchema.optional(),
+    tools: IntegrationToolGrantsSchema.optional(),
     if: z.string().min(1).optional(),
     output: z.object({ schema: JsonSchemaSchema }).strict().optional(),
     allow_outputs: z.array(AllowOutputSchema).optional(),
     auto_archive: z.boolean().optional(),
+    background: z.boolean().optional(),
   })
   .strict();
 
@@ -236,18 +258,24 @@ export interface CompiledInput {
 }
 
 export interface CompiledStep {
+  continuation?: import("../triggers/continuation.js").Continuation | undefined;
   id: string;
   environment: string;
   maxRuntimeMs: number;
   idleTimeoutMs: number;
+  startupTimeoutMs?: number | undefined;
   agent: CompiledAgentSelection;
+  /** Execution template for the workspace title; absent means Hub's default workspace title. */
+  title?: string | undefined;
   prompt: readonly CompiledPromptBlock[];
   env?: Readonly<Record<string, string>> | undefined;
   github?: CompiledGitHubAuthority | undefined;
+  tools?: IntegrationToolGrants | undefined;
   condition?: Expression | undefined;
   output?: { schema: JsonValue } | undefined;
   allowOutputs: readonly { type: string; max?: number | undefined; required: boolean }[];
   autoArchive: boolean;
+  background: boolean;
 }
 
 export type CompiledSteps = readonly CompiledStep[];
@@ -255,10 +283,17 @@ export type CompiledSteps = readonly CompiledStep[];
 export type CompiledTriggerFilter = Readonly<
   Omit<
     AuthoredTriggerFilter,
-    "channels" | "from_users" | "states" | "labels" | "exclude_labels" | "assignees"
+    | "channels"
+    | "from_users"
+    | "author_associations"
+    | "states"
+    | "labels"
+    | "exclude_labels"
+    | "assignees"
   > & {
     channels?: readonly string[] | undefined;
     from_users?: readonly string[] | undefined;
+    author_associations?: readonly GitHubAuthorAssociation[] | undefined;
     states?: readonly string[] | undefined;
     labels?: readonly string[] | undefined;
     exclude_labels?: readonly string[] | undefined;
@@ -383,14 +418,18 @@ const CompiledJsonSchemaSchema = z.custom<JsonValue>(
 
 const CompiledStepSchema: z.ZodType<CompiledStep> = z
   .object({
+    continuation: ContinuationSchema.optional(),
     id: z.string().regex(IDENTIFIER),
     environment: z.string().min(1),
     maxRuntimeMs: z.number().int().positive().max(MAX_DURATION_MS),
     idleTimeoutMs: z.number().int().positive().max(MAX_DURATION_MS),
+    startupTimeoutMs: z.number().int().positive().max(MAX_DURATION_MS).optional(),
     agent: CompiledAgentSelectionSchema,
+    title: z.string().min(1).optional(),
     prompt: z.array(CompiledPromptBlockSchema).min(1),
     env: z.record(z.string(), z.string()).optional(),
     github: CompiledGitHubAuthoritySchema.optional(),
+    tools: CompiledIntegrationToolGrantsSchema.optional(),
     condition: z.custom<Expression>(isExpression).optional(),
     output: z.object({ schema: CompiledJsonSchemaSchema }).strict().optional(),
     allowOutputs: z.array(
@@ -403,6 +442,7 @@ const CompiledStepSchema: z.ZodType<CompiledStep> = z
         .strict(),
     ),
     autoArchive: z.boolean(),
+    background: z.boolean().default(false),
   })
   .strict();
 
@@ -587,10 +627,22 @@ function compileStep(
     environment: step.environment,
     maxRuntimeMs,
     idleTimeoutMs,
+    ...(step.startup_timeout === undefined
+      ? {}
+      : {
+          startupTimeoutMs: compileAt([...stepPath, "startup_timeout"], () =>
+            parseDurationMs(
+              step.startup_timeout!,
+              `trigger ${trigger.name} step ${step.id} startup_timeout`,
+            ),
+          ),
+        }),
     agent,
+    ...(step.title === undefined ? {} : { title: step.title }),
     prompt: compilePromptBlocks(trigger.name, step.id, step.prompt, resolvedPromptPartials),
     ...(env === undefined ? {} : { env }),
     ...(github === undefined ? {} : { github }),
+    ...(step.tools === undefined ? {} : { tools: normalizeIntegrationToolGrants(step.tools) }),
     ...(condition === undefined ? {} : { condition }),
     ...(outputDeclaration === undefined ? {} : { output: outputDeclaration }),
     allowOutputs: (step.allow_outputs ?? []).map((allowOutput) => ({
@@ -599,6 +651,7 @@ function compileStep(
       required: allowOutput.required ?? false,
     })),
     autoArchive: step.auto_archive ?? false,
+    background: step.background ?? false,
   };
 }
 
@@ -838,6 +891,10 @@ function validateExpressionContract(
       validateTemplate(step.environment, ordinal, `step ${step.id} environment`, true);
       validateEnvironmentSelection(step.environment, ordinal, step.id);
     });
+    if (step.title !== undefined)
+      compileAt(["triggers", triggerName, "steps", step.id, "title"], () =>
+        validateTitleTemplate(step.title!, `step ${step.id} title`),
+      );
     if ("selector" in step.agent) {
       const selection = step.agent;
       compileAt(["triggers", triggerName, "steps", step.id, "agent"], () => {
@@ -1012,7 +1069,9 @@ function validateExpressionContract(
         return;
       }
       if (reference.path[0] === "execution") {
-        throw new Error(`${path} uses paseo.execution outside environment worktree.newBranch`);
+        throw new Error(
+          `${path} uses paseo.execution outside environment worktree.newBranch or a step title`,
+        );
       }
       const inputName = reference.path[1];
       const input = trigger.inputs[inputName];
@@ -1179,6 +1238,25 @@ function validateCompiledContract(config: CompiledHubConfig): void {
   }
 }
 
+/**
+ * A title is presentation: it may carry the execution id so runs of one trigger can be told
+ * apart, but never event text, so prompt, context, and inputs are refused by name.
+ */
+function validateTitleTemplate(title: string, path: string): void {
+  for (const reference of expressionPathsInTemplate(title)) {
+    if (reference.namespace !== "paseo") {
+      throw new Error(
+        `${path} uses ${reference.namespace}; a title supports only paseo.execution.id`,
+      );
+    }
+    const name = typeof reference.path === "string" ? reference.path : reference.path[0];
+    if (name === "execution") continue;
+    throw new Error(
+      `${path} uses paseo.${name}; a title is presentation and supports only paseo.execution.id`,
+    );
+  }
+}
+
 function validateEnvironmentTemplates(
   environments: readonly (AuthoredEnvironment | CompiledEnvironment)[],
 ): void {
@@ -1329,7 +1407,13 @@ function validateAuthoredIds(config: AuthoredHubConfig): void {
 }
 
 function validateTriggerLaunchSecurity(trigger: CompiledTrigger): void {
-  if (trigger.on === "manual.run") return;
+  const associations = trigger.filters?.author_associations;
+  if (associations !== undefined && !reportsAuthorAssociation(trigger.on)) {
+    throw new Error(
+      `trigger ${trigger.name}: filters.author_associations is not available for ${trigger.on}`,
+    );
+  }
+  if (isEditorEvent(trigger.on) && eventDefinition(trigger.on).origin === "hub") return;
   // A project scout is an intentionally autonomous, project-scoped policy. Every other
   // externally-originated Linear action remains actor-allowlisted below.
   if (trigger.on === "linear.issue_entered_scope") {
@@ -1340,9 +1424,15 @@ function validateTriggerLaunchSecurity(trigger: CompiledTrigger): void {
     }
     return;
   }
-  if ((trigger.filters?.from_users?.length ?? 0) === 0) {
+  if ((trigger.filters?.from_users?.length ?? 0) > 0) return;
+  if (!reportsAuthorAssociation(trigger.on)) {
     throw new Error(
       `trigger ${trigger.name} requires a non-empty filters.from_users allowlist for externally sourced events`,
+    );
+  }
+  if (associations === undefined) {
+    throw new Error(
+      `trigger ${trigger.name} requires a non-empty filters.from_users or filters.author_associations allowlist for externally sourced events`,
     );
   }
 }
@@ -1367,6 +1457,7 @@ function rejectTriggerFields(value: unknown, index: number): void {
     "prompt",
     "idle_timeout",
     "auto_archive",
+    "background",
     "allow_outputs",
   ]) {
     if (field in value) {

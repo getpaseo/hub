@@ -1,3 +1,5 @@
+import { integrationToolDefinitions } from "../integration-tools/index.js";
+import type { IntegrationToolGrants } from "../integration-tools/grants.js";
 import type { JsonValue } from "../config/compiler.js";
 import { compileFinishExecutionArguments } from "../workflows/json-schema.js";
 
@@ -27,6 +29,7 @@ export interface OutputToolDefinition {
 export interface OutputExecutionInput {
   agentExecutionId: string;
   attemptId?: string;
+  openInPaseoUrl?: string;
   toolType: string;
   args: Record<string, unknown>;
   outputContext: unknown;
@@ -153,6 +156,7 @@ export class OutputExecutorRegistry {
 export function executionToolDefinitions(
   outputSchema: JsonValue | undefined,
   materializedOutputs: readonly MaterializedOutputCapability[],
+  grants?: IntegrationToolGrants,
 ): readonly OutputToolDefinition[] {
   return [
     {
@@ -168,6 +172,7 @@ export function executionToolDefinitions(
           : `${capability.tool.description} (up to ${String(declaration.max)} times).`,
       inputSchema: capability.tool.inputSchema,
     })),
+    ...integrationToolDefinitions(grants),
   ];
 }
 

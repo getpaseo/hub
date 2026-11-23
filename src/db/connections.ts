@@ -54,6 +54,7 @@ export class ConnectionRepository {
         provider: input.provider,
         phase: initialConnectionAttemptPhase(input.provider),
         stateVerifier: input.stateVerifier,
+        pkceVerifier: input.pkceVerifier ?? null,
         organizationId: input.access.organizationId,
         returnRoute: input.access.returnRoute,
         userId: input.access.userId,
@@ -129,13 +130,18 @@ export class ConnectionRepository {
       await lockStoredAuthority(transaction, attempt);
       await lockProviderApplication(this.locks, runtimeTransaction, attempt.provider);
       await requireCurrentAttempt(transaction, attempt);
+      const { next } = input;
       await transaction
         .update(schema.organizationConnectionAttempts)
         .set({
-          phase: "github_user_authorization",
+          phase: next.phase,
           stateVerifier: input.nextStateVerifier,
-          candidateExternalId: String(input.installationId),
-          pkceVerifier: input.pkceVerifier,
+          candidateExternalId:
+            next.phase === "github_user_authorization" && next.installationId !== null
+              ? String(next.installationId)
+              : null,
+          pkceVerifier: next.phase === "github_user_authorization" ? next.pkceVerifier : null,
+          installationChoices: next.phase === "github_selection" ? next.installationChoices : null,
         })
         .where(eq(schema.organizationConnectionAttempts.id, attempt.id));
     });
@@ -161,7 +167,7 @@ export class ConnectionRepository {
         .for("update");
       if (existing !== undefined && existing.organizationId !== attempt.organizationId)
         throw new ConnectionConflictError();
-      const [_connection] =
+      const [connection] =
         existing === undefined
           ? await transaction
               .insert(schema.githubConnections)
@@ -195,6 +201,13 @@ export class ConnectionRepository {
               })
               .where(eq(schema.githubConnections.id, existing.id))
               .returning({ id: schema.githubConnections.id });
+      if (connection === undefined) throw new Error("GitHub connection unavailable");
+      await replaceGitHubRepositories(
+        transaction,
+        attempt.organizationId,
+        connection.id,
+        input.repositories,
+      );
       await consumeLockedAttempt(transaction, attempt.id);
     });
   }
@@ -1052,7 +1065,7 @@ async function consumeLockedAttempt(transaction: HubTransaction, attemptId: stri
 }
 
 function initialConnectionAttemptPhase(provider: ConnectionProvider): ConnectionAttemptPhase {
-  if (provider === "github") return "github_setup";
+  if (provider === "github") return "github_user_authorization";
   if (provider === "discord") return "discord_authorization";
   return provider === "slack" ? "slack_authorization" : "linear_authorization";
 }
@@ -1068,6 +1081,7 @@ function toAttempt(row: AttemptRow): ConnectionAttemptRecord {
     sessionId: row.sessionId,
     candidateExternalId: row.candidateExternalId,
     pkceVerifier: row.pkceVerifier,
+    installationChoices: row.installationChoices,
     configurationVersion: row.configurationVersion,
     providerApplicationId: row.providerApplicationId,
     callbackOrigin: row.callbackOrigin,
@@ -1162,4 +1176,40 @@ async function uniqueConnectionSlug(
   let suffix = 2;
   while (used.has(`${base}-${suffix}`)) suffix += 1;
   return `${base}-${suffix}`;
+}
+
+/** @package Complete snapshots are committed with the connection lifecycle transaction. */
+export async function replaceGitHubRepositories(
+  transaction: DrizzleHandle,
+  organizationId: string,
+  connectionId: string,
+  repositories: import("./types.js").GitHubRepositorySnapshot,
+): Promise<void> {
+  const ids = repositories.map((repository) => repository.repositoryId);
+  await transaction
+    .delete(schema.githubRepositories)
+    .where(
+      and(
+        eq(schema.githubRepositories.connectionId, connectionId),
+        ids.length === 0 ? undefined : sql`${schema.githubRepositories.repositoryId} not in ${ids}`,
+      ),
+    );
+  if (repositories.length === 0) return;
+  await transaction
+    .insert(schema.githubRepositories)
+    .values(
+      repositories.map((repository) => ({
+        organizationId,
+        connectionId,
+        ...repository,
+      })),
+    )
+    .onConflictDoUpdate({
+      target: [schema.githubRepositories.connectionId, schema.githubRepositories.repositoryId],
+      set: {
+        fullName: sql`excluded.full_name`,
+        defaultBranch: sql`excluded.default_branch`,
+        updatedAt: sql`clock_timestamp()`,
+      },
+    });
 }

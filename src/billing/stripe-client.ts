@@ -39,9 +39,6 @@ export function createStripeCatalogSource(stripeSecretKey: string): StripeCatalo
           name: product.name,
           active: product.active,
           metadata: product.metadata,
-          marketingFeatures: product.marketing_features.flatMap((feature) =>
-            feature.name === undefined ? [] : [feature.name],
-          ),
         });
       }
       return products;
@@ -116,18 +113,11 @@ export function createStripeBillingClient(stripeSecretKey: string): StripeBillin
           cancel_url: input.cancelUrl,
           client_reference_id: input.organizationId,
           metadata: { [ORGANIZATION_REFERENCE_METADATA_KEY]: input.organizationId },
-          subscription_data: input.trial
-            ? {
-                trial_period_days: 14,
-                trial_settings: { end_behavior: { missing_payment_method: "cancel" } },
-                metadata: { [ORGANIZATION_REFERENCE_METADATA_KEY]: input.organizationId },
-              }
-            : { metadata: { [ORGANIZATION_REFERENCE_METADATA_KEY]: input.organizationId } },
-          ...(input.trial ? { payment_method_collection: "if_required" } : {}),
+          subscription_data: {
+            metadata: { [ORGANIZATION_REFERENCE_METADATA_KEY]: input.organizationId },
+          },
         },
-        {
-          idempotencyKey: `checkout:${input.organizationId}:${input.priceId}:${input.trial ? "trial" : "paid"}`,
-        },
+        { idempotencyKey: `checkout:${input.organizationId}:${input.priceId}` },
       );
       if (session.url === null) throw new Error("Stripe checkout session has no redirect URL");
       return { url: session.url };
@@ -192,7 +182,6 @@ function toSubscriptionState(
     quantity: item.quantity ?? 1,
     status: subscription.status,
     currentPeriodEnd: new Date(item.current_period_end * 1000),
-    trialEnd: subscription.trial_end === null ? null : new Date(subscription.trial_end * 1000),
     cancelAtPeriodEnd: subscription.cancel_at_period_end,
   };
 }

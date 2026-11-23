@@ -1,0 +1,5 @@
+# Local files Paseo copies from the source checkout into each new worktree.
+.env
+.dev/*.pem
+AGENTS.override.md
+CLAUDE.local.md

@@ -1,3 +1,4 @@
+import { continuationKey } from "../triggers/continuation.js";
 import { DatabaseUnavailableError } from "../db/errors.js";
 import type {
   AgentExecutionRecord,
@@ -12,7 +13,7 @@ import type {
 } from "../db/types.js";
 import type { AgentExecutionStatus } from "../db/schema.js";
 import { parseCompiledHubConfig, type JsonPrimitive, type JsonValue } from "../config/compiler.js";
-import type { CompiledProjectConfiguration } from "../configuration/store.js";
+import { triggerDocumentName, type CompiledProjectConfiguration } from "../configuration/store.js";
 import { logger as defaultLogger } from "../logger.js";
 import { reportFailure } from "../failures/index.js";
 import { durableExecutionId } from "../daemons/lifecycle.js";
@@ -56,6 +57,8 @@ type WorkflowStepRun = Awaited<ReturnType<Database["listWorkflowStepRunsForTrigg
 interface PreparedWorkflowWakeup {
   run: AcceptedWorkflowRun;
   configuration: CompiledProjectConfiguration;
+  /** The trigger's name as its author wrote it, which is what the user sees for this run. */
+  triggerName: string;
   trigger: CompiledProjectConfiguration["triggers"][number];
   steps: WorkflowStepRun[];
   next: WorkflowStepRun;
@@ -70,6 +73,7 @@ export interface DurableWorkflowEngineOptions {
   entitlements: EntitlementsService | null;
   providers?: readonly TriggerProvider[];
   dispatchLaunchMachineIntent?: (intent: LaunchMachineIntent) => Promise<unknown>;
+  canDispatchToDaemon?: (daemonId: string) => boolean;
   validateLaunchMachineIntent?: (intent: LaunchMachineIntent) => void;
   configurationRevisionId?: string;
   leaseMs?: number;
@@ -193,6 +197,7 @@ export class DurableWorkflowEngine {
           inputs: acceptedMatch.invocation.inputs,
           triggerContext: acceptedMatch.triggerContext,
           outputContext: acceptedMatch.outputContext,
+          conversation: acceptedMatch.conversation,
           deadlineAt: runDeadline,
           stepIds: compiledTrigger.steps.map((step) => step.id),
           createdAt,
@@ -227,24 +232,34 @@ export class DurableWorkflowEngine {
     await this.recoverWorkflowDeadlines(this.now());
     this.kickTerminalNotificationRecovery();
     await database.recoverWorkflowWakeups(this.now());
+    const visited: string[] = [];
     while (!this.stopped) {
-      const wakeup = await database.claimWorkflowWakeup(this.now(), this.leaseMs);
+      const wakeup = await database.claimWorkflowWakeup(this.now(), this.leaseMs, visited);
       if (wakeup === undefined) return;
       try {
-        await this.processWakeup(wakeup);
+        if ((await this.processWakeup(wakeup)) === "deferred") visited.push(wakeup.triggerRunId);
       } catch (error) {
         this.report(error, "workflow.wakeup.process", { triggerRunId: wakeup.triggerRunId });
       }
     }
   }
 
-  private async processWakeup(wakeup: WorkflowWakeupRecord): Promise<void> {
+  private async processWakeup(wakeup: WorkflowWakeupRecord): Promise<"deferred" | void> {
     const database = this.options.database;
     if (database === null) return;
     const prepared = await this.prepareWorkflowWakeup(wakeup);
     if (prepared === undefined) return;
-    const { run, configuration, trigger, steps, next, step, context, recoverPreHandoffDispatch } =
-      prepared;
+    const {
+      run,
+      configuration,
+      triggerName,
+      trigger,
+      steps,
+      next,
+      step,
+      context,
+      recoverPreHandoffDispatch,
+    } = prepared;
     let shouldRun = true;
     try {
       shouldRun =
@@ -286,6 +301,7 @@ export class DurableWorkflowEngine {
     );
     const preparedIntent = await this.buildMaterializedStepIntentOrFail(
       configuration,
+      triggerName,
       trigger,
       step,
       run,
@@ -295,6 +311,7 @@ export class DurableWorkflowEngine {
     );
     if (preparedIntent === undefined) return;
     const { executionId, intent } = preparedIntent;
+    if (await this.deferUnavailableDispatch(intent, wakeup)) return "deferred";
     if (await this.failInvalidLaunchIntent(database, run, step, intent)) return;
     const reservation = await this.reserveExecution(run.organizationId);
     const created = await database.createWorkflowStepExecution({
@@ -341,13 +358,34 @@ export class DurableWorkflowEngine {
       await database.deleteWorkflowWakeup(run.id);
       return;
     }
+    await this.dispatchWorkflowExecution(intent, created.execution.id, next.id);
+    await database.deleteWorkflowWakeup(run.id);
+  }
+
+  private async dispatchWorkflowExecution(
+    intent: LaunchMachineIntent,
+    expectedExecutionId: string,
+    stepRunId: string,
+  ): Promise<void> {
     const result = await this.dispatch(intent);
-    const execution = await this.executionFromResult(result, intent, next.id);
-    if (execution.id !== created.execution.id) {
+    const execution = await this.executionFromResult(result, intent, stepRunId);
+    if (execution.id !== expectedExecutionId) {
       throw new Error(`durable dispatch returned a different execution: ${execution.id}`);
     }
     await this.finishPersistedExecution(execution);
-    await database.deleteWorkflowWakeup(run.id);
+  }
+
+  private async deferUnavailableDispatch(
+    intent: LaunchMachineIntent,
+    wakeup: WorkflowWakeupRecord,
+  ): Promise<boolean> {
+    if (this.options.canDispatchToDaemon?.(intent.environment.daemonId) !== false) return false;
+    await this.options.database!.releaseWorkflowWakeup(
+      wakeup.triggerRunId,
+      this.now(),
+      wakeup.leaseExpiresAt!,
+    );
+    return true;
   }
 
   private async linkWorkflowStepAndNotifyStart(
@@ -416,12 +454,7 @@ export class DurableWorkflowEngine {
     if (persistedIntent === null) {
       throw new Error(`workflow execution missing persisted launch intent: ${execution.id}`);
     }
-    const result = await this.dispatch(persistedIntent);
-    const recovered = await this.executionFromResult(result, persistedIntent, stepRunId);
-    if (recovered.id !== execution.id) {
-      throw new Error(`durable dispatch returned a different execution: ${recovered.id}`);
-    }
-    await this.finishPersistedExecution(recovered);
+    await this.dispatchWorkflowExecution(persistedIntent, execution.id, stepRunId);
   }
 
   private async prepareWorkflowWakeup(
@@ -440,10 +473,7 @@ export class DurableWorkflowEngine {
       await database.deleteWorkflowWakeup(triggerRunId);
       return undefined;
     }
-    const configuration = await this.configurationForRun(
-      run.projectId,
-      run.configurationRevisionId,
-    );
+    const { configuration, triggerName } = await this.configurationForRun(run);
     const trigger = configuration.triggers.find(
       (candidate) => candidate.name === run.configuredTriggerName,
     );
@@ -482,6 +512,7 @@ export class DurableWorkflowEngine {
     return {
       run: reconciledRun,
       configuration,
+      triggerName,
       trigger,
       steps,
       next,
@@ -493,6 +524,7 @@ export class DurableWorkflowEngine {
 
   private async buildStepIntentOrFail(
     configuration: CompiledProjectConfiguration,
+    triggerName: string,
     trigger: CompiledProjectConfiguration["triggers"][number],
     step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
     run: AcceptedWorkflowRun,
@@ -506,6 +538,7 @@ export class DurableWorkflowEngine {
     try {
       return buildStepIntent(
         configuration,
+        triggerName,
         trigger,
         step,
         run,
@@ -573,6 +606,7 @@ export class DurableWorkflowEngine {
 
   private async buildMaterializedStepIntentOrFail(
     configuration: CompiledProjectConfiguration,
+    triggerName: string,
     trigger: CompiledProjectConfiguration["triggers"][number],
     step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
     run: AcceptedWorkflowRun,
@@ -587,13 +621,14 @@ export class DurableWorkflowEngine {
     const executionId = durableExecutionId({
       triggerRunId: run.id,
       configurationRevisionId: run.configurationRevisionId,
-      triggerName: run.configuredTriggerName,
+      triggerName,
       workflowStepRunId: stepRunId,
     });
     const materializedContext = await this.materializeStepContextOrFail(run, step, executionId);
     if (materializedContext === undefined) return undefined;
     const intent = await this.buildStepIntentOrFail(
       configuration,
+      triggerName,
       trigger,
       step,
       run,
@@ -850,15 +885,22 @@ export class DurableWorkflowEngine {
   }
 
   private async configurationForRun(
-    projectId: string,
-    revisionId: string,
-  ): Promise<CompiledProjectConfiguration> {
+    run: AcceptedWorkflowRun,
+  ): Promise<{ configuration: CompiledProjectConfiguration; triggerName: string }> {
     const database = this.options.database;
     if (database === null) throw new DatabaseUnavailableError();
-    const revision = await database.findProjectConfigurationRevision(projectId, revisionId);
+    const revision = await database.findProjectConfigurationRevision(
+      run.projectId,
+      run.configurationRevisionId,
+    );
     if (revision === undefined)
-      throw new Error(`workflow configuration revision not found: ${revisionId}`);
-    return asProjectConfiguration(parseCompiledHubConfig(revision.normalizedConfiguration));
+      throw new Error(`workflow configuration revision not found: ${run.configurationRevisionId}`);
+    return {
+      configuration: asProjectConfiguration(
+        parseCompiledHubConfig(revision.normalizedConfiguration),
+      ),
+      triggerName: triggerDocumentName(revision) ?? run.configuredTriggerName,
+    };
   }
 
   private async dispatch(intent: LaunchMachineIntent): Promise<unknown> {
@@ -886,6 +928,7 @@ export class DurableWorkflowEngine {
 
 function buildStepIntent(
   configuration: CompiledProjectConfiguration,
+  triggerName: string,
   trigger: CompiledProjectConfiguration["triggers"][number],
   step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
   run: Extract<Awaited<ReturnType<Database["findTriggerRunById"]>>, { outcome: "accepted" }>,
@@ -914,7 +957,7 @@ function buildStepIntent(
       organizationId: run.organizationId,
       projectId: run.projectId,
       triggerRunId: run.id,
-      triggerName: run.configuredTriggerName,
+      triggerName,
       environmentName,
       environment: {
         kind: "daemon",
@@ -927,6 +970,10 @@ function buildStepIntent(
       },
       ...(step.env === undefined ? {} : { env: step.env }),
       ...(step.github === undefined ? {} : { github: step.github }),
+      ...(step.tools === undefined ? {} : { tools: step.tools }),
+      ...(step.title === undefined
+        ? {}
+        : { title: renderExecutionTemplate(step.title, executionId) }),
       prompt: step.prompt
         .map((block) =>
           renderExpressionTemplate(block.kind === "text" ? block.value : block.content, context),
@@ -936,12 +983,31 @@ function buildStepIntent(
       allowOutputs: step.allowOutputs,
       timeoutMs: step.maxRuntimeMs,
       idleTimeoutMs: step.idleTimeoutMs,
+      ...(step.startupTimeoutMs === undefined ? {} : { startupTimeoutMs: step.startupTimeoutMs }),
       autoArchive: step.autoArchive,
+      background: step.background,
       triggerContext: run.triggerContext,
       outputContext: run.outputContext,
       configurationRevisionId: run.configurationRevisionId,
       hubConfig: configuration,
     }),
+    ...(step.continuation === undefined
+      ? {}
+      : {
+          continuation: {
+            key: continuationKey(step.continuation, run.conversation, (value) =>
+              renderExpressionTemplate(value, context),
+            ),
+            compatibility: {
+              agent,
+              target: environment,
+              // Preserve existing visible-session fingerprints when using the default.
+              ...(step.background ? { background: true } : {}),
+              env: step.env ?? {},
+              github: step.github ?? null,
+            },
+          },
+        }),
     workflowStepRunId: stepRunId,
     ...(step.output === undefined ? {} : { outputSchema: step.output.schema }),
     deadlineAt,

@@ -9,9 +9,15 @@ import AxeBuilder from "@axe-core/playwright";
 export class DaemonHandoffSurface {
   constructor(private readonly page: Page) {}
 
+  /**
+   * The copy control announces itself through a live region of its own, so the poll is named by
+   * what it is polling for rather than by being the only status on the card.
+   */
   async expectWaiting(): Promise<void> {
     await expect(this.page.getByRole("heading", { name: "Connect a daemon" })).toBeVisible();
-    await expect(this.page.getByRole("status")).toContainText("Waiting for a daemon to connect");
+    await expect(this.page.getByRole("status").filter({ hasText: /daemon/u })).toContainText(
+      "Waiting for a daemon to connect",
+    );
   }
 
   /** The exact command the operator is told to paste, as it is rendered. */
@@ -41,12 +47,12 @@ export class DaemonHandoffSurface {
   }
 
   /**
-   * Both ways out land in the project instance setup already provisioned. Onboarding never hands
-   * the operator a list with one entry on it and asks them to pick.
+   * Both ways out land on the organization's Home, whose checklist carries on from here.
+   * Onboarding never hands the operator a list with one entry on it and asks them to pick.
    */
   async leave(label: "Continue" | "Do this later"): Promise<void> {
     await this.page.getByRole("button", { name: label, exact: true }).click();
-    await expect(this.page).toHaveURL(/\/o\/[^/]+\/triggers$/u);
-    await expect(this.page.getByRole("heading", { name: "Triggers", level: 1 })).toBeVisible();
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/home$/u);
+    await expect(this.page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
   }
 }

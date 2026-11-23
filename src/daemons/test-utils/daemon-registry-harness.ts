@@ -1,15 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { z } from "zod";
+import type { AgentSnapshot } from "../agents/index.js";
 import type { Logger } from "pino";
 import type { DaemonRecord } from "../../db/types.js";
-import type { HubExecutionAgentSnapshot } from "../../hub/protocol.js";
-import type {
-  DaemonAgentSnapshot,
-  DaemonConnection,
-  DaemonEvent,
-  DaemonEventHandler,
-} from "../protocol.js";
+import type { DaemonConnection } from "../protocol.js";
 import { ActiveDaemonRegistry } from "../registry.js";
 
 const SessionRequestSchema = z.object({
@@ -29,6 +24,11 @@ interface PendingRequest<T> {
   request: z.infer<typeof SessionRequestSchema>["message"];
 }
 
+/** Shape of the internal fields `ws` leaves untyped but always populates. */
+interface WebSocketInternals {
+  _socket: { write(data: Buffer): void };
+}
+
 export class DaemonRegistryHarness {
   private readonly presence = new DaemonPresence();
   private readonly registry: ActiveDaemonRegistry;
@@ -40,35 +40,38 @@ export class DaemonRegistryHarness {
   private didShutdown = false;
   private stopped = false;
 
-  constructor(logger?: Pick<Logger, "warn" | "error">) {
-    this.registry = new ActiveDaemonRegistry(this.presence, undefined, logger);
+  constructor(logger?: Pick<Logger, "warn" | "error">, projectListTimeoutMs?: number) {
+    this.registry = new ActiveDaemonRegistry(
+      this.presence,
+      undefined,
+      logger,
+      projectListTimeoutMs,
+    );
   }
 
-  static async start(logger?: Pick<Logger, "warn" | "error">): Promise<DaemonRegistryHarness> {
-    const harness = new DaemonRegistryHarness(logger);
+  static async start(
+    logger?: Pick<Logger, "warn" | "error">,
+    projectListTimeoutMs?: number,
+  ): Promise<DaemonRegistryHarness> {
+    const harness = new DaemonRegistryHarness(logger, projectListTimeoutMs);
     await harness.serverListening();
     await harness.replaceConnection();
     return harness;
   }
 
-  async pendingCreate(executionId: string): Promise<PendingRequest<DaemonAgentSnapshot>> {
+  async pendingCreate(executionId: string): Promise<PendingRequest<AgentSnapshot>> {
     const connection = this.connection();
-    const promise = connection.createAgent({
-      executionId,
+    const promise = connection.agents.create(executionId, {
       provider: "opencode",
       mode: "full-access",
       cwd: "/workspace",
-      prompt: "Do the work",
       env: {},
       providerOptions: { permission: { edit: "ask", bash: "deny" } },
-      toolPolicy: {
-        preapproved: [{ kind: "mcp", server: "hub", tool: "finish_execution" }],
-      },
     });
     void promise.catch(() => undefined);
     return {
       promise,
-      request: await this.currentSocket().next("hub.execution.agent.create.request"),
+      request: await this.currentSocket().next("create_agent_request"),
     };
   }
 
@@ -76,11 +79,17 @@ export class DaemonRegistryHarness {
     executionId: string,
     action: "interrupt" | "archive",
   ): Promise<PendingRequest<void>> {
-    const promise = this.connection().controlExecution({ executionId, action });
+    const promise = this.connection().agents.control(
+      `agent-${executionId}`,
+      `workspace-${executionId}`,
+      action,
+    );
     void promise.catch(() => undefined);
     return {
       promise,
-      request: await this.currentSocket().next("hub.execution.control.request"),
+      request: await this.currentSocket().next(
+        action === "archive" ? "archive_workspace_request" : "cancel_agent_request",
+      ),
     };
   }
 
@@ -96,6 +105,95 @@ export class DaemonRegistryHarness {
       promise,
       request: await this.currentSocket().next("hub.execution.agent.validate.request"),
     };
+  }
+
+  async pendingProviderSnapshot(cwd = "/workspace") {
+    const promise = this.connection().getProviderSnapshot({ cwd });
+    void promise.catch(() => undefined);
+    return {
+      promise,
+      request: await this.currentSocket().next("get_providers_snapshot_request"),
+    };
+  }
+
+  async pendingProviderRefresh(cwd = "/workspace") {
+    const promise = this.connection().refreshProviderSnapshot({ cwd, providers: ["codex"] });
+    void promise.catch(() => undefined);
+    return {
+      promise,
+      request: await this.currentSocket().next("refresh_providers_snapshot_request"),
+    };
+  }
+
+  listProjects() {
+    return this.connection().listProjects();
+  }
+
+  async pendingProjectList() {
+    const promise = this.listProjects();
+    void promise.catch(() => undefined);
+    return { promise, request: await this.currentSocket().next("project.list.request") };
+  }
+
+  respondProjectList(
+    pending: Awaited<ReturnType<DaemonRegistryHarness["pendingProjectList"]>>,
+    projects: readonly Record<string, unknown>[],
+  ): void {
+    this.currentSocket().send({
+      type: "project.list.response",
+      payload: { requestId: pending.request.requestId, projects },
+    });
+  }
+
+  /** The daemon's own refusal of a request, as it reports one it will not or cannot serve. */
+  rejectRequest(pending: { request: { requestId: string; type: string } }, code: string): void {
+    this.currentSocket().send({
+      type: "rpc_error",
+      payload: {
+        requestId: pending.request.requestId,
+        requestType: pending.request.type,
+        error: "daemon refused",
+        code,
+      },
+    });
+  }
+
+  respondProviderSnapshot(
+    pending: Awaited<ReturnType<DaemonRegistryHarness["pendingProviderSnapshot"]>>,
+  ): void {
+    this.currentSocket().send({
+      type: "get_providers_snapshot_response",
+      payload: {
+        requestId: pending.request.requestId,
+        cwd: pending.request["cwd"],
+        entries: [
+          {
+            provider: "codex",
+            status: "ready",
+            enabled: true,
+            models: [
+              {
+                provider: "codex",
+                id: "gpt-5.4",
+                label: "GPT-5.4",
+                thinkingOptions: [{ id: "xhigh", label: "Extra high" }],
+              },
+            ],
+            modes: [{ id: "full-access", label: "Full access" }],
+          },
+        ],
+        generatedAt: new Date().toISOString(),
+      },
+    });
+  }
+
+  respondProviderRefresh(
+    pending: Awaited<ReturnType<DaemonRegistryHarness["pendingProviderRefresh"]>>,
+  ): void {
+    this.currentSocket().send({
+      type: "refresh_providers_snapshot_response",
+      payload: { requestId: pending.request.requestId, acknowledged: true },
+    });
   }
 
   respondAgentValidation(
@@ -115,16 +213,14 @@ export class DaemonRegistryHarness {
     });
   }
 
-  respondControl(
-    pending: PendingRequest<void>,
-    overrides: { executionId?: string; action?: "interrupt" | "archive" } = {},
-  ): void {
+  respondControl(pending: PendingRequest<void>, overrides: { requestId?: string } = {}): void {
     this.currentSocket().send({
-      type: "hub.execution.control.response",
+      type:
+        pending.request.type === "archive_workspace_request"
+          ? "archive_workspace_response"
+          : "cancel_agent_response",
       payload: {
-        requestId: pending.request.requestId,
-        executionId: overrides.executionId ?? pending.request.executionId,
-        action: overrides.action ?? pending.request.action,
+        requestId: overrides.requestId ?? pending.request.requestId,
         success: true,
         error: null,
       },
@@ -196,10 +292,6 @@ export class DaemonRegistryHarness {
     return this.registry.onConnected(handler);
   }
 
-  subscribe(handler: DaemonEventHandler): () => void {
-    return this.connection().on(handler);
-  }
-
   failOfflinePresence(error: Error): void {
     this.presence.failNext(error);
   }
@@ -215,59 +307,25 @@ export class DaemonRegistryHarness {
     this.currentSocket().sendRaw(value);
   }
 
+  sendInvalidClose(code: number): void {
+    this.currentSocket().sendInvalidClose(code);
+  }
+
   waitUntilCurrentClosed(): Promise<void> {
     return this.currentSocket().waitUntilClosed();
   }
 
-  async completeCreate(executionId: string, agentId: string): Promise<DaemonAgentSnapshot> {
+  async completeCreate(executionId: string, agentId: string): Promise<AgentSnapshot> {
     const pending = await this.pendingCreate(executionId);
     this.currentSocket().send({
-      type: "hub.execution.agent.create.response",
+      type: "status",
       payload: {
+        status: "agent_created",
         requestId: pending.request.requestId,
-        executionId,
-        agentId,
-        agent: null,
-        success: true,
-        toolPolicyApplied: true,
-        error: null,
+        agent: { id: agentId, workspaceId: `workspace-${agentId}`, status: "idle" },
       },
     });
     return pending.promise;
-  }
-
-  async completeCreateWithoutContract(executionId: string): Promise<DaemonAgentSnapshot> {
-    const pending = await this.pendingCreate(executionId);
-    this.currentSocket().send({
-      type: "hub.execution.agent.create.response",
-      payload: {
-        requestId: pending.request.requestId,
-        executionId,
-        agentId: `agent-${executionId}`,
-        agent: null,
-        success: true,
-        error: null,
-      },
-    });
-    return pending.promise;
-  }
-
-  async reportAgentStatus(
-    executionId: string,
-    status: HubExecutionAgentSnapshot["status"],
-  ): Promise<DaemonEvent> {
-    const event = new Promise<DaemonEvent>((resolve) => {
-      const unsubscribe = this.connection().on((value) => {
-        unsubscribe();
-        resolve(value);
-      });
-    });
-    const agentId = `agent-${executionId}`;
-    this.currentSocket().send({
-      type: "hub.execution.agent.update",
-      payload: { executionId, agentId, agent: agentSnapshot(agentId, status) },
-    });
-    return event;
   }
 
   async stop(): Promise<void> {
@@ -422,13 +480,34 @@ class RegistrySocket {
         status: "server_info",
         serverId: "test-daemon",
         permissions,
-        features: {},
+        features: { providersSnapshot: true, hubAgentRpc: true, agentRequestReceipts: true },
       },
     });
   }
 
   sendRaw(value: string): void {
     this.socket.send(value);
+  }
+
+  /**
+   * Writes a raw WebSocket close control frame directly onto the
+   * underlying TCP socket, bypassing `ws`'s own `close()` validation so a
+   * status code the protocol forbids on the wire (e.g. 1006, reserved for
+   * abnormal closure and never legally sent) reaches the server's
+   * `Receiver`, reproducing WS_ERR_INVALID_CLOSE_CODE.
+   */
+  sendInvalidClose(code: number): void {
+    // `ws` does not type its internal `_socket`, but every `ws` WebSocket
+    // instance exposes the underlying net.Socket at runtime once open.
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- `ws` leaves `_socket` untyped
+    const internals = this.socket as unknown as WebSocketInternals;
+    const tcpSocket = internals._socket;
+    const mask = Buffer.alloc(4);
+    const payload = Buffer.alloc(2);
+    payload.writeUInt16BE(code, 0);
+    const maskedPayload = Buffer.alloc(2);
+    for (let i = 0; i < 2; i += 1) maskedPayload[i] = payload[i]! ^ mask[i]!;
+    tcpSocket.write(Buffer.concat([Buffer.from([0x88, 0x82]), mask, maskedPayload]));
   }
 
   close(): void {
@@ -467,37 +546,6 @@ function daemonRecord(): DaemonRecord {
     disconnectedAt: null,
     lastSeenAt: now,
     createdAt: now,
-  };
-}
-
-function agentSnapshot(
-  id: string,
-  status: HubExecutionAgentSnapshot["status"],
-): HubExecutionAgentSnapshot {
-  const timestamp = "2026-01-01T00:00:00.000Z";
-  return {
-    id,
-    provider: "opencode",
-    cwd: "/workspace",
-    model: null,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    lastUserMessageAt: null,
-    status,
-    capabilities: {
-      supportsStreaming: true,
-      supportsSessionPersistence: true,
-      supportsDynamicModes: true,
-      supportsMcpServers: true,
-      supportsReasoningStream: true,
-      supportsToolInvocations: true,
-    },
-    currentModeId: null,
-    availableModes: [],
-    pendingPermissions: [],
-    persistence: null,
-    title: null,
-    labels: {},
   };
 }
 
