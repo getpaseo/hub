@@ -245,7 +245,8 @@ export function createSlackBotClient(options: {
     const result = SlackFileInfoSchema.parse(
       await queryJson(input.organizationId, input.teamId, "files.info", { file: input.fileId }),
     );
-    if (!result.ok || result.file?.id !== input.fileId) {
+    if (!result.ok) throw new SlackApiError(result.error);
+    if (result.file?.id !== input.fileId) {
       throw new Error(`Slack file ${input.fileId} is unavailable`);
     }
     const downloadUrl = new URL(result.file.url_private_download);

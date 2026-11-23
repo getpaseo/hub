@@ -345,6 +345,26 @@ describe("Slack Web API client", () => {
       },
     ]);
   });
+
+  it("throws SlackApiError with Slack's error code when files.info fails", async () => {
+    const client = createSlackBotClient({
+      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      fetch: async () => Response.json({ ok: false, error: "file_not_found" }),
+    });
+
+    await assert.rejects(
+      () =>
+        client.downloadAttachment!({
+          organizationId: "org-1",
+          teamId: "T1",
+          fileId: "F-missing",
+        }),
+      (error: unknown) =>
+        error instanceof SlackApiError &&
+        error.code === "file_not_found" &&
+        error.message === "Slack API file_not_found",
+    );
+  });
 });
 
 function requestUrl(input: RequestInfo | URL): string {
