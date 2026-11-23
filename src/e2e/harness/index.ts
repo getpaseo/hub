@@ -1600,6 +1600,11 @@ ${this.failureArtifacts()}`,
       writeFile(this.completionGate, "ready\n"),
     ]);
     await initializeGitWorkspace(this.workspace);
+    // Docker publishes container ports from the same ephemeral range that
+    // `availablePort()` draws from, and a reserved port is free again until its
+    // child binds it. Start the container first so it cannot take a reserved port.
+    this.postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    this.pool = await createPostgresQueryRuntime(this.postgres.getConnectionUri());
     const [hubPort, proxyPort, daemonPort] = await Promise.all([
       availablePort(),
       availablePort(),
@@ -1608,8 +1613,6 @@ ${this.failureArtifacts()}`,
     this.hubPort = hubPort;
     this.hubOrigin = `http://127.0.0.1:${hubPort}`;
     this.daemonHost = `127.0.0.1:${daemonPort}`;
-    this.postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
-    this.pool = await createPostgresQueryRuntime(this.postgres.getConnectionUri());
     this.proxy = await HubFaultProxy.start(this.hubOrigin, proxyPort);
     this.hub = await this.startHub();
     if (this.options.realAgent !== true) {

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { expect, test } from "vitest";
 import { AgentSessions } from "./index.js";
 import { createMemoryDatabase } from "../db/memory.js";
@@ -7,6 +8,7 @@ import { createExecutionCapabilityServer } from "../execution-capabilities/serve
 import type { AgentConnection, AgentSnapshot } from "../daemons/agents/index.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import type { DaemonCreateAgentOptions } from "../daemons/protocol.js";
+import { readMcpMessage } from "../test-utils/mcp-response.js";
 
 class TestAgents implements AgentConnection {
   readonly agents = new Map<string, AgentSnapshot>();
@@ -169,10 +171,18 @@ async function fixture(now = Date.now) {
       }),
       session!.id,
     );
-    const result: unknown = await response.json();
-    return result;
+    return readMcpMessage(response);
   }
-  return { database, connection, sessions, replies, arrival, execution, call };
+  async function sessionMcp(executionId: string) {
+    const owner = await execution(executionId);
+    const session = await database.findAgentSession(owner.agentSessionId!);
+    return {
+      sessionId: session!.id,
+      mcp: session!.creationOptions.mcpServers!["hub"]!,
+      handle: (request: Request) => capabilities.handleSession(request, session!.id),
+    };
+  }
+  return { database, connection, sessions, replies, arrival, execution, call, sessionMcp };
 }
 
 test("continuations reuse matching integration grants and reject a different scope", async () => {
@@ -310,6 +320,40 @@ test("session tools keep each arrival's destination and reject stale or foreign 
   expect(
     await f.call(foreign.executionId, "finish_execution", {}, second.executionId),
   ).toMatchObject({ result: { isError: true } });
+});
+
+// The session MCP endpoint is what Claude Code reaches for every Slack-triggered
+// run. Claude Code speaks 2026-07-28 first, and a rejected request there cost
+// 6 to 22 seconds of fallback before the prompt reached the agent (#176).
+test("session tools serve a client pinned to protocol 2026-07-28", async () => {
+  const f = await fixture();
+  const run = await f.arrival();
+  await run.dispatch();
+  const { mcp, handle } = await f.sessionMcp(run.executionId);
+  const client = new Client(
+    { name: "claude-code", version: "1.0.0" },
+    { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+  );
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(mcp.url), {
+        requestInit: { headers: mcp.headers ?? {} },
+        fetch: (input, init) => handle(new Request(input, init)),
+      }),
+    );
+    expect(client.getNegotiatedProtocolVersion()).toBe("2026-07-28");
+    expect(
+      await client.callTool({
+        name: "reply",
+        arguments: { content: "hello", executionId: run.executionId },
+      }),
+    ).toMatchObject({ content: [{ type: "text", text: "Output sent" }] });
+  } finally {
+    await client.close();
+  }
+  expect(f.replies).toEqual([
+    { executionId: run.executionId, context: { arrival: run.executionId } },
+  ]);
 });
 
 test("new-agent policy isolates arrivals and incompatible targets fail without replacement", async () => {

@@ -5,6 +5,9 @@ test("creates a twice-daily schedule, edits weekly recurrence, and preserves it 
   hub,
   page,
 }) => {
+  // Seven steps and ten save-and-reload round trips take about 17s alone on a
+  // developer machine; on CI with two workers they overrun the default 30s.
+  test.slow();
   await hub.signUpAs("owner", {
     name: "Schedule Owner",
     email: "schedule-owner@example.com",

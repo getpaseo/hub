@@ -24,6 +24,7 @@ import {
 } from "../../agent-executions/completion-token.js";
 import { createDatabase } from "../../db/test-utils/runtime.js";
 import type { ApiKeyScope } from "../../auth/api-key-contract.js";
+import { readMcpMessage } from "../../test-utils/mcp-response.js";
 import type { OperationAuthenticator } from "../../auth/operation-auth.js";
 import type {
   AgentExecutionRecord,
@@ -1189,7 +1190,7 @@ export class HubHarness {
       }),
     });
     assert.equal(response.status, 200);
-    const body: unknown = await response.json();
+    const body = await readMcpMessage(response);
     assert.ok(isRecord(body));
     return body;
   }
@@ -1219,7 +1220,7 @@ export class HubHarness {
       }),
     });
     assert.equal(response.status, 200);
-    const body: unknown = await response.json();
+    const body = await readMcpMessage(response);
     assert.ok(isRecord(body));
     return body;
   }
@@ -1256,7 +1257,7 @@ export class HubHarness {
           ),
         }),
       })
-      .parse(await response.json()).result.tools;
+      .parse(await readMcpMessage(response)).result.tools;
   }
 
   async restartApp(): Promise<void> {

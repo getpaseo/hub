@@ -1,6 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { once } from "node:events";
 import { isIP } from "node:net";
 import type { Logger } from "pino";
 import { logger as defaultLogger } from "../logger.js";
@@ -127,11 +126,20 @@ async function forwardRequest(
       return;
     }
     const reader = response.body.getReader();
+    // A client that disconnects never reads again: release a streamed body
+    // (an MCP SSE exchange holds its server open until then) instead of
+    // waiting for the next chunk or for a drain that will not come.
+    const cancelBody = (): void => {
+      if (!outgoing.writableFinished) void reader.cancel().catch(() => {});
+    };
+    if (outgoing.destroyed) cancelBody();
+    else outgoing.once("close", cancelBody);
     for (;;) {
       const chunk = await reader.read();
-      if (chunk.done) break;
-      if (!outgoing.write(chunk.value)) await once(outgoing, "drain");
+      if (chunk.done || outgoing.destroyed) break;
+      if (!outgoing.write(chunk.value)) await drainOrClose(outgoing);
     }
+    if (outgoing.destroyed) return;
     responseForwarded = true;
     outgoing.end();
   } catch (error) {
@@ -162,6 +170,18 @@ async function forwardRequest(
     outgoing.setHeader("content-type", "text/plain; charset=utf-8");
     outgoing.end(withReference("Hub couldn't complete this request.", report.requestId));
   }
+}
+
+function drainOrClose(outgoing: ServerResponse): Promise<void> {
+  return new Promise((resolve) => {
+    const settle = (): void => {
+      outgoing.off("drain", settle);
+      outgoing.off("close", settle);
+      resolve();
+    };
+    outgoing.once("drain", settle);
+    outgoing.once("close", settle);
+  });
 }
 
 function safeRequestPath(value: string | undefined): string {
