@@ -169,8 +169,8 @@ export class AgentSessions {
   /**
    * Points the execution at the session's agent, restoring the agent when it is archived.
    * A closed or failed agent interrupts only work it already holds: it was created for this
-   * execution, or this execution reached it before a restart. Otherwise that state belongs to an
-   * earlier turn, and sending the message resumes the agent from storage.
+   * execution, or this execution was already running on it before a restart. Otherwise that state
+   * belongs to an earlier turn, and sending the message resumes the agent from storage.
    */
   private async attachAgent(
     input: { executionId: string; connection: AgentConnection },
@@ -179,7 +179,7 @@ export class AgentSessions {
     startupTimeoutMs: number,
   ): Promise<AgentSessionAction> {
     const execution = await this.database.findAgentExecutionById(input.executionId);
-    const held = action === "created" || execution?.daemonAgentId === agent.agentId;
+    const held = action === "created" || execution?.status === "running";
     await this.database.attachAgentToExecution(input.executionId, agent.daemonId, agent.agentId);
     const state = await input.connection.get(agent.agentId);
     if (state.archivedAt) {

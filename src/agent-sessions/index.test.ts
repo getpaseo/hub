@@ -13,6 +13,7 @@ class TestAgents implements AgentConnection {
   readonly deliveries: { agentId: string; text: string }[] = [];
   readonly creates: DaemonCreateAgentOptions[] = [];
   readonly messages = new Set<string>();
+  loseNextGet = false;
   archives = 0;
   restorations = 0;
   async create(_key: string, options: DaemonCreateAgentOptions) {
@@ -22,6 +23,10 @@ class TestAgents implements AgentConnection {
     return agent;
   }
   async get(id: string) {
+    if (this.loseNextGet) {
+      this.loseNextGet = false;
+      throw new Error("response lost");
+    }
     const agent = this.agents.get(id);
     if (!agent) throw new Error("missing");
     return agent;
@@ -238,10 +243,28 @@ test("a follow-up resumes a continuation agent the daemon closed while idle", as
   ]);
 });
 
+test("a follow-up recovered before its message was sent still resumes the closed agent", async () => {
+  const f = await fixture();
+  const first = await f.arrival();
+  const original = await first.dispatch();
+  await f.database.transitionAgentExecution(first.executionId, "succeeded");
+  await f.connection.collectIdle(original.agentId);
+
+  const followUp = await f.arrival("conversation", "daemon", {}, "follow-up");
+  f.connection.loseNextGet = true;
+  await expect(followUp.dispatch()).rejects.toThrow("response lost");
+  expect(await followUp.dispatch()).toMatchObject({ agentId: original.agentId });
+  expect(f.connection.deliveries.map(({ text }) => text)).toEqual([
+    expect.stringContaining("hello"),
+    expect.stringContaining("follow-up"),
+  ]);
+});
+
 test("a recovered execution whose own agent closed is interrupted instead of resent", async () => {
   const f = await fixture();
   const first = await f.arrival();
   const original = await first.dispatch();
+  await f.database.transitionAgentExecution(first.executionId, "running");
   await f.connection.collectIdle(original.agentId);
 
   await expect(first.dispatch()).rejects.toThrow("agent_interrupted");
