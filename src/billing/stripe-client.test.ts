@@ -22,6 +22,10 @@ interface CheckoutSession {
 class LocalStripe {
   private readonly sessions: CheckoutSession[] = [];
   private readonly replays = new Map<string, { body: string; session: CheckoutSession }>();
+  /** Stripe failing every expire request with a server error, or recovering. */
+  expireOutage = false;
+  /** Runs once a create has made a new session, to stand in for a request racing this one. */
+  afterCreate: (() => void) | undefined;
   private readonly server: Server = createServer((request, response) => {
     let body = "";
     request.on("data", (chunk: Buffer) => (body += chunk.toString()));
@@ -65,6 +69,7 @@ class LocalStripe {
       };
       this.sessions.push(session);
       this.replays.set(key, { body, session });
+      this.afterCreate?.();
       return send(response, 200, view(session));
     }
     if (request.method === "GET" && url.pathname === "/v1/checkout/sessions") {
@@ -74,13 +79,24 @@ class LocalStripe {
         .map(view);
       return send(response, 200, { object: "list", data, has_more: false });
     }
-    const expire = /^\/v1\/checkout\/sessions\/([^/]+)\/expire$/u.exec(url.pathname);
-    const session = this.sessions.find((candidate) => candidate.id === expire?.[1]);
-    if (request.method === "POST" && session?.status === "open") {
-      session.status = "expired";
-      return send(response, 200, view(session));
+    const [, id, action] =
+      /^\/v1\/checkout\/sessions\/([^/]+)(\/expire)?$/u.exec(url.pathname) ?? [];
+    const session = this.sessions.find((candidate) => candidate.id === id);
+    if (session === undefined)
+      return send(response, 404, { error: { type: "invalid_request_error" } });
+    if (request.method === "GET" && action === undefined) return send(response, 200, view(session));
+    if (this.expireOutage) return send(response, 503, { error: { type: "api_error" } });
+    if (session.status !== "open") {
+      // Stripe only expires an open session.
+      return send(response, 400, { error: { type: "invalid_request_error" } });
     }
-    send(response, 400, { error: { type: "invalid_request_error" } });
+    this.expire(session.id);
+    send(response, 200, view(session));
+  }
+
+  expire(id: string): void {
+    const session = this.sessions.find((candidate) => candidate.id === id);
+    if (session !== undefined) session.status = "expired";
   }
 }
 
@@ -163,6 +179,35 @@ describe("Stripe billing client", () => {
         { id: "cs_test_3", status: "open" },
       ],
     );
+  });
+
+  it("finishes replacing an earlier Checkout link when a retry follows a failed expiry", async () => {
+    const client = createStripeBillingClient("sk_test_local", { apiBaseUrl });
+    await client.createCheckoutSession(CHECKOUT);
+
+    stripe.expireOutage = true;
+    await assert.rejects(client.createCheckoutSession({ ...CHECKOUT, quantity: 4 }));
+    stripe.expireOutage = false;
+    const retry = await client.createCheckoutSession({ ...CHECKOUT, quantity: 4 });
+
+    assert.deepEqual(retry, { url: "https://checkout.stripe.test/c/pay/cs_test_2" });
+    assert.deepEqual(
+      stripe.checkoutSessions.map(({ id, status }) => ({ id, status })),
+      [
+        { id: "cs_test_1", status: "expired" },
+        { id: "cs_test_2", status: "open" },
+      ],
+    );
+  });
+
+  it("returns the link when a concurrent identical checkout already expired the earlier one", async () => {
+    const client = createStripeBillingClient("sk_test_local", { apiBaseUrl });
+    await client.createCheckoutSession(CHECKOUT);
+
+    stripe.afterCreate = () => stripe.expire("cs_test_1");
+    const changed = await client.createCheckoutSession({ ...CHECKOUT, quantity: 4 });
+
+    assert.deepEqual(changed, { url: "https://checkout.stripe.test/c/pay/cs_test_2" });
   });
 
   it("leaves only the newest Checkout link payable when the checkout changes", async () => {
