@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { Agent, request as httpRequest, type IncomingMessage } from "node:http";
+import { connect, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import { afterEach, describe, it } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
@@ -39,9 +40,11 @@ class FakeRuntime {
 
 const agents: Agent[] = [];
 const servers: HubServer[] = [];
+const sockets: Socket[] = [];
 
 afterEach(async () => {
   for (const agent of agents.splice(0)) agent.destroy();
+  for (const socket of sockets.splice(0)) socket.destroy();
   await Promise.allSettled(servers.splice(0).map((server) => server.close()));
 });
 
@@ -174,6 +177,37 @@ describe("hub server shutdown", () => {
 
     assert.deepEqual(late, { status: 503, body: "Hub is shutting down", connection: "close" });
     assert.deepEqual(paths, ["/stream"]);
+  });
+
+  it("answers every request a connection sent before shutdown", async () => {
+    const runtime = new FakeRuntime();
+    const paths: string[] = [];
+    const bothStarted = deferred();
+    const finish = deferred();
+    const { server, origin } = await startHubServer(runtime, async (request) => {
+      paths.push(new URL(request.url).pathname);
+      if (paths.length === 2) bothStarted.resolve();
+      await finish.promise;
+      return new Response("ok");
+    });
+    const socket = connect(Number(new URL(origin).port), "127.0.0.1");
+    sockets.push(socket);
+    let received = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => (received += chunk));
+    const ended = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+    socket.write(
+      "GET /first HTTP/1.1\r\nHost: hub.test\r\n\r\nGET /second HTTP/1.1\r\nHost: hub.test\r\n\r\n",
+    );
+    await bothStarted.promise;
+
+    const closed = server.close();
+    finish.resolve();
+    await withinMs(closed, 2_000, "server.close()");
+    await ended;
+
+    assert.equal(received.match(/HTTP\/1\.1 200 OK/gu)?.length, 2, received);
+    assert.equal(runtime.stopped, true);
   });
 
   it("stops the runtime once the drain timeout passes for a request that never finishes", async () => {

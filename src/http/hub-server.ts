@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import {
   createFetchRequestListener,
@@ -78,7 +78,7 @@ export function createHubServer(options: HubServerOptions): HubServer {
         resolve();
       });
     });
-    for (const response of inFlight) response.shouldKeepAlive = false;
+    closeAfterLastResponse(inFlight);
     await drain(inFlight, drainTimeoutMs);
     try {
       await stopRuntime();
@@ -109,6 +109,17 @@ export function createHubServer(options: HubServerOptions): HubServer {
       return closing;
     },
   };
+}
+
+/**
+ * Ends each connection after the last response it already accepted, so the client's next request
+ * opens a new connection instead of reaching a stopping Hub. Earlier pipelined responses keep the
+ * connection open; closing after them would drop the ones queued behind.
+ */
+function closeAfterLastResponse(responses: Set<ServerResponse>): void {
+  const lastBySocket = new Map<Socket, ServerResponse>();
+  for (const response of responses) lastBySocket.set(response.req.socket, response);
+  for (const response of lastBySocket.values()) response.shouldKeepAlive = false;
 }
 
 function refuse(response: ServerResponse): void {
