@@ -131,6 +131,143 @@ describe("workflow-owned provider reactions", () => {
       assert.deepEqual(result.run.reactionState, { reactionId: 2 });
     },
   );
+
+  it("orders a slow accepted eyes reaction before terminal completion on a skipped Slack workflow", async () => {
+    let releaseEyes: (() => void) | undefined;
+    const eyesStarted = new Promise<void>((resolve) => {
+      releaseEyes = resolve;
+    });
+    let allowEyesToFinish!: () => void;
+    const eyesGate = new Promise<void>((resolve) => {
+      allowEyesToFinish = resolve;
+    });
+
+    const client = new RecordingSlackClient({
+      onAddReaction: async (name) => {
+        if (name !== "eyes") return;
+        releaseEyes?.();
+        await eyesGate;
+      },
+    });
+    const organizationId = `org-reactions-${randomUUID()}`;
+    const now = new Date();
+    const database = createMemoryDatabase({ organizationIds: [organizationId], now: () => now });
+    const { project, revision, store } = await createActiveProjectConfiguration(
+      database,
+      {
+        environments: [
+          {
+            name: "runner",
+            kind: "daemon",
+            daemon: TEST_DAEMON_SLUG,
+            cwd: "/workspace",
+          },
+        ],
+        triggers: [
+          {
+            name: "slack-skip",
+            on: "slack.mention",
+            filters: { from_users: ["U1"] },
+            max_runtime: "1h",
+            steps: [
+              {
+                id: "only",
+                environment: "runner",
+                max_runtime: "10m",
+                idle_timeout: "1m",
+                agent: { provider: "codex" },
+                prompt: [{ text: "skip me" }],
+                if: "${{ false }}",
+              },
+            ],
+          },
+        ],
+      },
+      { organizationId },
+    );
+    const provider = createSlackTriggerProvider({
+      configurationStoreForProject: () => store,
+      botUserIdForWorkspace: async () => "UBOT",
+      client,
+    });
+    const lifecycle = createDaemonDispatchLifecycle({
+      database,
+      connectionForDaemon: () => undefined,
+      providers: [provider],
+      publicBaseUrl: "https://hub.test",
+      completionTokenSecret: "reaction-secret",
+    });
+    const { engine } = createDurableWorkflowHandler({
+      database,
+      entitlements: createUnlimitedEntitlementsService(),
+      providers: [provider],
+      now: () => now,
+      leaseMs: 1_000,
+      dispatchLaunchMachineIntent: async () => {
+        throw new Error("expected all steps to be skipped");
+      },
+      onWorkflowRunAccepted: (accepted) => lifecycle.notifyWorkflowRunAccepted(accepted),
+      onWorkflowRunStarted: (started) => lifecycle.notifyWorkflowRunStarted(started),
+      onWorkflowRunTerminal: (terminal) => lifecycle.notifyWorkflowRunTerminal(terminal),
+    });
+
+    const receiptId = randomUUID();
+    try {
+      const enqueuePromise = engine.enqueue({
+        organizationId,
+        projectId: project.id,
+        configurationRevisionId: revision.id,
+        providerEventReceiptId: receiptId,
+        connectionId: null,
+        resourceId: "T1",
+        source: "slack.mention",
+        deliveryId: "slack-slow-eyes",
+        receivedAt: now,
+        payload: {
+          type: "mention",
+          id: "Ev1",
+          teamId: "T1",
+          appId: "A1",
+          channelId: "C1",
+          messageTs: "1700000000.000001",
+          threadTs: null,
+          eventTs: "1700000000.000001",
+          eventTime: 1_700_000_001,
+          content: "<@UBOT> run",
+          author: { id: "U1" },
+          createdAt: new Date(1_700_000_000_000).toISOString(),
+          attachments: [],
+        },
+      });
+
+      await eyesStarted;
+      const workerPromise = engine.processAvailable();
+      await waitFor(async () => {
+        const [run] = await database.findTriggerRunsByProviderEventReceiptId(receiptId);
+        return run?.status === "succeeded" ? run : undefined;
+      });
+      // Give any unserialized terminal notification a chance to run before releasing eyes.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      allowEyesToFinish();
+
+      await enqueuePromise;
+      await workerPromise;
+      await engine.processAvailable();
+      await engine.stop();
+      await lifecycle.stop();
+
+      const [run] = await database.findTriggerRunsByProviderEventReceiptId(receiptId);
+      assert.ok(run?.outcome === "accepted");
+      assert.equal(run.status, "succeeded");
+      assert.equal(run.reactionState, null);
+      assert.deepEqual(visibleSlackReactions(client), ["white_check_mark"]);
+      assert.deepEqual(client.reactions, ["add:eyes", "remove:eyes", "add:white_check_mark"]);
+    } finally {
+      allowEyesToFinish();
+      await engine.stop();
+      await lifecycle.stop();
+    }
+  });
 });
 
 function createDiscordReactionFixture() {
@@ -525,9 +662,12 @@ class RecordingDiscordBot implements DiscordBotClient {
 class RecordingSlackClient implements SlackBotClient {
   readonly reactions: string[] = [];
 
+  constructor(private readonly hooks?: { onAddReaction?: (name: string) => Promise<void> }) {}
+
   async sendMessage(): Promise<void> {}
 
   async addReaction(input: { name: string }): Promise<void> {
+    await this.hooks?.onAddReaction?.(input.name);
     this.reactions.push(`add:${input.name}`);
   }
 
