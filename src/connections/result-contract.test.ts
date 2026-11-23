@@ -75,4 +75,21 @@ describe("connection return contract", () => {
     assert.match(unavailable.message, /^Hub couldn't finish the Discord connection\./u);
     assert.match(unavailable.message, /quote reference req-9/u);
   });
+
+  it("tells a person GitHub doesn't show as an owner apart from a link that expired", () => {
+    const notOwner = connectionReturnCopy({ provider: "github", result: "github_not_owner" });
+    assert.deepEqual(notOwner, {
+      tone: "error",
+      title: "GitHub wasn't connected",
+      message:
+        "GitHub doesn't show you as an owner of that account. Nothing was connected. Ask an owner to connect it, or pick an account you own",
+    });
+    const expired = connectionReturnCopy({ provider: "github", result: "connection_invalid" });
+    assert.match(expired.message, /^That connection link had already been used or had expired/u);
+    const rejected = connectionReturnCopy({
+      provider: "github",
+      result: "github_verification_rejected",
+    });
+    assert.doesNotMatch(rejected.message, /expired|owner/u);
+  });
 });
