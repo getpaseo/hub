@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import StripeSDK from "stripe";
 import type {
   StripeCatalogPrice,
@@ -17,6 +18,8 @@ import type {
 const PASEO_PLAN_METADATA_KEY = "paseo_plan";
 const ORGANIZATION_REFERENCE_METADATA_KEY = "organizationId";
 const LIST_PAGE_SIZE = 100;
+/** Digest of the Checkout request a session was created for, so a retry can find it again. */
+const CHECKOUT_REQUEST_METADATA_KEY = "paseo_checkout_request";
 
 /**
  * The real Stripe SDK behind `StripeCatalogSource`. Fetches every product/price via the List
@@ -70,8 +73,14 @@ export function createStripeCatalogSource(stripeSecretKey: string): StripeCatalo
  * event ordering. `getSubscription` reads the period end off the first subscription item, where
  * the current Stripe API keeps it.
  */
-export function createStripeBillingClient(stripeSecretKey: string): StripeBillingClient {
-  const stripe = new StripeSDK(stripeSecretKey);
+export function createStripeBillingClient(
+  stripeSecretKey: string,
+  options: {
+    /** Stripe's API host. Only tests point this anywhere else. */
+    apiBaseUrl?: string;
+  } = {},
+): StripeBillingClient {
+  const stripe = new StripeSDK(stripeSecretKey, stripeConnection(options.apiBaseUrl));
   return {
     async ensureCustomer(input: EnsureCustomerInput): Promise<string> {
       const customer = await stripe.customers.create(
@@ -104,22 +113,42 @@ export function createStripeBillingClient(stripeSecretKey: string): StripeBillin
       return result;
     },
     async createCheckoutSession(input: CreateCheckoutSessionInput): Promise<{ url: string }> {
-      const session = await stripe.checkout.sessions.create(
-        {
-          mode: "subscription",
-          customer: input.customerId,
-          line_items: [{ price: input.priceId, quantity: input.quantity }],
-          success_url: input.successUrl,
-          cancel_url: input.cancelUrl,
-          client_reference_id: input.organizationId,
+      const params: StripeSDK.Checkout.SessionCreateParams = {
+        mode: "subscription",
+        customer: input.customerId,
+        line_items: [{ price: input.priceId, quantity: input.quantity }],
+        allow_promotion_codes: true,
+        success_url: input.successUrl,
+        cancel_url: input.cancelUrl,
+        client_reference_id: input.organizationId,
+        metadata: { [ORGANIZATION_REFERENCE_METADATA_KEY]: input.organizationId },
+        subscription_data: {
           metadata: { [ORGANIZATION_REFERENCE_METADATA_KEY]: input.organizationId },
-          subscription_data: {
-            metadata: { [ORGANIZATION_REFERENCE_METADATA_KEY]: input.organizationId },
-          },
         },
-        { idempotencyKey: `checkout:${input.organizationId}:${input.priceId}` },
-      );
+      };
+      // One open Checkout link per customer. The session for this request is the open one that
+      // carries its digest, or a new one keyed on the request and the open sessions it replaces:
+      // identical concurrent attempts collapse onto one session, and a key is never replayed after
+      // its session was replaced (Stripe would answer an A, B, A sequence with A's first, already
+      // expired, session). Then every other open session is expired, so only the newest link can
+      // be paid. A retry after a failed expiry reuses the session and finishes the job.
+      const digest = requestDigest(params);
+      const open = await openCheckoutSessions(stripe, input.customerId);
+      const session =
+        open.find((candidate) => candidate.metadata?.[CHECKOUT_REQUEST_METADATA_KEY] === digest) ??
+        (await stripe.checkout.sessions.create(
+          { ...params, metadata: { ...params.metadata, [CHECKOUT_REQUEST_METADATA_KEY]: digest } },
+          {
+            idempotencyKey: `checkout:${input.organizationId}:${requestDigest({
+              digest,
+              replaced: open.map((candidate) => candidate.id).sort(),
+            })}`,
+          },
+        ));
       if (session.url === null) throw new Error("Stripe checkout session has no redirect URL");
+      for (const other of open) {
+        if (other.id !== session.id) await expireCheckoutSession(stripe, other.id);
+      }
       return { url: session.url };
     },
     async changeSubscriptionPrice(input: ChangeSubscriptionPriceInput): Promise<void> {
@@ -165,6 +194,46 @@ export function createStripeBillingClient(stripeSecretKey: string): StripeBillin
       if (organizationId === undefined || item === undefined) return undefined;
       return toSubscriptionState(subscription, organizationId, item);
     },
+  };
+}
+
+async function openCheckoutSessions(
+  stripe: StripeSDK,
+  customerId: string,
+): Promise<StripeSDK.Checkout.Session[]> {
+  const sessions: StripeSDK.Checkout.Session[] = [];
+  for await (const session of stripe.checkout.sessions.list({
+    customer: customerId,
+    status: "open",
+    limit: LIST_PAGE_SIZE,
+  })) {
+    sessions.push(session);
+  }
+  return sessions;
+}
+
+/** Expires a session unless it is already closed, which a concurrent replacement can do first. */
+async function expireCheckoutSession(stripe: StripeSDK, sessionId: string): Promise<void> {
+  try {
+    await stripe.checkout.sessions.expire(sessionId);
+  } catch (error) {
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    if (session.status === "open") throw error;
+  }
+}
+
+function requestDigest(params: object): string {
+  return createHash("sha256").update(JSON.stringify(params)).digest("base64url");
+}
+
+function stripeConnection(apiBaseUrl: string | undefined): StripeSDK.StripeConfig {
+  if (apiBaseUrl === undefined) return {};
+  const url = new URL(apiBaseUrl);
+  return {
+    host: url.hostname,
+    port: url.port,
+    protocol: url.protocol === "http:" ? "http" : "https",
+    maxNetworkRetries: 0,
   };
 }
 
