@@ -6,6 +6,7 @@ import {
   type CompiledAgent,
   type CompiledHubConfig,
   HubConfigurationCompilationError,
+  stepSelections,
   type JsonValue,
 } from "./compiler.js";
 import {
@@ -145,30 +146,20 @@ function collectAgentValidationTargets(
   configuration: CompiledHubConfig,
   agentDefinitions: Readonly<Record<string, CompiledAgent>>,
 ): readonly HubBundleAgentValidationTarget[] {
-  const allDaemonEnvironments = configuration.environments
-    .filter((environment) => environment.kind === "daemon")
-    .map(({ name }) => name);
   const targets = new Map<string, HubBundleAgentValidationTarget>();
   for (const [triggerIndex, authoredTrigger] of authoredTriggers.entries()) {
     const compiledTrigger = configuration.triggers[triggerIndex];
     if (!isRecord(authoredTrigger) || compiledTrigger === undefined) continue;
     const authoredSteps = Array.isArray(authoredTrigger["steps"]) ? authoredTrigger["steps"] : [];
     for (const [stepIndex, authoredStep] of authoredSteps.entries()) {
-      const compiledStep = compiledTrigger.steps[stepIndex];
-      if (!isRecord(authoredStep) || compiledStep === undefined) continue;
+      if (!isRecord(authoredStep) || compiledTrigger.steps[stepIndex] === undefined) continue;
       const authoredAgent = authoredStep["agent"];
       if (typeof authoredAgent !== "string") continue;
-      let names: readonly string[] = [];
-      if (authoredAgent.includes("${{")) names = Object.keys(agentDefinitions);
-      else if (Object.hasOwn(agentDefinitions, authoredAgent)) names = [authoredAgent];
-      const authoredEnvironment = authoredStep["environment"];
-      const environmentNames =
-        typeof authoredEnvironment === "string" && !authoredEnvironment.includes("${{")
-          ? [authoredEnvironment]
-          : allDaemonEnvironments;
-      for (const name of names) {
+      const selection = stepSelections(compiledTrigger, stepIndex);
+      for (const name of selection.namedAgents ?? [authoredAgent]) {
         const agent = agentDefinitions[name];
         if (agent === undefined) continue;
+        const environmentNames = selection.environments;
         const key = `${name}\0${environmentNames.join("\0")}`;
         targets.set(key, { name, agent, environmentNames });
       }
