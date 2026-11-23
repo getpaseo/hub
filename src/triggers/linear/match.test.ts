@@ -61,6 +61,43 @@ describe("Linear trigger matching", () => {
     );
   });
 
+  it("treats a wildcard allowlist as everyone, like the trigger editor's Everyone audience", () => {
+    const config = configuration();
+    const everyone = Object.assign({}, config, {
+      triggers: config.triggers.map((trigger) =>
+        Object.assign({}, trigger, {
+          filters: Object.assign({}, trigger.filters, { from_users: ["*"] }),
+        }),
+      ),
+    });
+
+    const entered = issue({ action: "create", actor: { id: "integration-bot" } });
+    assert.deepEqual(
+      matchLinearTriggers(everyone, entered).map((match) => match.trigger.name),
+      ["scout"],
+    );
+    assert.deepEqual(
+      matchLinearTriggers(everyone, { ...entered, actor: null }).map((match) => match.trigger.name),
+      ["scout"],
+    );
+
+    const assigned = issue({
+      action: "update",
+      actor: { id: "anyone" },
+      updatedFrom: { assigneeId: null },
+    });
+    assert.deepEqual(
+      matchLinearTriggers(everyone, assigned).map((match) => match.trigger.name),
+      ["assignment"],
+    );
+
+    const comment = { ...commentEvent(), actor: { id: "anyone" } };
+    assert.deepEqual(
+      matchLinearTriggers(everyone, comment).map((match) => match.trigger.name),
+      ["comment"],
+    );
+  });
+
   it("keeps triggers isolated to their configured Linear connection", () => {
     const connectionId = "11111111-1111-4111-8111-111111111111";
     const config = configuration();
