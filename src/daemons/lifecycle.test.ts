@@ -14,10 +14,15 @@ import {
 import { createDurableWorkflowHandler } from "../workflows/engine.js";
 import type { TriggerProvider } from "../triggers/index.js";
 import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
-import type { DaemonRecord } from "../db/types.js";
+import type { AgentExecutionRecord, DaemonRecord } from "../db/types.js";
 import { createLogger, serializeError } from "../logger.js";
 import { MAX_EXPLICIT_AGENT_TITLE_CHARS } from "@getpaseo/protocol/agent-title-limits";
 import { assertOneFailure, FailureLogStream } from "../test-utils/failure-logs.js";
+import {
+  createActiveProjectConfiguration,
+  TEST_DAEMON_ID,
+  TEST_DAEMON_SLUG,
+} from "../test-utils/project-configuration.js";
 
 const DAEMON_ID = "daemon-ack-test";
 const AGENT_ID = "agent-ack-test";
@@ -190,6 +195,124 @@ describe("durable Hub action acknowledgement state", () => {
       assert.equal(subscriptions, 0);
     },
   );
+
+  it("redrives a durable dispatch whose response is lost while the daemon stays connected", async () => {
+    const organizationId = "org-lost-response";
+    const database = createMemoryDatabase({ organizationIds: [organizationId] });
+    await database.issueEnrollmentToken({
+      id: "enrollment-lost-response",
+      verifier: "verifier-lost-response",
+      organizationId,
+      expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+      consumedAt: null,
+    });
+    await database.enrollDaemon({
+      tokenVerifier: "verifier-lost-response",
+      daemonId: TEST_DAEMON_ID,
+      idempotencyKey: "runner-lost-response",
+      serverId: "server-lost-response",
+      daemonPublicKey: "public-key",
+      credentialVerifier: "credential-verifier",
+      permissions: ["hub.execute"],
+      now: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    const { project, revision } = await createActiveProjectConfiguration(
+      database,
+      {
+        environments: [{ name: "runner", kind: "daemon", daemon: TEST_DAEMON_SLUG, cwd: "/repo" }],
+        triggers: [
+          {
+            name: "lost-response",
+            on: "manual.run",
+            max_runtime: "1h",
+            steps: [
+              {
+                id: "only",
+                environment: "runner",
+                max_runtime: "10m",
+                idle_timeout: "1m",
+                agent: { provider: "codex" },
+                prompt: [{ text: "work" }],
+              },
+            ],
+          },
+        ],
+      },
+      { organizationId },
+    );
+    const { run } = await database.createAcceptedTriggerRun({
+      organizationId,
+      projectId: project.id,
+      configurationRevisionId: revision.id,
+      providerEventReceiptId: "receipt-lost-response",
+      configuredTriggerName: "lost-response",
+      prompt: "work",
+      inputs: {},
+      triggerContext: {},
+      outputContext: {},
+      deadlineAt: new Date("2099-01-01T00:00:00.000Z"),
+      stepIds: ["only"],
+    });
+    // The daemon is slow to answer the first agent read, so the request times out while the
+    // WebSocket stays connected. No reconnect follows to recover the dispatch.
+    let reads = 0;
+    let sends = 0;
+    const connection: DaemonConnection = {
+      agents: {
+        create: async (key) => ({ id: key, workspaceId: "workspace", status: "idle" }),
+        get: async (id) => {
+          reads++;
+          if (reads === 1) throw new DaemonResponseLostError();
+          return { id, workspaceId: "workspace", status: "idle" };
+        },
+        send: async () => {
+          sends++;
+        },
+        control: async () => {},
+        restore: async () => false,
+        watch: async () => () => {},
+      },
+      getProviderSnapshot: async () => {
+        throw new Error("Provider catalog is not used");
+      },
+      refreshProviderSnapshot: async () => {},
+      listProjects: async () => [],
+      validateAgentConfiguration: async () => ({ valid: true }),
+    };
+    const lifecycle = createDaemonDispatchLifecycle({
+      database,
+      connectionForDaemon: (daemonId) => (daemonId === TEST_DAEMON_ID ? connection : undefined),
+      publicBaseUrl: "https://hub.test",
+      completionTokenSecret: "test-secret",
+      test: { logger: createLogger(new FailureLogStream()) },
+    });
+    const engine = createDurableWorkflowHandler({
+      database,
+      entitlements: createUnlimitedEntitlementsService(),
+      providers: [],
+      dispatchLaunchMachineIntent: (intent) => lifecycle.handoffLaunchMachineIntent(intent),
+    }).engine;
+    try {
+      await engine.processAvailable();
+      const [step] = await database.listWorkflowStepRunsForTriggerRun(run.id);
+      assert.ok(step);
+      const execution = await settledExecution(() =>
+        database.findAgentExecutionByWorkflowStepRunId(step.id),
+      );
+
+      assert.deepEqual(
+        { status: execution?.status, reads, sends },
+        {
+          status: "running",
+          reads: 2,
+          sends: 1,
+        },
+      );
+    } finally {
+      await engine.stop();
+      await lifecycle.stop();
+    }
+  });
 
   it("logs a daemon execution recovery failure exactly once", async () => {
     const canary = "daemon-lifecycle-secret-4c09";
@@ -411,6 +534,18 @@ describe("durable Hub action acknowledgement state", () => {
     await fixture.lifecycle.stop();
   });
 });
+
+/** Polls until the execution leaves `spawning`, and returns its last state either way. */
+async function settledExecution(
+  read: () => Promise<AgentExecutionRecord | undefined>,
+): Promise<AgentExecutionRecord | undefined> {
+  let execution = await read();
+  for (let attempt = 0; attempt < 200 && execution?.status === "spawning"; attempt += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    execution = await read();
+  }
+  return execution;
+}
 
 async function acknowledgementFixture() {
   const database = createMemoryDatabase({ now: () => new Date("2026-01-01T00:00:00.000Z") });
