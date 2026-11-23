@@ -18,6 +18,85 @@ function rawDataToText(data: RawData): string {
   return data.toString();
 }
 
+function daemonRecord(secret: string): DaemonRecord {
+  const now = new Date();
+  return {
+    id: randomUUID(),
+    slug: "negotiation-daemon",
+    machineId: randomUUID(),
+    serverId: randomUUID(),
+    daemonPublicKey: "public-key",
+    credentialVerifier: createHash("sha256").update(secret).digest("base64url"),
+    permissions: ["hub.execute"],
+    registeredByApiKeyId: null,
+    registeredByCliCredentialId: null,
+    status: "active",
+    presence: "offline",
+    connectedAt: null,
+    disconnectedAt: null,
+    lastSeenAt: now,
+    createdAt: now,
+  };
+}
+
+describe("daemon socket admission during shutdown", () => {
+  it("refuses a daemon whose credential lookup finishes after shutdown begins", async () => {
+    const secret = "daemon-secret";
+    const daemon = daemonRecord(secret);
+    const presence: string[] = [];
+    const registry = new ActiveDaemonRegistry({
+      touchDaemon: async () => undefined,
+      setDaemonPresence: async (_id, value) => {
+        presence.push(value);
+      },
+    });
+    let lookupStarted!: () => void;
+    const lookingUp = new Promise<void>((resolve) => (lookupStarted = resolve));
+    let finishLookup!: () => void;
+    const lookup = new Promise<void>((resolve) => (finishLookup = resolve));
+    const handleUpgrade = createDaemonUpgradeHandler(
+      {
+        findDaemonById: async () => {
+          lookupStarted();
+          await lookup;
+          return daemon;
+        },
+      },
+      registry,
+    );
+    const server = createServer();
+    server.on("upgrade", (request, socket, head) => {
+      void handleUpgrade(request, socket, head);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert(address && typeof address !== "string");
+    const client = new WebSocket(`ws://127.0.0.1:${address.port}/api/daemons/socket`, {
+      headers: { authorization: `Bearer ${secret}`, "x-paseo-daemon-id": daemon.id },
+    });
+    const outcome = new Promise<string>((resolve) => {
+      client.once("open", () => resolve("open"));
+      client.once("unexpected-response", (_request, response) =>
+        resolve(`rejected ${response.statusCode}`),
+      );
+      client.once("error", (error) => resolve(`error ${error.message}`));
+    });
+    await lookingUp;
+
+    await registry.stop();
+    finishLookup();
+
+    try {
+      assert.equal(await outcome, "rejected 503");
+      assert.equal(registry.connection(daemon.id), undefined);
+      assert.deepEqual(presence, []);
+    } finally {
+      client.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
 describe("daemon socket protocol negotiation", () => {
   it.each([
     {
@@ -36,24 +115,7 @@ describe("daemon socket protocol negotiation", () => {
     "negotiates the standard session only when offered=$offered",
     async ({ offered, expectedProtocol, expectsHello, expectsReady }) => {
       const secret = "daemon-secret";
-      const now = new Date();
-      const daemon: DaemonRecord = {
-        id: randomUUID(),
-        slug: "negotiation-daemon",
-        machineId: randomUUID(),
-        serverId: randomUUID(),
-        daemonPublicKey: "public-key",
-        credentialVerifier: createHash("sha256").update(secret).digest("base64url"),
-        permissions: ["hub.execute"],
-        registeredByApiKeyId: null,
-        registeredByCliCredentialId: null,
-        status: "active",
-        presence: "offline",
-        connectedAt: null,
-        disconnectedAt: null,
-        lastSeenAt: now,
-        createdAt: now,
-      };
+      const daemon = daemonRecord(secret);
       const registry = new ActiveDaemonRegistry({
         touchDaemon: async () => undefined,
         setDaemonPresence: async () => undefined,
@@ -88,13 +150,17 @@ describe("daemon socket protocol negotiation", () => {
         client.once("open", resolve);
         client.once("error", reject);
       });
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      const isHello = (message: string) =>
+        HubDaemonHelloSchema.safeParse(JSON.parse(message)).success;
+      if (expectsHello) {
+        // The hello crosses the socket after the client's open event, so wait for it to arrive.
+        await vi.waitFor(() => assert(messages.some(isHello)), { timeout: 5_000 });
+      } else {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
 
       assert.equal(negotiatedProtocol, expectedProtocol);
-      assert.equal(
-        messages.some((message) => HubDaemonHelloSchema.safeParse(JSON.parse(message)).success),
-        expectsHello,
-      );
+      assert.equal(messages.some(isHello), expectsHello);
       assert.equal(registry.connection(daemon.id) !== undefined, expectsReady);
 
       client.close();
@@ -174,8 +240,10 @@ describe("daemon socket generations", () => {
   });
 
   it("delegates provider, model, mode, and structured option validation to the daemon", async () => {
-    const pending = await daemon.pendingAgentValidation();
+    const pending = await daemon.pendingAgentValidation("/workspace");
 
+    // The daemon resolves the provider catalog of the directory the agent will run in (#209).
+    assert.equal(pending.request["cwd"], "/workspace");
     assert.equal(pending.request["provider"], "definitely-not-installed");
     assert.equal(pending.request["model"], "imaginary-model");
     assert.equal(pending.request["modeId"], "imaginary-mode");
@@ -312,6 +380,16 @@ describe("daemon socket generations", () => {
     assert.equal(await daemon.shutdownCompleted(), false);
     daemon.persistOfflinePresence();
     await daemon.shutdownCompletes();
+  });
+
+  it("finishes shutdown when a daemon never answers the close frame", async () => {
+    daemon.ignoreCloseHandshake();
+    const started = Date.now();
+
+    await daemon.stop();
+
+    // `ws` alone waits 30 seconds for the close handshake; supervisors kill Hub before that.
+    assert.ok(Date.now() - started < 3_000, `shutdown took ${Date.now() - started}ms`);
   });
 
   it("logs an offline-presence storage rejection exactly once", async () => {

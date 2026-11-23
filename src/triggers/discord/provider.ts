@@ -18,7 +18,11 @@ import {
 } from "./match.js";
 import { matchesInputFilters, parseInvocation } from "../invocation.js";
 import { NormalizedDiscordMessageEventSchema } from "./events.js";
-import type { NormalizedDiscordContextMessage, NormalizedDiscordMessageEvent } from "./events.js";
+import type {
+  DiscordMessageEmbed,
+  NormalizedDiscordContextMessage,
+  NormalizedDiscordMessageEvent,
+} from "./events.js";
 
 export interface DiscordAttachmentLocator {
   id: string;
@@ -44,6 +48,7 @@ export interface DiscordMaterializedMessage {
   channel: { id: string };
   created_at: string;
   attachments: AttachmentDescriptor[];
+  embeds: DiscordMessageEmbed[];
   referenced_message: { id: string; channel_id: string; guild_id: string | null } | null;
 }
 
@@ -438,6 +443,7 @@ async function materializeDiscordMessage(
   );
   return Object.assign(buildDiscordMergeMessage(message), {
     attachments: materializedAttachments,
+    embeds: message.embeds,
   });
 }
 

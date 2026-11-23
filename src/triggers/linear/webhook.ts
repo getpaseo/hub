@@ -20,6 +20,8 @@ const MAX_TIMESTAMP_SKEW_MS = 60_000;
 export interface LinearWebhookSourceOptions {
   signingSecret: string;
   now?: () => number;
+  /** The Linear user Hub acts as in this workspace; events it authored never start runs. */
+  appUserId?(linearOrganizationId: string): Promise<string | undefined>;
   canHydrateIssue?(linearOrganizationId: string): Promise<boolean>;
   resolveIssue?(input: {
     linearOrganizationId: string;
@@ -121,6 +123,10 @@ async function handoffLinearEvent(
       logger.info({ deliveryId: verified.deliveryId }, "ignoring unsupported Linear event");
       return new Response("OK", { status: 200 });
     }
+    if (await isAuthoredByHub(event, options)) {
+      logger.info({ deliveryId: verified.deliveryId }, "ignoring Linear event authored by Hub");
+      return new Response("OK", { status: 200 });
+    }
     const hasCompleteTeamRoute =
       eventTeamId(event) !== undefined &&
       hasExplicitNullLinearProject(verified.payload, verified.eventName);
@@ -161,6 +167,15 @@ async function handoffLinearEvent(
     logger.error({ err: error, deliveryId: verified.deliveryId }, "Linear event handoff failed");
     return Response.json({ error: "event_handoff_unavailable" }, { status: 503 });
   }
+}
+
+/** Hub's replies arrive as new comments; matching them would let a comment trigger answer itself. */
+async function isAuthoredByHub(
+  event: NonNullable<ReturnType<typeof normalizeLinearEvent>>,
+  options: Pick<LinearWebhookSourceOptions, "appUserId">,
+): Promise<boolean> {
+  if (event.actor === null || options.appUserId === undefined) return false;
+  return event.actor.id === (await options.appUserId(event.organizationId));
 }
 
 async function acceptAndDispatchLinearEvent(

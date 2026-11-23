@@ -204,7 +204,10 @@ function matchesActor(
   allowed: readonly string[] | undefined,
 ): boolean {
   if (allowed === undefined || allowed.length === 0) return false;
-  return allowed.includes("*") || (event.actor !== null && allowed.includes(event.actor.id));
+  // "*" is the editor's "Everyone" audience, as for GitHub, Slack, and Discord triggers.
+  if (allowed.includes("*")) return true;
+  if (event.actor === null) return false;
+  return allowed.includes(event.actor.id);
 }
 
 function matchesOptionalId(allowed: readonly string[], value: string | null): boolean {

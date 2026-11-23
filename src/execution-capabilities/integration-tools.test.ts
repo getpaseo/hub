@@ -13,6 +13,7 @@ import {
   createSlackIntegrationTools,
 } from "../integration-tools/index.js";
 import type { IntegrationToolGrants } from "../integration-tools/grants.js";
+import { readMcpMessage } from "../test-utils/mcp-response.js";
 import {
   chat,
   localChatFetch,
@@ -208,7 +209,7 @@ describe("Scoped integration tools through Hub MCP", () => {
           ? await server.handleSession(request, sessionId)
           : await server.handle(request, id);
         assert.equal(response.status, 200);
-        const parsed = RpcResult.parse(await response.json());
+        const parsed = RpcResult.parse(await readMcpMessage(response));
         return parsed.result;
       }
       async function call(

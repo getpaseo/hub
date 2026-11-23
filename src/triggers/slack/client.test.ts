@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { createSlackBotClient } from "./client.js";
+import { createSlackBotClient, SlackApiError } from "./client.js";
 
 describe("Slack Web API client", () => {
   it("looks up an authored username with the workspace bot token", async () => {
@@ -18,8 +18,8 @@ describe("Slack Web API client", () => {
       "operator",
     );
     assert.deepEqual(request, {
-      url: "https://slack.com/api/users.info",
-      method: "POST",
+      url: "https://slack.com/api/users.info?user=U1",
+      method: "GET",
     });
   });
 
@@ -77,7 +77,10 @@ describe("Slack Web API client", () => {
           messageTs: "1.1",
           name: "eyes",
         }),
-      /Slack API ratelimited/u,
+      (error: unknown) =>
+        error instanceof SlackApiError &&
+        error.code === "ratelimited" &&
+        error.message === "Slack API ratelimited",
     );
   });
 
@@ -133,6 +136,47 @@ describe("Slack Web API client", () => {
       { name: "TimeoutError" },
     );
     assert.equal(requestSignal?.aborted, true);
+  });
+
+  it("treats a reaction that is already in place, or whose message is gone, as done", async () => {
+    const client = createSlackBotClient({
+      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      fetch: async (input) =>
+        Response.json({
+          ok: false,
+          error: requestUrl(input).endsWith("reactions.add") ? "already_reacted" : "no_reaction",
+        }),
+    });
+    const reaction = {
+      organizationId: "org-1",
+      teamId: "T1",
+      channelId: "C1",
+      messageTs: "1.1",
+      name: "white_check_mark",
+    };
+
+    await client.addReaction(reaction);
+    await client.removeReaction(reaction);
+
+    for (const error of ["message_not_found", "channel_not_found"]) {
+      const gone = createSlackBotClient({
+        tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+        fetch: async () => Response.json({ ok: false, error }),
+      });
+      await gone.addReaction(reaction);
+      await gone.removeReaction(reaction);
+    }
+
+    const mismatched = createSlackBotClient({
+      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      fetch: async (input) =>
+        Response.json({
+          ok: false,
+          error: requestUrl(input).endsWith("reactions.add") ? "no_reaction" : "already_reacted",
+        }),
+    });
+    await assert.rejects(() => mismatched.addReaction(reaction), /Slack API no_reaction/u);
+    await assert.rejects(() => mismatched.removeReaction(reaction), /Slack API already_reacted/u);
   });
 
   it("keeps the root with the latest 49 preceding Slack replies, oldest first", async () => {
@@ -271,7 +315,7 @@ describe("Slack Web API client", () => {
           url: requestUrl(input),
           authorization: new Headers(init?.headers).get("authorization"),
         });
-        if (requestUrl(input).endsWith("files.info")) {
+        if (requestUrl(input).startsWith("https://slack.com/api/files.info?")) {
           return Response.json({
             ok: true,
             file: {
@@ -294,12 +338,32 @@ describe("Slack Web API client", () => {
 
     assert.equal(await response?.text(), "slack-image-bytes");
     assert.deepEqual(requests, [
-      { url: "https://slack.com/api/files.info", authorization: "Bearer xoxb-secret" },
+      { url: "https://slack.com/api/files.info?file=F1", authorization: "Bearer xoxb-secret" },
       {
         url: "https://files.slack.com/files-pri/T1-F1/download/image.png",
         authorization: "Bearer xoxb-secret",
       },
     ]);
+  });
+
+  it("throws SlackApiError with Slack's error code when files.info fails", async () => {
+    const client = createSlackBotClient({
+      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      fetch: async () => Response.json({ ok: false, error: "file_not_found" }),
+    });
+
+    await assert.rejects(
+      () =>
+        client.downloadAttachment!({
+          organizationId: "org-1",
+          teamId: "T1",
+          fileId: "F-missing",
+        }),
+      (error: unknown) =>
+        error instanceof SlackApiError &&
+        error.code === "file_not_found" &&
+        error.message === "Slack API file_not_found",
+    );
   });
 });
 

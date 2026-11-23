@@ -271,6 +271,36 @@ describe("Discord bot client", () => {
     assert.equal(thread.starterReads, 1);
   });
 
+  it("keeps embeds on referenced messages and thread starters", async () => {
+    const referenced = contextMessage("300", "200", "", 0, [releaseFailureEmbed()]);
+    const starter = contextMessage("200", "100", "", 0, [releaseFailureEmbed()]);
+    const bot = createDiscordBotClient({
+      token: "token",
+      clientId: "900",
+      client: createFakeClient(
+        new FakeSendableChannel({ message: referenced }),
+        new FakeReadableThread(starter, []),
+      ),
+    });
+
+    const message = await bot.readMessage({ channelId: "200", messageId: "300" });
+    const [threadStarter] = await bot.readThreadMessages({
+      channelId: "207",
+      beforeMessageId: "300",
+    });
+
+    const normalizedEmbed = {
+      title: "Deploy failed",
+      description: "The production deploy exited with code 1",
+      url: "https://ci.example.test/runs/42",
+      author: "CI",
+      fields: [{ name: "Branch", value: "main" }],
+      footer: "Run 42",
+    };
+    assert.deepEqual(message.embeds, [normalizedEmbed]);
+    assert.deepEqual(threadStarter?.embeds, [normalizedEmbed]);
+  });
+
   it("rejects thread context when Discord cannot provide its starter", async () => {
     const bot = createDiscordBotClient({
       token: "token",
@@ -343,11 +373,11 @@ describe("Discord bot client", () => {
   });
 });
 
-class FakeSendableChannel {
+class FakeSendableChannel<TMessage extends FakeMessage | FakeContextMessage = FakeMessage> {
   readonly sentPayloads: unknown[] = [];
-  readonly messages: { fetch: (messageId: string) => Promise<FakeMessage> };
+  readonly messages: { fetch: (messageId: string) => Promise<TMessage> };
 
-  constructor(readonly options: { message?: FakeMessage; messageFetchError?: Error } = {}) {
+  constructor(readonly options: { message?: TMessage; messageFetchError?: Error } = {}) {
     this.messages = {
       fetch: async (messageId: string) => {
         assert.equal(messageId, "300");
@@ -362,7 +392,7 @@ class FakeSendableChannel {
     };
   }
 
-  get message(): FakeMessage | undefined {
+  get message(): TMessage | undefined {
     return this.options.message;
   }
 
@@ -403,7 +433,22 @@ interface FakeContextMessage {
   author: { id: string; username: string; bot: boolean };
   createdAt: Date;
   attachments: Map<string, never>;
+  embeds: FakeEmbed[];
   reference: null;
+}
+
+// The discord.js `Embed` getters a received message exposes; its constructor is private.
+interface FakeEmbed {
+  title: string | null;
+  description: string | null;
+  url: string | null;
+  color: number | null;
+  timestamp: string | null;
+  author: { name: string; url?: string; iconURL?: string } | null;
+  fields: Array<{ name: string; value: string; inline?: boolean }>;
+  footer: { text: string; iconURL?: string } | null;
+  image: { url: string } | null;
+  thumbnail: { url: string } | null;
 }
 
 function contextMessage(
@@ -411,6 +456,7 @@ function contextMessage(
   channelId: string,
   content: string,
   seconds: number,
+  embeds: FakeEmbed[] = [],
 ): FakeContextMessage {
   return {
     id,
@@ -419,7 +465,23 @@ function contextMessage(
     author: { id: "400", username: "maintainer", bot: false },
     createdAt: new Date(1_700_000_000_000 + seconds * 1_000),
     attachments: new Map<string, never>(),
+    embeds,
     reference: null,
+  };
+}
+
+function releaseFailureEmbed(): FakeEmbed {
+  return {
+    title: "Deploy failed",
+    description: "The production deploy exited with code 1",
+    url: "https://ci.example.test/runs/42",
+    color: 0xe8837a,
+    timestamp: "2026-11-23T10:00:00.000Z",
+    author: { name: "CI", iconURL: "https://ci.example.test/icon.png" },
+    fields: [{ name: "Branch", value: "main", inline: true }],
+    footer: { text: "Run 42" },
+    image: null,
+    thumbnail: { url: "https://ci.example.test/thumb.png" },
   };
 }
 
@@ -485,7 +547,7 @@ class FakeMessage {
 }
 
 function createFakeClient(
-  channel: FakeSendableChannel,
+  channel: FakeSendableChannel<FakeMessage | FakeContextMessage>,
   thread?: FakeSendableChannel | FakeReadableThread,
   options: { deleteReactionError?: Error } = {},
 ): Client {
@@ -494,11 +556,14 @@ function createFakeClient(
       return fakeClient;
     },
     channels: {
-      async fetch(channelId: string): Promise<FakeSendableChannel | FakeReadableThread> {
+      async fetch(
+        channelId: string,
+      ): Promise<FakeSendableChannel<FakeMessage | FakeContextMessage> | FakeReadableThread> {
         if (channelId === "207" && thread !== undefined) {
           return thread;
         }
-        const attachedThread = channel.message?.thread;
+        const attachedThread =
+          channel.message instanceof FakeMessage ? channel.message.thread : undefined;
         if (channelId === "300" && attachedThread !== undefined && attachedThread !== null)
           return attachedThread;
         assert.equal(channelId, "200");

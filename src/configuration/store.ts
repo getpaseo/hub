@@ -33,9 +33,15 @@ export interface StoredProjectConfiguration {
   configuration: CompiledProjectConfiguration;
 }
 
+/** Where an agent will run: the daemon, and the directory whose provider catalog applies. */
+export interface AgentValidationTarget {
+  daemonId: string;
+  cwd: string;
+}
+
 export interface DaemonAgentConfigurationValidator {
   validateAgentConfiguration(
-    daemonId: string,
+    target: AgentValidationTarget,
     agent: import("../config/compiler.js").CompiledAgent,
   ): Promise<
     | { valid: true }
@@ -429,9 +435,11 @@ async function validateNamedAgents(
   validator: DaemonAgentConfigurationValidator | undefined,
 ): Promise<ConfigurationValidationErrors | undefined> {
   if (targets.length === 0) return undefined;
-  const daemonIdByEnvironment = new Map(
+  const targetByEnvironment = new Map(
     configuration.environments.flatMap((environment) =>
-      environment.kind === "daemon" ? [[environment.name, environment.daemonId] as const] : [],
+      environment.kind === "daemon"
+        ? [[environment.name, { daemonId: environment.daemonId, cwd: environment.cwd }] as const]
+        : [],
     ),
   );
   if (validator === undefined) {
@@ -448,10 +456,10 @@ async function validateNamedAgents(
   const validations: Array<Promise<readonly { path: (string | number)[]; message: string }[]>> = [];
   for (const { name, agent, environmentNames } of targets) {
     for (const environmentName of environmentNames) {
-      const daemonId = daemonIdByEnvironment.get(environmentName);
-      if (daemonId === undefined) continue;
+      const target = targetByEnvironment.get(environmentName);
+      if (target === undefined) continue;
       validations.push(
-        validator.validateAgentConfiguration(daemonId, agent).then(
+        validator.validateAgentConfiguration(target, agent).then(
           (result) =>
             result.valid
               ? []
@@ -778,7 +786,8 @@ async function resolveResource(
   }
   if (provider === "slack") {
     const connection = (await database.organizationConnectionUsage(organizationId)).slack.find(
-      ({ id, slug }) => slug === resource && allowedConnectionIds.has(id),
+      ({ id, slug, teamId }) =>
+        (teamId === resource || slug === resource) && allowedConnectionIds.has(id),
     );
     return connection === undefined
       ? undefined
@@ -792,7 +801,8 @@ async function resolveResource(
     return { connectionId: connections[0]!.id, resourceId: resource };
   }
   const connection = (await database.organizationConnectionUsage(organizationId)).discord.find(
-    ({ id, slug }) => slug === resource && allowedConnectionIds.has(id),
+    ({ id, slug, guildId }) =>
+      (guildId === resource || slug === resource) && allowedConnectionIds.has(id),
   );
   return connection === undefined
     ? undefined

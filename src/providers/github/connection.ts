@@ -264,9 +264,13 @@ class GitHubConnectionFlow {
         const justInstalled = choices.find((choice) => choice.installationId === installed);
         if (justInstalled?.availability === "available") return this.connect(step, justInstalled);
         // GitHub's setup return named an installation this person cannot see, or does not own.
-        if (justInstalled === undefined || justInstalled.availability === "notOwner") {
+        if (justInstalled === undefined) {
           await this.consume(step);
           return this.result(step, "github_verification_rejected");
+        }
+        if (justInstalled.availability === "notOwner") {
+          await this.consume(step);
+          return this.result(step, "github_not_owner");
         }
       }
       if (choices.length > 0) return this.offer(step, choices);
@@ -289,14 +293,14 @@ class GitHubConnectionFlow {
     const installationId = positiveInteger(new URL(request.url).searchParams.get("installationId"));
     return this.step(request, "github_selection", "choose", async (step) => {
       const choice = storedChoices(step.attempt).find(
-        (candidate) =>
-          candidate.installationId === installationId && candidate.availability === "available",
+        (candidate) => candidate.installationId === installationId,
       );
-      if (choice === undefined) {
-        await this.consume(step);
-        return this.result(step, "github_verification_rejected");
-      }
-      return this.connect(step, choice);
+      if (choice?.availability === "available") return this.connect(step, choice);
+      await this.consume(step);
+      return this.result(
+        step,
+        choice?.availability === "notOwner" ? "github_not_owner" : "github_verification_rejected",
+      );
     });
   }
 
@@ -433,7 +437,11 @@ class GitHubConnectionFlow {
 
   private result(
     step: AttemptStep,
-    result: "github_connected" | "github_approval_required" | "github_verification_rejected",
+    result:
+      | "github_connected"
+      | "github_approval_required"
+      | "github_verification_rejected"
+      | "github_not_owner",
   ): Response {
     return connectionResult(
       step.attempt.callbackOrigin,

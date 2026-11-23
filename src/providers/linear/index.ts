@@ -129,6 +129,8 @@ export function createLinearRegistration(
     ...(database === null
       ? {}
       : {
+          appUserId: async (linearOrganizationId) =>
+            (await database.findLinearConnection(linearOrganizationId))?.appUserId,
           canHydrateIssue: async (linearOrganizationId) => {
             const connection = await database.findLinearConnection(linearOrganizationId);
             return connection !== undefined && !linearConnectionRequiresReauthorization(connection);

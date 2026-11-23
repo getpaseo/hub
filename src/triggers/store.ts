@@ -145,7 +145,10 @@ export class OrganizationTriggerStore {
         ReturnType<DaemonAgentConfigurationValidator["validateAgentConfiguration"]>
       >;
       try {
-        verdict = await this.agentValidator.validateAgentConfiguration(target.daemonId, agent);
+        verdict = await this.agentValidator.validateAgentConfiguration(
+          { daemonId: target.daemonId, cwd: target.cwd },
+          agent,
+        );
       } catch (error) {
         throw new TriggerDocumentError([
           {

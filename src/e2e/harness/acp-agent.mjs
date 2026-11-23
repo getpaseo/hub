@@ -146,9 +146,29 @@ async function callMcp(server, id, method, params) {
     body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
   });
   if (!response.ok) throw new Error(`MCP ${method} failed: ${response.status}`);
-  const body = await response.json();
+  const body = await readMcpMessage(response);
   if (body.error) throw new Error(`MCP ${method} protocol error: ${JSON.stringify(body.error)}`);
   return body;
+}
+
+/**
+ * A stateless 2025-era MCP exchange answers as one SSE event; an error before
+ * dispatch answers as plain JSON.
+ * @param {Response} response
+ */
+async function readMcpMessage(response) {
+  const text = await response.text();
+  if (!response.headers.get("content-type")?.startsWith("text/event-stream")) {
+    return JSON.parse(text);
+  }
+  const data = text
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice("data:".length).trim())
+    .filter((line) => line.length > 0);
+  const message = data.at(-1);
+  if (message === undefined) throw new Error("MCP event stream carried no message");
+  return JSON.parse(message);
 }
 
 function mcpHeaders(server) {

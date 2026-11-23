@@ -889,6 +889,7 @@ function validateExpressionContract(
 ): void {
   const environmentNames = new Set(environments.keys());
   const stepOrdinals = new Map(trigger.steps.map((step, ordinal) => [step.id, ordinal]));
+  const finiteTemplateValues = finiteTemplateResolver(trigger);
   const valueNames = new Set(Object.keys(trigger.values));
   const visiting = new Set<string>();
 
@@ -947,72 +948,6 @@ function validateExpressionContract(
         throw new Error(`step ${stepId} environment ${name} must be a daemon environment`);
       }
     }
-  }
-
-  function finiteTemplateValues(template: string, ordinal: number): readonly string[] | undefined {
-    let results = [""];
-    let cursor = 0;
-    while (cursor < template.length) {
-      const start = template.indexOf(EXPRESSION_START, cursor);
-      if (start < 0) return results.map((prefix) => prefix + template.slice(cursor));
-      const end = template.indexOf(EXPRESSION_END, start + EXPRESSION_START.length);
-      if (end < 0) return undefined;
-      const literal = template.slice(cursor, start);
-      const choices = finiteExpressionValues(
-        parseExpression(template.slice(start + EXPRESSION_START.length, end)),
-        ordinal,
-      );
-      if (choices === undefined) return undefined;
-      results = results.flatMap((prefix) =>
-        choices.map((choice) => prefix + literal + interpolatedValue(choice)),
-      );
-      cursor = end + EXPRESSION_END.length;
-    }
-    return [...new Set(results)];
-  }
-
-  function finiteExpressionValues(
-    expression: Expression,
-    ordinal: number,
-  ): readonly JsonValue[] | undefined {
-    if (expression.kind === "literal") return [expression.value];
-    if (expression.kind === "path") return finitePathValues(expression.value, ordinal);
-    if (expression.kind === "not") {
-      const values = finiteExpressionValues(expression.value, ordinal);
-      return values === undefined ? undefined : [...new Set(values.map((value) => !truthy(value)))];
-    }
-    const left = finiteExpressionValues(expression.left, ordinal);
-    const right = finiteExpressionValues(expression.right, ordinal);
-    if (left === undefined || right === undefined) return undefined;
-    const results: JsonValue[] = [];
-    for (const leftValue of left) {
-      for (const rightValue of right) {
-        results.push(finiteBinaryValue(expression.operator, leftValue, rightValue));
-      }
-    }
-    return uniqueJsonValues(results);
-  }
-
-  function finitePathValues(
-    reference: ExpressionPath,
-    ordinal: number,
-  ): readonly JsonValue[] | undefined {
-    if (reference.namespace === "paseo") {
-      if (!Array.isArray(reference.path)) return undefined;
-      const input = trigger.inputs[reference.path[1]];
-      if (input?.choices === undefined) return undefined;
-      return input.required || input.default !== undefined
-        ? input.choices
-        : [...input.choices, null];
-    }
-    if (reference.namespace === "values") {
-      const value = trigger.values[reference.name];
-      return value === undefined ? undefined : finiteExpressionValues(value, ordinal);
-    }
-    const referencedOrdinal = stepOrdinals.get(reference.stepId);
-    if (referencedOrdinal === undefined || referencedOrdinal >= ordinal) return undefined;
-    const output = trigger.steps[referencedOrdinal]?.output;
-    return output === undefined ? undefined : finiteSchemaChoices(output.schema, reference.path);
   }
 
   function validateValue(name: string, ordinal = Number.POSITIVE_INFINITY): void {
@@ -1160,6 +1095,106 @@ function compileAt<T>(path: readonly (string | number)[], operation: () => T): T
       { cause: error },
     );
   }
+}
+
+/**
+ * Every value a template in step `ordinal` can resolve to, when the trigger's inputs, values,
+ * and earlier step outputs prove it finite; `undefined` when they do not.
+ */
+function finiteTemplateResolver(
+  trigger: CompiledTrigger,
+): (template: string, ordinal: number) => readonly string[] | undefined {
+  const stepOrdinals = new Map(trigger.steps.map((step, ordinal) => [step.id, ordinal]));
+  return finiteTemplateValues;
+
+  function finiteTemplateValues(template: string, ordinal: number): readonly string[] | undefined {
+    let results = [""];
+    let cursor = 0;
+    while (cursor < template.length) {
+      const start = template.indexOf(EXPRESSION_START, cursor);
+      if (start < 0) return results.map((prefix) => prefix + template.slice(cursor));
+      const end = template.indexOf(EXPRESSION_END, start + EXPRESSION_START.length);
+      if (end < 0) return undefined;
+      const literal = template.slice(cursor, start);
+      const choices = finiteExpressionValues(
+        parseExpression(template.slice(start + EXPRESSION_START.length, end)),
+        ordinal,
+      );
+      if (choices === undefined) return undefined;
+      results = results.flatMap((prefix) =>
+        choices.map((choice) => prefix + literal + interpolatedValue(choice)),
+      );
+      cursor = end + EXPRESSION_END.length;
+    }
+    return [...new Set(results)];
+  }
+
+  function finiteExpressionValues(
+    expression: Expression,
+    ordinal: number,
+  ): readonly JsonValue[] | undefined {
+    if (expression.kind === "literal") return [expression.value];
+    if (expression.kind === "path") return finitePathValues(expression.value, ordinal);
+    if (expression.kind === "not") {
+      const values = finiteExpressionValues(expression.value, ordinal);
+      return values === undefined ? undefined : [...new Set(values.map((value) => !truthy(value)))];
+    }
+    const left = finiteExpressionValues(expression.left, ordinal);
+    const right = finiteExpressionValues(expression.right, ordinal);
+    if (left === undefined || right === undefined) return undefined;
+    const results: JsonValue[] = [];
+    for (const leftValue of left) {
+      for (const rightValue of right) {
+        results.push(finiteBinaryValue(expression.operator, leftValue, rightValue));
+      }
+    }
+    return uniqueJsonValues(results);
+  }
+
+  function finitePathValues(
+    reference: ExpressionPath,
+    ordinal: number,
+  ): readonly JsonValue[] | undefined {
+    if (reference.namespace === "paseo") {
+      if (!Array.isArray(reference.path)) return undefined;
+      const input = trigger.inputs[reference.path[1]];
+      if (input?.choices === undefined) return undefined;
+      return input.required || input.default !== undefined
+        ? input.choices
+        : [...input.choices, null];
+    }
+    if (reference.namespace === "values") {
+      const value = trigger.values[reference.name];
+      return value === undefined ? undefined : finiteExpressionValues(value, ordinal);
+    }
+    const referencedOrdinal = stepOrdinals.get(reference.stepId);
+    if (referencedOrdinal === undefined || referencedOrdinal >= ordinal) return undefined;
+    const output = trigger.steps[referencedOrdinal]?.output;
+    return output === undefined ? undefined : finiteSchemaChoices(output.schema, reference.path);
+  }
+}
+
+/**
+ * The environments and named agents a step can launch. Compilation already proved both
+ * selections finite, so this is exact for every compiled trigger.
+ */
+export function stepSelections(
+  trigger: CompiledTrigger,
+  ordinal: number,
+): { environments: readonly string[]; namedAgents: readonly string[] | undefined } {
+  const step = trigger.steps[ordinal];
+  if (step === undefined) throw new Error(`trigger ${trigger.name} has no step ${ordinal}`);
+  const finiteTemplateValues = finiteTemplateResolver(trigger);
+  const environments = finiteTemplateValues(step.environment, ordinal);
+  if (environments === undefined) {
+    throw new Error(`step ${step.id} environment must resolve from finite choices`);
+  }
+  if (!("selector" in step.agent)) return { environments, namedAgents: undefined };
+  const namedAgents = finiteTemplateValues(step.agent.selector, ordinal);
+  if (namedAgents === undefined) {
+    throw new Error(`step ${step.id} agent must resolve from finite choices`);
+  }
+  return { environments, namedAgents };
 }
 
 function truthy(value: JsonValue): boolean {

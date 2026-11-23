@@ -5,7 +5,11 @@ import { compiledConfigurationHash, parseCompiledHubConfig } from "../config/com
 import { ProjectConfigurationStore, revisionBundleFiles } from "./store.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import { enrollTestDaemon, TEST_DAEMON_SLUG } from "../test-utils/project-configuration.js";
-import type { DiscordConnectionRecord, LinearConnectionRecord } from "../db/types.js";
+import type {
+  DiscordConnectionRecord,
+  LinearConnectionRecord,
+  SlackConnectionRecord,
+} from "../db/types.js";
 import { configurationBundleFixture } from "../test-utils/configuration-bundle.js";
 
 const primary: DiscordConnectionRecord = {
@@ -15,6 +19,18 @@ const primary: DiscordConnectionRecord = {
   slug: "discord-primary",
   guildName: "Primary guild",
   providerApplicationId: "discord-app",
+};
+
+const slack: SlackConnectionRecord = {
+  id: "00000000-0000-4000-8000-000000000003",
+  organizationId: "org_1",
+  slug: "slack-primary",
+  teamId: "T0100",
+  teamName: "Primary workspace",
+  botUserId: "U0BOT",
+  botAccessToken: "xoxb-test",
+  scopes: [],
+  providerApplicationId: null,
 };
 
 const secondary: DiscordConnectionRecord = {
@@ -100,6 +116,50 @@ describe("ProjectConfigurationStore resource compilation", () => {
     assert.deepEqual(activeAgent.options, options);
     assert.deepEqual(storedAgent.options, options);
   });
+
+  it.each([
+    {
+      provider: "Discord",
+      field: "guild" as const,
+      connection: primary,
+      resourceId: primary.guildId,
+      configuration: discordConfiguration({ guild: primary.guildId }),
+    },
+    {
+      provider: "Slack",
+      field: "workspace" as const,
+      connection: slack,
+      resourceId: slack.teamId,
+      configuration: slackConfiguration({ workspace: slack.teamId }),
+    },
+  ])(
+    "resolves a $provider filters.$field by its provider id",
+    async ({ field, connection, resourceId, configuration }) => {
+      const database = createMemoryDatabase();
+      await enrollTestDaemon(database);
+      database.organizationConnectionUsage = () =>
+        Promise.resolve({ github: [], slack: [slack], discord: [primary], linear: [] });
+      const project = await database.createProject({
+        organizationId: "org_1",
+        name: "Resource id project",
+        slug: "resource-id-project",
+        createdByUserId: "user-1",
+      });
+      const store = new ProjectConfigurationStore(database, project.id);
+
+      const revision = await store.insertManualBundleRevision({
+        files: configurationBundleFixture(dump(configuration)),
+        userId: "user-1",
+      });
+
+      assert.equal(revision.validationErrors, null);
+      const active = await store.activate(revision.id);
+      const filters = active.configuration.triggers[0]?.filters;
+      assert.equal(filters?.[field], resourceId);
+      assert.equal(filters?.connectionId, connection.id);
+      assert.equal(filters?.resourceId, resourceId);
+    },
+  );
 
   it("accepts guild and scopes an authored resource to an optional connection slug", async () => {
     const database = createMemoryDatabase();
@@ -579,12 +639,20 @@ describe("ProjectConfigurationStore resource compilation", () => {
 });
 
 function discordConfiguration(filters: Record<string, string>) {
+  return mentionConfiguration("discord", filters);
+}
+
+function slackConfiguration(filters: Record<string, string>) {
+  return mentionConfiguration("slack", filters);
+}
+
+function mentionConfiguration(provider: "discord" | "slack", filters: Record<string, string>) {
   return {
     environments: [{ name: "runner", kind: "daemon", daemon: TEST_DAEMON_SLUG, cwd: "/repo" }],
     triggers: [
       {
-        name: "discord-mention",
-        on: "discord.mention",
+        name: `${provider}-mention`,
+        on: `${provider}.mention`,
         max_runtime: "1h",
         filters: { ...filters, from_users: ["user-1"] },
         steps: [

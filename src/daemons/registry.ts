@@ -76,6 +76,12 @@ type PendingRequestInput =
 const DEFAULT_PROJECT_LIST_TIMEOUT_MS = 15_000;
 
 /**
+ * How long shutdown waits for a daemon to answer the 1001 close frame before dropping its socket.
+ * `ws` alone waits 30 seconds, longer than supervisors wait before killing Hub.
+ */
+const SHUTDOWN_CLOSE_TIMEOUT_MS = 1_000;
+
+/**
  * How a daemon says it will not list its projects for Hub: one that predates sharing them
  * refuses the session, and one that predates the request does not know its name. Neither is a
  * failure to report; the daemon offers no projects.
@@ -107,6 +113,7 @@ export class ActiveDaemonRegistry {
   private readonly revokedHandlers = new Set<DaemonRevokedHandler>();
   private readonly presenceWrites = new Set<Promise<void>>();
   private generation = 0;
+  private stopping = false;
 
   constructor(
     private readonly database: Pick<Database, "setDaemonPresence" | "touchDaemon">,
@@ -175,7 +182,12 @@ export class ActiveDaemonRegistry {
             type: "hello",
             clientId: `hub:${daemon.id}`,
             clientType: "hub",
-            capabilities: { all_providers: true, selective_agent_timeline: true },
+            // Hidden runs need idle updates before Hub can archive them and resume the conversation.
+            capabilities: {
+              all_providers: true,
+              selective_agent_timeline: true,
+              background_agents: true,
+            },
             protocolVersion: 1,
           }),
         ),
@@ -201,13 +213,15 @@ export class ActiveDaemonRegistry {
       getProviderSnapshot: (options) => this.getProviderSnapshot(daemonId, options),
       refreshProviderSnapshot: (options) => this.refreshProviderSnapshot(daemonId, options),
       listProjects: () => this.listProjects(daemonId),
-      validateAgentConfiguration: (agent) => this.validateAgentConfiguration(daemonId, agent),
+      validateAgentConfiguration: (agent, options) =>
+        this.validateAgentConfiguration(daemonId, agent, options),
     };
   }
 
-  validateAgentConfiguration(
+  private validateAgentConfiguration(
     daemonId: string,
     agent: import("../config/compiler.js").CompiledAgent,
+    options: { cwd: string },
   ): Promise<{ valid: true } | { valid: false; issues: readonly AgentValidationIssue[] }> {
     const active = this.active.get(daemonId);
     if (!active?.ready) return Promise.reject(new Error("daemon_not_connected"));
@@ -218,6 +232,7 @@ export class ActiveDaemonRegistry {
     const request = HubExecutionAgentValidateRequestSchema.parse({
       type: "hub.execution.agent.validate.request",
       requestId,
+      cwd: options.cwd,
       provider: agent.provider,
       model: agent.model,
       modeId: agent.mode,
@@ -248,16 +263,15 @@ export class ActiveDaemonRegistry {
     }
   }
 
+  /** False once shutdown begins: a daemon admitted after that would outlive the database. */
+  accepting(): boolean {
+    return !this.stopping;
+  }
+
   async stop(): Promise<void> {
+    this.stopping = true;
     const activeDaemons = Array.from(this.active.values());
-    const sockets = activeDaemons.map(
-      (active) =>
-        new Promise<void>((resolve) => {
-          if (active.socket.readyState === WebSocket.CLOSED) return resolve();
-          active.socket.once("close", () => resolve());
-          active.socket.close(1001, "server shutdown");
-        }),
-    );
+    const sockets = activeDaemons.map((active) => closeForShutdown(active.socket));
     await Promise.all(sockets);
     await Promise.all(this.presenceWrites);
     for (const [daemonId, pending] of this.pendingByDaemon) {
@@ -576,6 +590,16 @@ export class ActiveDaemonRegistry {
   }
 }
 
+/** Closes with 1001, and drops the socket if the daemon does not answer the close frame in time. */
+async function closeForShutdown(socket: WebSocket): Promise<void> {
+  if (socket.readyState === WebSocket.CLOSED) return;
+  const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+  const unanswered = setTimeout(() => socket.terminate(), SHUTDOWN_CLOSE_TIMEOUT_MS);
+  socket.close(1001, "server shutdown");
+  await closed;
+  clearTimeout(unanswered);
+}
+
 function samePermissions(actual: readonly string[], expected: readonly string[]): boolean {
   return (
     actual.length === expected.length && expected.every((permission) => actual.includes(permission))
@@ -612,6 +636,8 @@ export function createDaemonUpgradeHandler(
       !matchesVerifier(credential, daemon.credentialVerifier)
     )
       return rejectUpgrade(socket, 403);
+    // The lookup above can finish after shutdown has taken its snapshot of sockets to close.
+    if (!registry.accepting()) return rejectUpgrade(socket, 503);
     const sessionProtocol =
       request.headers[DAEMON_SESSION_PROTOCOL_HEADER] === DAEMON_SESSION_PROTOCOL_VERSION
         ? "session-v1"
@@ -633,7 +659,7 @@ function matchesVerifier(value: string, verifier: string): boolean {
 function bearer(value: string | undefined): string | undefined {
   return value?.startsWith("Bearer ") ? value.slice(7) : undefined;
 }
-function rejectUpgrade(socket: Duplex, status: 401 | 403): void {
+function rejectUpgrade(socket: Duplex, status: 401 | 403 | 503): void {
   socket.write(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\n\r\n`);
   socket.destroy();
 }

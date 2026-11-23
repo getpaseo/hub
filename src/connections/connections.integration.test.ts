@@ -178,7 +178,7 @@ describe("provider connection facades PostgreSQL authority", () => {
     assert.deepEqual(await offered(connections, notOwner), [
       { account: "acme-inc", availability: "notOwner" },
     ]);
-    assert.equal(result(await choose(connections, notOwner, 42)), "github_verification_rejected");
+    assert.equal(result(await choose(connections, notOwner, 42)), "github_not_owner");
 
     const forged = await atChooser(connections);
     assert.equal(result(await choose(connections, forged, 84)), "github_verification_rejected");
@@ -230,10 +230,7 @@ describe("provider connection facades PostgreSQL authority", () => {
       redirectLocation(await setup(connections, setupUrl)).toString(),
     );
 
-    assert.equal(
-      result(await githubCallback(connections, authorized)),
-      "github_verification_rejected",
-    );
+    assert.equal(result(await githubCallback(connections, authorized)), "github_not_owner");
     assert.equal(await database.findGitHubConnection(42), undefined);
   });
 

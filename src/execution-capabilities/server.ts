@@ -5,14 +5,13 @@ import {
   type IntegrationToolHandlers,
 } from "../integration-tools/index.js";
 import type { ErrorObject } from "ajv";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { createMcpHandler, Server } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import {
   deriveAgentExecutionCompletionToken,
   verifyAgentExecutionCompletionToken,
 } from "../agent-executions/completion-token.js";
+import type { AgentSessionRecord } from "../agent-sessions/index.js";
 import type { AgentExecutionRecord, Database } from "../db/types.js";
 import { registerResponseLifecycle } from "../http/response-lifecycle.js";
 import { reportFailure, withReference } from "../failures/index.js";
@@ -70,54 +69,8 @@ export function createExecutionCapabilityServer(
       ) {
         return Response.json({ error: "unauthorized" }, { status: 401 });
       }
-      const server = new Server(
-        { name: "paseo-hub-session", version: "1.0.0" },
-        { capabilities: { tools: {} } },
-      );
-      server.setRequestHandler(ListToolsRequestSchema, () => ({
-        tools: session.tools.map((tool) => ({
-          ...tool,
-          inputSchema: {
-            ...tool.inputSchema,
-            properties: {
-              ...tool.inputSchema.properties,
-              executionId: {
-                type: "string",
-                description: "Execution ID supplied with the request prompt.",
-              },
-            },
-            required: [...(tool.inputSchema.required ?? []), "executionId"],
-          },
-        })),
-      }));
-      server.setRequestHandler(CallToolRequestSchema, async (call) => {
-        const { executionId, ...args } = call.params.arguments ?? {};
-        if (typeof executionId !== "string" || !z.uuid().safeParse(executionId).success)
-          return toolFailure("A valid executionId is required");
-        const execution = await options.database.findAgentExecutionById(executionId);
-        if (
-          !execution ||
-          execution.agentSessionId !== session.id ||
-          execution.organizationId !== session.organizationId ||
-          execution.projectId !== session.projectId ||
-          (execution.status !== "spawning" && execution.status !== "running")
-        ) {
-          return toolFailure("Execution is not live in this agent session");
-        }
-        const outputs = options.outputs.materialize(
-          execution.launchIntent?.allowOutputs ?? [],
-          execution.outputContext,
-        );
-        return callExecutionTool(
-          options,
-          execution,
-          deriveAgentExecutionCompletionToken(options.completionTokenSecret!, execution.id),
-          outputs,
-          call.params.name,
-          args,
-        );
-      });
-      return serveMcp(request, sessionId, server);
+      const secret = options.completionTokenSecret;
+      return serveMcp(request, sessionId, () => createSessionMcpServer(options, session, secret));
     },
     async handle(request, executionId) {
       const token = readBearerToken(request.headers.get("authorization") ?? undefined);
@@ -147,26 +100,29 @@ export function createExecutionCapabilityServer(
         );
       }
 
-      const server = createMcpServer(options, execution, token!, materializedOutputs);
-      return serveMcp(request, executionId, server);
+      return serveMcp(request, executionId, () =>
+        createExecutionMcpServer(options, execution, token!, materializedOutputs),
+      );
     },
   };
 }
 
-async function serveMcp(request: Request, executionId: string, server: Server): Promise<Response> {
-  const transport = new WebStandardStreamableHTTPServerTransport({
-    // Omitting sessionIdGenerator is the SDK's stateless-mode setting.
-    enableJsonResponse: true,
-    enableDnsRebindingProtection: false,
-  });
+/**
+ * Serves one MCP HTTP exchange. The handler answers both protocol eras from
+ * fresh per-request servers: 2026-07-28 requests carry their protocol version
+ * in a per-request envelope, and 2025-era clients that open with `initialize`
+ * go through the SDK's stateless fallback. Nothing outlives the response.
+ */
+async function serveMcp(
+  request: Request,
+  resourceId: string,
+  createServer: () => Server,
+): Promise<Response> {
+  const handler = createMcpHandler(createServer, { legacy: "stateless" });
   let responseLifecycleRegistered = false;
-  const closeMcp = async (): Promise<void> => {
-    await closeCapabilityResource("mcp_server", executionId, () => server.close());
-    await closeCapabilityResource("mcp_transport", executionId, () => transport.close());
-  };
+  const closeMcp = () => closeCapabilityResource("mcp_handler", resourceId, () => handler.close());
   try {
-    await server.connect(transport);
-    const response = await transport.handleRequest(request);
+    const response = await handler.fetch(request);
     responseLifecycleRegistered = true;
     return registerResponseLifecycle(response, {
       // HTTP finish only proves that Node flushed the MCP response. The
@@ -221,7 +177,62 @@ async function authenticateExecution(
   return execution;
 }
 
-function createMcpServer(
+function createSessionMcpServer(
+  options: ExecutionCapabilityOptions,
+  session: AgentSessionRecord,
+  completionTokenSecret: string,
+): Server {
+  const server = new Server(
+    { name: "paseo-hub-session", version: "1.0.0" },
+    { capabilities: { tools: {} } },
+  );
+  server.setRequestHandler("tools/list", () => ({
+    tools: session.tools.map((tool) => ({
+      ...tool,
+      inputSchema: {
+        ...tool.inputSchema,
+        properties: {
+          ...tool.inputSchema.properties,
+          executionId: {
+            type: "string",
+            description: "Execution ID supplied with the request prompt.",
+          },
+        },
+        required: [...(tool.inputSchema.required ?? []), "executionId"],
+      },
+    })),
+  }));
+  server.setRequestHandler("tools/call", async (call) => {
+    const { executionId, ...args } = call.params.arguments ?? {};
+    if (typeof executionId !== "string" || !z.uuid().safeParse(executionId).success)
+      return toolFailure("A valid executionId is required");
+    const execution = await options.database.findAgentExecutionById(executionId);
+    if (
+      !execution ||
+      execution.agentSessionId !== session.id ||
+      execution.organizationId !== session.organizationId ||
+      execution.projectId !== session.projectId ||
+      (execution.status !== "spawning" && execution.status !== "running")
+    ) {
+      return toolFailure("Execution is not live in this agent session");
+    }
+    const outputs = options.outputs.materialize(
+      execution.launchIntent?.allowOutputs ?? [],
+      execution.outputContext,
+    );
+    return callExecutionTool(
+      options,
+      execution,
+      deriveAgentExecutionCompletionToken(completionTokenSecret, execution.id),
+      outputs,
+      call.params.name,
+      args,
+    );
+  });
+  return server;
+}
+
+function createExecutionMcpServer(
   options: ExecutionCapabilityOptions,
   execution: AgentExecutionRecord,
   token: string,
@@ -236,8 +247,8 @@ function createMcpServer(
     materializedOutputs,
     execution.launchIntent?.tools,
   );
-  server.setRequestHandler(ListToolsRequestSchema, () => ({ tools }));
-  server.setRequestHandler(CallToolRequestSchema, (request) =>
+  server.setRequestHandler("tools/list", () => ({ tools: [...tools] }));
+  server.setRequestHandler("tools/call", (request) =>
     callExecutionTool(
       options,
       execution,
