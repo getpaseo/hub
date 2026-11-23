@@ -226,18 +226,76 @@ describe("Linear registration", () => {
     assert.equal(accepts, 1);
     assert.equal(acceptedProjectId, undefined);
   });
+
+  it("ignores comments Hub's Linear app authored, so its replies cannot trigger new runs", async () => {
+    const database = createMemoryDatabase();
+    database.findLinearConnection = async (linearOrganizationId) =>
+      linearOrganizationId === "linear-org"
+        ? {
+            id: "linear-connection",
+            organizationId: "org",
+            slug: "acme-linear",
+            providerApplicationId: "client",
+            linearOrganizationId,
+            linearOrganizationName: "Acme",
+            appUserId: "app-user",
+            accessToken: "access-token",
+            refreshToken: "refresh-token",
+            accessTokenExpiresAt: null,
+            scopes: ["read", "comments:create"],
+          }
+        : undefined;
+    let accepts = 0;
+    database.acceptLinearEvent = async (input) => {
+      accepts += 1;
+      return { status: "duplicate", receiptId: input.deliveryId };
+    };
+    const registration = createLinearRegistration({
+      database,
+      auth: null,
+      applicationBaseUrl: "https://hub.test",
+      publicBaseUrl: "https://hub.test",
+      configuration: linearConfiguration(),
+      apiClient: {
+        readIssue: async ({ issueId }) => ({
+          id: issueId,
+          title: "Ship the feature",
+          description: null,
+          projectId: "project-1",
+          stateId: "ready",
+          assigneeId: null,
+          labelIds: [],
+        }),
+        readIssueComments: async () => ({ comments: [], complete: true }),
+        createComment: async () => {},
+      },
+    });
+
+    const hubReply = await registration.requests[0]!.handle(
+      linearCommentRequest({ id: "app-user", name: "Paseo Hub" }),
+    );
+    assert.equal(hubReply.status, 200);
+    assert.equal(accepts, 0);
+
+    const memberComment = await registration.requests[0]!.handle(
+      linearCommentRequest({ id: "member", name: "Member" }),
+    );
+    assert.equal(memberComment.status, 200);
+    assert.equal(accepts, 1);
+  });
 });
 
 function linearConfiguration() {
   return { clientId: "client", clientSecret: "secret", webhookSecret: "webhook-secret" };
 }
 
-function linearCommentRequest(): Request {
+function linearCommentRequest(actor?: { id: string; name: string }): Request {
   const body = JSON.stringify({
     action: "create",
     type: "Comment",
     organizationId: "linear-org",
     webhookTimestamp: Date.now(),
+    ...(actor === undefined ? {} : { actor }),
     data: { id: "comment-1", issueId: "issue-1", body: "Please investigate" },
   });
   return new Request("https://hub.test/api/integrations/linear/events", {
