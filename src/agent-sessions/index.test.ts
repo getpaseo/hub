@@ -38,8 +38,8 @@ class TestAgents implements AgentConnection {
     // The daemon resumes a stored agent from persistence when it receives a message.
     this.agents.set(agentId, { ...(await this.get(agentId)), status: "running" });
   }
-  /** The daemon's idle runtime cleanup keeps the agent in storage as closed, not archived. */
-  async collectIdle(agentId: string) {
+  /** Idle runtime cleanup and daemon shutdown keep the agent in storage as closed, not archived. */
+  async closeAgent(agentId: string) {
     this.agents.set(agentId, { ...(await this.get(agentId)), status: "closed" });
   }
   async watch() {
@@ -229,7 +229,7 @@ test("a follow-up resumes a continuation agent the daemon closed while idle", as
   const first = await f.arrival();
   const original = await first.dispatch();
   await f.database.transitionAgentExecution(first.executionId, "succeeded");
-  await f.connection.collectIdle(original.agentId);
+  await f.connection.closeAgent(original.agentId);
 
   const followUp = await f.arrival("conversation", "daemon", {}, "follow-up");
   expect(await followUp.dispatch()).toMatchObject({
@@ -248,7 +248,7 @@ test("a follow-up recovered before its message was sent still resumes the closed
   const first = await f.arrival();
   const original = await first.dispatch();
   await f.database.transitionAgentExecution(first.executionId, "succeeded");
-  await f.connection.collectIdle(original.agentId);
+  await f.connection.closeAgent(original.agentId);
 
   const followUp = await f.arrival("conversation", "daemon", {}, "follow-up");
   f.connection.loseNextGet = true;
@@ -260,12 +260,24 @@ test("a follow-up recovered before its message was sent still resumes the closed
   ]);
 });
 
+test("a recovered execution whose new agent closed before its first status is interrupted", async () => {
+  const f = await fixture();
+  const first = await f.arrival();
+  f.connection.loseNextGet = true;
+  await expect(first.dispatch()).rejects.toThrow("response lost");
+  const [agentId] = f.connection.agents.keys();
+  await f.connection.closeAgent(agentId!);
+
+  await expect(first.dispatch()).rejects.toThrow("agent_interrupted");
+  expect(f.connection.deliveries).toHaveLength(0);
+});
+
 test("a recovered execution whose own agent closed is interrupted instead of resent", async () => {
   const f = await fixture();
   const first = await f.arrival();
   const original = await first.dispatch();
   await f.database.transitionAgentExecution(first.executionId, "running");
-  await f.connection.collectIdle(original.agentId);
+  await f.connection.closeAgent(original.agentId);
 
   await expect(first.dispatch()).rejects.toThrow("agent_interrupted");
   expect(f.connection.deliveries).toHaveLength(1);
