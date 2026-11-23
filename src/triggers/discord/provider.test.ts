@@ -230,6 +230,7 @@ describe("Discord Phase 1 trigger provider", () => {
           author: { id: "401", username: "maintainer", bot: false },
           createdAt: "2026-05-18T23:59:00.000Z",
           attachments: [attachment],
+          embeds: [],
           referencedMessage: null,
         },
       ],
@@ -310,6 +311,7 @@ describe("Discord Phase 1 trigger provider", () => {
               url: attachments.urlFor(contextAttachment.id, "execution-discord-materialize"),
             },
           ],
+          embeds: [],
           referenced_message: null,
         },
         thread: {
@@ -332,6 +334,7 @@ describe("Discord Phase 1 trigger provider", () => {
                   url: attachments.urlFor(contextAttachment.id, "execution-discord-materialize"),
                 },
               ],
+              embeds: [],
               referenced_message: null,
             },
           ],
@@ -370,6 +373,7 @@ describe("Discord Phase 1 trigger provider", () => {
       author: { id: "401", username: "maintainer", bot: false },
       createdAt: "2026-05-18T23:59:00.000Z",
       attachments: [],
+      embeds: [],
       referencedMessage: null,
     };
     const bot = new MemoryDiscordBotClient({
@@ -413,11 +417,69 @@ describe("Discord Phase 1 trigger provider", () => {
           channel: { id: "200" },
           created_at: "2026-05-18T23:59:00.000Z",
           attachments: [],
+          embeds: [],
           referenced_message: null,
         },
         thread: null,
       },
     });
+  });
+
+  it("carries embeds from referenced messages and thread starters into context", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    const embed = {
+      title: "Deploy failed",
+      description: "The production deploy exited with code 1",
+      url: "https://ci.example.test/runs/42",
+      author: "CI",
+      fields: [{ name: "Branch", value: "main" }],
+      footer: "Run 42",
+    };
+    const embedOnlyMessage = (id: string, channelId: string) => ({
+      id,
+      channelId,
+      content: "",
+      author: { id: "402", username: "ci-bot", bot: true },
+      createdAt: "2026-05-18T23:59:00.000Z",
+      attachments: [],
+      embeds: [embed],
+      referencedMessage: null,
+    });
+    const bot = new MemoryDiscordBotClient({
+      selfUserId: "900",
+      messages: [embedOnlyMessage("298", "200")],
+      threadMessages: [embedOnlyMessage("207", "200")],
+    });
+    const provider = createDiscordTriggerProvider({
+      configurationStoreForProject: () => store,
+      bot,
+    });
+    const match = (
+      await provider.match(
+        external(
+          project.id,
+          revision.id,
+          event({
+            channelId: "207",
+            threadId: "207",
+            parentChannelId: "200",
+            referencedMessage: { id: "298", channelId: "200", guildId: "100" },
+          }),
+        ),
+      )
+    )[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+    const materialized = await provider.materializeContext!({
+      executionId: "execution-discord-embeds",
+      organizationId: "org_1",
+      projectId: project.id,
+      providerEventReceiptId: "11111111-1111-4111-8111-111111111118",
+      triggerContext: match.triggerContext,
+    });
+
+    assert.deepEqual(materialized?.discord.referenced_message?.embeds, [embed]);
+    assert.deepEqual(materialized?.discord.thread?.messages[0]?.embeds, [embed]);
   });
 
   it("does not require attachment capability during Discord ingestion", async () => {

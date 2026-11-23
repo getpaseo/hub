@@ -147,7 +147,7 @@ test("refuses an installation GitHub did not confirm and says so", async ({ hub 
   await github.forgeSetupReturn(84);
   await hub.expectGitHubNotConnected(
     "alice",
-    "GitHub didn't confirm that you can connect that account. Nothing was connected. Connect GitHub again, and pick an account you own",
+    "GitHub didn't confirm that you can connect that account. Nothing was connected. Start the connection again from this page",
   );
 });
 

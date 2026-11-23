@@ -1157,10 +1157,12 @@ ${this.failureArtifacts()}`,
     const trigger = configuration.triggers.find(
       (item) => item.name === (realAgent ? "finalize" : "e2e-discord"),
     )!;
-    for (const step of trigger.steps)
+    for (const step of trigger.steps) {
       step.continuation = realAgent
         ? { mode: "key", key: "real-agent-continuation" }
         : { mode: "conversation" };
+      if (!realAgent) step.background = true;
+    }
     await this.requirePool().query(
       "update project_configuration_revisions set normalized_configuration = $2 where id = $1",
       [row.id, configuration],
@@ -1187,6 +1189,17 @@ ${this.failureArtifacts()}`,
       );
       return result.rows[0]?.done === true;
     }, "session workspace archival");
+  }
+
+  async sessionIdleWasAcknowledged(executionId: string): Promise<void> {
+    await this.observe(async () => {
+      const result = await this.requirePool().query<{ idle: boolean }>(
+        `select hub_action_acknowledgements->>'idle_at' is not null as idle
+         from agent_executions where id = $1`,
+        [executionId],
+      );
+      return result.rows[0]?.idle === true;
+    }, "hidden session idle acknowledgement");
   }
 
   async completedCapabilityRun(executionId: string) {
@@ -1587,6 +1600,11 @@ ${this.failureArtifacts()}`,
       writeFile(this.completionGate, "ready\n"),
     ]);
     await initializeGitWorkspace(this.workspace);
+    // Docker publishes container ports from the same ephemeral range that
+    // `availablePort()` draws from, and a reserved port is free again until its
+    // child binds it. Start the container first so it cannot take a reserved port.
+    this.postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
+    this.pool = await createPostgresQueryRuntime(this.postgres.getConnectionUri());
     const [hubPort, proxyPort, daemonPort] = await Promise.all([
       availablePort(),
       availablePort(),
@@ -1595,8 +1613,6 @@ ${this.failureArtifacts()}`,
     this.hubPort = hubPort;
     this.hubOrigin = `http://127.0.0.1:${hubPort}`;
     this.daemonHost = `127.0.0.1:${daemonPort}`;
-    this.postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
-    this.pool = await createPostgresQueryRuntime(this.postgres.getConnectionUri());
     this.proxy = await HubFaultProxy.start(this.hubOrigin, proxyPort);
     this.hub = await this.startHub();
     if (this.options.realAgent !== true) {

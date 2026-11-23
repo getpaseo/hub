@@ -523,6 +523,14 @@ function normalizeContextMessage(message: Message): NormalizedDiscordContextMess
       contentType: attachment.contentType,
       size: attachment.size,
     })),
+    embeds: message.embeds.map((embed) => ({
+      title: embed.title,
+      description: embed.description,
+      url: embed.url,
+      author: embed.author?.name ?? null,
+      fields: embed.fields.map((field) => ({ name: field.name, value: field.value })),
+      footer: embed.footer?.text ?? null,
+    })),
     referencedMessage:
       message.reference === null || message.reference.messageId === undefined
         ? null

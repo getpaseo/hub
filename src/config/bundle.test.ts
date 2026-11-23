@@ -141,6 +141,44 @@ describe("Hub configuration bundle", () => {
     });
   });
 
+  /**
+   * A daemon validates an agent against the catalog of each directory it may run in, so a
+   * directory or named agent the workflow can never select must not be checked: it could
+   * reject a bundle whose every reachable launch is valid.
+   */
+  it("validates each named agent only in the environments its step can select", () => {
+    const unreachable = hub
+      .replace(
+        "agents:",
+        [
+          "  docs:",
+          "    kind: daemon",
+          "    daemon: local",
+          "    cwd: /workspace/docs",
+          "agents:",
+        ].join("\n"),
+      )
+      .concat(["  reviewer:", "    provider: opencode", ""].join("\n"));
+    const files = [
+      ...canonicalFiles().filter(({ path }) => path !== ".paseo/hub.yml"),
+      { path: ".paseo/hub.yml", content: unreachable },
+    ];
+    const bundle = compileHubBundle(files);
+
+    assert.deepEqual(
+      bundle.agentValidationTargets
+        .map(({ name, environmentNames }) => ({
+          name,
+          environmentNames: [...environmentNames].sort(),
+        }))
+        .sort((left, right) => left.name.localeCompare(right.name)),
+      [
+        { name: "claude", environmentNames: ["hub", "paseo"] },
+        { name: "codex-safe", environmentNames: ["hub", "paseo"] },
+      ],
+    );
+  });
+
   it("rejects monolithic triggers with a direct migration error", () => {
     assert.throws(
       () => compileHubBundle([{ path: ".paseo/hub.yml", content: `${hub}\ntriggers: []\n` }]),

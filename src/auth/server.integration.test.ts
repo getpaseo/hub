@@ -218,7 +218,7 @@ describe("account and organization boundary", () => {
       assert.equal(bound, login === "octo" ? organizationId : undefined);
       assert.equal(
         new URL(result.headers.get("location")!).searchParams.get("result"),
-        login === "octo" ? "github_connected" : "github_verification_rejected",
+        login === "octo" ? "github_connected" : "github_not_owner",
       );
     });
   }

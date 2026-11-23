@@ -1552,17 +1552,37 @@ export class DaemonDispatchLifecycle {
         onEvent: (event) => this.observeSessionEvent(input.executionId, input.daemonId, event),
       })
       .catch(async (error: unknown) => {
+        if (this.lostOnLiveConnection(error, input.daemonId, connection)) return undefined;
         const execution = await this.options.database.findAgentExecutionById(input.executionId);
         if (execution && isTerminalExecutionStatus(execution.status)) {
           await this.reconcileHubActionSafely(execution);
         }
         throw error;
       });
+    // Every daemon request in a dispatch is idempotent: create by session key, send by execution id.
+    if (dispatched === undefined) return this.dispatchSession(input);
     this.executionSubscriptions.get(input.executionId)?.();
     this.executionSubscriptions.set(input.executionId, dispatched.unsubscribe);
     await this.startAgentExecution(input.executionId);
     await this.armLiveExecutionDeadline(input.executionId);
     return dispatched.agentId;
+  }
+
+  /**
+   * A response lost because the connection closed or was replaced is recovered when the daemon
+   * reconnects. A response lost on the connection that is still current timed out, and no
+   * reconnect will follow, so the dispatch has to repeat itself.
+   */
+  private lostOnLiveConnection(
+    error: unknown,
+    daemonId: string,
+    connection: DaemonConnection,
+  ): boolean {
+    return (
+      error instanceof DaemonResponseLostError &&
+      !this.stopping &&
+      this.options.connectionForDaemon(daemonId)?.agents === connection.agents
+    );
   }
 
   private observeSessionEvent(executionId: string, daemonId: string, event: AgentEvent): void {

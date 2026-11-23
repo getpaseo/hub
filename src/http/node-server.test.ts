@@ -218,6 +218,54 @@ describe("fetch response lifecycle", () => {
   });
 });
 
+describe("streamed responses", () => {
+  // A stateless 2025-era MCP tool call answers over SSE and holds its server
+  // open until the stream ends or is cancelled. A client that disconnects
+  // before the first event must release it, not leave it waiting on a socket
+  // that will never read again.
+  it("cancels the response body when the client disconnects before the first chunk", async () => {
+    let readStarted!: () => void;
+    const bodyRead = new Promise<void>((resolve) => {
+      readStarted = resolve;
+    });
+    let bodyCancelled!: () => void;
+    const cancelled = new Promise<void>((resolve) => {
+      bodyCancelled = resolve;
+    });
+    const server = createFetchServer(
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull: () => {
+              readStarted();
+              return new Promise<void>(() => {});
+            },
+            cancel: () => bodyCancelled(),
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    );
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address !== null && typeof address !== "string");
+    try {
+      const request = httpRequest({
+        host: "127.0.0.1",
+        port: address.port,
+        path: "/",
+        method: "POST",
+      });
+      request.once("error", () => {});
+      request.end("{}");
+      await bodyRead;
+      request.destroy();
+      await cancelled;
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 describe("HTTP failure ownership", () => {
   it("emits exactly one record for a reported expected 4xx response", async () => {
     const stream = new CaptureStream();

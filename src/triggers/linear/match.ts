@@ -175,7 +175,10 @@ function matchesActor(
   event: NormalizedLinearEvent,
   allowed: readonly string[] | undefined,
 ): boolean {
-  if (allowed === undefined || allowed.length === 0 || event.actor === null) return false;
+  if (allowed === undefined || allowed.length === 0) return false;
+  // "*" is the editor's "Everyone" audience, as for GitHub, Slack, and Discord triggers.
+  if (allowed.includes("*")) return true;
+  if (event.actor === null) return false;
   return allowed.includes(event.actor.id);
 }
 
