@@ -30,6 +30,12 @@ class TestAgents implements AgentConnection {
     if (this.messages.has(messageId)) return;
     this.messages.add(messageId);
     this.deliveries.push({ agentId, text });
+    // The daemon resumes a stored agent from persistence when it receives a message.
+    this.agents.set(agentId, { ...(await this.get(agentId)), status: "running" });
+  }
+  /** The daemon's idle runtime cleanup keeps the agent in storage as closed, not archived. */
+  async collectIdle(agentId: string) {
+    this.agents.set(agentId, { ...(await this.get(agentId)), status: "closed" });
   }
   async watch() {
     return () => {};
@@ -211,6 +217,35 @@ test("same-key arrivals share an agent; an earlier completion cannot archive new
   const third = await f.arrival();
   expect(await third.dispatch()).toMatchObject({ agentId: a.agentId, action: "restored" });
   expect(f.connection.restorations).toBe(1);
+});
+
+test("a follow-up resumes a continuation agent the daemon closed while idle", async () => {
+  const f = await fixture();
+  const first = await f.arrival();
+  const original = await first.dispatch();
+  await f.database.transitionAgentExecution(first.executionId, "succeeded");
+  await f.connection.collectIdle(original.agentId);
+
+  const followUp = await f.arrival("conversation", "daemon", {}, "follow-up");
+  expect(await followUp.dispatch()).toMatchObject({
+    agentId: original.agentId,
+    action: "continued",
+  });
+  expect(f.connection.creates).toHaveLength(1);
+  expect(f.connection.deliveries.map(({ text }) => text)).toEqual([
+    expect.stringContaining("hello"),
+    expect.stringContaining("follow-up"),
+  ]);
+});
+
+test("a recovered execution whose own agent closed is interrupted instead of resent", async () => {
+  const f = await fixture();
+  const first = await f.arrival();
+  const original = await first.dispatch();
+  await f.connection.collectIdle(original.agentId);
+
+  await expect(first.dispatch()).rejects.toThrow("agent_interrupted");
+  expect(f.connection.deliveries).toHaveLength(1);
 });
 
 test("session tools keep each arrival's destination and reject stale or foreign execution IDs", async () => {
