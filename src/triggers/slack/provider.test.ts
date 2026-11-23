@@ -443,6 +443,7 @@ describe("Slack Phase 1 trigger provider", () => {
       publicBaseUrl: "https://hub.test",
       authoritySecret: "hub-secret",
       resolvers: {},
+      now: () => new Date("2026-10-31T00:00:00.000Z"),
     });
     const client = new RecordingSlackClient({
       threadMessages: [
@@ -553,6 +554,7 @@ describe("Slack Phase 1 trigger provider", () => {
       publicBaseUrl: "https://hub.test",
       authoritySecret: "hub-secret",
       resolvers: {},
+      now: () => new Date("2026-10-31T00:00:00.000Z"),
     });
     const provider = createSlackTriggerProvider({
       configurationStoreForProject: () => store,
