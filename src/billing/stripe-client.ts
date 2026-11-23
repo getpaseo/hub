@@ -131,6 +131,16 @@ export function createStripeBillingClient(
         idempotencyKey: `checkout:${input.organizationId}:${requestDigest(params)}`,
       });
       if (session.url === null) throw new Error("Stripe checkout session has no redirect URL");
+      // A changed checkout gets a new session, so expire the customer's earlier ones: only the
+      // newest link can be paid, and two completed links never make two subscriptions. This runs
+      // after the create, because an identical retry replays the session it must keep.
+      for await (const open of stripe.checkout.sessions.list({
+        customer: input.customerId,
+        status: "open",
+        limit: LIST_PAGE_SIZE,
+      })) {
+        if (open.id !== session.id) await stripe.checkout.sessions.expire(open.id);
+      }
       return { url: session.url };
     },
     async changeSubscriptionPrice(input: ChangeSubscriptionPriceInput): Promise<void> {
