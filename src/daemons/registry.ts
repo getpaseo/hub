@@ -175,7 +175,12 @@ export class ActiveDaemonRegistry {
             type: "hello",
             clientId: `hub:${daemon.id}`,
             clientType: "hub",
-            capabilities: { all_providers: true, selective_agent_timeline: true },
+            // Hidden runs need idle updates before Hub can archive them and resume the conversation.
+            capabilities: {
+              all_providers: true,
+              selective_agent_timeline: true,
+              background_agents: true,
+            },
             protocolVersion: 1,
           }),
         ),

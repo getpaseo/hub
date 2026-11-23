@@ -23,7 +23,7 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     assert.deepEqual(shutdown?.leakedProcesses ?? [], []);
   }, 120_000);
 
-  it("continues a conversation through session tools and restores its archived workspace", async () => {
+  it("continues a hidden conversation through session tools and restores its archived workspace", async () => {
     await hub.connect();
     await hub.daemonIsConnected();
     await hub.enableAgentContinuation();
@@ -31,6 +31,7 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     const firstResult = await hub.completedCapabilityRun(first.executionId);
     assert.equal(firstResult.replySucceeded, true);
     assert.equal(firstResult.duplicateRejected, true);
+    await hub.sessionIdleWasAcknowledged(first.executionId);
     await hub.sessionIsArchived(first.executionId);
     const session = await hub.sessionEvidence(first.executionId);
     const second = await hub.runCapabilityTrigger("continuation-second", "one-thread");
