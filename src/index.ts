@@ -17,7 +17,7 @@ import type { Locks } from "./db/runtime/locks/index.js";
 import { logger } from "./logger.js";
 import { reportFailure } from "./failures/index.js";
 import { installProcessFailureHandlers } from "./failures/process.js";
-import { createFetchServer } from "./http/node-server.js";
+import { createHubServer } from "./http/hub-server.js";
 import { loadBuiltStartServer } from "./server/build.js";
 import { createAuthServer } from "./auth/server.js";
 import { startApplication, stopApplication, type ApplicationRuntime } from "./server/runtime.js";
@@ -305,37 +305,26 @@ async function main(): Promise<void> {
   const config = loadRuntimeConfig();
   const port = readPort();
   const canonicalRequestOrigin = nonEmptyEnvironment(process.env["PASEO_HUB_APP_URL"]);
-  const server = createFetchServer((request) => build.default.fetch(request), {
+  const server = createHubServer({
+    fetch: (request) => build.default.fetch(request),
+    upgrade: (request, socket, head) =>
+      handleDaemonUpgradeRequest({
+        request,
+        socket,
+        handle: () => build.handleDaemonUpgrade(request, socket, head),
+      }),
+    stopRuntime: () => build.stopProductionRuntime(),
     ...(config.trustedClientIpHeader === undefined
       ? {}
       : { trustedClientIpHeader: config.trustedClientIpHeader }),
     ...(canonicalRequestOrigin === undefined ? {} : { canonicalRequestOrigin }),
   });
-  server.on("upgrade", (request, socket, head) => {
-    void handleDaemonUpgradeRequest({
-      request,
-      socket,
-      handle: () => build.handleDaemonUpgrade(request, socket, head),
-    });
-  });
   const appUrl =
     nonEmptyEnvironment(process.env["PASEO_HUB_APP_URL"]) ?? `http://localhost:${port}`;
-  server.listen(port, config.bind, () => {
-    logger.info(`server started, available at: ${appUrl}`);
-  });
+  await server.listen(port, config.bind);
+  logger.info(`server started, available at: ${appUrl}`);
 
-  const stop = async () => {
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => {
-        if (error !== undefined) {
-          reject(error);
-          return;
-        }
-        resolve();
-      });
-    });
-    await build.stopProductionRuntime();
-  };
+  const stop = () => server.close();
   const stopAfterSignal = () => {
     void shutdownProductionServer(stop)
       .then((clean) => {

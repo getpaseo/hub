@@ -76,6 +76,12 @@ type PendingRequestInput =
 const DEFAULT_PROJECT_LIST_TIMEOUT_MS = 15_000;
 
 /**
+ * How long shutdown waits for a daemon to answer the 1001 close frame before dropping its socket.
+ * `ws` alone waits 30 seconds, longer than supervisors wait before killing Hub.
+ */
+const SHUTDOWN_CLOSE_TIMEOUT_MS = 1_000;
+
+/**
  * How a daemon says it will not list its projects for Hub: one that predates sharing them
  * refuses the session, and one that predates the request does not know its name. Neither is a
  * failure to report; the daemon offers no projects.
@@ -258,14 +264,7 @@ export class ActiveDaemonRegistry {
 
   async stop(): Promise<void> {
     const activeDaemons = Array.from(this.active.values());
-    const sockets = activeDaemons.map(
-      (active) =>
-        new Promise<void>((resolve) => {
-          if (active.socket.readyState === WebSocket.CLOSED) return resolve();
-          active.socket.once("close", () => resolve());
-          active.socket.close(1001, "server shutdown");
-        }),
-    );
+    const sockets = activeDaemons.map((active) => closeForShutdown(active.socket));
     await Promise.all(sockets);
     await Promise.all(this.presenceWrites);
     for (const [daemonId, pending] of this.pendingByDaemon) {
@@ -582,6 +581,16 @@ export class ActiveDaemonRegistry {
       request.reject(new Error("daemon disconnected"));
     }
   }
+}
+
+/** Closes with 1001, and drops the socket if the daemon does not answer the close frame in time. */
+async function closeForShutdown(socket: WebSocket): Promise<void> {
+  if (socket.readyState === WebSocket.CLOSED) return;
+  const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+  const unanswered = setTimeout(() => socket.terminate(), SHUTDOWN_CLOSE_TIMEOUT_MS);
+  socket.close(1001, "server shutdown");
+  await closed;
+  clearTimeout(unanswered);
 }
 
 function samePermissions(actual: readonly string[], expected: readonly string[]): boolean {

@@ -1,4 +1,10 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type RequestListener,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { isIP } from "node:net";
 import type { Logger } from "pino";
@@ -19,38 +25,48 @@ interface StreamingRequestInit extends RequestInit {
   duplex: "half";
 }
 
-interface FetchServerOptions {
+export interface FetchRequestOptions {
   trustedClientIpHeader?: string;
   /** Explicit public URL whose origin is authoritative over proxy request metadata. */
   canonicalRequestOrigin?: string;
+  logger?: Pick<Logger, "warn" | "error">;
+}
+
+interface FetchServerOptions extends FetchRequestOptions {
   /** Test and embedded adapters may terminate TLS directly; production normally uses its proxy. */
   tls?: { key: string; cert: string };
-  logger?: Pick<Logger, "warn" | "error">;
 }
 
 export function createFetchServer(
   fetchHandler: FetchHandler,
   options: FetchServerOptions = {},
 ): Server {
+  const { tls, ...requestOptions } = options;
+  const listener = createFetchRequestListener(fetchHandler, requestOptions);
+  return tls === undefined ? createServer(listener) : createHttpsServer(tls, listener);
+}
+
+/** Answers each Node request by forwarding it to a fetch handler. */
+export function createFetchRequestListener(
+  fetchHandler: FetchHandler,
+  options: FetchRequestOptions = {},
+): RequestListener {
   const resolvedOptions = {
     ...options,
     ...(options.canonicalRequestOrigin === undefined
       ? {}
       : { canonicalRequestOrigin: parseHttpOrigin(options.canonicalRequestOrigin) }),
   };
-  const handler = (request: IncomingMessage, response: ServerResponse) => {
+  return (request, response) => {
     void forwardRequest(fetchHandler, request, response, resolvedOptions);
   };
-  return resolvedOptions.tls === undefined
-    ? createServer(handler)
-    : createHttpsServer(resolvedOptions.tls, handler);
 }
 
 async function forwardRequest(
   fetchHandler: FetchHandler,
   incoming: IncomingMessage,
   outgoing: ServerResponse,
-  options: FetchServerOptions,
+  options: FetchRequestOptions,
 ): Promise<void> {
   try {
     const clientAddress = resolveClientAddress(incoming, options.trustedClientIpHeader);
@@ -196,7 +212,7 @@ function safeRequestPath(value: string | undefined): string {
 function toRequest(
   incoming: IncomingMessage,
   clientAddress: string,
-  options: FetchServerOptions,
+  options: FetchRequestOptions,
   onBodyCancelled: () => void,
 ): Request {
   const method = incoming.method ?? "GET";
@@ -275,7 +291,7 @@ function requestHeaders(incoming: IncomingMessage): Headers {
   return headers;
 }
 
-function requestOrigin(incoming: IncomingMessage, options: FetchServerOptions): string {
+function requestOrigin(incoming: IncomingMessage, options: FetchRequestOptions): string {
   if (options.canonicalRequestOrigin !== undefined) return options.canonicalRequestOrigin;
   const directProtocol = Reflect.get(incoming.socket, "encrypted") === true ? "https" : "http";
   const directHost = incoming.headers.host;

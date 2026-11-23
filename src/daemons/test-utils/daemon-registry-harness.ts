@@ -26,7 +26,7 @@ interface PendingRequest<T> {
 
 /** Shape of the internal fields `ws` leaves untyped but always populates. */
 interface WebSocketInternals {
-  _socket: { write(data: Buffer): void };
+  _socket: { write(data: Buffer): void; pause(): void };
 }
 
 export class DaemonRegistryHarness {
@@ -314,6 +314,10 @@ export class DaemonRegistryHarness {
     this.currentSocket().sendInvalidClose(code);
   }
 
+  ignoreCloseHandshake(): void {
+    this.currentSocket().stopReading();
+  }
+
   waitUntilCurrentClosed(): Promise<void> {
     return this.currentSocket().waitUntilClosed();
   }
@@ -511,6 +515,13 @@ class RegistrySocket {
     const maskedPayload = Buffer.alloc(2);
     for (let i = 0; i < 2; i += 1) maskedPayload[i] = payload[i]! ^ mask[i]!;
     tcpSocket.write(Buffer.concat([Buffer.from([0x88, 0x82]), mask, maskedPayload]));
+  }
+
+  /** Stops reading from the wire, so the daemon never answers the server's close frame. */
+  stopReading(): void {
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- `ws` leaves `_socket` untyped
+    const internals = this.socket as unknown as WebSocketInternals;
+    internals._socket.pause();
   }
 
   close(): void {

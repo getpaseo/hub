@@ -320,6 +320,16 @@ describe("daemon socket generations", () => {
     await daemon.shutdownCompletes();
   });
 
+  it("finishes shutdown when a daemon never answers the close frame", async () => {
+    daemon.ignoreCloseHandshake();
+    const started = Date.now();
+
+    await daemon.stop();
+
+    // `ws` alone waits 30 seconds for the close handshake; supervisors kill Hub before that.
+    assert.ok(Date.now() - started < 3_000, `shutdown took ${Date.now() - started}ms`);
+  });
+
   it("logs an offline-presence storage rejection exactly once", async () => {
     const canary = "offline-presence-secret-7e12";
     daemon.failOfflinePresence(new Error(canary));
