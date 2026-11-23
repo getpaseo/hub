@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import StripeSDK from "stripe";
 import type {
   StripeCatalogPrice,
@@ -70,8 +71,14 @@ export function createStripeCatalogSource(stripeSecretKey: string): StripeCatalo
  * event ordering. `getSubscription` reads the period end off the first subscription item, where
  * the current Stripe API keeps it.
  */
-export function createStripeBillingClient(stripeSecretKey: string): StripeBillingClient {
-  const stripe = new StripeSDK(stripeSecretKey);
+export function createStripeBillingClient(
+  stripeSecretKey: string,
+  options: {
+    /** Stripe's API host. Only tests point this anywhere else. */
+    apiBaseUrl?: string;
+  } = {},
+): StripeBillingClient {
+  const stripe = new StripeSDK(stripeSecretKey, stripeConnection(options.apiBaseUrl));
   return {
     async ensureCustomer(input: EnsureCustomerInput): Promise<string> {
       const customer = await stripe.customers.create(
@@ -104,21 +111,25 @@ export function createStripeBillingClient(stripeSecretKey: string): StripeBillin
       return result;
     },
     async createCheckoutSession(input: CreateCheckoutSessionInput): Promise<{ url: string }> {
-      const session = await stripe.checkout.sessions.create(
-        {
-          mode: "subscription",
-          customer: input.customerId,
-          line_items: [{ price: input.priceId, quantity: input.quantity }],
-          success_url: input.successUrl,
-          cancel_url: input.cancelUrl,
-          client_reference_id: input.organizationId,
+      const params: StripeSDK.Checkout.SessionCreateParams = {
+        mode: "subscription",
+        customer: input.customerId,
+        line_items: [{ price: input.priceId, quantity: input.quantity }],
+        allow_promotion_codes: true,
+        success_url: input.successUrl,
+        cancel_url: input.cancelUrl,
+        client_reference_id: input.organizationId,
+        metadata: { [ORGANIZATION_REFERENCE_METADATA_KEY]: input.organizationId },
+        subscription_data: {
           metadata: { [ORGANIZATION_REFERENCE_METADATA_KEY]: input.organizationId },
-          subscription_data: {
-            metadata: { [ORGANIZATION_REFERENCE_METADATA_KEY]: input.organizationId },
-          },
         },
-        { idempotencyKey: `checkout:${input.organizationId}:${input.priceId}` },
-      );
+      };
+      // Identical concurrent attempts collapse onto one session. The key covers every parameter
+      // because Stripe rejects a reused key with different parameters for 24 hours, which would
+      // otherwise strand a checkout after a seat change or a new Checkout option.
+      const session = await stripe.checkout.sessions.create(params, {
+        idempotencyKey: `checkout:${input.organizationId}:${requestDigest(params)}`,
+      });
       if (session.url === null) throw new Error("Stripe checkout session has no redirect URL");
       return { url: session.url };
     },
@@ -165,6 +176,21 @@ export function createStripeBillingClient(stripeSecretKey: string): StripeBillin
       if (organizationId === undefined || item === undefined) return undefined;
       return toSubscriptionState(subscription, organizationId, item);
     },
+  };
+}
+
+function requestDigest(params: object): string {
+  return createHash("sha256").update(JSON.stringify(params)).digest("base64url");
+}
+
+function stripeConnection(apiBaseUrl: string | undefined): StripeSDK.StripeConfig {
+  if (apiBaseUrl === undefined) return {};
+  const url = new URL(apiBaseUrl);
+  return {
+    host: url.hostname,
+    port: url.port,
+    protocol: url.protocol === "http:" ? "http" : "https",
+    maxNetworkRetries: 0,
   };
 }
 

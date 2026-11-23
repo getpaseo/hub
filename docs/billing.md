@@ -146,9 +146,11 @@ more than one interval. Everything here is driven off the catalog, so a second p
 annual price restores the controls without a redesign — but nothing that has no meaning today is
 rendered today.
 
-Checkout is the only way onto a paid plan, and it always collects payment. Customer, Checkout, and
+Checkout is the only way onto a paid plan, and it always collects payment. It accepts the
+promotion codes defined in the Stripe dashboard; Hub stores no coupons. Customer, Checkout, and
 subscription metadata carry the organization id, and idempotency keys collapse concurrent creation
-attempts. A customer who already has a subscription never reaches Checkout again: a plan change
+attempts. The Checkout key digests every request parameter, because Stripe refuses a key reused
+with different parameters for 24 hours. A customer who already has a subscription never reaches Checkout again: a plan change
 updates the existing subscription's item in place.
 
 The subscription webhook (`BillingRuntime.handleWebhook`) reconciles rather than applies. It takes
