@@ -149,9 +149,11 @@ rendered today.
 Checkout is the only way onto a paid plan, and it always collects payment. It accepts the
 promotion codes defined in the Stripe dashboard; Hub stores no coupons. Customer, Checkout, and
 subscription metadata carry the organization id, and idempotency keys collapse concurrent creation
-attempts. The Checkout key digests every request parameter, because Stripe refuses a key reused
-with different parameters for 24 hours. A changed checkout therefore gets a new session, and
-creating one expires the customer's other open sessions so only the newest link can be paid. A customer who already has a subscription never reaches Checkout again: a plan change
+attempts. A customer has at most one open Checkout link. A retry of the same request reuses the
+open session tagged with that request's digest; any other request creates a session and expires
+the open ones, so only the newest link can be paid. The new session's idempotency key digests the
+request and the sessions it replaces: Stripe refuses a key reused with different parameters, and
+replays a reused key's first response even after that session expired. A customer who already has a subscription never reaches Checkout again: a plan change
 updates the existing subscription's item in place.
 
 The subscription webhook (`BillingRuntime.handleWebhook`) reconciles rather than applies. It takes

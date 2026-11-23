@@ -10,6 +10,7 @@ interface CheckoutSession {
   customer: string;
   status: "open" | "expired";
   url: string;
+  metadata: Record<string, string>;
   params: URLSearchParams;
 }
 
@@ -59,6 +60,7 @@ class LocalStripe {
         customer: params.get("customer") ?? "",
         status: "open",
         url: `https://checkout.stripe.test/c/pay/${id}`,
+        metadata: metadataOf(params),
         params,
       };
       this.sessions.push(session);
@@ -80,6 +82,15 @@ class LocalStripe {
     }
     send(response, 400, { error: { type: "invalid_request_error" } });
   }
+}
+
+function metadataOf(params: URLSearchParams): Record<string, string> {
+  const metadata: Record<string, string> = {};
+  for (const [name, value] of params) {
+    const key = /^metadata\[(.+)\]$/u.exec(name)?.[1];
+    if (key !== undefined) metadata[key] = value;
+  }
+  return metadata;
 }
 
 function view({ params: _params, ...session }: CheckoutSession) {
@@ -133,6 +144,24 @@ describe("Stripe billing client", () => {
     assert.deepEqual(
       stripe.checkoutSessions.map(({ id, status }) => ({ id, status })),
       [{ id: "cs_test_1", status: "open" }],
+    );
+  });
+
+  it("returns a payable link when a checkout goes back to an earlier choice", async () => {
+    const client = createStripeBillingClient("sk_test_local", { apiBaseUrl });
+
+    await client.createCheckoutSession(CHECKOUT);
+    await client.createCheckoutSession({ ...CHECKOUT, priceId: "price_business" });
+    const back = await client.createCheckoutSession(CHECKOUT);
+
+    assert.deepEqual(back, { url: "https://checkout.stripe.test/c/pay/cs_test_3" });
+    assert.deepEqual(
+      stripe.checkoutSessions.map(({ id, status }) => ({ id, status })),
+      [
+        { id: "cs_test_1", status: "expired" },
+        { id: "cs_test_2", status: "expired" },
+        { id: "cs_test_3", status: "open" },
+      ],
     );
   });
 

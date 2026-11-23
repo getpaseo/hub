@@ -18,6 +18,8 @@ import type {
 const PASEO_PLAN_METADATA_KEY = "paseo_plan";
 const ORGANIZATION_REFERENCE_METADATA_KEY = "organizationId";
 const LIST_PAGE_SIZE = 100;
+/** Digest of the Checkout request a session was created for, so a retry can find it again. */
+const CHECKOUT_REQUEST_METADATA_KEY = "paseo_checkout_request";
 
 /**
  * The real Stripe SDK behind `StripeCatalogSource`. Fetches every product/price via the List
@@ -124,23 +126,27 @@ export function createStripeBillingClient(
           metadata: { [ORGANIZATION_REFERENCE_METADATA_KEY]: input.organizationId },
         },
       };
-      // Identical concurrent attempts collapse onto one session. The key covers every parameter
-      // because Stripe rejects a reused key with different parameters for 24 hours, which would
-      // otherwise strand a checkout after a seat change or a new Checkout option.
-      const session = await stripe.checkout.sessions.create(params, {
-        idempotencyKey: `checkout:${input.organizationId}:${requestDigest(params)}`,
-      });
+      // One open Checkout link per customer. A retry of the same request reuses the open session
+      // that carries its digest. Anything else replaces every open session: the new one is keyed on
+      // the request and the sessions it replaces, so identical concurrent attempts collapse onto
+      // one session, and a key is never replayed after its session was replaced. Stripe would
+      // otherwise answer an A, B, A sequence with A's first, already expired, session.
+      const digest = requestDigest(params);
+      const open = await openCheckoutSessions(stripe, input.customerId);
+      const current = open.find(
+        (session) => session.metadata?.[CHECKOUT_REQUEST_METADATA_KEY] === digest,
+      );
+      if (current?.url != null) return { url: current.url };
+      const replaced = open.map((session) => session.id).sort();
+      const session = await stripe.checkout.sessions.create(
+        { ...params, metadata: { ...params.metadata, [CHECKOUT_REQUEST_METADATA_KEY]: digest } },
+        {
+          idempotencyKey: `checkout:${input.organizationId}:${requestDigest({ digest, replaced })}`,
+        },
+      );
       if (session.url === null) throw new Error("Stripe checkout session has no redirect URL");
-      // A changed checkout gets a new session, so expire the customer's earlier ones: only the
-      // newest link can be paid, and two completed links never make two subscriptions. This runs
-      // after the create, because an identical retry replays the session it must keep.
-      for await (const open of stripe.checkout.sessions.list({
-        customer: input.customerId,
-        status: "open",
-        limit: LIST_PAGE_SIZE,
-      })) {
-        if (open.id !== session.id) await stripe.checkout.sessions.expire(open.id);
-      }
+      // Only the newest link can be paid, so two completed links never make two subscriptions.
+      for (const id of replaced) await stripe.checkout.sessions.expire(id);
       return { url: session.url };
     },
     async changeSubscriptionPrice(input: ChangeSubscriptionPriceInput): Promise<void> {
@@ -187,6 +193,21 @@ export function createStripeBillingClient(
       return toSubscriptionState(subscription, organizationId, item);
     },
   };
+}
+
+async function openCheckoutSessions(
+  stripe: StripeSDK,
+  customerId: string,
+): Promise<StripeSDK.Checkout.Session[]> {
+  const sessions: StripeSDK.Checkout.Session[] = [];
+  for await (const session of stripe.checkout.sessions.list({
+    customer: customerId,
+    status: "open",
+    limit: LIST_PAGE_SIZE,
+  })) {
+    sessions.push(session);
+  }
+  return sessions;
 }
 
 function requestDigest(params: object): string {
