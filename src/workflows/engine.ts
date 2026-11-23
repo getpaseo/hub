@@ -401,7 +401,7 @@ export class DurableWorkflowEngine {
     await database.linkWorkflowStepRunExecution(stepRunId, executionId, intent);
     if (steps.some((candidate) => candidate.startedAt !== null)) return;
     const started = await database.findTriggerRunById(triggerRunId);
-    if (started?.outcome === "accepted") await this.deliverWorkflowRunStarted(started);
+    if (started?.outcome === "accepted") void this.deliverWorkflowRunStarted(started);
   }
 
   /**
@@ -755,7 +755,9 @@ export class DurableWorkflowEngine {
     if (callback === undefined || database === null) return Promise.resolve();
     return this.runSerializedReaction(run.id, async () => {
       const current = await database.findTriggerRunById(run.id);
-      if (current?.outcome !== "accepted" || current.status !== "running") return;
+      if (current?.outcome !== "accepted" || current.terminalNotificationDeliveredAt !== null) {
+        return;
+      }
       try {
         const result = await callback(current);
         await database.setWorkflowRunReactionState(
@@ -794,14 +796,15 @@ export class DurableWorkflowEngine {
   private async recoverPendingWorkflowRunTerminalNotifications(): Promise<void> {
     const database = this.options.database;
     if (database === null) return;
+    const inFlight: Promise<void>[] = [];
     while (!this.stopped) {
       const run = await database.claimPendingWorkflowRunTerminalNotification(
         this.now(),
         this.leaseMs,
       );
-      if (run === undefined) return;
-      try {
-        await this.runSerializedReaction(run.id, async () => {
+      if (run === undefined) break;
+      inFlight.push(
+        this.runSerializedReaction(run.id, async () => {
           const latest = await database.findTriggerRunById(run.id);
           const terminalRun = latest?.outcome === "accepted" ? latest : run;
           const reactionState = await this.options.onWorkflowRunTerminal?.(terminalRun);
@@ -812,11 +815,12 @@ export class DurableWorkflowEngine {
             this.now(),
             deliveredReactionState,
           );
-        });
-      } catch (error) {
-        this.report(error, "workflow.notification.terminal.deliver", { triggerRunId: run.id });
-      }
+        }).catch((error: unknown) => {
+          this.report(error, "workflow.notification.terminal.deliver", { triggerRunId: run.id });
+        }),
+      );
     }
+    await Promise.all(inFlight);
   }
 
   private async finishPersistedExecution(
