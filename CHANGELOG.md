@@ -7,6 +7,7 @@
 - `github.pull_request_synchronized` triggers a workflow when new commits are pushed to a pull request, with the pushed head SHA in the agent context.
 - The GitHub `exclude_contains` filter skips an event whose text contains the given string, so a general mention trigger can leave a command such as `@bot review` to the trigger that owns it.
 - `github.pull_request_ready_for_review` triggers a workflow when a draft pull request is marked ready for review, without running on creation or later pushes. GitHub pull request deliveries expose the draft status and head SHA in the agent context for revision checks.
+- Slack agent context includes `slack.trigger_message` with the mention's `ts`, channel id, and thread `ts` (`null` for a root mention), so an agent can address the message it is answering.
 
 ### Changed
 
@@ -15,6 +16,7 @@
 ### Fixed
 
 - Discord `${{ paseo.context }}` keeps the embeds of referenced messages and thread messages: each embed's title, description, URL, author, fields, and footer. An embed-only bot notification no longer reaches the agent as an empty message.
+- Files attached to the Slack message that mentions the bot reach the agent in `slack.trigger_message.attachments`. Before, only files from earlier messages in the thread did.
 
 ## 0.11.0 - 2026-10-25
 

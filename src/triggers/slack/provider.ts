@@ -75,8 +75,20 @@ interface SlackContextPayload {
   messages: SlackMergeMessage[];
 }
 
+/**
+ * Where the mention was posted, so an agent can address that message or its thread, and the
+ * files posted with it, which the thread's earlier messages never include.
+ */
+interface SlackMaterializedTriggerMessage {
+  ts: string;
+  channel: { id: string };
+  thread: { ts: string } | null;
+  attachments: AttachmentDescriptor[];
+}
+
 export interface SlackMaterializedContext {
   slack: {
+    trigger_message: SlackMaterializedTriggerMessage;
     thread: SlackContextPayload;
   };
 }
@@ -203,11 +215,42 @@ export function createSlackTriggerProvider(options: {
     },
     async materializeContext(launch): Promise<SlackMaterializedContext> {
       const locator = launch.triggerContext.event.slack.trigger_thread_context;
+      const { ts, channel, thread, attachments } =
+        launch.triggerContext.event.slack.trigger_message;
+      const triggerMessage: SlackMaterializedTriggerMessage = {
+        ts,
+        channel: { id: channel.id },
+        thread: thread === null ? null : { ts: thread.ts },
+        attachments: await registerAttachments(
+          attachments.map((attachment) => ({
+            id: attachment.id,
+            filename: attachment.filename,
+            contentType: attachment.content_type,
+            size: attachment.size,
+          })),
+          launch.providerEventReceiptId,
+          launch.organizationId,
+          launch.triggerContext.event.slack.team.id,
+          launch.triggerContext.event.slack.connection_id,
+          launch.executionId,
+          options.attachments,
+        ),
+      };
       if (locator.status === "not_applicable") {
-        return { slack: { thread: { status: "not_applicable", messages: [] } } };
+        return {
+          slack: {
+            trigger_message: triggerMessage,
+            thread: { status: "not_applicable", messages: [] },
+          },
+        };
       }
       if (options.client.readThreadMessages === undefined) {
-        return { slack: { thread: { status: "unavailable", messages: [] } } };
+        return {
+          slack: {
+            trigger_message: triggerMessage,
+            thread: { status: "unavailable", messages: [] },
+          },
+        };
       }
       let history;
       try {
@@ -229,7 +272,12 @@ export function createSlackTriggerProvider(options: {
             },
           },
         );
-        return { slack: { thread: { status: "unavailable", messages: [] } } };
+        return {
+          slack: {
+            trigger_message: triggerMessage,
+            thread: { status: "unavailable", messages: [] },
+          },
+        };
       }
       const messages = await Promise.all(
         history.messages.map(async (message) => ({
@@ -251,6 +299,7 @@ export function createSlackTriggerProvider(options: {
       );
       return {
         slack: {
+          trigger_message: triggerMessage,
           thread: {
             status: history.complete ? "available" : "incomplete",
             messages,
