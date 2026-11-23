@@ -301,12 +301,8 @@ describe("durable Hub action acknowledgement state", () => {
       );
 
       assert.deepEqual(
-        { status: execution?.status, reads, sends },
-        {
-          status: "running",
-          reads: 2,
-          sends: 1,
-        },
+        { status: execution?.status, agent: execution?.agentSessionAction, reads, sends },
+        { status: "running", agent: "created", reads: 2, sends: 1 },
       );
     } finally {
       await engine.stop();
