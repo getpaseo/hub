@@ -185,6 +185,30 @@ describe("Linear event normalization", () => {
     assert.equal(normalize(envelope).sourceCommentId, undefined);
   });
 
+  it("uses the source reply as a created session's parser message", () => {
+    const envelope = agentSessionEnvelope({ action: "created" });
+    const event = normalizeLinearEvent(
+      {
+        ...envelope,
+        agentSession: {
+          ...envelope.agentSession,
+          sourceComment: {
+            id: "reply-1",
+            body: "@Paseo /run priority=high",
+          },
+        },
+      },
+      "AgentSessionEvent",
+      hydratedIssue(),
+    );
+
+    if (event?.type !== "agent_session") throw new Error("expected an agent session event");
+    assert.equal(event.agentSession.rootCommentId, "comment-1");
+    assert.equal(event.agentSession.sourceCommentId, "reply-1");
+    assert.equal(event.parserMessage, "@Paseo /run priority=high");
+    assert.equal(event.prompt, "<issue>Canonical Linear context</issue>");
+  });
+
   it("carries the comment a session prompt came from, wherever the activity places it", () => {
     const normalize = (
       agentActivity: Record<string, unknown>,

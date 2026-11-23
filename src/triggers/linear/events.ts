@@ -371,7 +371,16 @@ function normalizeAgentSessionTurn(input: {
   }
 
   const rootComment = asRecord(input.session["comment"]);
-  const directMessage = readString(rootComment?.["body"]);
+  const sourceComment = asRecord(input.session["sourceComment"]);
+  const sourceCommentId = firstDefined(
+    readString(sourceComment?.["id"]),
+    readString(input.session["sourceCommentId"]),
+    readString(input.payload["sourceCommentId"]),
+  );
+  const directMessage = firstDefined(
+    sourceCommentId === undefined ? undefined : readString(sourceComment?.["body"]),
+    readString(rootComment?.["body"]),
+  );
   const prompt = firstDefined(input.promptContext, directMessage, issuePrompt(input.issue));
   const parserMessage = firstDefined(directMessage, prompt);
   const occurredAt = firstDefined(
@@ -391,11 +400,7 @@ function normalizeAgentSessionTurn(input: {
     prompt,
     parserMessage,
     occurredAt,
-    sourceCommentId: firstDefined(
-      readString(asRecord(input.session["sourceComment"])?.["id"]),
-      readString(input.session["sourceCommentId"]),
-      readString(input.payload["sourceCommentId"]),
-    ),
+    sourceCommentId,
   };
 }
 
