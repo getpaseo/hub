@@ -87,8 +87,11 @@ export interface DaemonConnection {
   refreshProviderSnapshot(options: { cwd?: string; providers?: string[] }): Promise<void>;
   /** The daemon's open projects. Empty when the daemon does not share them with Hub. */
   listProjects(): Promise<readonly DaemonProject[]>;
-  /** The daemon's own answer about whether it can run this agent as configured. */
-  validateAgentConfiguration(agent: CompiledAgent): Promise<AgentValidationVerdict>;
+  /** The daemon's own answer about whether it can run this agent as configured in `cwd`. */
+  validateAgentConfiguration(
+    agent: CompiledAgent,
+    options: { cwd: string },
+  ): Promise<AgentValidationVerdict>;
 }
 
 /** A durable daemon request may have succeeded before its acknowledgement was lost. */

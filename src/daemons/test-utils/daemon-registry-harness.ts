@@ -93,13 +93,16 @@ export class DaemonRegistryHarness {
     };
   }
 
-  async pendingAgentValidation() {
-    const promise = this.registry.validateAgentConfiguration(this.daemon.id, {
-      provider: "definitely-not-installed",
-      model: "imaginary-model",
-      mode: "imaginary-mode",
-      options: { nonsense: true },
-    });
+  async pendingAgentValidation(cwd = "/workspace") {
+    const promise = this.connection().validateAgentConfiguration(
+      {
+        provider: "definitely-not-installed",
+        model: "imaginary-model",
+        mode: "imaginary-mode",
+        options: { nonsense: true },
+      },
+      { cwd },
+    );
     void promise.catch(() => undefined);
     return {
       promise,

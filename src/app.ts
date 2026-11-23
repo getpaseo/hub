@@ -135,7 +135,7 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
   const agentValidator = createAgentValidator(daemons, connectionForDaemon);
   const storeForProject = (projectId: string) => {
     if (options.database === null) throw new DatabaseUnavailableError();
-    return new ProjectConfigurationStore(options.database, projectId, daemons ?? undefined);
+    return new ProjectConfigurationStore(options.database, projectId, agentValidator ?? undefined);
   };
   const manualProvider =
     options.database === null ? undefined : createManualRunProvider(storeForProject);
@@ -352,8 +352,8 @@ function createAgentValidator(
 ): DaemonAgentConfigurationValidator | null {
   if (daemons === null) return null;
   return {
-    validateAgentConfiguration: (daemonId, agent) =>
-      connectionForDaemon(daemonId)?.validateAgentConfiguration(agent) ??
+    validateAgentConfiguration: ({ daemonId, cwd }, agent) =>
+      connectionForDaemon(daemonId)?.validateAgentConfiguration(agent, { cwd }) ??
       Promise.reject(new Error("daemon_not_connected")),
   };
 }

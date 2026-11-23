@@ -173,6 +173,8 @@ export const HubExecutionAgentStreamEventSchema = z.discriminatedUnion("type", [
 export const HubExecutionAgentValidateRequestSchema = z.object({
   type: z.literal("hub.execution.agent.validate.request"),
   requestId: z.string(),
+  /** The directory the agent will run in; the daemon validates against that directory's catalog. */
+  cwd: z.string().optional(),
   provider: z.string(),
   model: z.string().optional(),
   modeId: z.string().optional(),

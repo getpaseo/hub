@@ -89,6 +89,31 @@ describe("organization trigger store", () => {
     );
   });
 
+  /**
+   * #209: the model picker lists the OpenCode models of the target working directory, so saving
+   * must ask the daemon about that directory, not its global catalog.
+   */
+  it("accepts a model the daemon offers only in the target working directory", async () => {
+    const database = await enrolledDatabase();
+    const store = new OrganizationTriggerStore(
+      database,
+      "org",
+      catalogAgentValidator(
+        { opencode: { models: [], modes: ["build"] } },
+        { "/workspace": { opencode: { models: ["openai/gpt-6.1-sol"], modes: ["build"] } } },
+      ),
+    );
+
+    await store.save({
+      yaml: triggerYaml(true).replace(
+        "agent: { provider: codex, mode: full-access }",
+        "agent: { provider: opencode, model: openai/gpt-6.1-sol, mode: build }",
+      ),
+      userId: null,
+    });
+    assert.equal((await store.list()).length, 1);
+  });
+
   it.each(["pi", "custom-provider"])(
     "accepts daemon provider %s without a mode",
     async (provider) => {
