@@ -201,13 +201,15 @@ export class ActiveDaemonRegistry {
       getProviderSnapshot: (options) => this.getProviderSnapshot(daemonId, options),
       refreshProviderSnapshot: (options) => this.refreshProviderSnapshot(daemonId, options),
       listProjects: () => this.listProjects(daemonId),
-      validateAgentConfiguration: (agent) => this.validateAgentConfiguration(daemonId, agent),
+      validateAgentConfiguration: (agent, options) =>
+        this.validateAgentConfiguration(daemonId, agent, options),
     };
   }
 
-  validateAgentConfiguration(
+  private validateAgentConfiguration(
     daemonId: string,
     agent: import("../config/compiler.js").CompiledAgent,
+    options: { cwd: string },
   ): Promise<{ valid: true } | { valid: false; issues: readonly AgentValidationIssue[] }> {
     const active = this.active.get(daemonId);
     if (!active?.ready) return Promise.reject(new Error("daemon_not_connected"));
@@ -218,6 +220,7 @@ export class ActiveDaemonRegistry {
     const request = HubExecutionAgentValidateRequestSchema.parse({
       type: "hub.execution.agent.validate.request",
       requestId,
+      cwd: options.cwd,
       provider: agent.provider,
       model: agent.model,
       modeId: agent.mode,

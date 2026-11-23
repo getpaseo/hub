@@ -89,10 +89,10 @@ describe("public configuration bundle installation", () => {
   });
 
   it("rejects every named agent through the selected daemon's current provider contract", async () => {
-    const validations: Array<{ daemonId: string; provider: string }> = [];
+    const validations: Array<{ daemonId: string; cwd: string; provider: string }> = [];
     const validator: DaemonAgentConfigurationValidator = {
-      async validateAgentConfiguration(daemonId, agent) {
-        validations.push({ daemonId, provider: agent.provider });
+      async validateAgentConfiguration({ daemonId, cwd }, agent) {
+        validations.push({ daemonId, cwd, provider: agent.provider });
         return {
           valid: false,
           issues: [
@@ -116,7 +116,11 @@ describe("public configuration bundle installation", () => {
       ],
     );
     assert.deepEqual(validations, [
-      { daemonId: "10000000-0000-4000-8000-000000000001", provider: "definitely-not-installed" },
+      {
+        daemonId: "10000000-0000-4000-8000-000000000001",
+        cwd: "/repo",
+        provider: "definitely-not-installed",
+      },
     ]);
     assert.equal((await harness.readModel()).activeRevision, null);
   });

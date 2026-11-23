@@ -174,8 +174,10 @@ describe("daemon socket generations", () => {
   });
 
   it("delegates provider, model, mode, and structured option validation to the daemon", async () => {
-    const pending = await daemon.pendingAgentValidation();
+    const pending = await daemon.pendingAgentValidation("/workspace");
 
+    // The daemon resolves the provider catalog of the directory the agent will run in (#209).
+    assert.equal(pending.request["cwd"], "/workspace");
     assert.equal(pending.request["provider"], "definitely-not-installed");
     assert.equal(pending.request["model"], "imaginary-model");
     assert.equal(pending.request["modeId"], "imaginary-mode");

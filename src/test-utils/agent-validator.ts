@@ -6,18 +6,25 @@ export interface AgentCatalogEntry {
   modes: readonly string[];
 }
 
+type AgentCatalog = Readonly<Record<string, AgentCatalogEntry>>;
+
 /**
  * A daemon that answers agent validation from a fixed catalog, the way the registry relays the
  * daemon's own answer (`hub.execution.agent.validate.request`): a model or mode the provider does
  * not offer is an issue addressed to that field, and an unknown provider is an issue on the
  * provider. Nothing is stubbed; this is the same interface the store receives in production.
+ *
+ * A working directory listed in `workspaceCatalogs` answers from its own catalog, the way a
+ * daemon resolves providers in the directory the agent will run in (an OpenCode project can
+ * configure models the daemon's global catalog does not have).
  */
 export function catalogAgentValidator(
-  catalog: Readonly<Record<string, AgentCatalogEntry>>,
+  catalog: AgentCatalog,
+  workspaceCatalogs: Readonly<Record<string, AgentCatalog>> = {},
 ): DaemonAgentConfigurationValidator {
   return {
-    validateAgentConfiguration(_daemonId, agent) {
-      const entry = catalog[agent.provider];
+    validateAgentConfiguration({ cwd }, agent) {
+      const entry = (workspaceCatalogs[cwd] ?? catalog)[agent.provider];
       if (entry === undefined) {
         return Promise.resolve({
           valid: false,
