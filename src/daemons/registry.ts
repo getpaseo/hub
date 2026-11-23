@@ -113,6 +113,7 @@ export class ActiveDaemonRegistry {
   private readonly revokedHandlers = new Set<DaemonRevokedHandler>();
   private readonly presenceWrites = new Set<Promise<void>>();
   private generation = 0;
+  private stopping = false;
 
   constructor(
     private readonly database: Pick<Database, "setDaemonPresence" | "touchDaemon">,
@@ -262,7 +263,13 @@ export class ActiveDaemonRegistry {
     }
   }
 
+  /** False once shutdown begins: a daemon admitted after that would outlive the database. */
+  accepting(): boolean {
+    return !this.stopping;
+  }
+
   async stop(): Promise<void> {
+    this.stopping = true;
     const activeDaemons = Array.from(this.active.values());
     const sockets = activeDaemons.map((active) => closeForShutdown(active.socket));
     await Promise.all(sockets);
@@ -629,6 +636,8 @@ export function createDaemonUpgradeHandler(
       !matchesVerifier(credential, daemon.credentialVerifier)
     )
       return rejectUpgrade(socket, 403);
+    // The lookup above can finish after shutdown has taken its snapshot of sockets to close.
+    if (!registry.accepting()) return rejectUpgrade(socket, 503);
     const sessionProtocol =
       request.headers[DAEMON_SESSION_PROTOCOL_HEADER] === DAEMON_SESSION_PROTOCOL_VERSION
         ? "session-v1"
@@ -650,7 +659,7 @@ function matchesVerifier(value: string, verifier: string): boolean {
 function bearer(value: string | undefined): string | undefined {
   return value?.startsWith("Bearer ") ? value.slice(7) : undefined;
 }
-function rejectUpgrade(socket: Duplex, status: 401 | 403): void {
+function rejectUpgrade(socket: Duplex, status: 401 | 403 | 503): void {
   socket.write(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\n\r\n`);
   socket.destroy();
 }

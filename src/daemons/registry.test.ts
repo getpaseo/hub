@@ -18,6 +18,85 @@ function rawDataToText(data: RawData): string {
   return data.toString();
 }
 
+function daemonRecord(secret: string): DaemonRecord {
+  const now = new Date();
+  return {
+    id: randomUUID(),
+    slug: "negotiation-daemon",
+    machineId: randomUUID(),
+    serverId: randomUUID(),
+    daemonPublicKey: "public-key",
+    credentialVerifier: createHash("sha256").update(secret).digest("base64url"),
+    permissions: ["hub.execute"],
+    registeredByApiKeyId: null,
+    registeredByCliCredentialId: null,
+    status: "active",
+    presence: "offline",
+    connectedAt: null,
+    disconnectedAt: null,
+    lastSeenAt: now,
+    createdAt: now,
+  };
+}
+
+describe("daemon socket admission during shutdown", () => {
+  it("refuses a daemon whose credential lookup finishes after shutdown begins", async () => {
+    const secret = "daemon-secret";
+    const daemon = daemonRecord(secret);
+    const presence: string[] = [];
+    const registry = new ActiveDaemonRegistry({
+      touchDaemon: async () => undefined,
+      setDaemonPresence: async (_id, value) => {
+        presence.push(value);
+      },
+    });
+    let lookupStarted!: () => void;
+    const lookingUp = new Promise<void>((resolve) => (lookupStarted = resolve));
+    let finishLookup!: () => void;
+    const lookup = new Promise<void>((resolve) => (finishLookup = resolve));
+    const handleUpgrade = createDaemonUpgradeHandler(
+      {
+        findDaemonById: async () => {
+          lookupStarted();
+          await lookup;
+          return daemon;
+        },
+      },
+      registry,
+    );
+    const server = createServer();
+    server.on("upgrade", (request, socket, head) => {
+      void handleUpgrade(request, socket, head);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert(address && typeof address !== "string");
+    const client = new WebSocket(`ws://127.0.0.1:${address.port}/api/daemons/socket`, {
+      headers: { authorization: `Bearer ${secret}`, "x-paseo-daemon-id": daemon.id },
+    });
+    const outcome = new Promise<string>((resolve) => {
+      client.once("open", () => resolve("open"));
+      client.once("unexpected-response", (_request, response) =>
+        resolve(`rejected ${response.statusCode}`),
+      );
+      client.once("error", (error) => resolve(`error ${error.message}`));
+    });
+    await lookingUp;
+
+    await registry.stop();
+    finishLookup();
+
+    try {
+      assert.equal(await outcome, "rejected 503");
+      assert.equal(registry.connection(daemon.id), undefined);
+      assert.deepEqual(presence, []);
+    } finally {
+      client.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
 describe("daemon socket protocol negotiation", () => {
   it.each([
     {
@@ -36,24 +115,7 @@ describe("daemon socket protocol negotiation", () => {
     "negotiates the standard session only when offered=$offered",
     async ({ offered, expectedProtocol, expectsHello, expectsReady }) => {
       const secret = "daemon-secret";
-      const now = new Date();
-      const daemon: DaemonRecord = {
-        id: randomUUID(),
-        slug: "negotiation-daemon",
-        machineId: randomUUID(),
-        serverId: randomUUID(),
-        daemonPublicKey: "public-key",
-        credentialVerifier: createHash("sha256").update(secret).digest("base64url"),
-        permissions: ["hub.execute"],
-        registeredByApiKeyId: null,
-        registeredByCliCredentialId: null,
-        status: "active",
-        presence: "offline",
-        connectedAt: null,
-        disconnectedAt: null,
-        lastSeenAt: now,
-        createdAt: now,
-      };
+      const daemon = daemonRecord(secret);
       const registry = new ActiveDaemonRegistry({
         touchDaemon: async () => undefined,
         setDaemonPresence: async () => undefined,
