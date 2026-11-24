@@ -29,13 +29,11 @@ const buttonVariants = cva(
         outline: "border border-input bg-transparent hover:bg-accent hover:text-accent-foreground",
         secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
         ghost: "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-        // A link standing on its own: a section action, a footer, a row. Nothing around it is
-        // prose, so the hue alone marks it and the underline only answers the pointer.
-        link: "h-auto gap-1 p-0 text-link underline-offset-4 hover:underline",
-        // A link inside a sentence. The link hue against muted body text is 1.7:1, too close to
-        // tell apart by colour alone, so a faint underline in its own hue marks it at rest.
-        "inline-link":
-          "h-auto gap-1 p-0 text-link underline decoration-link/40 underline-offset-4 hover:decoration-link",
+        // A link inside text. Hub has no link hue: colour is kept for state, so the link is the
+        // foreground step over muted prose, and an underline in a tint of its own colour marks
+        // it at rest without drawing a second colour under it. An action that stands on its own
+        // is an `outline` button, never this.
+        link: "h-auto gap-1 p-0 text-foreground underline decoration-foreground/30 underline-offset-4 hover:decoration-foreground",
       },
     },
     defaultVariants: {

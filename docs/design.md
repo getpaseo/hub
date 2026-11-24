@@ -26,11 +26,14 @@ controls. `src/typography-policy.test.ts` enforces the parts a regex can see; th
    shape that does not exist there, add it there and use it from the screen. Never hand-roll a card,
    field, table, empty state, pill, header, or key/value row in a panel file. Fix the component, not
    the leaf.
+8. **Colour is state.** The page is monochrome. Hue appears only where it means something: a
+   `StatusPill` tone, a destructive action or error, the one `default` button on a surface, and the
+   focus ring. Text is never coloured to say "you can click this"; the control's shape says it.
 
 ## Tokens
 
 All tokens live in `src/styles.css`. Values come from Linear's measured ramp; Paseo green survives only
-as the link and focus hue.
+as the focus ring, the `primary` fill, and code-editor accents. Hub has no link colour.
 
 ### Surfaces and text
 
@@ -47,7 +50,7 @@ as the link and focus hue.
 | `border`                  | `#23252a`             | Every structural rule. Near invisible; that is the point.                                                                                        |
 | `input`                   | `#34343a`             | Control borders, one step stronger than `border`.                                                                                                |
 | `primary` / `-foreground` | `#1b4f4a` / `#bfe6da` | A dark teal fill with a pale mint label; the one place the brand hue is a surface.                                                               |
-| `link`                    | `#7ccba0`             | Text links and the focus ring. The one brand hue.                                                                                                |
+| `brand`                   | `#7ccba0`             | The focus ring and code-editor accents. Never text.                                                                                              |
 | `ring`                    | `#7ccba0`             | Focus. One pixel outline, two pixel offset, nothing else.                                                                                        |
 | `destructive`             | `#e8837a`             | Destructive button fill and error text.                                                                                                          |
 
@@ -117,10 +120,26 @@ background only.
 - A key/value pair is `text-xs muted-foreground` over `text-sm foreground`. Use `SummaryPanel`.
 - Table headers are `text-xs muted-foreground` in sentence case. They are the quietest text in the
   table.
-- A link on its own (a section action, a footer, a row's one action) is `Button variant="link"`:
-  `text-link` at rest, underlined on hover. A link inside a sentence is `variant="inline-link"`,
-  which keeps a faint underline in its own hue at rest, because the link hue against muted prose is
-  1.7:1 and colour alone does not set it apart.
+
+## Actions and links
+
+Every control reads as a control at rest, without colour. Pick by where it sits:
+
+| It sits                                                              | It is                                      |
+| -------------------------------------------------------------------- | ------------------------------------------ |
+| The one action a surface exists for                                  | `Button` (`default`)                       |
+| On its own: a section or card action, a footer, a row, a drawer      | `Button variant="outline" size="sm"`       |
+| An icon with no label: steppers, close, copy, kebab, pager           | `Button variant="ghost"` at an `icon` size |
+| Beside a filled or outline button to back out: Cancel, Do this later | `Button variant="ghost"`                   |
+| Inside a sentence, or a pre-auth card's footer line                  | `Button variant="link"`                    |
+| A record's name in a table cell or list row                          | A plain link, `hover:underline`            |
+
+- `link` is the foreground step with an underline in a tint of its own colour, so it stands out
+  from muted prose by brightness and by shape. It is for text, never for an action on its own.
+- A navigation action that stands alone is an outline button even when it only changes the page.
+  "All triggers", "Manage", "View runs", "Unmatched events" are buttons.
+- A record name is not styled as a link because the row is the control: it has a hover fill and
+  opens on click.
 
 ## Component roster
 

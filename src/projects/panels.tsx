@@ -242,12 +242,12 @@ function ProviderConnections({
               note: providerWeek(activity),
               actions: (
                 <>
-                  <Button variant="link" size="sm" asChild>
+                  <Button variant="outline" size="sm" asChild>
                     <ActivityLink organizationSlug={organizationSlug} search={{ provider }}>
                       View runs
                     </ActivityLink>
                   </Button>
-                  <Button variant="link" size="sm" asChild>
+                  <Button variant="outline" size="sm" asChild>
                     <ActivityLink
                       organizationSlug={organizationSlug}
                       search={{ view: "unmatched", provider }}
@@ -358,7 +358,7 @@ export function ProjectOverviewPanel() {
       <Section
         title="Recent activity"
         action={
-          <Button variant="link" asChild>
+          <Button variant="outline" size="sm" asChild>
             <Link to={`${base}/activity` as never}>View all</Link>
           </Button>
         }
@@ -652,11 +652,9 @@ function ActivityTable({
                   detailBasePath &&
                   "configuredTriggerName" in event &&
                   event.configuredTriggerName !== null ? (
-                    <Button variant="link" asChild>
-                      <Link to={`${detailBasePath}/${event.id}` as never}>
-                        {event.configuredTriggerName}
-                      </Link>
-                    </Button>
+                    <Link to={`${detailBasePath}/${event.id}` as never} className="hover:underline">
+                      {event.configuredTriggerName}
+                    </Link>
                   ) : (
                     <span className="font-mono">{event.id.slice(0, 12)}</span>
                   )

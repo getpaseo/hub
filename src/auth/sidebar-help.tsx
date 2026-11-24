@@ -15,7 +15,7 @@ export function HelpChannels() {
     <div className="grid gap-2 text-muted-foreground">
       <p>
         Join the{" "}
-        <Button asChild variant="inline-link">
+        <Button asChild variant="link">
           <a href={DISCORD_INVITE} target="_blank" rel="noreferrer">
             Paseo Discord
           </a>
@@ -24,7 +24,7 @@ export function HelpChannels() {
       </p>
       <p>
         Or email{" "}
-        <Button asChild variant="inline-link">
+        <Button asChild variant="link">
           <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>
         </Button>
       </p>

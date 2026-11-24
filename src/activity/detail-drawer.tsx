@@ -201,7 +201,7 @@ function CopyLink() {
   return (
     <Button
       size="sm"
-      variant="ghost"
+      variant="outline"
       onClick={() => {
         void navigator.clipboard.writeText(window.location.href).then(() => setCopied(true));
       }}
@@ -333,7 +333,7 @@ function UnmatchedBody({
         <Card title={reason.title} description={reason.explanation}>
           <div className="flex flex-wrap items-center gap-2">
             <NextStep step={reason.next} organizationSlug={organizationSlug} />
-            <Button size="sm" variant="ghost" onClick={() => onFilter({ reason: event.reason })}>
+            <Button size="sm" variant="outline" onClick={() => onFilter({ reason: event.reason })}>
               Filter by this reason
             </Button>
           </div>

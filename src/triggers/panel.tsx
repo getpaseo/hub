@@ -769,7 +769,7 @@ function TriggerForm({
 
       <Card>
         <p className="flex items-center gap-2 text-sm text-muted-foreground">
-          <LockKeyhole aria-hidden="true" className="size-4 shrink-0 text-link" />
+          <LockKeyhole aria-hidden="true" className="size-4 shrink-0" />
           Keys, provider configuration, and sandboxing stay on your daemon
         </p>
       </Card>

@@ -217,7 +217,7 @@ function SignedOutFooter({
         <p>
           This invitation is bound to the invited email address.{" "}
           {mode === "signIn" ? "Need an account?" : "Already have an account?"}{" "}
-          <Button type="button" variant="inline-link" disabled={busy} onClick={onToggle}>
+          <Button type="button" variant="link" disabled={busy} onClick={onToggle}>
             {mode === "signIn" ? "Create an account" : "Sign in"}
           </Button>
         </p>
@@ -234,7 +234,7 @@ function SignedOutFooter({
       <div className="grid gap-2 text-center text-sm text-muted-foreground">
         <p>
           {mode === "signIn" ? "No account yet?" : "Already have an account?"}{" "}
-          <Button type="button" variant="inline-link" disabled={busy} onClick={onToggle}>
+          <Button type="button" variant="link" disabled={busy} onClick={onToggle}>
             {mode === "signIn" ? "Create an account" : "Sign in"}
           </Button>
         </p>

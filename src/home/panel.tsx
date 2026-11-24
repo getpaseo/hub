@@ -193,7 +193,7 @@ function Triggers({ snapshot }: { snapshot: HomeSnapshot }) {
       title="Triggers"
       description={`Most runs in the ${RANGE_LABELS[range].toLowerCase()}`}
       action={
-        <Button variant="link" asChild>
+        <Button variant="outline" size="sm" asChild>
           <Link to={`/o/${slug}/triggers` as never}>All triggers</Link>
         </Button>
       }
@@ -251,7 +251,7 @@ function Triggers({ snapshot }: { snapshot: HomeSnapshot }) {
 
 function UnmatchedEventsLink({ link }: { link: ReturnType<typeof activityLink> }) {
   return (
-    <Button variant="link" size="sm" asChild>
+    <Button variant="outline" size="sm" asChild>
       <Link to={link.to as never} search={link.search as never}>
         Unmatched events
       </Link>
@@ -272,7 +272,7 @@ function Daemons({
     <Section
       title="Daemons"
       action={
-        <Button variant="link" asChild>
+        <Button variant="outline" size="sm" asChild>
           <Link to={`/o/${slug}/daemons` as never}>Manage</Link>
         </Button>
       }
@@ -290,7 +290,7 @@ function Daemons({
                   </StatusPill>
                 }
                 actions={
-                  <Button variant="link" size="sm" asChild>
+                  <Button variant="outline" size="sm" asChild>
                     <Link
                       to={link.to as never}
                       search={link.search as never}

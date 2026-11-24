@@ -110,7 +110,7 @@ function modeExtensions(readOnly: boolean, label: string) {
 const paseoHighlight = HighlightStyle.define([
   {
     tag: [tags.definition(tags.propertyName), tags.propertyName, tags.attributeName],
-    color: "var(--link)",
+    color: "var(--brand)",
   },
   { tag: [tags.string, tags.special(tags.string), tags.monospace], color: "var(--chart-3)" },
   { tag: [tags.number, tags.bool, tags.null, tags.atom], color: "var(--chart-4)" },
@@ -127,7 +127,7 @@ const editorTheme = EditorView.theme({
   "&.cm-focused": { outline: "none" },
   // The size comes from the host's `text-sm`; only the family is set here.
   ".cm-scroller": { fontFamily: "var(--font-mono)", lineHeight: "1.6" },
-  ".cm-content": { caretColor: "var(--link)", padding: "0.5rem 0" },
+  ".cm-content": { caretColor: "var(--brand)", padding: "0.5rem 0" },
   ".cm-line": { padding: "0 0.875rem" },
   ".cm-gutters": {
     backgroundColor: "transparent",
@@ -138,7 +138,7 @@ const editorTheme = EditorView.theme({
   ".cm-activeLine": { backgroundColor: "color-mix(in oklab, var(--foreground) 4%, transparent)" },
   "&:not(.cm-focused) .cm-activeLine": { backgroundColor: "transparent" },
   ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, .cm-content ::selection": {
-    backgroundColor: "color-mix(in oklab, var(--link) 25%, transparent)",
+    backgroundColor: "color-mix(in oklab, var(--brand) 25%, transparent)",
   },
-  ".cm-cursor": { borderLeftColor: "var(--link)" },
+  ".cm-cursor": { borderLeftColor: "var(--brand)" },
 });

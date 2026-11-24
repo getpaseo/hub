@@ -865,7 +865,7 @@ function Segment({ segment }: { segment: StepSegment }) {
   }
   if (segment.kind === "link") {
     return (
-      <Button asChild variant="inline-link">
+      <Button asChild variant="link">
         <a href={segment.href} target="_blank" rel="noreferrer">
           {segment.value}
           <ExternalLink aria-hidden="true" className="size-3" />

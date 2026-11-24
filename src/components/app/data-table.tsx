@@ -47,7 +47,7 @@ export interface DataTablePagination {
 /** A quiet line under the rows: where to look for what the table leaves out. */
 export interface DataTableFooter {
   note: string;
-  /** One link, normally `Button variant="link"`. */
+  /** One action, an `outline` `sm` `Button`. */
   action: ReactNode;
 }
 
