@@ -28,6 +28,7 @@ import {
   DROP_REASONS,
   formatBytes,
   formatDuration,
+  runSession,
   runStatusTone,
   stepStatusTone,
   type DropReasonNextStep,
@@ -161,10 +162,10 @@ function RunActions({
   run: ActivityRunDetailView;
   organizationSlug: string;
 }) {
-  const execution = newestSession(run.steps);
+  const execution = runSession(run.steps);
   return (
     <>
-      {execution == null ? null : (
+      {execution === undefined ? null : (
         <Button asChild size="sm">
           <a href={executionLinkPath(execution.id)}>
             <ExternalLink aria-hidden="true" /> Open in Paseo
@@ -186,15 +187,6 @@ function RunActions({
   );
 }
 
-/** The newest step that reached an agent is the session a reader wants to open. */
-function newestSession(steps: ActivityRunDetailView["steps"]) {
-  for (let index = steps.length - 1; index >= 0; index -= 1) {
-    const execution = steps[index]?.execution;
-    if (execution?.daemonAgentId != null) return execution;
-  }
-  return undefined;
-}
-
 const FAILURE_TITLES: Readonly<Record<string, string>> = {
   failed: "Run failed",
   timed_out: "Run timed out",
@@ -203,7 +195,7 @@ const FAILURE_TITLES: Readonly<Record<string, string>> = {
 
 function RunBody({ run }: { run: ActivityRunDetailView }) {
   const failure = FAILURE_TITLES[run.status];
-  const latest = run.steps.at(-1)?.execution ?? null;
+  const session = runSession(run.steps);
   const timed = run.steps.some((step) => step.startedAt !== null);
   const rows: SummaryRow[] = [
     { label: "Daemon", value: run.daemon?.slug ?? "None" },
@@ -215,11 +207,11 @@ function RunBody({ run }: { run: ActivityRunDetailView }) {
     {
       label: "Session",
       value:
-        latest?.daemonAgentId == null
+        session === undefined
           ? "None"
           : describe([
-              latest.sessionAction === null ? null : statusLabel(latest.sessionAction),
-              latest.daemonAgentId,
+              session.sessionAction === null ? null : statusLabel(session.sessionAction),
+              session.daemonAgentId,
             ]),
     },
     { label: "Started", value: formatAbsolute(run.createdAt) },

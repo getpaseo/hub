@@ -93,3 +93,20 @@ export const DROP_REASONS: Readonly<Record<ProviderEventDropReasonCode, DropReas
     next: "check_integrations",
   },
 };
+
+/**
+ * The agent session a run's drawer offers: the newest step that reached an agent. A later
+ * step can be skipped or never reach one, so the last step is not the answer. The Session row
+ * and Open in Paseo both read this, so they name the same session.
+ */
+export function runSession<Execution extends { daemonAgentId: string | null }>(
+  steps: readonly { execution: Execution | null }[],
+): (Execution & { daemonAgentId: string }) | undefined {
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const execution = steps[index]?.execution;
+    if (execution != null && execution.daemonAgentId !== null) {
+      return { ...execution, daemonAgentId: execution.daemonAgentId };
+    }
+  }
+  return undefined;
+}
