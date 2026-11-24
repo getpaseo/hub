@@ -1025,8 +1025,8 @@ describe("durable Hub action acknowledgement state", () => {
       return { clock, connection, database, lifecycle, stream, run, step, executionId };
     }
 
-    it("settles the dispatch as a success when the agent replied but never finished", async () => {
-      const fixture = await dispatchedWorkflowExecution({ emitted: true });
+    it("settles the dispatch as a success when the agent delivered its required reply", async () => {
+      const fixture = await dispatchedWorkflowExecution({ emitted: true, required: true });
 
       await fixture.clock.advance(IDLE_TIMEOUT_MS);
       await fixture.connection.unsubscribed();
@@ -1051,7 +1051,7 @@ describe("durable Hub action acknowledgement state", () => {
     });
 
     it("runs terminal cleanup for an idle success recovered by the workflow deadline scan", async () => {
-      const fixture = await dispatchedWorkflowExecution({ emitted: true });
+      const fixture = await dispatchedWorkflowExecution({ emitted: true, required: true });
       fixture.clock.elapseWithoutRunningTimers(IDLE_TIMEOUT_MS);
       const recoveries = await fixture.database.recoverWorkflowDeadlines(
         new Date(fixture.clock.now()),
@@ -1089,7 +1089,7 @@ describe("durable Hub action acknowledgement state", () => {
     });
 
     it("returns success when finish_execution arrives after the idle timestamp", async () => {
-      const fixture = await dispatchedWorkflowExecution({ emitted: true });
+      const fixture = await dispatchedWorkflowExecution({ emitted: true, required: true });
       fixture.clock.elapseWithoutRunningTimers(IDLE_TIMEOUT_MS);
 
       const execution = await fixture.lifecycle.completeAgentExecutionFromCallback({
@@ -1126,21 +1126,46 @@ describe("durable Hub action acknowledgement state", () => {
       await fixture.lifecycle.stop();
     });
 
-    it("completes a standalone execution whose agent replied but never finished", async () => {
+    it("completes a standalone execution whose required reply was delivered", async () => {
       const database = createMemoryDatabase();
       const lifecycle = createDaemonDispatchLifecycle({
         database,
         connectionForDaemon: () => undefined,
       });
-      const execution = await database.insertAgentExecution({
-        id: "00000000-0000-4000-8000-0000000000ef",
+      const executionId = "00000000-0000-4000-8000-0000000000ef";
+      const launchIntent: LaunchMachineIntent = {
+        kind: "launch_machine",
         organizationId: "org-idle-output",
         projectId: "project-idle-output",
+        triggerRunId: "run-idle-output",
+        triggerName: "idle-output",
+        environmentName: "work",
+        environment: {
+          kind: "daemon",
+          daemonId: DAEMON_ID,
+          authoredSlug: "work",
+          cwd: "/repo",
+        },
+        prompt: "reply",
+        agent: { provider: "test", mode: "default" },
+        allowOutputs: [{ type: "linear.reply", required: true }],
+        autoArchive: false,
+        background: false,
+        triggerContext: {},
+        outputContext: {},
+        configurationRevisionId: "revision-idle-output",
+        hubConfig: {},
+      };
+      const execution = await database.insertAgentExecution({
+        id: executionId,
+        organizationId: launchIntent.organizationId,
+        projectId: launchIntent.projectId,
         machineId: null,
         daemonId: DAEMON_ID,
         triggerContext: {},
         outputContext: {},
-        configurationRevisionId: "revision-idle-output",
+        configurationRevisionId: launchIntent.configurationRevisionId,
+        launchIntent,
         deadlineAt: new Date("2099-01-01T00:00:00.000Z"),
         idleDeadlineAt: new Date("2000-01-01T00:00:00.000Z"),
       });

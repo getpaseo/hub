@@ -479,13 +479,14 @@ async function findProviderEventConnection(
     receivedAt,
   );
   if (sessionConnection === undefined) return { connection: liveConnection, liveConnection };
+  const sameTenantLiveConnection =
+    liveConnection?.organizationId === sessionConnection.organizationId
+      ? liveConnection
+      : undefined;
   return {
-    connection: sessionConnection,
+    connection: sameTenantLiveConnection ?? sessionConnection,
     // A live binding owned by another tenant cannot grant or restrict authority over this session.
-    liveConnection:
-      liveConnection?.organizationId === sessionConnection.organizationId
-        ? liveConnection
-        : undefined,
+    liveConnection: sameTenantLiveConnection,
   };
 }
 
