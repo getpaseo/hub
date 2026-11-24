@@ -181,6 +181,16 @@ class MemoryDatabase implements Database {
     async findRunIdForExecution() {
       return undefined;
     },
+    async summarize() {
+      return {
+        statuses: { running: 0, succeeded: 0, failed: 0, timed_out: 0, rejected: 0 },
+        triggers: [],
+        daemons: [],
+      };
+    },
+    async latestRun() {
+      return undefined;
+    },
   };
   readonly webhooks: import("../triggers/webhook/index.js").WebhookStore = {
     async list() {

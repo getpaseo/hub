@@ -15,4 +15,10 @@ export type {
   UnmatchedEventDetailView,
   UnmatchedEventView,
 } from "./dashboard.js";
-export type { ActivityFilterOptions, ActivityStore } from "./store.js";
+export type {
+  ActivityFilterOptions,
+  ActivityStore,
+  ActivitySummary,
+  LatestRun,
+  TriggerActivity,
+} from "./store.js";

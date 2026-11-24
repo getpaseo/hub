@@ -44,6 +44,13 @@ export interface DataTablePagination {
   onPage: (page: number) => void;
 }
 
+/** A quiet line under the rows: where to look for what the table leaves out. */
+export interface DataTableFooter {
+  note: string;
+  /** One link, normally `Button variant="link"`. */
+  action: ReactNode;
+}
+
 const TableSort = createContext<DataTableSort | undefined>(undefined);
 
 /** The columns of the table a cell is drawn in, and which of them the cell sits under. */
@@ -64,6 +71,7 @@ export function DataTable({
   isEmpty,
   sort,
   pagination,
+  footer,
   children,
 }: {
   label: string;
@@ -74,6 +82,8 @@ export function DataTable({
   sort?: DataTableSort;
   /** The rows are one page of many: the card ends in the range shown and page controls. */
   pagination?: DataTablePagination;
+  /** The rows are a summary: the card ends in a pointer to what they leave out. */
+  footer?: DataTableFooter;
   children: ReactNode;
 }) {
   if (isEmpty) {
@@ -92,6 +102,7 @@ export function DataTable({
         label={label}
         columns={columns}
         {...(pagination === undefined ? {} : { pagination })}
+        {...(footer === undefined ? {} : { footer })}
       >
         {children}
       </TableShell>
@@ -144,11 +155,13 @@ function TableShell({
   label,
   columns,
   pagination,
+  footer,
   children,
 }: {
   label: string;
   columns: readonly DataColumn[];
   pagination?: DataTablePagination;
+  footer?: DataTableFooter;
   children: ReactNode;
 }) {
   const sort = useContext(TableSort);
@@ -191,6 +204,12 @@ function TableShell({
         </TableBody>
       </Table>
       {pagination === undefined ? null : <Pagination label={label} {...pagination} />}
+      {footer === undefined ? null : (
+        <div className="flex h-11 items-center justify-between gap-4 border-t px-4">
+          <p className="truncate text-xs text-muted-foreground">{footer.note}</p>
+          <div className="shrink-0">{footer.action}</div>
+        </div>
+      )}
     </div>
   );
 }

@@ -3,8 +3,6 @@ import { describe, it } from "vitest";
 import type { AuthServer } from "../auth/server.js";
 import { createMemoryDatabase } from "../db/memory.js";
 import type { Database } from "../db/types.js";
-import { parseCompiledHubConfig } from "../config/compiler.js";
-import { buildLaunchMachineIntent } from "../dispatcher/index.js";
 import { acceptingAgentValidator } from "../test-utils/agent-validator.js";
 import {
   enrollTestDaemon,
@@ -32,12 +30,11 @@ describe("home read model", () => {
     assert.deepEqual(snapshot.connections, []);
     assert.deepEqual(snapshot.daemons, []);
     assert.deepEqual(snapshot.triggers, []);
-    assert.deepEqual(snapshot.runs, []);
-    assert.deepEqual(snapshot.unrouted, []);
-    assert.equal(snapshot.windowDays, 7);
+    assert.equal(snapshot.range, "7d");
+    assert.equal(snapshot.latestRun, null);
   });
 
-  it("reads daemons with whether they can run agents, triggers with their event, and recent runs with the agent that ran", async () => {
+  it("reads connections, daemons with whether they can run agents, and triggers with their events", async () => {
     const database = memberDatabase();
     await enrollTestDaemon(database, "org-1");
     await enrollConnectedOnlyDaemon(database);
@@ -47,8 +44,6 @@ describe("home read model", () => {
       "org-1",
       acceptingAgentValidator(),
     ).save({ yaml: triggerYaml, userId: "user-1" });
-    await recordRun(database, trigger.runtimeProjectId, "first", "succeeded", 120_000);
-    await recordRun(database, trigger.runtimeProjectId, "second", "failed", 60_000);
 
     const snapshot = await new HomeDashboard(
       database,
@@ -58,40 +53,27 @@ describe("home read model", () => {
     ).snapshot(request, "acme");
 
     assert.deepEqual(snapshot.connections, [
-      { provider: "slack", slug: "acme-slack", label: "Acme Slack" },
+      { provider: "slack", slug: "acme-slack", label: "Acme Slack", suspended: false },
     ]);
     assert.deepEqual(snapshot.daemons, [
-      { id: TEST_DAEMON_ID, slug: TEST_DAEMON_SLUG, presence: "connected", canExecute: true },
-      { id: CONNECTED_ONLY_DAEMON_ID, slug: "laptop", presence: "offline", canExecute: false },
+      {
+        id: TEST_DAEMON_ID,
+        slug: TEST_DAEMON_SLUG,
+        presence: "connected",
+        canExecute: true,
+        runs: 0,
+      },
+      {
+        id: CONNECTED_ONLY_DAEMON_ID,
+        slug: "laptop",
+        presence: "offline",
+        canExecute: false,
+        runs: 0,
+      },
     ]);
     assert.deepEqual(snapshot.triggers, [
       { id: trigger.id, name: "manual-task", events: ["manual.run"], enabled: true },
     ]);
-    assert.deepEqual(
-      snapshot.runs.map(({ triggerName, provider, source, status, agent }) => ({
-        triggerName,
-        provider,
-        source,
-        status,
-        agent,
-      })),
-      [
-        {
-          triggerName: "manual-task",
-          provider: "manual",
-          source: "manual.run",
-          status: "failed",
-          agent: { provider: "codex", model: "gpt-5.4" },
-        },
-        {
-          triggerName: "manual-task",
-          provider: "manual",
-          source: "manual.run",
-          status: "succeeded",
-          agent: { provider: "codex", model: "gpt-5.4" },
-        },
-      ],
-    );
   });
 
   it("reads every event of a YAML-only trigger with agent choices", async () => {
@@ -112,84 +94,6 @@ describe("home read model", () => {
       "acme",
     );
     assert.deepEqual(snapshot.triggers[0]?.events, ["schedule.tick", "webhook.received"]);
-  });
-
-  it("keeps the latest runs of an organization whose last run is older than the window", async () => {
-    const database = memberDatabase();
-    await enrollTestDaemon(database, "org-1");
-    const trigger = await new OrganizationTriggerStore(
-      database,
-      "org-1",
-      acceptingAgentValidator(),
-    ).save({ yaml: triggerYaml, userId: "user-1" });
-    const threeWeeks = 21 * 86_400_000;
-    await recordRun(database, trigger.runtimeProjectId, "old", "succeeded", threeWeeks);
-
-    const snapshot = await new HomeDashboard(
-      database,
-      accountAuth(),
-      APPS_CONFIGURED,
-      () => NOW,
-    ).snapshot(request, "acme");
-
-    assert.deepEqual(snapshot.runs, []);
-    assert.deepEqual(
-      snapshot.recentRuns.map(({ triggerName, status }) => ({ triggerName, status })),
-      [{ triggerName: "manual-task", status: "succeeded" }],
-    );
-  });
-
-  it("names a run after its trigger, not after the event within the trigger that started it", async () => {
-    const database = memberDatabase();
-    await enrollTestDaemon(database, "org-1");
-    const trigger = await new OrganizationTriggerStore(
-      database,
-      "org-1",
-      acceptingAgentValidator(),
-    ).save({ yaml: scheduledTriggerYaml, userId: "user-1" });
-    await recordRun(
-      database,
-      trigger.runtimeProjectId,
-      "tick",
-      "succeeded",
-      60_000,
-      "schedule.tick",
-    );
-
-    const snapshot = await new HomeDashboard(
-      database,
-      accountAuth(),
-      APPS_CONFIGURED,
-      () => NOW,
-    ).snapshot(request, "acme");
-
-    assert.deepEqual(
-      snapshot.runs.map(({ triggerName }) => triggerName),
-      ["manual-task"],
-    );
-  });
-
-  it("counts provider events dropped for want of a trigger, per provider, inside the window", async () => {
-    const database = memberDatabase();
-    await dropSlackEvent(database, "recent-1", new Date("2026-09-20T12:00:00.000Z"));
-    await dropSlackEvent(database, "recent-2", new Date("2026-09-21T09:00:00.000Z"));
-    await dropSlackEvent(database, "stale", new Date("2026-09-01T12:00:00.000Z"));
-    // A filter rejection is a trigger listening and declining, so it is not a missing trigger.
-    await dropSlackEvent(
-      database,
-      "filtered",
-      new Date("2026-09-21T10:00:00.000Z"),
-      "trigger_filters_rejected",
-    );
-
-    const snapshot = await new HomeDashboard(
-      database,
-      accountAuth(),
-      APPS_CONFIGURED,
-      () => NOW,
-    ).snapshot(request, "acme");
-
-    assert.deepEqual(snapshot.unrouted, [{ provider: "slack", count: 2 }]);
   });
 
   it("asks the provider registrations whether any app is configured, with the organization's bindings", async () => {
@@ -263,107 +167,6 @@ async function enrollConnectedOnlyDaemon(database: Database): Promise<void> {
     permissions: [],
     now: new Date("2026-09-21T11:00:00.000Z"),
   });
-}
-
-async function recordRun(
-  database: Database,
-  projectId: string,
-  deliveryId: string,
-  status: "succeeded" | "failed",
-  ageMs: number,
-  event = "manual.run",
-): Promise<void> {
-  const revision = await database.findActiveProjectConfiguration(projectId);
-  assert.ok(revision);
-  const configured = parseCompiledHubConfig(revision.normalizedConfiguration).triggers.find(
-    ({ on }) => on === event,
-  );
-  assert.ok(configured);
-  const receipt = await database.persistManualEvent({
-    organizationId: "org-1",
-    projectId,
-    deliveryId,
-    source: "manual.run",
-    payload: {},
-    receivedAt: new Date(NOW.getTime() - ageMs),
-  });
-  assert.equal(receipt.status, "accepted");
-  if (receipt.status !== "accepted") return;
-  const { run } = await database.createAcceptedTriggerRun({
-    organizationId: "org-1",
-    projectId,
-    configurationRevisionId: revision.id,
-    providerEventReceiptId: receipt.event.providerEventReceiptId,
-    configuredTriggerName: configured.name,
-    prompt: "run it",
-    inputs: {},
-    triggerContext: {},
-    outputContext: {},
-    deadlineAt: new Date(NOW.getTime() + 3_600_000),
-    stepIds: ["run"],
-    createdAt: new Date(NOW.getTime() - ageMs),
-  });
-  const executionId = `execution-${deliveryId}`;
-  await database.createWorkflowStepExecution({
-    triggerRunId: run.id,
-    stepId: "run",
-    ordinal: 0,
-    executionId,
-    execution: {
-      id: executionId,
-      organizationId: "org-1",
-      projectId,
-      machineId: null,
-      daemonId: TEST_DAEMON_ID,
-      triggerContext: {},
-      outputContext: {},
-      configurationRevisionId: revision.id,
-      deadlineAt: new Date(NOW.getTime() + 3_600_000),
-      idleDeadlineAt: new Date(NOW.getTime() + 600_000),
-      startedAt: new Date(NOW.getTime() - 30_000),
-      launchIntent: buildLaunchMachineIntent({
-        organizationId: "org-1",
-        projectId,
-        triggerRunId: run.id,
-        configurationRevisionId: revision.id,
-        triggerName: "manual-task",
-        environmentName: "target",
-        environment: {
-          kind: "daemon",
-          daemonId: TEST_DAEMON_ID,
-          authoredSlug: TEST_DAEMON_SLUG,
-          cwd: "/workspace",
-        },
-        prompt: "run it",
-        agent: { provider: "codex", model: "gpt-5.4", mode: "full-access" },
-        allowOutputs: [],
-        autoArchive: true,
-        background: false,
-        triggerContext: {},
-        outputContext: {},
-        hubConfig: {},
-      }),
-    },
-  });
-  if (status === "succeeded") await database.succeedTriggerRun(run.id);
-  else await database.failWorkflowRun(run.id, "failed", "agent_interrupted", "run");
-}
-
-async function dropSlackEvent(
-  database: Database,
-  deliveryId: string,
-  receivedAt: Date,
-  reason = "no_project_route",
-): Promise<void> {
-  const accepted = await database.acceptSlackEvent({
-    teamId: "T-ACME",
-    deliveryId,
-    source: "slack.mention",
-    payload: {},
-    receivedAt,
-    dropReason: reason,
-  });
-  assert.equal(accepted.status, "dropped");
 }
 
 const triggerYaml = `name: manual-task

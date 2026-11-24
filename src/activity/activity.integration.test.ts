@@ -141,7 +141,38 @@ describe("activity store", () => {
           daemons: [{ id: DAEMON, slug: "devbox" }],
         });
 
-        // No list or filter query names a payload column, and no list result carries one.
+        // The overview counts every run in its window, in the terms the list filters by.
+        const day = await activity.summarize(ORG, new Date(NOW.getTime() - 86_400_000), 8);
+        expect(day).toEqual({
+          statuses: { running: 20, succeeded: 20, failed: 20, timed_out: 0, rejected: 0 },
+          triggers: [
+            {
+              id: DEPLOY,
+              name: "deploy",
+              runs: 60,
+              failed: 20,
+              lastRunAt: new Date("2026-11-20T11:40:00Z"),
+            },
+            { id: TRIAGE, name: "triage", runs: 0, failed: 0, lastRunAt: null },
+          ],
+          daemons: [],
+        });
+        const week = await activity.summarize(ORG, new Date(NOW.getTime() - 7 * 86_400_000), 1);
+        expect(week.triggers.map((trigger) => trigger.name)).toEqual(["deploy"]);
+        expect(week.daemons).toEqual([{ id: DAEMON, runs: 1 }]);
+        expect(Object.values(week.statuses).reduce((sum, count) => sum + count, 0)).toBe(
+          (await activity.listRuns(ORG, query(), NOW)).total,
+        );
+        expect(await activity.latestRun(ORG)).toEqual({
+          triggerName: "deploy",
+          receivedAt: new Date("2026-11-20T11:40:00Z"),
+        });
+        expect(await activity.latestRun(OTHER_ORG)).toEqual({
+          triggerName: "other",
+          receivedAt: new Date("2026-11-19T00:00:00Z"),
+        });
+
+        // No list, filter, or overview query names a payload column, and no list result carries one.
         expect(statements.filter((sql) => PAYLOAD_COLUMNS.test(sql))).toEqual([]);
         expect(JSON.stringify([runs, triage, unmatched])).not.toContain(PRIVATE);
 

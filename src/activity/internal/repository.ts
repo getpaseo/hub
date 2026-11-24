@@ -3,6 +3,7 @@ import type { ProviderEventDropReasonCode } from "../../triggers/drop-reason.js"
 import { parseInvocationRejection } from "../../triggers/invocation.js";
 import {
   ACTIVITY_PAGE_SIZE,
+  FAILED_RUN_STATUSES,
   rangeStart,
   type ActivityProvider,
   type ActivityQuery,
@@ -16,6 +17,8 @@ import {
   type ActivityRunDetail,
   type ActivityStep,
   type ActivityStore,
+  type ActivitySummary,
+  type LatestRun,
   type PayloadPreview,
   type UnmatchedEvent,
   type UnmatchedEventDetail,
@@ -298,6 +301,91 @@ export class ActivityRepository implements ActivityStore {
       [executionId],
     );
     return row?.trigger_run_id;
+  }
+
+  async summarize(
+    organizationId: string,
+    since: Date,
+    triggerLimit: number,
+  ): Promise<ActivitySummary> {
+    const failed = `runs.status in (${FAILED_RUN_STATUSES.map((status) => `'${status}'`).join(", ")})`;
+    const [statuses, triggers, daemons] = await Promise.all([
+      this.runtime.query<{ status: RunStatus; runs: number }>(
+        `select runs.status, count(*)::int as runs
+         ${RUN_FROM}
+         where runs.organization_id = $1 and runs.created_at >= $2
+         group by runs.status`,
+        [organizationId, since],
+      ),
+      // From the triggers, not the runs: a trigger that was quiet this week is still listed.
+      this.runtime.query<{
+        id: string;
+        name: string;
+        run_count: number;
+        failed: number;
+        last_run_at: Date | null;
+      }>(
+        `select triggers.id, triggers.name, count(runs.id)::int as run_count,
+                (count(runs.id) filter (where ${failed}))::int as failed,
+                max(runs.created_at) as last_run_at
+         from organization_triggers triggers
+         left join trigger_runs runs
+           on runs.project_id = triggers.runtime_project_id
+          and runs.organization_id = triggers.organization_id
+          and runs.created_at >= $2
+         where triggers.organization_id = $1
+         group by triggers.id, triggers.name
+         order by run_count desc, triggers.name, triggers.id
+         limit $3`,
+        [organizationId, since, triggerLimit],
+      ),
+      this.runtime.query<{ id: string; runs: number }>(
+        `select executions.daemon_id as id, count(distinct runs.id)::int as runs
+         from trigger_runs runs
+         join workflow_step_runs steps on steps.trigger_run_id = runs.id
+         join agent_executions executions on executions.id = steps.agent_execution_id
+         where runs.organization_id = $1 and runs.created_at >= $2
+           and executions.daemon_id is not null
+         group by executions.daemon_id`,
+        [organizationId, since],
+      ),
+    ]);
+    const counts = new Map(statuses.rows.map((row) => [row.status, row.runs]));
+    const count = (status: RunStatus) => counts.get(status) ?? 0;
+    return {
+      statuses: {
+        running: count("running"),
+        succeeded: count("succeeded"),
+        failed: count("failed"),
+        timed_out: count("timed_out"),
+        rejected: count("rejected"),
+      },
+      triggers: triggers.rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        runs: row.run_count,
+        failed: row.failed,
+        lastRunAt: row.last_run_at,
+      })),
+      daemons: daemons.rows,
+    };
+  }
+
+  async latestRun(organizationId: string): Promise<LatestRun | undefined> {
+    const {
+      rows: [row],
+    } = await this.runtime.query<{ trigger_name: string; received_at: Date }>(
+      `select coalesce(triggers.name, runs.configured_trigger_name) as trigger_name,
+              receipts.received_at
+       ${RUN_FROM}
+       where runs.organization_id = $1
+       order by runs.created_at desc, runs.id desc
+       limit 1`,
+      [organizationId],
+    );
+    return row === undefined
+      ? undefined
+      : { triggerName: row.trigger_name, receivedAt: row.received_at };
   }
 }
 

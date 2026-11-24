@@ -28,6 +28,40 @@ export interface ActivityStore {
   ): Promise<UnmatchedEventDetail | undefined>;
   /** The run an agent execution belongs to, for links that only know the execution. */
   findRunIdForExecution(executionId: string): Promise<string | undefined>;
+  /**
+   * Runs since `since`, counted exactly and in the same terms the Runs list filters by, so a
+   * figure and the list it links to always agree.
+   */
+  summarize(organizationId: string, since: Date, triggerLimit: number): Promise<ActivitySummary>;
+  /** The organization's newest run, however old. */
+  latestRun(organizationId: string): Promise<LatestRun | undefined>;
+}
+
+export interface ActivitySummary {
+  /** Runs by status. Every status is present, zero when none ended that way. */
+  statuses: Record<RunStatus, number>;
+  /**
+   * The busiest triggers in the window, then the quiet ones by name, at most `triggerLimit`. A
+   * trigger with no runs in the window is still a trigger the organization has.
+   */
+  triggers: TriggerActivity[];
+  /** Runs per daemon. A run counts for each daemon one of its steps ran on. */
+  daemons: { id: string; runs: number }[];
+}
+
+export interface TriggerActivity {
+  id: string;
+  name: string;
+  runs: number;
+  /** Runs that failed, timed out, or were rejected. */
+  failed: number;
+  /** The newest run in the window. */
+  lastRunAt: Date | null;
+}
+
+export interface LatestRun {
+  triggerName: string;
+  receivedAt: Date;
 }
 
 export interface ActivityPage<Row> {

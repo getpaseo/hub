@@ -213,19 +213,30 @@ const SEARCH_KEYS = [
   "selected",
 ] as const satisfies readonly (keyof ActivitySearch)[];
 
-/** A link into Activity from anywhere in the organization. */
+/** A link into Activity as router `Link` props: the path, and the search Activity will read. */
+export function activityLink(
+  organizationSlug: string,
+  search: Readonly<Record<string, unknown>> = {},
+): { to: string; search: ActivitySearch } {
+  return {
+    to: `/o/${encodeURIComponent(organizationSlug)}/activity`,
+    search: parseActivitySearch(search),
+  };
+}
+
+/** A link into Activity from anywhere in the organization, as one address. */
 export function activityHref(
   organizationSlug: string,
   search: Readonly<Record<string, unknown>> = {},
 ): string {
-  const parsed = parseActivitySearch(search);
+  const link = activityLink(organizationSlug, search);
   const params = new URLSearchParams();
   for (const key of SEARCH_KEYS) {
-    const value = parsed[key];
+    const value = link.search[key];
     if (value !== undefined) params.set(key, String(value));
   }
   const query = params.toString();
-  return `/o/${encodeURIComponent(organizationSlug)}/activity${query === "" ? "" : `?${query}`}`;
+  return `${link.to}${query === "" ? "" : `?${query}`}`;
 }
 
 const RANGE_DAYS = { "24h": 1, "7d": 7, "30d": 30 } as const;
