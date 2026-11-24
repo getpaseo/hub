@@ -3,7 +3,9 @@ import { rangeStart, type ActivityProvider, type RunStatus } from "../activity/q
 import type { AuthServer } from "../auth/server.js";
 import type { Database, OrganizationConnectionUsage } from "../db/types.js";
 import { resolveRouteTenant } from "../projects/access.js";
-import { eventDefinition, isEditorEvent } from "../triggers/configuration/events.js";
+import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
+import { hasRequiredSlackScopes } from "../providers/slack/client.js";
+import { eventDefinition, eventProvider, isEditorEvent } from "../triggers/configuration/events.js";
 import { configuredTriggerEvents } from "../triggers/store.js";
 import type { HomeRange } from "./range.js";
 
@@ -18,8 +20,11 @@ export interface HomeSnapshot {
     provider: "github" | "slack" | "discord" | "linear";
     slug: string;
     label: string;
-    /** The provider stopped delivering events to Hub until someone acts on its side. */
-    suspended: boolean;
+    /**
+     * `suspended`: GitHub stopped delivering events until someone acts on its side.
+     * `requiresReauthorization`: the grant is short of what Hub needs, as Integrations says.
+     */
+    status: "connected" | "suspended" | "requiresReauthorization";
   }[];
   daemons: readonly {
     id: string;
@@ -83,7 +88,8 @@ export class HomeDashboard {
       organizationSlug,
     });
     const organizationId = tenant.organization.id;
-    const since = rangeStart(range, this.now()) ?? new Date(0);
+    const now = this.now();
+    const since = rangeStart(range, now) ?? new Date(0);
     const triggers = await this.database.listOrganizationTriggers(organizationId);
     const [connections, daemons, revisions, summary, latestRun] = await Promise.all([
       this.database.organizationConnectionUsage(organizationId),
@@ -105,7 +111,7 @@ export class HomeDashboard {
     return {
       organization: tenant.organization,
       appsConfigured: this.providerAppsConfigured(connections),
-      connections: connectionViews(connections),
+      connections: connectionViews(connections, now),
       daemons: daemons
         .filter(({ status }) => status === "active")
         .map(({ id, slug, presence, permissions }) => ({
@@ -127,31 +133,38 @@ export class HomeDashboard {
   }
 }
 
-function connectionViews(connections: OrganizationConnectionUsage): HomeSnapshot["connections"] {
+function connectionViews(
+  connections: OrganizationConnectionUsage,
+  now: Date,
+): HomeSnapshot["connections"] {
   return [
     ...connections.github.map(({ slug, accountLogin, status }) => ({
       provider: "github" as const,
       slug,
       label: accountLogin,
-      suspended: status === "suspended",
+      status: status === "suspended" ? ("suspended" as const) : ("connected" as const),
     })),
-    ...connections.slack.map(({ slug, teamName }) => ({
+    ...connections.slack.map(({ slug, teamName, scopes }) => ({
       provider: "slack" as const,
       slug,
       label: teamName,
-      suspended: false,
+      status: hasRequiredSlackScopes(scopes)
+        ? ("connected" as const)
+        : ("requiresReauthorization" as const),
     })),
     ...connections.discord.map(({ slug, guildName }) => ({
       provider: "discord" as const,
       slug,
       label: guildName,
-      suspended: false,
+      status: "connected" as const,
     })),
-    ...connections.linear.map(({ slug, linearOrganizationName }) => ({
+    ...connections.linear.map((connection) => ({
       provider: "linear" as const,
-      slug,
-      label: linearOrganizationName,
-      suspended: false,
+      slug: connection.slug,
+      label: connection.linearOrganizationName,
+      status: linearConnectionRequiresReauthorization(connection, now)
+        ? ("requiresReauthorization" as const)
+        : ("connected" as const),
     })),
   ];
 }
@@ -166,7 +179,7 @@ function busiestTriggers(
     return {
       id: activity.id,
       name: activity.name,
-      provider: definition?.provider ?? "manual",
+      provider: eventProvider(event),
       event: definition?.label ?? event,
       runs: activity.runs,
       failed: activity.failed,

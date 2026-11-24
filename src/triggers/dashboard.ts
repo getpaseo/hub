@@ -7,6 +7,7 @@ import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 import { ProjectCommandError } from "../projects/command-error.js";
 import type { DaemonAgentConfigurationValidator } from "../configuration/store.js";
 import { projectTriggerForm } from "./configuration/editor.js";
+import { eventProvider } from "./configuration/events.js";
 import { configuredTriggerEvents, OrganizationTriggerStore } from "./store.js";
 import type { WebhookSecretAction } from "./webhook/index.js";
 
@@ -132,7 +133,7 @@ async function triggerView(
   const revision = await store.activeRevision(trigger);
   const evidence = record(revision.sourceEvidence);
   const event = configuredTriggerEvents(trigger.format, revision)[0] ?? "manual.run";
-  const provider = triggerProvider(event);
+  const provider = eventProvider(event);
   const lastTriggered =
     lastRun === undefined
       ? null
@@ -166,23 +167,6 @@ async function triggerView(
     provider,
     lastTriggered,
   };
-}
-
-function triggerProvider(
-  event: string,
-): "github" | "discord" | "slack" | "linear" | "manual" | "schedule" | "webhook" {
-  const provider = event.split(".")[0];
-  if (
-    provider === "schedule" ||
-    provider === "webhook" ||
-    provider === "github" ||
-    provider === "discord" ||
-    provider === "slack" ||
-    provider === "linear"
-  ) {
-    return provider;
-  }
-  return "manual";
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

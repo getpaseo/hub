@@ -7,7 +7,11 @@ import { Cpu, History, TriangleAlert } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { RANGE_LABELS } from "../activity/presentation.js";
-import { activityLink, FAILED_RUN_STATUSES } from "../activity/query-contract.js";
+import {
+  activityLink,
+  activityProviderLabel,
+  FAILED_RUN_STATUSES,
+} from "../activity/query-contract.js";
 import { useActiveAccount } from "../auth/active-account.js";
 import { Card, CardSkeleton } from "../components/app/card.js";
 import { CopyField } from "../components/app/copy-field.js";
@@ -77,7 +81,7 @@ export function HomePanel() {
           />
         ) : null}
       </PageHeader>
-      <SuspendedConnections connections={data.connections} base={base} />
+      <ConnectionsNeedingAttention connections={data.connections} base={base} />
       {/* Completing the last step is what collapses the list: the key remounts it with the
           collapsed default, and every toggle before or after that is the reader's own. */}
       <GetStarted
@@ -103,35 +107,41 @@ export function HomePanel() {
 }
 
 /**
- * The one fault Home raises: a provider stopped delivering events, so triggers on it start
- * nothing until someone acts on the provider's side. Events no trigger listens to are not a
- * fault, so they are a quiet link under Triggers instead.
+ * The one fault Home raises: a connection Hub cannot use as it stands, so someone has to act on
+ * the provider's side — GitHub suspended the app, or a Slack or Linear grant is short of what Hub
+ * needs. Events no trigger listens to are not a fault, so they are a quiet link under Triggers.
  */
-function SuspendedConnections({
+function ConnectionsNeedingAttention({
   connections,
   base,
 }: {
   connections: HomeSnapshot["connections"];
   base: string;
 }) {
-  const suspended = connections.filter((connection) => connection.suspended);
-  if (suspended.length === 0) return null;
+  const faults = connections.filter(({ status }) => status !== "connected");
+  if (faults.length === 0) return null;
   return (
     <WarningAlert
       standalone
-      title="GitHub stopped sending events"
+      title={faults.length === 1 ? "A connection needs attention" : "Connections need attention"}
       action={
         <Button asChild variant="outline" size="sm">
           <Link to={`${base}/integrations` as never}>Open integrations</Link>
         </Button>
       }
     >
-      <p>
-        {suspended.map(({ label }) => label).join(", ")} is suspended on GitHub. Its triggers start
-        nothing until it is unsuspended
-      </p>
+      {faults.map((connection) => (
+        <p key={`${connection.provider}:${connection.slug}`}>{connectionFault(connection)}</p>
+      ))}
     </WarningAlert>
   );
+}
+
+function connectionFault({ provider, label, status }: HomeSnapshot["connections"][number]): string {
+  const where = activityProviderLabel(provider);
+  return status === "suspended"
+    ? `${label} is suspended on ${where}, so its events stop arriving`
+    : `${label} needs reauthorizing on ${where}`;
 }
 
 function Figures({ snapshot }: { snapshot: HomeSnapshot }) {

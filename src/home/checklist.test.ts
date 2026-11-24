@@ -32,7 +32,9 @@ describe("the onboarding checklist", () => {
   it("marks the app step done by a connection, whatever the app situation", () => {
     const snapshot = {
       ...nothing,
-      connections: [{ provider: "github" as const, slug: "acme", label: "acme", suspended: false }],
+      connections: [
+        { provider: "github" as const, slug: "acme", label: "acme", status: "connected" as const },
+      ],
     };
     assert.equal(states(snapshot)[0], "done");
     assert.equal(states({ ...snapshot, appsConfigured: false })[0], "done");
@@ -80,7 +82,9 @@ describe("the onboarding checklist", () => {
   it("completes and counts once a trigger exists and has run, however long ago", () => {
     const checklist = deriveChecklist({
       appsConfigured: true,
-      connections: [{ provider: "slack", slug: "acme", label: "Acme", suspended: false }],
+      connections: [
+        { provider: "slack", slug: "acme", label: "Acme", status: "connected" as const },
+      ],
       daemons: [{ id: "2", slug: "devbox", presence: "connected", canExecute: true, runs: 0 }],
       triggers: [{ id: "t", name: "slack-help", events: ["slack.mention"], enabled: true }],
       latestRun: { triggerName: "slack-help", receivedAt: "2026-09-01T12:00:00.000Z" },

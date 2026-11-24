@@ -118,6 +118,19 @@ export class OrganizationHome {
     await expect(this.page.getByRole("alert")).toHaveCount(0);
   }
 
+  /** A connection Hub cannot use as it stands is the one fault Home raises. */
+  async expectConnectionFault(fault: string) {
+    const alert = this.page.getByRole("alert");
+    await expect(alert).toHaveCount(1);
+    await expect(alert).toContainText("A connection needs attention");
+    await expect(alert).toContainText(fault);
+  }
+
+  async openIntegrationsFromAlert() {
+    await this.page.getByRole("alert").getByRole("link", { name: "Open integrations" }).click();
+    await expect(this.page.getByRole("heading", { name: "Integrations", level: 1 })).toBeVisible();
+  }
+
   async chooseRange(range: HomeRange) {
     await this.page
       .getByRole("radiogroup", { name: "Range" })

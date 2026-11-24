@@ -179,6 +179,13 @@ test("walks a hosted organization from sign-in to its first run", async ({ hub, 
     await activity.expectUrl({ view: "unmatched", range: null });
     await activity.expectRows("Unmatched events", 2);
   });
+
+  await test.step("a Slack workspace short of Hub's permissions raises the one alert", async () => {
+    await hub.seedSlackConnection("owner", "acme-eng", "Acme Engineering");
+    await home.open();
+    await home.expectConnectionFault("Acme Engineering needs reauthorizing on Slack");
+    await home.openIntegrationsFromAlert();
+  });
 });
 
 /** A self-hosted operator who deferred app setup is sent back to it from the first step. */

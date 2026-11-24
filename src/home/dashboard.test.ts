@@ -53,7 +53,13 @@ describe("home read model", () => {
     ).snapshot(request, "acme");
 
     assert.deepEqual(snapshot.connections, [
-      { provider: "slack", slug: "acme-slack", label: "Acme Slack", suspended: false },
+      // The fixture's workspace granted `app_mentions:read` only, short of what Hub requires.
+      {
+        provider: "slack",
+        slug: "acme-slack",
+        label: "Acme Slack",
+        status: "requiresReauthorization",
+      },
     ]);
     assert.deepEqual(snapshot.daemons, [
       {
