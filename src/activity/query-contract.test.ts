@@ -54,7 +54,7 @@ describe("activity URL contract", () => {
       view: "unmatched",
       reason: "trigger_filters_rejected",
       q: "404",
-      page: 400,
+      page: 9999,
     });
   });
 

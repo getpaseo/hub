@@ -244,7 +244,123 @@ describe("activity store", () => {
     },
     120_000,
   );
+
+  it.each(["postgres", "embedded"])(
+    "%s attributes a migrated trigger's runs from before the migration to it",
+    async (driver) => {
+      const directory = await mkdtemp(join(tmpdir(), "hub-activity-migrated-"));
+      const { runtime } =
+        driver === "postgres"
+          ? await createPostgresTestRuntime(postgres.getConnectionUri())
+          : await embeddedDatabaseRuntime(directory);
+      try {
+        await runtime.migrate();
+        await seedMigratedTrigger(runtime);
+        const activity = new ActivityRepository(runtime);
+        const query = (search: Record<string, unknown> = {}) =>
+          activityQuery(parseActivitySearch(search));
+
+        // The legacy project's `review` run is the trigger's; its `lint` run, from a workflow
+        // that became another trigger, is not.
+        const runs = await activity.listRuns(
+          MIGRATED_ORG,
+          query({ trigger: REVIEW, range: "all" }),
+          NOW,
+        );
+        expect(runs.rows.map((run) => [run.id, run.triggerId, run.triggerName])).toEqual([
+          [CURRENT_REVIEW_RUN, REVIEW, "legacy-review"],
+          [LEGACY_REVIEW_RUN, REVIEW, "legacy-review"],
+        ]);
+        expect(await activity.findRun(MIGRATED_ORG, LEGACY_REVIEW_RUN, NOW)).toMatchObject({
+          triggerId: REVIEW,
+          triggerName: "legacy-review",
+        });
+        expect(await activity.findRun(MIGRATED_ORG, LEGACY_LINT_RUN, NOW)).toMatchObject({
+          triggerId: null,
+          triggerName: "lint",
+        });
+
+        const summary = await activity.summarize(MIGRATED_ORG, new Date(0), 8);
+        expect(summary.triggers).toEqual([
+          {
+            id: REVIEW,
+            name: "legacy-review",
+            runs: 2,
+            failed: 1,
+            lastRunAt: new Date("2026-11-19T00:00:00Z"),
+          },
+        ]);
+        expect(await activity.lastRuns(MIGRATED_ORG)).toEqual([
+          { triggerId: REVIEW, status: "succeeded", receivedAt: new Date("2026-11-19T00:00:00Z") },
+        ]);
+      } finally {
+        await runtime.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
 });
+
+const MIGRATED_ORG = "migrated-org";
+const LEGACY_PROJECT = "11000000-0000-4000-8000-000000000001";
+const REVIEW_RUNTIME = "11000000-0000-4000-8000-000000000002";
+const REVIEW = "31000000-0000-4000-8000-000000000001";
+const LEGACY_REVIEW_RUN = "81000000-0000-4000-8000-000000000001";
+const LEGACY_LINT_RUN = "81000000-0000-4000-8000-000000000002";
+const CURRENT_REVIEW_RUN = "81000000-0000-4000-8000-000000000003";
+
+/**
+ * A project migrated into one trigger, `review`, renamed `legacy-review` because the name was
+ * taken. Its runs from before the migration stay in the legacy project.
+ */
+async function seedMigratedTrigger(runtime: DatabaseRuntime) {
+  const statements = `
+    insert into organization (id, name, slug) values ('${MIGRATED_ORG}', 'Migrated', 'migrated');
+    insert into projects (id, organization_id, name, slug) values
+      ('${LEGACY_PROJECT}', '${MIGRATED_ORG}', 'Legacy', 'legacy'),
+      ('${REVIEW_RUNTIME}', '${MIGRATED_ORG}', 'Trigger runtime: legacy-review', 'trigger-review');
+    insert into project_configuration_revisions
+      (id, project_id, organization_id, version, source_kind, source_evidence, normalized_configuration, content_hash)
+    values
+      ('21000000-0000-4000-8000-000000000001', '${LEGACY_PROJECT}', '${MIGRATED_ORG}', 1, 'manual', '{}', '{}', 'legacy'),
+      ('21000000-0000-4000-8000-000000000002', '${REVIEW_RUNTIME}', '${MIGRATED_ORG}', 1, 'manual', '{}', '{}', 'review');
+    insert into organization_triggers (id, organization_id, name, format, runtime_project_id) values
+      ('${REVIEW}', '${MIGRATED_ORG}', 'legacy-review', 'single_run', '${REVIEW_RUNTIME}');
+    insert into organization_trigger_revisions
+      (trigger_id, organization_id, version, yaml, normalized_configuration, content_hash,
+       source_kind, source_evidence)
+    values
+      ('${REVIEW}', '${MIGRATED_ORG}', 1, '', '{"environments":[],"triggers":[{"name":"review"}]}',
+       'review', 'project_migration',
+       '{"kind":"project_migration","legacyProjectId":"${LEGACY_PROJECT}"}');
+    insert into provider_event_receipts
+      (id, organization_id, provider, delivery_id, source, payload, received_at)
+    values
+      ('53000000-0000-4000-8000-000000000001', '${MIGRATED_ORG}', 'github', 'legacy-review',
+       'github.pull_request', '{}', '2026-11-01T00:00:00Z'),
+      ('53000000-0000-4000-8000-000000000002', '${MIGRATED_ORG}', 'github', 'legacy-lint',
+       'github.pull_request', '{}', '2026-11-02T00:00:00Z'),
+      ('53000000-0000-4000-8000-000000000003', '${MIGRATED_ORG}', 'github', 'current-review',
+       'github.pull_request', '{}', '2026-11-19T00:00:00Z');
+    insert into trigger_runs
+      (id, organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
+       configured_trigger_name, status, prompt, deadline_at, created_at)
+    values
+      ('${LEGACY_REVIEW_RUN}', '${MIGRATED_ORG}', '${LEGACY_PROJECT}', '21000000-0000-4000-8000-000000000001',
+       '53000000-0000-4000-8000-000000000001', 'review', 'failed', '', '2026-12-01T00:00:00Z',
+       '2026-11-01T00:00:00Z'),
+      ('${LEGACY_LINT_RUN}', '${MIGRATED_ORG}', '${LEGACY_PROJECT}', '21000000-0000-4000-8000-000000000001',
+       '53000000-0000-4000-8000-000000000002', 'lint', 'succeeded', '', '2026-12-01T00:00:00Z',
+       '2026-11-02T00:00:00Z'),
+      ('${CURRENT_REVIEW_RUN}', '${MIGRATED_ORG}', '${REVIEW_RUNTIME}', '21000000-0000-4000-8000-000000000002',
+       '53000000-0000-4000-8000-000000000003', 'legacy-review', 'succeeded', '', '2026-12-01T00:00:00Z',
+       '2026-11-19T00:00:00Z')
+  `;
+  for (const statement of statements.split(";").filter((sql) => sql.trim() !== "")) {
+    await runtime.query(statement);
+  }
+}
 
 function isSorted(values: readonly number[]): boolean {
   return values.every((value, index) => index === 0 || values[index - 1]! <= value);

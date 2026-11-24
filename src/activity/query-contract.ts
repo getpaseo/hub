@@ -47,8 +47,6 @@ export type ActivitySort = (typeof ACTIVITY_SORTS)[number];
 const RUN_ONLY_SORTS: ReadonlySet<ActivitySort> = new Set(["duration", "status"]);
 
 export const ACTIVITY_PAGE_SIZE = 25;
-/** Offset paging stays cheap while it is bounded; 400 pages of 25 is 10,000 rows. */
-export const ACTIVITY_MAX_PAGE = 400;
 export const ACTIVITY_SEARCH_MAX = 120;
 
 export interface ActivitySearch {
@@ -294,6 +292,9 @@ function text(value: unknown): string | undefined {
 
 function pageNumber(value: unknown): number | undefined {
   const page = typeof value === "string" ? Number(value) : value;
-  if (typeof page !== "number" || !Number.isInteger(page) || page < 1) return undefined;
-  return Math.min(page, ACTIVITY_MAX_PAGE);
+  // Not capped, so every matching record stays reachable. A page past the last returns no rows
+  // after reading the matches once: the runs count reads them anyway, and unmatched receipts
+  // are kept for 7 days.
+  if (typeof page !== "number" || !Number.isSafeInteger(page) || page < 1) return undefined;
+  return page;
 }

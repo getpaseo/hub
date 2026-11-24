@@ -63,13 +63,34 @@ const LATEST_EXECUTION = `left join lateral (
     limit 1
   ) execution on true`;
 
+/**
+ * Where each trigger of the organization in `$1` finds its runs. A trigger's own runs are in its
+ * runtime project. A trigger migrated from a project also owns the runs that project's workflow
+ * of the same former name made before the migration: those runs keep their original project
+ * (docs/trigger-migration.md), so they are matched by the name the migration revision recorded.
+ */
+const TRIGGER_SOURCES = `(
+  select id, name, runtime_project_id as project_id, null::text as former_name
+  from organization_triggers
+  where organization_id = $1
+  union all
+  select triggers.id, triggers.name,
+         (revisions.source_evidence ->> 'legacyProjectId')::uuid as project_id,
+         revisions.normalized_configuration #>> '{triggers,0,name}' as former_name
+  from organization_trigger_revisions revisions
+  join organization_triggers triggers on triggers.id = revisions.trigger_id
+  where revisions.organization_id = $1 and revisions.source_kind = 'project_migration'
+)`;
+
+/** A run belongs to the trigger whose source it came from. */
+const RUN_OF_TRIGGER = `runs.project_id = triggers.project_id
+  and (triggers.former_name is null or runs.configured_trigger_name = triggers.former_name)`;
+
 const RUN_FROM = `from trigger_runs runs
   join provider_event_receipts receipts
     on receipts.id = runs.provider_event_receipt_id
    and receipts.organization_id = runs.organization_id
-  left join organization_triggers triggers
-    on triggers.runtime_project_id = runs.project_id
-   and triggers.organization_id = runs.organization_id`;
+  left join ${TRIGGER_SOURCES} triggers on ${RUN_OF_TRIGGER}`;
 
 /** A run that ended badly, in the terms Activity's failure filter uses. */
 const FAILED_RUN = `runs.status in (${FAILED_RUN_STATUSES.map((status) => `'${status}'`).join(", ")})`;
@@ -333,12 +354,11 @@ export class ActivityRepository implements ActivityStore {
         `select triggers.id, triggers.name, count(runs.id)::int as run_count,
                 (count(runs.id) filter (where ${failed}))::int as failed,
                 max(runs.created_at) as last_run_at
-         from organization_triggers triggers
+         from ${TRIGGER_SOURCES} triggers
          left join trigger_runs runs
-           on runs.project_id = triggers.runtime_project_id
-          and runs.organization_id = triggers.organization_id
+           on ${RUN_OF_TRIGGER}
+          and runs.organization_id = $1
           and runs.created_at >= $2
-         where triggers.organization_id = $1
          group by triggers.id, triggers.name
          order by run_count desc, triggers.name, triggers.id
          limit $3`,
@@ -411,27 +431,31 @@ export class ActivityRepository implements ActivityStore {
   }
 
   async lastRuns(organizationId: string): Promise<TriggerLastRun[]> {
-    // One indexed read per trigger, through `trigger_runs_project_created_idx`.
+    // One indexed read per trigger source, through `trigger_runs_project_created_idx`, then the
+    // newest of a migrated trigger's two sources.
     const { rows } = await this.runtime.query<{
       trigger_id: string;
       status: RunStatus;
       received_at: Date;
     }>(
-      `select triggers.id as trigger_id, latest.status, latest.received_at
-       from organization_triggers triggers
-       join lateral (
-         select runs.status, receipts.received_at
-         from trigger_runs runs
-         join provider_event_receipts receipts
-           on receipts.id = runs.provider_event_receipt_id
-          and receipts.organization_id = runs.organization_id
-         where runs.project_id = triggers.runtime_project_id
-           and runs.organization_id = triggers.organization_id
-         order by runs.created_at desc, runs.id desc
-         limit 1
-       ) latest on true
-       where triggers.organization_id = $1
-       order by triggers.name, triggers.id`,
+      `select trigger_id, status, received_at from (
+         select distinct on (triggers.id)
+                triggers.id as trigger_id, triggers.name, latest.status, latest.received_at
+         from ${TRIGGER_SOURCES} triggers
+         join lateral (
+           select runs.id, runs.status, runs.created_at, receipts.received_at
+           from trigger_runs runs
+           join provider_event_receipts receipts
+             on receipts.id = runs.provider_event_receipt_id
+            and receipts.organization_id = runs.organization_id
+           where ${RUN_OF_TRIGGER}
+             and runs.organization_id = $1
+           order by runs.created_at desc, runs.id desc
+           limit 1
+         ) latest on true
+         order by triggers.id, latest.created_at desc, latest.id desc
+       ) newest
+       order by name, trigger_id`,
       [organizationId],
     );
     return rows.map((row) => ({
