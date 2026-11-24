@@ -29,6 +29,7 @@ import { SiteHeaderActions } from "../shell/site-header-actions.js";
 import { ProviderGlyph } from "../connections/provider-glyph.js";
 import { CodeEditor } from "../projects/configuration/code-editor.js";
 import { useRouteTenant } from "../projects/context.js";
+import { ActivityLink } from "../activity/link.js";
 import type { Result } from "../contract/respond.js";
 import {
   describeTriggerEvent,
@@ -182,7 +183,17 @@ export function TriggersPanel() {
                   <span className="text-muted-foreground">Never</span>
                 ) : (
                   <TwoLine
-                    primary={<RelativeTime value={trigger.lastTriggered.receivedAt} />}
+                    primary={
+                      <ActivityLink
+                        organizationSlug={scope.organizationSlug}
+                        search={{ trigger: trigger.id }}
+                        title="View activity"
+                        className="hover:underline"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <RelativeTime value={trigger.lastTriggered.receivedAt} />
+                      </ActivityLink>
+                    }
                     secondary={statusLabel(trigger.lastTriggered.status)}
                   />
                 )}
@@ -363,7 +374,18 @@ function TriggerEditor({
           tone: editor.form.enabled ? "success" : "neutral",
         }}
         description={TRIGGER_EDITOR_DESCRIPTION}
-      />
+      >
+        {trigger === null ? null : (
+          <Button asChild variant="outline" size="sm">
+            <ActivityLink
+              organizationSlug={snapshot.organization.slug}
+              search={{ trigger: trigger.id }}
+            >
+              View activity
+            </ActivityLink>
+          </Button>
+        )}
+      </PageHeader>
       <div className="grid gap-6">
         <TriggerCompatibilityAlert
           legacy={legacy}

@@ -43,25 +43,6 @@ export interface ProviderEventReceiptSummary {
   droppedReason: string | null;
 }
 
-/** One run as an organization overview reads it: what fired, what happened, and which agent ran. */
-export interface OrganizationRunRecord {
-  id: string;
-  /** The trigger's name as the user wrote it, never the internal name of one of its events. */
-  triggerName: string;
-  provider: ProviderEventReceiptRecord["provider"];
-  source: string;
-  status: TriggerRunRecord["status"];
-  receivedAt: Date;
-  /** The agent the dispatched launch intent named; null before dispatch or when nothing launched. */
-  agent: { provider: string; model: string | null } | null;
-}
-
-/** How many events a provider delivered that no trigger was listening for. */
-export interface UnroutedProviderEventCount {
-  provider: ProviderEventReceiptRecord["provider"];
-  count: number;
-}
-
 export interface ProviderEventRouteSnapshot {
   projectId: string;
   configurationRevisionId: string;
@@ -1562,9 +1543,6 @@ export interface Database {
     triggerId: string,
     revisionId: string,
   ): Promise<OrganizationTriggerRevisionRecord | undefined>;
-  findOrganizationTriggerMigrationRevision(
-    triggerId: string,
-  ): Promise<OrganizationTriggerRevisionRecord | undefined>;
   saveOrganizationTrigger(input: SaveOrganizationTriggerInput): Promise<OrganizationTriggerRecord>;
   listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]>;
   findProjectForOrganization(
@@ -1636,24 +1614,6 @@ export interface Database {
     connectionId: string,
     repositoryId: number,
   ): Promise<GitHubConfigurationTarget[]>;
-  listUnroutedProviderEventsForOrganization(
-    organizationId: string,
-  ): Promise<ProviderEventReceiptSummary[]>;
-  /** Newest first, every run the organization's triggers started at or after `since`. */
-  listOrganizationRunsSince(
-    organizationId: string,
-    since: Date,
-    limit: number,
-  ): Promise<OrganizationRunRecord[]>;
-  /**
-   * Events received at or after `since` that were dropped because no trigger listens for them
-   * (`no_project_route`, `no_trigger_for_source`), counted per provider. A filter that declined
-   * an event is a trigger listening, so those drops are not counted.
-   */
-  countUnroutedProviderEventsSince(
-    organizationId: string,
-    since: Date,
-  ): Promise<UnroutedProviderEventCount[]>;
   isOrganizationMember(userId: string, organizationId: string): Promise<boolean>;
   startConnectionAttempt(input: StartConnectionAttemptInput): Promise<void>;
   findConnectionAttemptConfiguration(

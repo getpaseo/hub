@@ -20,5 +20,7 @@ export type {
   ActivityStore,
   ActivitySummary,
   LatestRun,
+  ProviderActivity,
   TriggerActivity,
+  TriggerLastRun,
 } from "./store.js";

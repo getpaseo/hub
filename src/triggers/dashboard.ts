@@ -1,10 +1,10 @@
+import type { TriggerLastRun } from "../activity/index.js";
 import type { AuthServer } from "../auth/server.js";
 import { capabilitiesFor } from "../auth/organization-policy.js";
 import type { Database, OrganizationTriggerRecord } from "../db/types.js";
 import { resolveRouteTenant } from "../projects/access.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 import { ProjectCommandError } from "../projects/command-error.js";
-import { parseCompiledHubConfig } from "../config/compiler.js";
 import type { DaemonAgentConfigurationValidator } from "../configuration/store.js";
 import { projectTriggerForm } from "./configuration/editor.js";
 import { configuredTriggerEvents, OrganizationTriggerStore } from "./store.js";
@@ -27,18 +27,13 @@ export class TriggerDashboard {
       tenant.organization.id,
       this.agentValidator,
     );
-    const [triggers, daemons, connections, webhooks] = await Promise.all([
+    const [triggers, daemons, connections, webhooks, lastRuns] = await Promise.all([
       store.list(),
       this.database.listDaemonsForOrganization(tenant.organization.id),
       this.database.organizationConnectionUsage(tenant.organization.id),
       this.database.webhooks.list(tenant.organization.id),
+      this.database.activity.lastRuns(tenant.organization.id),
     ]);
-    const activity = (
-      await Promise.all(triggers.map((trigger) => this.activityForTrigger(trigger)))
-    )
-      .flat()
-      .sort((left, right) => right.receivedAt.localeCompare(left.receivedAt))
-      .slice(0, 100);
     return {
       organization: tenant.organization,
       canManage: capabilitiesFor(tenant.membership.role).manageResources,
@@ -47,11 +42,10 @@ export class TriggerDashboard {
           triggerView(
             store,
             trigger,
-            activity.find(({ triggerId }) => triggerId === trigger.id),
+            lastRuns.find(({ triggerId }) => triggerId === trigger.id),
           ),
         ),
       ),
-      activity,
       webhooks,
       webhookOrigin: new URL(
         request.headers.get(TRUSTED_REQUEST_ORIGIN_HEADER) ?? this.publicBaseUrl ?? request.url,
@@ -90,41 +84,6 @@ export class TriggerDashboard {
         })),
       ],
     };
-  }
-
-  private async activityForTrigger(trigger: OrganizationTriggerRecord) {
-    const migrationRevision = await this.database.findOrganizationTriggerMigrationRevision(
-      trigger.id,
-    );
-    const evidence = record(migrationRevision?.sourceEvidence);
-    const legacyProjectId = string(evidence?.["legacyProjectId"]);
-    const legacyTriggerName =
-      migrationRevision === undefined
-        ? undefined
-        : parseCompiledHubConfig(migrationRevision.normalizedConfiguration).triggers[0]?.name;
-    const [current, historical] = await Promise.all([
-      this.database.listProjectActivityRuns(trigger.runtimeProjectId, 100),
-      legacyProjectId === undefined
-        ? Promise.resolve([])
-        : this.database.listProjectActivityRuns(legacyProjectId, 100),
-    ]);
-    return [...current, ...historical]
-      .filter(
-        ({ run }) =>
-          current.some((candidate) => candidate.run.id === run.id) ||
-          run.configuredTriggerName === legacyTriggerName,
-      )
-      .map(({ run, receipt }) => ({
-        id: run.id,
-        triggerId: trigger.id,
-        triggerName: trigger.name,
-        provider: receipt.provider,
-        source: receipt.source,
-        repo: receipt.repo,
-        webhookDeliveryId: receipt.provider === "webhook" ? receipt.id : null,
-        status: run.status,
-        receivedAt: receipt.receivedAt.toISOString(),
-      }));
   }
 
   async rotateWebhookSecret(
@@ -168,17 +127,16 @@ export class TriggerDashboard {
 async function triggerView(
   store: OrganizationTriggerStore,
   trigger: OrganizationTriggerRecord,
-  lastTriggered: { source: string; status: string; receivedAt: string } | undefined,
+  lastRun: TriggerLastRun | undefined,
 ) {
   const revision = await store.activeRevision(trigger);
   const evidence = record(revision.sourceEvidence);
-  const event =
-    configuredTriggerEvents(trigger.format, revision)[0] ?? lastTriggered?.source ?? "manual.run";
+  const event = configuredTriggerEvents(trigger.format, revision)[0] ?? "manual.run";
   const provider = triggerProvider(event);
-  const operational =
-    lastTriggered === undefined
+  const lastTriggered =
+    lastRun === undefined
       ? null
-      : { status: lastTriggered.status, receivedAt: lastTriggered.receivedAt };
+      : { status: lastRun.status, receivedAt: lastRun.receivedAt.toISOString() };
   if (trigger.format === "legacy_multistep") {
     return {
       id: trigger.id,
@@ -191,7 +149,7 @@ async function triggerView(
       draft: null,
       event,
       provider,
-      lastTriggered: operational,
+      lastTriggered,
     };
   }
   const projection = projectTriggerForm(revision.yaml);
@@ -206,7 +164,7 @@ async function triggerView(
     draft: projection.status === "editable" ? projection.value : null,
     event,
     provider,
-    lastTriggered: operational,
+    lastTriggered,
   };
 }
 
@@ -237,8 +195,4 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((entry): entry is string => typeof entry === "string")
     : [];
-}
-
-function string(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
 }

@@ -1,6 +1,7 @@
 import { expect } from "@playwright/test";
 import { test } from "./app.js";
 import { OrganizationActivity } from "./helpers/activity.js";
+import { OrganizationDaemons } from "./helpers/daemons.js";
 import { OrganizationTriggers } from "./helpers/triggers.js";
 
 const SHOTS = "e2e/screenshots/activity";
@@ -28,6 +29,7 @@ test("pages, filters, sorts, and opens runs and unmatched events from the URL", 
   const daemon = await hub.connectProviderDaemon("owner", "Acme");
   const triggers = new OrganizationTriggers(page);
   const activity = new OrganizationActivity(page);
+  const daemons = new OrganizationDaemons(page);
 
   await test.step("seed two triggers, 31 runs, and two events no trigger matched", async () => {
     await triggers.open();
@@ -139,5 +141,28 @@ test("pages, filters, sorts, and opens runs and unmatched events from the URL", 
     await activity.expectRows("Unmatched events", 2);
     await activity.reload();
     await expect(page.getByRole("combobox", { name: "Reason" })).toContainText("No route for repo");
+  });
+
+  await test.step("a trigger's last run and its editor open Activity on that trigger", async () => {
+    await triggers.open();
+    await triggers.expectLastTriggered("triage", "Failed");
+    await triggers.openLastTriggered("triage");
+    await activity.expectOpen();
+    await activity.expectRows("Runs", 1);
+    await expect(page.getByRole("combobox", { name: "Trigger" })).toContainText("triage");
+    await triggers.open();
+    await triggers.openTrigger("deploy");
+    await triggers.openTriggerActivity();
+    await activity.expectOpen();
+    await activity.expectRows("Runs", 25);
+    await activity.expectPageRange("Runs", "1–25 of 30");
+  });
+
+  await test.step("a daemon's row actions open Activity filtered to that daemon", async () => {
+    await daemons.open();
+    await daemons.openActivity(daemon);
+    await activity.expectOpen();
+    await expect.poll(() => new URL(page.url()).searchParams.get("daemon")).not.toBeNull();
+    await expect(page.getByRole("combobox", { name: "Daemon" })).toContainText(daemon);
   });
 });

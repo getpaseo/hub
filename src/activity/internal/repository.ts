@@ -19,6 +19,8 @@ import {
   type ActivityStore,
   type ActivitySummary,
   type LatestRun,
+  type ProviderActivity,
+  type TriggerLastRun,
   type PayloadPreview,
   type UnmatchedEvent,
   type UnmatchedEventDetail,
@@ -68,6 +70,9 @@ const RUN_FROM = `from trigger_runs runs
   left join organization_triggers triggers
     on triggers.runtime_project_id = runs.project_id
    and triggers.organization_id = runs.organization_id`;
+
+/** A run that ended badly, in the terms Activity's failure filter uses. */
+const FAILED_RUN = `runs.status in (${FAILED_RUN_STATUSES.map((status) => `'${status}'`).join(", ")})`;
 
 const RUN_COLUMNS = `runs.id, triggers.id as trigger_id,
   coalesce(triggers.name, runs.configured_trigger_name) as trigger_name,
@@ -308,7 +313,7 @@ export class ActivityRepository implements ActivityStore {
     since: Date,
     triggerLimit: number,
   ): Promise<ActivitySummary> {
-    const failed = `runs.status in (${FAILED_RUN_STATUSES.map((status) => `'${status}'`).join(", ")})`;
+    const failed = FAILED_RUN;
     const [statuses, triggers, daemons] = await Promise.all([
       this.runtime.query<{ status: RunStatus; runs: number }>(
         `select runs.status, count(*)::int as runs
@@ -371,6 +376,23 @@ export class ActivityRepository implements ActivityStore {
     };
   }
 
+  async summarizeProviders(organizationId: string, since: Date): Promise<ProviderActivity[]> {
+    const { rows } = await this.runtime.query<{
+      provider: ActivityProvider;
+      runs: number;
+      failed: number;
+    }>(
+      `select receipts.provider, count(*)::int as runs,
+              (count(*) filter (where ${FAILED_RUN}))::int as failed
+       ${RUN_FROM}
+       where runs.organization_id = $1 and runs.created_at >= $2
+       group by receipts.provider
+       order by receipts.provider`,
+      [organizationId, since],
+    );
+    return rows.map(({ provider, runs, failed }) => ({ provider, runs, failed }));
+  }
+
   async latestRun(organizationId: string): Promise<LatestRun | undefined> {
     const {
       rows: [row],
@@ -386,6 +408,37 @@ export class ActivityRepository implements ActivityStore {
     return row === undefined
       ? undefined
       : { triggerName: row.trigger_name, receivedAt: row.received_at };
+  }
+
+  async lastRuns(organizationId: string): Promise<TriggerLastRun[]> {
+    // One indexed read per trigger, through `trigger_runs_project_created_idx`.
+    const { rows } = await this.runtime.query<{
+      trigger_id: string;
+      status: RunStatus;
+      received_at: Date;
+    }>(
+      `select triggers.id as trigger_id, latest.status, latest.received_at
+       from organization_triggers triggers
+       join lateral (
+         select runs.status, receipts.received_at
+         from trigger_runs runs
+         join provider_event_receipts receipts
+           on receipts.id = runs.provider_event_receipt_id
+          and receipts.organization_id = runs.organization_id
+         where runs.project_id = triggers.runtime_project_id
+           and runs.organization_id = triggers.organization_id
+         order by runs.created_at desc, runs.id desc
+         limit 1
+       ) latest on true
+       where triggers.organization_id = $1
+       order by triggers.name, triggers.id`,
+      [organizationId],
+    );
+    return rows.map((row) => ({
+      triggerId: row.trigger_id,
+      status: row.status,
+      receivedAt: row.received_at,
+    }));
   }
 }
 

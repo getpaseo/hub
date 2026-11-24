@@ -163,6 +163,13 @@ describe("activity store", () => {
         expect(Object.values(week.statuses).reduce((sum, count) => sum + count, 0)).toBe(
           (await activity.listRuns(ORG, query(), NOW)).total,
         );
+        expect(
+          await activity.summarizeProviders(ORG, new Date(NOW.getTime() - 7 * 86_400_000)),
+        ).toEqual([{ provider: "github", runs: 61, failed: 21 }]);
+        expect(await activity.lastRuns(ORG)).toEqual([
+          { triggerId: DEPLOY, status: "running", receivedAt: new Date("2026-11-20T11:40:00Z") },
+          { triggerId: TRIAGE, status: "failed", receivedAt: new Date("2026-11-17T12:00:00Z") },
+        ]);
         expect(await activity.latestRun(ORG)).toEqual({
           triggerName: "deploy",
           receivedAt: new Date("2026-11-20T11:40:00Z"),

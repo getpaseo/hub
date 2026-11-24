@@ -3971,7 +3971,12 @@ class HubUser {
     await this.openOrganizationSection("Daemons");
     const daemon = this.page.getByRole("row").filter({ hasText: displayName });
     await expect(daemon.getByText(displayName, { exact: true })).toBeVisible();
-    await expect(daemon.getByRole("button", { name: `Actions for ${displayName}` })).toHaveCount(0);
+    // A member can read the daemon's activity but not change the daemon.
+    await daemon.getByRole("button", { name: `Actions for ${displayName}` }).click();
+    const actions = this.page.getByRole("menu");
+    await expect(actions.getByRole("menuitem")).toHaveText(["View activity"]);
+    await this.page.keyboard.press("Escape");
+    await expect(actions).toHaveCount(0);
   }
 
   private async expectTenantControlsLocked(destinationOrganization: string): Promise<void> {

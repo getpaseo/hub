@@ -33,8 +33,25 @@ export interface ActivityStore {
    * figure and the list it links to always agree.
    */
   summarize(organizationId: string, since: Date, triggerLimit: number): Promise<ActivitySummary>;
+  /** Runs since `since` by the provider of the event that started them, in the same terms. */
+  summarizeProviders(organizationId: string, since: Date): Promise<ProviderActivity[]>;
   /** The organization's newest run, however old. */
   latestRun(organizationId: string): Promise<LatestRun | undefined>;
+  /** Each trigger's newest run, however old. A trigger that never ran is absent. */
+  lastRuns(organizationId: string): Promise<TriggerLastRun[]>;
+}
+
+export interface TriggerLastRun {
+  triggerId: string;
+  status: RunStatus;
+  receivedAt: Date;
+}
+
+export interface ProviderActivity {
+  provider: ActivityProvider;
+  runs: number;
+  /** Runs that failed, timed out, or were rejected. */
+  failed: number;
 }
 
 export interface ActivitySummary {
