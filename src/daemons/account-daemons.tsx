@@ -2,7 +2,7 @@ import { useSnapshotQuery } from "../queries/index.js";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { BookOpen } from "lucide-react";
-import { useCallback, useState, type FormEvent } from "react";
+import { useCallback, useMemo, useState, type FormEvent } from "react";
 import { ConfirmMenuItem } from "../components/app/confirm-action.js";
 import { CopyField } from "../components/app/copy-field.js";
 import {
@@ -31,6 +31,7 @@ import {
 } from "./functions.js";
 import type { Result } from "../contract/respond.js";
 import { DAEMON_MUTATION_KEY } from "../auth/tenant-mutation.js";
+import { ActivityLink } from "../activity/link.js";
 import { daemonLoginCommand, GRANT_EXECUTE_COMMAND } from "./handoff.js";
 import { daemonsQueryKey, refreshDaemons } from "./status.js";
 
@@ -176,6 +177,7 @@ export function DaemonsPanel({
           <DaemonRow
             key={daemon.id}
             daemon={daemon}
+            organizationSlug={organizationSlug}
             canManage={daemons.canManage}
             busy={busy}
             onRename={renameSelected}
@@ -189,12 +191,14 @@ export function DaemonsPanel({
 
 function DaemonRow({
   daemon,
+  organizationSlug,
   canManage,
   busy,
   onRename,
   onRevoke,
 }: {
   daemon: BrowserDaemon;
+  organizationSlug: string;
   canManage: boolean;
   busy: boolean;
   onRename: (daemonId: string, slug: string) => Promise<string | undefined>;
@@ -206,6 +210,7 @@ function DaemonRow({
     setRenaming(true);
   }, []);
   const revoke = useCallback(() => onRevoke(daemon.id), [daemon.id, onRevoke]);
+  const activitySearch = useMemo(() => ({ daemon: daemon.id }), [daemon.id]);
 
   return (
     <DataRow>
@@ -232,33 +237,38 @@ function DaemonRow({
         <RelativeTime value={daemon.registeredAt} />
       </DataCell>
       <DataCell>
-        {canManage ? (
-          <>
-            <RowActions label={`Actions for ${daemon.slug}`}>
-              <DropdownMenuItem disabled={busy} onSelect={requestRename}>
-                Rename
-              </DropdownMenuItem>
-              {daemon.status === "revoked" ? null : (
-                <ConfirmMenuItem
-                  busy={busy}
-                  destructive
-                  label="Revoke"
-                  title={`Revoke ${daemon.slug}?`}
-                  description="The daemon will disconnect and its credential cannot reconnect"
-                  cancelLabel="Cancel"
-                  confirmLabel="Revoke daemon"
-                  onConfirm={revoke}
-                />
-              )}
-            </RowActions>
-            <RenameDaemonDialog
-              daemon={daemon}
+        <RowActions label={`Actions for ${daemon.slug}`}>
+          <DropdownMenuItem asChild>
+            <ActivityLink organizationSlug={organizationSlug} search={activitySearch}>
+              View activity
+            </ActivityLink>
+          </DropdownMenuItem>
+          {canManage ? (
+            <DropdownMenuItem disabled={busy} onSelect={requestRename}>
+              Rename
+            </DropdownMenuItem>
+          ) : null}
+          {canManage && daemon.status !== "revoked" ? (
+            <ConfirmMenuItem
               busy={busy}
-              onRename={onRename}
-              open={renaming}
-              onOpenChange={setRenaming}
+              destructive
+              label="Revoke"
+              title={`Revoke ${daemon.slug}?`}
+              description="The daemon will disconnect and its credential cannot reconnect"
+              cancelLabel="Cancel"
+              confirmLabel="Revoke daemon"
+              onConfirm={revoke}
             />
-          </>
+          ) : null}
+        </RowActions>
+        {canManage ? (
+          <RenameDaemonDialog
+            daemon={daemon}
+            busy={busy}
+            onRename={onRename}
+            open={renaming}
+            onOpenChange={setRenaming}
+          />
         ) : null}
       </DataCell>
     </DataRow>

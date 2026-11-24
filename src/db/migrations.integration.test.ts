@@ -22,6 +22,9 @@ import type { OperationAuthenticator } from "../auth/operation-auth.js";
 import { EntitlementsService } from "../entitlements/service.js";
 import { migrateLegacyProjectTriggers } from "../triggers/migration.js";
 import type { MigrateProjectTriggersInput } from "./types.js";
+import { activityQuery } from "../activity/query-contract.js";
+
+const UNMATCHED_EVER = activityQuery({ view: "unmatched", range: "all" });
 
 const GITHUB_OWNER = { providerApplicationId: "42", configurationVersion: 0 };
 
@@ -312,7 +315,7 @@ describe("database migration application", () => {
     assert.deepEqual(after, before);
     assert.deepEqual(await historicalShape(fixture.url), {
       authTables: 7,
-      drizzleMigrations: 52,
+      drizzleMigrations: 53,
       legacyArtifacts: null,
       legacyOperatorPrincipals: null,
       bootstrapOrganizationId: fixture.organizationId,
@@ -1106,9 +1109,9 @@ describe("database migration application", () => {
 
       assert.equal(result.status, "dropped");
       assert.equal(
-        (await database.listUnroutedProviderEventsForOrganization("organization-a")).some(
-          (event) => event.deliveryId === "unrouted-activity-receipt",
-        ),
+        (
+          await database.activity.listUnmatched("organization-a", UNMATCHED_EVER, new Date())
+        ).rows.some((event) => event.deliveryId === "unrouted-activity-receipt"),
         true,
       );
     } finally {

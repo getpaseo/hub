@@ -1,20 +1,16 @@
+import type { ActivitySummary } from "../activity/index.js";
+import { rangeStart, type ActivityProvider, type RunStatus } from "../activity/query-contract.js";
 import type { AuthServer } from "../auth/server.js";
-import type {
-  Database,
-  OrganizationConnectionUsage,
-  OrganizationRunRecord,
-  UnroutedProviderEventCount,
-} from "../db/types.js";
+import type { Database, OrganizationConnectionUsage } from "../db/types.js";
 import { resolveRouteTenant } from "../projects/access.js";
+import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
+import { hasRequiredSlackScopes } from "../providers/slack/client.js";
+import { eventDefinition, eventProvider, isEditorEvent } from "../triggers/configuration/events.js";
 import { configuredTriggerEvents } from "../triggers/store.js";
+import type { HomeRange } from "./range.js";
 
-/** How far back the overview looks. One week is long enough to hold a first run and short enough that a nudge fades once a trigger listens. */
-export const HOME_WINDOW_DAYS = 7;
-const RUNS_SHOWN = 50;
-const RECENT_RUNS_SHOWN = 5;
-const BEGINNING = new Date(0);
-
-export type HomeRun = Omit<OrganizationRunRecord, "receivedAt"> & { receivedAt: string };
+/** As many triggers as the overview ranks; the rest are one link away on Triggers. */
+const TRIGGERS_SHOWN = 8;
 
 export interface HomeSnapshot {
   organization: { id: string; name: string; slug: string };
@@ -24,6 +20,11 @@ export interface HomeSnapshot {
     provider: "github" | "slack" | "discord" | "linear";
     slug: string;
     label: string;
+    /**
+     * `suspended`: GitHub stopped delivering events until someone acts on its side.
+     * `requiresReauthorization`: the grant is short of what Hub needs, as Integrations says.
+     */
+    status: "connected" | "suspended" | "requiresReauthorization";
   }[];
   daemons: readonly {
     id: string;
@@ -31,24 +32,40 @@ export interface HomeSnapshot {
     presence: "offline" | "connected";
     /** Enrolled with `hub.execute`; without it Hub can see the daemon but launch nothing on it. */
     canExecute: boolean;
+    /** Runs with a step this daemon executed, inside `range`. */
+    runs: number;
   }[];
   triggers: readonly { id: string; name: string; events: readonly string[]; enabled: boolean }[];
-  /** The overview's window: every run in the last `windowDays`, newest first. */
-  runs: readonly HomeRun[];
+  /** The window every figure below is counted over. */
+  range: HomeRange;
+  /** Every run that started inside `range`, counted by status. */
+  runs: Readonly<Record<RunStatus, number>>;
+  /** The triggers that ran most inside `range`, then the idle ones by name. */
+  busiestTriggers: readonly HomeTrigger[];
   /**
-   * The newest runs the organization ever had, whatever their age. An organization that has run
-   * before is not new: this is what ends the checklist and what keeps Recent runs on the page
-   * through a quiet week.
+   * The organization's newest run, whatever its age. An organization that has run before is not
+   * new: this is what ends the checklist and keeps the overview on the page through a quiet week.
    */
-  recentRuns: readonly HomeRun[];
-  unrouted: readonly UnroutedProviderEventCount[];
-  windowDays: number;
+  latestRun: { triggerName: string; receivedAt: string } | null;
+}
+
+export interface HomeTrigger {
+  id: string;
+  name: string;
+  /** Where the trigger's first event comes from. */
+  provider: ActivityProvider;
+  /** The trigger's first event, as the trigger editor names it. */
+  event: string;
+  runs: number;
+  failed: number;
+  lastRunAt: string | null;
 }
 
 /**
  * Everything Home derives its checklist and overview from, read from records: nothing here is a
  * stored "onboarding" flag, so the checklist can only say what the organization has actually
- * done, and undoes itself when a daemon is revoked or a connection removed.
+ * done, and undoes itself when a daemon is revoked or a connection removed. Every figure is
+ * counted in the database over the whole range, never over a page of rows.
  */
 export class HomeDashboard {
   constructor(
@@ -62,14 +79,19 @@ export class HomeDashboard {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  async snapshot(request: Request, organizationSlug: string): Promise<HomeSnapshot> {
+  async snapshot(
+    request: Request,
+    organizationSlug: string,
+    range: HomeRange = "7d",
+  ): Promise<HomeSnapshot> {
     const { tenant } = await resolveRouteTenant(this.auth, this.database, request, {
       organizationSlug,
     });
     const organizationId = tenant.organization.id;
-    const since = new Date(this.now().getTime() - HOME_WINDOW_DAYS * 86_400_000);
+    const now = this.now();
+    const since = rangeStart(range, now) ?? new Date(0);
     const triggers = await this.database.listOrganizationTriggers(organizationId);
-    const [connections, daemons, revisions, runs, recentRuns, unrouted] = await Promise.all([
+    const [connections, daemons, revisions, summary, latestRun] = await Promise.all([
       this.database.organizationConnectionUsage(organizationId),
       this.database.listDaemonsForOrganization(organizationId),
       Promise.all(
@@ -77,35 +99,19 @@ export class HomeDashboard {
           this.database.findOrganizationTriggerRevision(trigger.id, trigger.activeRevisionId),
         ),
       ),
-      this.database.listOrganizationRunsSince(organizationId, since, RUNS_SHOWN),
-      this.database.listOrganizationRunsSince(organizationId, BEGINNING, RECENT_RUNS_SHOWN),
-      this.database.countUnroutedProviderEventsSince(organizationId, since),
+      this.database.activity.summarize(organizationId, since, TRIGGERS_SHOWN),
+      this.database.activity.latestRun(organizationId),
     ]);
+    const triggerViews = triggers.map((trigger, index) => ({
+      id: trigger.id,
+      name: trigger.name,
+      events: configuredTriggerEvents(trigger.format, revisions[index]),
+      enabled: trigger.enabled,
+    }));
     return {
       organization: tenant.organization,
       appsConfigured: this.providerAppsConfigured(connections),
-      connections: [
-        ...connections.github.map(({ slug, accountLogin }) => ({
-          provider: "github" as const,
-          slug,
-          label: accountLogin,
-        })),
-        ...connections.slack.map(({ slug, teamName }) => ({
-          provider: "slack" as const,
-          slug,
-          label: teamName,
-        })),
-        ...connections.discord.map(({ slug, guildName }) => ({
-          provider: "discord" as const,
-          slug,
-          label: guildName,
-        })),
-        ...connections.linear.map(({ slug, linearOrganizationName }) => ({
-          provider: "linear" as const,
-          slug,
-          label: linearOrganizationName,
-        })),
-      ],
+      connections: connectionViews(connections, now),
       daemons: daemons
         .filter(({ status }) => status === "active")
         .map(({ id, slug, presence, permissions }) => ({
@@ -113,21 +119,71 @@ export class HomeDashboard {
           slug,
           presence,
           canExecute: permissions.includes("hub.execute"),
+          runs: summary.daemons.find((daemon) => daemon.id === id)?.runs ?? 0,
         })),
-      triggers: triggers.map((trigger, index) => ({
-        id: trigger.id,
-        name: trigger.name,
-        events: configuredTriggerEvents(trigger.format, revisions[index]),
-        enabled: trigger.enabled,
-      })),
-      runs: runs.map(toHomeRun),
-      recentRuns: recentRuns.map(toHomeRun),
-      unrouted,
-      windowDays: HOME_WINDOW_DAYS,
+      triggers: triggerViews,
+      range,
+      runs: summary.statuses,
+      busiestTriggers: busiestTriggers(summary, triggerViews),
+      latestRun:
+        latestRun === undefined
+          ? null
+          : { triggerName: latestRun.triggerName, receivedAt: latestRun.receivedAt.toISOString() },
     };
   }
 }
 
-function toHomeRun(run: OrganizationRunRecord): HomeRun {
-  return { ...run, receivedAt: run.receivedAt.toISOString() };
+function connectionViews(
+  connections: OrganizationConnectionUsage,
+  now: Date,
+): HomeSnapshot["connections"] {
+  return [
+    ...connections.github.map(({ slug, accountLogin, status }) => ({
+      provider: "github" as const,
+      slug,
+      label: accountLogin,
+      status: status === "suspended" ? ("suspended" as const) : ("connected" as const),
+    })),
+    ...connections.slack.map(({ slug, teamName, scopes }) => ({
+      provider: "slack" as const,
+      slug,
+      label: teamName,
+      status: hasRequiredSlackScopes(scopes)
+        ? ("connected" as const)
+        : ("requiresReauthorization" as const),
+    })),
+    ...connections.discord.map(({ slug, guildName }) => ({
+      provider: "discord" as const,
+      slug,
+      label: guildName,
+      status: "connected" as const,
+    })),
+    ...connections.linear.map((connection) => ({
+      provider: "linear" as const,
+      slug: connection.slug,
+      label: connection.linearOrganizationName,
+      status: linearConnectionRequiresReauthorization(connection, now)
+        ? ("requiresReauthorization" as const)
+        : ("connected" as const),
+    })),
+  ];
+}
+
+function busiestTriggers(
+  summary: ActivitySummary,
+  triggers: HomeSnapshot["triggers"],
+): HomeTrigger[] {
+  return summary.triggers.map((activity) => {
+    const event = triggers.find(({ id }) => id === activity.id)?.events[0] ?? "manual.run";
+    const definition = isEditorEvent(event) ? eventDefinition(event) : undefined;
+    return {
+      id: activity.id,
+      name: activity.name,
+      provider: eventProvider(event),
+      event: definition?.label ?? event,
+      runs: activity.runs,
+      failed: activity.failed,
+      lastRunAt: activity.lastRunAt?.toISOString() ?? null,
+    };
+  });
 }

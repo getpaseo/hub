@@ -29,10 +29,11 @@ const buttonVariants = cva(
         outline: "border border-input bg-transparent hover:bg-accent hover:text-accent-foreground",
         secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
         ghost: "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-        // Underlined at rest, not on hover. A link inside a paragraph has to be tellable from
-        // the prose around it without relying on colour — the link hue against muted body text
-        // is 1.7:1 — so the decoration carries it and the hover promotes the decoration instead.
-        link: "h-auto gap-1 p-0 text-link underline decoration-extra-muted-foreground underline-offset-4 hover:decoration-current",
+        // A link inside text. Hub has no link hue: colour is kept for state, so the link is the
+        // foreground step over muted prose, and an underline in a tint of its own colour marks
+        // it at rest without drawing a second colour under it. An action that stands on its own
+        // is an `outline` button, never this.
+        link: "h-auto gap-1 p-0 text-foreground underline decoration-foreground/30 underline-offset-4 hover:decoration-foreground",
       },
     },
     defaultVariants: {

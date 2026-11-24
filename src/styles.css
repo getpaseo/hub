@@ -5,10 +5,11 @@
  * implementation, and `src/typography-policy.test.ts` enforces the parts a regex can see.
  *
  * Both ramps are Linear's measured palette: four neutral surfaces above the page, four text
- * steps, two border steps. Nothing here is a hue except `--link` and `--ring`, which stay Paseo
- * green so the product still signs its name somewhere. `--primary` is the one place that hue is
- * a surface rather than text: a dark teal fill under a pale mint label, dark enough that the
- * label clears AA at every size the filled button is drawn.
+ * steps, two border steps. Nothing here is a hue except `--brand` and `--ring`, which stay Paseo
+ * green so the product still signs its name somewhere: the focus ring and the code editor, never
+ * text. `--primary` is the one place that hue is a surface: a dark teal fill under a pale mint
+ * label, dark enough that the label clears AA at every size the filled button is drawn. State
+ * colours are the status tones, read only through `StatusPill`.
  *
  * The app renders dark (`<html class="dark">`). The light column is kept correct so switching
  * is a one-line change, not a re-derivation.
@@ -23,7 +24,7 @@
   --popover-foreground: #282a30;
   --primary: #1d5c50;
   --primary-foreground: #eefaf4;
-  --link: #20744a;
+  --brand: #20744a;
   --secondary: #f0f0f0;
   --secondary-foreground: #282a30;
   --muted: #f4f4f4;
@@ -76,7 +77,7 @@
   --popover-foreground: #f7f8f8;
   --primary: #1b4f4a;
   --primary-foreground: #bfe6da;
-  --link: #7ccba0;
+  --brand: #7ccba0;
   --secondary: #191a1b;
   --secondary-foreground: #f7f8f8;
   --muted: #141516;
@@ -155,7 +156,6 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
-  --color-link: var(--link);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);

@@ -291,6 +291,27 @@ export class PaseoHub {
     return `${this.primary.origin}/open/executions/${execution}`;
   }
 
+  /** The agent execution a dispatched run's newest step started, once the step records it. */
+  async executionOfRun(triggerRunId: string): Promise<string> {
+    const read = async () =>
+      z.array(z.object({ agent_execution_id: z.string().uuid() })).parse(
+        await this.queryDatabaseRows(
+          this.primary,
+          `select agent_execution_id from workflow_step_runs
+             where trigger_run_id = $1 and agent_execution_id is not null
+             order by ordinal desc limit 1`,
+          [triggerRunId],
+        ),
+      )[0]?.agent_execution_id;
+    await expect.poll(read).toBeDefined();
+    return (await read())!;
+  }
+
+  /** Follow an execution link's "View run in Hub" address, as the launcher page writes it. */
+  async viewRunFromExecutionLink(executionId: string): Promise<void> {
+    await this.page.goto(`${this.primary.origin}/open/executions/${executionId}?view=run`);
+  }
+
   async expectExecutionLinkRequiresSignIn(url: string): Promise<void> {
     const response = await this.requests.get(url, { maxRedirects: 0 });
     expect(response.status()).toBe(303);
@@ -326,11 +347,20 @@ export class PaseoHub {
     );
   }
 
-  async viewExecutionInHub(executionUrl: string): Promise<void> {
+  /**
+   * An execution no run started lands on its organization's Activity rather than an error. A
+   * session that signed in from the link has no organization chosen yet, so it chooses first and
+   * stays on the same address.
+   */
+  async viewExecutionInHub(organizationName: string): Promise<void> {
     await this.page.getByRole("link", { name: "View run in Hub" }).click();
-    await expect(this.page).toHaveURL(`${executionUrl}?view=run`);
-    await expect(this.page.getByRole("heading", { name: "Execution details" })).toBeVisible();
-    await expect(this.page.getByText("succeeded", { exact: true })).toBeVisible();
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/activity$/u);
+    await this.page
+      .getByRole("list", { name: "Organizations" })
+      .getByRole("button", { name: organizationName })
+      .click();
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/activity$/u);
+    await expect(this.page.getByRole("heading", { name: "Activity", level: 1 })).toBeVisible();
   }
 
   async expectExecutionLinkDenied(alias: string, url: string): Promise<void> {
@@ -2126,10 +2156,18 @@ export class PaseoHub {
     await connection.expectCreatedConfiguration(expected);
   }
 
-  /** A finished or running run of a saved trigger, received `minutesAgo` minutes ago. */
+  /**
+   * A finished or running run of a saved trigger, received `minutesAgo` minutes ago. A run given
+   * `durationMinutes` completed that long after it started; a failed one may carry its reason.
+   */
   async seedTriggerRun(
     triggerName: string,
-    run: { minutesAgo: number; status: "running" | "succeeded" | "failed" },
+    run: {
+      minutesAgo: number;
+      status: "running" | "succeeded" | "failed";
+      durationMinutes?: number;
+      failureReason?: string;
+    },
   ): Promise<void> {
     const receivedAt = `now() - make_interval(mins => $3)`;
     await this.queryDatabase(
@@ -2150,11 +2188,19 @@ export class PaseoHub {
        )
        insert into trigger_runs
          (organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
-          configured_trigger_name, status, prompt, deadline_at, created_at)
+          configured_trigger_name, status, prompt, deadline_at, created_at, completed_at,
+          failure_reason)
        select receipt.organization_id, trigger.project_id, trigger.revision_id, receipt.id, $1, $2,
-              'Handle the event.', now() + interval '1 hour', ${receivedAt}
+              'Handle the event.', now() + interval '1 hour', ${receivedAt},
+              ${receivedAt} + make_interval(mins => $4::int), $5
        from receipt, trigger`,
-      [triggerName, run.status, run.minutesAgo],
+      [
+        triggerName,
+        run.status,
+        run.minutesAgo,
+        run.durationMinutes ?? null,
+        run.failureReason ?? null,
+      ],
     );
   }
 
@@ -3946,7 +3992,12 @@ class HubUser {
     await this.openOrganizationSection("Daemons");
     const daemon = this.page.getByRole("row").filter({ hasText: displayName });
     await expect(daemon.getByText(displayName, { exact: true })).toBeVisible();
-    await expect(daemon.getByRole("button", { name: `Actions for ${displayName}` })).toHaveCount(0);
+    // A member can read the daemon's activity but not change the daemon.
+    await daemon.getByRole("button", { name: `Actions for ${displayName}` }).click();
+    const actions = this.page.getByRole("menu");
+    await expect(actions.getByRole("menuitem")).toHaveText(["View activity"]);
+    await this.page.keyboard.press("Escape");
+    await expect(actions).toHaveCount(0);
   }
 
   private async expectTenantControlsLocked(destinationOrganization: string): Promise<void> {

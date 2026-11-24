@@ -12,6 +12,26 @@ export class OrganizationTriggers {
     await expect(this.page.getByRole("heading", { name: "Triggers", level: 1 })).toBeVisible();
   }
 
+  private row(name: string) {
+    return this.page
+      .getByRole("table", { name: "Triggers" })
+      .getByRole("row")
+      .filter({ has: this.page.getByRole("link", { name, exact: true }) });
+  }
+
+  async expectLastTriggered(name: string, status: string) {
+    await expect(this.row(name)).toContainText(status);
+  }
+
+  /** The "Last triggered" time opens Activity on that trigger's runs. */
+  async openLastTriggered(name: string) {
+    await this.row(name).getByTitle("View activity").click();
+  }
+
+  async openTriggerActivity() {
+    await this.page.getByRole("link", { name: "View activity" }).click();
+  }
+
   async expectEmpty() {
     await expect(this.page.getByText("No triggers", { exact: true })).toBeVisible();
   }
@@ -638,7 +658,6 @@ export class OrganizationTriggers {
     await expect(this.page).toHaveURL(/\/activity$/u);
     await this.page.reload();
     const row = this.page.getByRole("row").filter({ hasText: name });
-    await expect(row.getByRole("cell", { name: "schedule", exact: true })).toBeVisible();
     await expect(row.getByRole("cell", { name: "schedule.tick", exact: true })).toBeVisible();
     await this.page.screenshot({ path: "e2e/screenshots/schedules/activity.png" });
   }

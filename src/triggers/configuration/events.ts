@@ -116,6 +116,27 @@ export function eventDefinition(eventId: EditorEvent): EventDefinition {
   return EVENTS[eventId];
 }
 
+const PROVIDERS: readonly EventDefinition["provider"][] = [
+  "github",
+  "slack",
+  "discord",
+  "linear",
+  "manual",
+  "schedule",
+  "webhook",
+];
+
+/**
+ * Where an event comes from. An event the editor offers says so itself; a YAML-only event such as
+ * `discord.message` is named for its provider, and only an event from no provider Hub knows
+ * counts as manual.
+ */
+export function eventProvider(eventId: string): EventDefinition["provider"] {
+  if (isEditorEvent(eventId)) return EVENTS[eventId].provider;
+  const prefix = eventId.split(".")[0];
+  return PROVIDERS.find((provider) => provider === prefix) ?? "manual";
+}
+
 /** The audience a new trigger for this event starts with. */
 export function defaultAudience(eventId: EditorEvent): TriggerAudience {
   return EVENTS[eventId].audiences[0] ?? "everyone";

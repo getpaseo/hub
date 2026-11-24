@@ -9,14 +9,10 @@ import { TriggerDashboard } from "./dashboard.js";
 import { OrganizationTriggerStore } from "./store.js";
 
 describe("trigger dashboard read model", () => {
-  it("describes the provider and latest run on the organization trigger list", async () => {
+  it("describes the provider of a trigger that has never run", async () => {
     const database = memberDatabase();
     await enrollTestDaemon(database, "org-1");
-    const trigger = await new OrganizationTriggerStore(
-      database,
-      "org-1",
-      acceptingAgentValidator(),
-    ).save({
+    await new OrganizationTriggerStore(database, "org-1", acceptingAgentValidator()).save({
       yaml: triggerYaml,
       userId: "user-1",
     });
@@ -30,44 +26,14 @@ describe("trigger dashboard read model", () => {
       headers: { [TRUSTED_REQUEST_ORIGIN_HEADER]: "https://hub.test" },
     });
 
-    const before = await dashboard.snapshot(request, "acme");
-    assert.equal(before.webhookOrigin, "https://hub.test");
-    assert.equal(before.triggers[0]?.provider, "manual");
-    assert.equal(before.triggers[0]?.event, "manual.run");
-    assert.equal(before.triggers[0]?.lastTriggered, null);
+    const snapshot = await dashboard.snapshot(request, "acme");
+    assert.equal(snapshot.webhookOrigin, "https://hub.test");
+    assert.equal(snapshot.triggers[0]?.provider, "manual");
+    assert.equal(snapshot.triggers[0]?.event, "manual.run");
+    assert.equal(snapshot.triggers[0]?.lastTriggered, null);
 
-    const revision = await database.findActiveProjectConfiguration(trigger.runtimeProjectId);
-    assert.ok(revision);
-    const receivedAt = new Date("2026-08-30T09:30:00.000Z");
-    const receipt = await database.persistManualEvent({
-      organizationId: "org-1",
-      projectId: trigger.runtimeProjectId,
-      deliveryId: "dashboard-manual-run",
-      source: "manual.run",
-      payload: {},
-      receivedAt,
-    });
-    assert.equal(receipt.status, "accepted");
-    if (receipt.status !== "accepted") return;
-    await database.createAcceptedTriggerRun({
-      organizationId: "org-1",
-      projectId: trigger.runtimeProjectId,
-      configurationRevisionId: revision.id,
-      providerEventReceiptId: receipt.event.providerEventReceiptId,
-      configuredTriggerName: "manual-task",
-      prompt: "run it",
-      inputs: {},
-      triggerContext: {},
-      outputContext: {},
-      deadlineAt: new Date("2026-08-30T10:30:00.000Z"),
-      stepIds: ["run"],
-    });
-
-    const after = await dashboard.snapshot(request, "acme");
-    assert.deepEqual(after.triggers[0]?.lastTriggered, {
-      status: "running",
-      receivedAt: receivedAt.toISOString(),
-    });
+    // The latest run is read by `ActivityStore.lastRuns`, covered against Postgres and PGlite in
+    // `src/activity/activity.integration.test.ts`, and on the list by `e2e/activity.spec.ts`.
   });
   it("labels a YAML-only webhook with its saved event before any deliveries", async () => {
     const database = memberDatabase();

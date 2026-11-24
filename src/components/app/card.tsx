@@ -14,6 +14,7 @@ export function Card({
   title,
   description,
   action,
+  footer,
   children,
   className,
 }: {
@@ -25,6 +26,11 @@ export function Card({
   action?: ReactNode;
   /** Optional: a card that is only a title and an action is still a card. */
   children?: ReactNode;
+  /**
+   * A quiet line closing the card: one fact about its records, and links to where they are
+   * listed in full.
+   */
+  footer?: { note: string; actions: ReactNode };
   /** Placement in a parent grid only. Never used to change how the card looks. */
   className?: string;
 }) {
@@ -52,6 +58,12 @@ export function Card({
         </div>
       ) : null}
       {children}
+      {footer === undefined ? null : (
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t pt-4">
+          <p className="text-xs text-muted-foreground tabular-nums">{footer.note}</p>
+          <div className="flex shrink-0 items-center gap-2">{footer.actions}</div>
+        </div>
+      )}
     </section>
   );
 }

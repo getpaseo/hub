@@ -3,6 +3,9 @@ import { afterAll, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { createPostgresQueryRuntime } from "./test-utils/runtime.js";
 import { createDatabase } from "./test-utils/runtime.js";
+import { activityQuery } from "../activity/query-contract.js";
+
+const UNMATCHED_EVER = activityQuery({ view: "unmatched", range: "all" });
 
 describe("trigger acceptance persistence", () => {
   let postgres: StartedPostgreSqlContainer;
@@ -100,16 +103,15 @@ describe("trigger acceptance persistence", () => {
     });
     if (receipt.status !== "accepted") throw new Error("expected accepted receipt");
 
-    assert.deepEqual(
-      await database.listUnroutedProviderEventsForOrganization("drop-reason-org"),
-      [],
-    );
+    const unmatched = () =>
+      database.activity.listUnmatched("drop-reason-org", UNMATCHED_EVER, new Date());
+    assert.deepEqual((await unmatched()).rows, []);
     await database.markProviderEventDropped(
       receipt.event.providerEventReceiptId,
       "trigger_filters_rejected",
     );
-    const [unrouted] = await database.listUnroutedProviderEventsForOrganization("drop-reason-org");
-    assert.equal(unrouted?.droppedReason, "trigger_filters_rejected");
+    const [unrouted] = (await unmatched()).rows;
+    assert.equal(unrouted?.reason, "trigger_filters_rejected");
     assert.equal("payload" in (unrouted ?? {}), false);
     await database.close();
   }, 120_000);

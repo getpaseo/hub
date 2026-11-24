@@ -7,7 +7,7 @@ const nothing: ChecklistFacts = {
   connections: [],
   daemons: [],
   triggers: [],
-  recentRuns: [],
+  latestRun: null,
 };
 
 function states(facts: ChecklistFacts) {
@@ -32,7 +32,9 @@ describe("the onboarding checklist", () => {
   it("marks the app step done by a connection, whatever the app situation", () => {
     const snapshot = {
       ...nothing,
-      connections: [{ provider: "github" as const, slug: "acme", label: "acme" }],
+      connections: [
+        { provider: "github" as const, slug: "acme", label: "acme", status: "connected" as const },
+      ],
     };
     assert.equal(states(snapshot)[0], "done");
     assert.equal(states({ ...snapshot, appsConfigured: false })[0], "done");
@@ -47,7 +49,7 @@ describe("the onboarding checklist", () => {
     };
     const snapshot: ChecklistFacts = {
       ...nothing,
-      daemons: [{ id: "2", slug: "devbox", presence: "connected", canExecute: true }],
+      daemons: [{ id: "2", slug: "devbox", presence: "connected", canExecute: true, runs: 0 }],
       triggers: [webhook],
     };
     assert.deepEqual(deriveChecklist(snapshot).steps, [
@@ -59,8 +61,20 @@ describe("the onboarding checklist", () => {
   });
 
   it("tells a daemon that cannot run agents apart from no daemon at all", () => {
-    const laptop = { id: "1", slug: "laptop", presence: "connected" as const, canExecute: false };
-    const devbox = { id: "2", slug: "devbox", presence: "offline" as const, canExecute: true };
+    const laptop = {
+      id: "1",
+      slug: "laptop",
+      presence: "connected" as const,
+      canExecute: false,
+      runs: 0,
+    };
+    const devbox = {
+      id: "2",
+      slug: "devbox",
+      presence: "offline" as const,
+      canExecute: true,
+      runs: 0,
+    };
     assert.equal(states({ ...nothing, daemons: [laptop] })[1], "cannotRun");
     assert.equal(states({ ...nothing, daemons: [laptop, devbox] })[1], "done");
   });
@@ -68,20 +82,12 @@ describe("the onboarding checklist", () => {
   it("completes and counts once a trigger exists and has run, however long ago", () => {
     const checklist = deriveChecklist({
       appsConfigured: true,
-      connections: [{ provider: "slack", slug: "acme", label: "Acme" }],
-      daemons: [{ id: "2", slug: "devbox", presence: "connected", canExecute: true }],
-      triggers: [{ id: "t", name: "slack-help", events: ["slack.mention"], enabled: true }],
-      recentRuns: [
-        {
-          id: "r",
-          triggerName: "slack-help",
-          provider: "slack",
-          source: "slack.mention",
-          status: "succeeded",
-          receivedAt: "2026-09-21T12:00:00.000Z",
-          agent: { provider: "codex", model: "gpt-5.4" },
-        },
+      connections: [
+        { provider: "slack", slug: "acme", label: "Acme", status: "connected" as const },
       ],
+      daemons: [{ id: "2", slug: "devbox", presence: "connected", canExecute: true, runs: 0 }],
+      triggers: [{ id: "t", name: "slack-help", events: ["slack.mention"], enabled: true }],
+      latestRun: { triggerName: "slack-help", receivedAt: "2026-09-01T12:00:00.000Z" },
     });
     assert.equal(checklist.completed, 4);
     assert.equal(checklist.complete, true);

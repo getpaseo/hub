@@ -19,6 +19,7 @@ import { createUnlimitedEntitlementsService } from "../../entitlements/test-util
 import { scheduleYaml } from "./test-fixture.js";
 import { createScheduleProvider } from "./index.js";
 import { DispatchedManualRunSchema } from "../../public-api/contracts.js";
+import { activityQuery } from "../../activity/query-contract.js";
 
 let postgres: StartedPostgreSqlContainer;
 beforeAll(async () => {
@@ -153,9 +154,13 @@ describe.each(["embedded", "postgres"] as const)("schedule on %s", (kind) => {
         /^Hub · scheduled-scan · [0-9a-f]{8}$/,
       );
       expect(
-        (await fixture.database.listOrganizationRunsSince("schedule-org", new Date(0), 10)).map(
-          ({ triggerName, source }) => ({ triggerName, source }),
-        ),
+        (
+          await fixture.database.activity.listRuns(
+            "schedule-org",
+            activityQuery({ range: "all" }),
+            new Date(),
+          )
+        ).rows.map(({ triggerName, source }) => ({ triggerName, source })),
       ).toEqual([{ triggerName: "scheduled-scan", source: "schedule.tick" }]);
     } finally {
       await runtime.stop();
