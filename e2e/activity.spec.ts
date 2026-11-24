@@ -121,6 +121,8 @@ test("pages, filters, sorts, and opens runs and unmatched events from the URL", 
     await activity.capture(`${SHOTS}/01-run-drawer.png`);
     await activity.stepRecord("Next record");
     await activity.expectRecord("deploy");
+    await activity.expectCopiedLinkIsThisView();
+    await activity.expectCopyLinkFallbackWhenClipboardIsBlocked();
     await activity.closeRecordWithEscape();
     await activity.expectUrl({ selected: null });
     await activity.expectRows("Runs", 25);
@@ -148,6 +150,7 @@ test("pages, filters, sorts, and opens runs and unmatched events from the URL", 
     await triggers.expectLastTriggered("triage", "Failed");
     await triggers.openLastTriggered("triage");
     await activity.expectOpen();
+    await activity.expectUrl({ range: "all" });
     await activity.expectRows("Runs", 1);
     await expect(page.getByRole("combobox", { name: "Trigger" })).toContainText("triage");
     await triggers.open();

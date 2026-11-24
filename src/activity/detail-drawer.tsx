@@ -1,11 +1,11 @@
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-new-array-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop -- the drawer binds one record; its actions, status, and step pills are that record's own slots */
 import { Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { ExternalLink, Link2 } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { useState } from "react";
 import { executionLinkPath } from "../agent-executions/link.js";
 import { Card, CardSkeleton } from "../components/app/card.js";
-import { CodeBlock } from "../components/app/copy-field.js";
+import { CodeBlock, CopyPageLink } from "../components/app/copy-field.js";
 import { DetailSheet } from "../components/app/detail-sheet.js";
 import { Disclosure } from "../components/app/disclosure.js";
 import { EmptyState } from "../components/app/empty-state.js";
@@ -181,7 +181,7 @@ function RunActions({
           </Link>
         </Button>
       )}
-      <CopyLink />
+      <CopyPageLink />
     </>
   );
 }
@@ -193,22 +193,6 @@ function newestSession(steps: ActivityRunDetailView["steps"]) {
     if (execution?.daemonAgentId != null) return execution;
   }
   return undefined;
-}
-
-/** The address of exactly this view: the filtered list with this record open. */
-function CopyLink() {
-  const [copied, setCopied] = useState(false);
-  return (
-    <Button
-      size="sm"
-      variant="outline"
-      onClick={() => {
-        void navigator.clipboard.writeText(window.location.href).then(() => setCopied(true));
-      }}
-    >
-      <Link2 aria-hidden="true" /> {copied ? "Link copied" : "Copy link"}
-    </Button>
-  );
 }
 
 const FAILURE_TITLES: Readonly<Record<string, string>> = {

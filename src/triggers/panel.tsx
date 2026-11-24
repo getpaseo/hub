@@ -184,9 +184,11 @@ export function TriggersPanel() {
                 ) : (
                   <TwoLine
                     primary={
+                      // All time: the run this timestamp names can be older than Activity's
+                      // default window.
                       <ActivityLink
                         organizationSlug={scope.organizationSlug}
-                        search={{ trigger: trigger.id }}
+                        search={{ trigger: trigger.id, range: "all" }}
                         title="View activity"
                         className="hover:underline"
                         onClick={(event) => event.stopPropagation()}

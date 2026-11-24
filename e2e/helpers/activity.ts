@@ -139,6 +139,30 @@ export class OrganizationActivity {
     await this.record().getByRole("button", { name: direction }).click();
   }
 
+  /** Copy link puts the address of the view as it stands now on the clipboard. */
+  async expectCopiedLinkIsThisView() {
+    await this.page.context().grantPermissions(["clipboard-read", "clipboard-write"], {
+      origin: new URL(this.page.url()).origin,
+    });
+    await this.record().getByRole("button", { name: "Copy link" }).click();
+    await expect(this.record().getByRole("status").filter({ hasText: "Copied link" })).toHaveCount(
+      1,
+    );
+    await expect
+      .poll(() => this.page.evaluate(() => navigator.clipboard.readText()))
+      .toBe(this.page.url());
+  }
+
+  /** A browser that refuses the clipboard leaves the reader the address bar to copy from. */
+  async expectCopyLinkFallbackWhenClipboardIsBlocked() {
+    await this.page.evaluate(() => {
+      navigator.clipboard.writeText = () =>
+        Promise.reject(new DOMException("Write permission denied.", "NotAllowedError"));
+    });
+    await this.record().getByRole("button", { name: "Copy link" }).click();
+    await expect(this.record()).toContainText("Copy the address from the browser");
+  }
+
   async closeRecordWithEscape() {
     await this.page.keyboard.press("Escape");
     await this.expectNoRecord();

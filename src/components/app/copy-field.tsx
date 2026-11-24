@@ -1,4 +1,4 @@
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, Link2 } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { Button } from "../ui/button.js";
@@ -14,13 +14,13 @@ type CopyState = "idle" | "copied" | "manual";
  * of the button never changes — the confirmation is announced in a live region instead, so a
  * screen reader hears "Copied Callback URL" without the button renaming itself under the user.
  */
-function useCopy(label: string, value: string) {
+function useCopy(label: string, read: () => string) {
   const [state, setState] = useState<CopyState>("idle");
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
   const copy = useCallback(() => {
     clearTimeout(timer.current);
-    const write = navigator.clipboard?.writeText(value);
+    const write = navigator.clipboard?.writeText(read());
     if (write === undefined) {
       setState("manual");
       return;
@@ -34,7 +34,7 @@ function useCopy(label: string, value: string) {
         return true;
       })
       .catch(() => setState("manual"));
-  }, [value]);
+  }, [read]);
   const announcement = state === "copied" ? `Copied ${label}` : "";
   return { state, copy, announcement };
 }
@@ -85,13 +85,40 @@ function Announcement({ message }: { message: string }) {
  * `CopyField` draws would be a second copy of what the reader is already looking at.
  */
 export function CopyButton({ label, value }: { label: string; value: string }) {
-  const { state, copy, announcement } = useCopy(label, value);
+  const read = useCallback(() => value, [value]);
+  const { state, copy, announcement } = useCopy(label, read);
   return (
     <>
       <CopyControl label={`Copy ${label}`} copied={state === "copied"} onCopy={copy} />
       <Announcement message={announcement} />
     </>
   );
+}
+
+/**
+ * Copy the address of this view as it stands: its filters, its sort, and the open record. The
+ * address is read when the button is pressed, so it follows a reader who stepped to another
+ * record. When the browser blocks the clipboard, the address bar still holds the value, so the
+ * fallback points there.
+ */
+export function CopyPageLink() {
+  const { state, copy, announcement } = useCopy("link", readPageAddress);
+  return (
+    <>
+      <Button type="button" size="sm" variant="outline" onClick={copy}>
+        {state === "copied" ? <Check aria-hidden="true" /> : <Link2 aria-hidden="true" />}
+        Copy link
+      </Button>
+      {state === "manual" ? (
+        <span className="text-xs text-muted-foreground">Copy the address from the browser</span>
+      ) : null}
+      <Announcement message={announcement} />
+    </>
+  );
+}
+
+function readPageAddress(): string {
+  return window.location.href;
 }
 
 /**
@@ -146,7 +173,8 @@ export function CopyField({
   copyLabel?: string;
   focusOnMount?: boolean;
 }) {
-  const { state, copy, announcement } = useCopy(label, value);
+  const read = useCallback(() => value, [value]);
+  const { state, copy, announcement } = useCopy(label, read);
   const id = useId();
   const text = useRef<HTMLSpanElement>(null);
   const field = useRef<HTMLInputElement>(null);
@@ -228,7 +256,8 @@ export function CopyBlock({
   /** The visible button text, e.g. "Copy manifest". */
   action: string;
 }) {
-  const { state, copy, announcement } = useCopy(label, value);
+  const read = useCallback(() => value, [value]);
+  const { state, copy, announcement } = useCopy(label, read);
   return (
     <Field className="min-w-0 gap-2">
       <div className="flex items-center justify-between gap-2">
