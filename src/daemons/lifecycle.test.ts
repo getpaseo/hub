@@ -363,6 +363,86 @@ describe("durable Hub action acknowledgement state", () => {
     }
   });
 
+  it.each(["archival", "shutdown"] as const)(
+    "releases a recovered watch when %s finishes before watch setup returns",
+    async (boundary) => {
+      const fixture = await acknowledgementFixture();
+      const watch = fixture.connection.agents.watch.bind(fixture.connection.agents);
+      let previousUnsubscribed = false;
+      const watchingAgent = vi
+        .spyOn(fixture.connection.agents, "watch")
+        .mockImplementationOnce(async (agentId, listener) => {
+          const unsubscribe = await watch(agentId, listener);
+          return () => {
+            previousUnsubscribed = true;
+            unsubscribe();
+          };
+        });
+      await fixture.lifecycle.recoverPendingHubActions(DAEMON_ID);
+      await fixture.connection.emit(toolCall("finish-call", "hub.finish_execution", "completed"));
+      await fixture.connection.emit(turnCompleted());
+
+      let watching!: () => void;
+      const watchStarted = new Promise<void>((resolve) => {
+        watching = resolve;
+      });
+      let releaseWatch!: () => void;
+      const watchGate = new Promise<void>((resolve) => {
+        releaseWatch = resolve;
+      });
+      let unsubscriptions = 0;
+      watchingAgent.mockImplementationOnce(async (agentId, listener) => {
+        const unsubscribe = await watch(agentId, listener);
+        watching();
+        await watchGate;
+        return () => {
+          unsubscriptions++;
+          unsubscribe();
+        };
+      });
+      const recovery = fixture.lifecycle.recoverPendingHubActions(DAEMON_ID);
+
+      try {
+        await watchStarted;
+        assert.equal(fixture.lifecycle.activeExecutionObservationCount(), 1);
+        assert.equal(previousUnsubscribed, false);
+        if (boundary === "archival") {
+          await fixture.connection.emit(agentIdle());
+          assert.deepEqual(fixture.connection.actions, ["archive"]);
+          assert.notEqual(
+            (await fixture.database.findAgentExecutionById(EXECUTION_ID))?.hubActionCompletedAt,
+            null,
+          );
+        } else {
+          await fixture.lifecycle.stop();
+        }
+        releaseWatch();
+        await recovery;
+
+        assert.equal(fixture.lifecycle.activeExecutionObservationCount(), 0);
+        assert.equal(previousUnsubscribed, true);
+        assert.equal(unsubscriptions, 1);
+      } finally {
+        releaseWatch();
+        await recovery;
+        await fixture.lifecycle.stop();
+      }
+    },
+  );
+
+  it("releases recovery ownership when watch setup fails", async () => {
+    const fixture = await acknowledgementFixture();
+    const error = new Error("watch setup failed");
+    vi.spyOn(fixture.connection.agents, "watch").mockRejectedValueOnce(error);
+
+    try {
+      await assert.rejects(fixture.lifecycle.recoverPendingHubActions(DAEMON_ID), error);
+      assert.equal(fixture.lifecycle.activeExecutionObservationCount(), 0);
+    } finally {
+      await fixture.lifecycle.stop();
+    }
+  });
+
   it("defers workflow-owned terminal provider failure notification to the outbox", async () => {
     const database = createMemoryDatabase();
     let failureHooks = 0;
