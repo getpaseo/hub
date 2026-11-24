@@ -158,10 +158,10 @@ class MemoryDatabase implements Database {
   // Activity reads are SQL aggregates; their tests run against Postgres and embedded PGlite.
   readonly activity: import("../activity/index.js").ActivityStore = {
     async listRuns() {
-      return { rows: [], total: 0, totalCapped: false };
+      return { rows: [], total: 0, totalCapped: false, hasNext: false };
     },
     async listUnmatched() {
-      return { rows: [], total: 0, totalCapped: false };
+      return { rows: [], total: 0, totalCapped: false, hasNext: false };
     },
     async filterOptions() {
       return { triggers: [], daemons: [] };

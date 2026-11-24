@@ -71,6 +71,11 @@ describe("activity store", () => {
           agent: null,
         });
         expect(isSorted(runs.rows.map((run) => -run.receivedAt.getTime()))).toBe(true);
+        expect(runs.hasNext).toBe(true);
+        expect(await activity.listRuns(ORG, query({ page: "3" }), NOW)).toMatchObject({
+          total: 61,
+          hasNext: false,
+        });
         expect((await activity.listRuns(ORG, query({ page: "3" }), NOW)).rows).toHaveLength(11);
         expect((await activity.listRuns(ORG, query({ range: "24h" }), NOW)).total).toBe(60);
         expect((await activity.listRuns(ORG, query({ range: "all" }), NOW)).total).toBe(62);
@@ -195,7 +200,7 @@ describe("activity store", () => {
             {
               stepId: "triage",
               status: "failed",
-              output: null,
+              output: { text: '{\n    "summary": "partial"\n}', truncated: false },
               execution: {
                 id: EXECUTION,
                 daemon: { id: DAEMON, slug: "devbox" },
@@ -224,19 +229,49 @@ describe("activity store", () => {
 
         expect(await activity.findRunIdForExecution(EXECUTION)).toBe(TRIAGE_RUN);
 
-        // A noisy stream is counted only up to the cap.
+        // A noisy stream is counted only up to the cap, and its last page still knows it is
+        // last: 1,025 events fill page 41 exactly and nothing follows it.
         await runtime.query(
           `insert into provider_event_receipts
              (organization_id, provider, delivery_id, source, payload, received_at, dropped_reason)
            select $1, 'github', 'flood-' || n, 'github.push', '{}', $2::timestamptz - n * interval '1 second',
              'no_project_route'
-           from generate_series(1, 1000) n`,
+           from generate_series(1, 992) n`,
           [ORG, NOW],
         );
-        expect(await activity.listUnmatched(ORG, query({ view: "unmatched" }), NOW)).toMatchObject({
+        const unmatchedPage = (page: number) =>
+          activity.listUnmatched(ORG, query({ view: "unmatched", page }), NOW);
+        expect(await unmatchedPage(1)).toMatchObject({
           total: 1_000,
           totalCapped: true,
+          hasNext: true,
         });
+        expect(await unmatchedPage(40)).toMatchObject({
+          total: 1_000,
+          totalCapped: true,
+          hasNext: true,
+        });
+        const last = await unmatchedPage(41);
+        expect(last).toMatchObject({ total: 1_025, totalCapped: false, hasNext: false });
+        expect(last.rows).toHaveLength(25);
+        expect(await unmatchedPage(42)).toMatchObject({
+          rows: [],
+          total: 1_000,
+          totalCapped: true,
+          hasNext: false,
+        });
+
+        // One event past a page boundary: the partial last page is the exact total.
+        await runtime.query(
+          `insert into provider_event_receipts
+             (organization_id, provider, delivery_id, source, payload, received_at, dropped_reason)
+           values ($1, 'github', 'flood-last', 'github.push', '{}', $2::timestamptz - interval '1 hour',
+             'no_project_route')`,
+          [ORG, NOW],
+        );
+        const partial = await unmatchedPage(42);
+        expect(partial).toMatchObject({ total: 1_026, totalCapped: false, hasNext: false });
+        expect(partial.rows).toHaveLength(1);
       } finally {
         await runtime.close();
         await rm(directory, { recursive: true, force: true });
@@ -438,8 +473,10 @@ async function seed(runtime: DatabaseRuntime) {
       ('${EXECUTION}', '${ORG}', '10000000-0000-4000-8000-000000000002', 'failed',
        '20000000-0000-4000-8000-000000000002', '${DAEMON}', 'agent-1',
        '{"agent":{"provider":"claude","model":"opus"}}');
-    insert into workflow_step_runs (trigger_run_id, step_id, ordinal, status, agent_execution_id, failure_reason)
-    values ('${TRIAGE_RUN}', 'triage', 0, 'failed', '${EXECUTION}', 'agent crashed');
+    insert into workflow_step_runs
+      (trigger_run_id, step_id, ordinal, status, agent_execution_id, failure_reason, output)
+    values ('${TRIAGE_RUN}', 'triage', 0, 'failed', '${EXECUTION}', 'agent crashed',
+      '{"summary": "partial"}');
 
     insert into provider_event_receipts
       (organization_id, provider, delivery_id, source, repo, payload, received_at, dropped_reason)

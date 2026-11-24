@@ -1,6 +1,7 @@
 import type { StatusTone } from "../components/app/status-pill.js";
 import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
-import type { ActivityRange, RunStatus } from "./query-contract.js";
+import type { ActivityProvider, ActivityRange, RunStatus } from "./query-contract.js";
+import { PAYLOAD_PREVIEW_CHARACTERS } from "./store.js";
 
 /** How a run's state reads wherever a run is shown: green done, red ended badly, grey busy. */
 export function runStatusTone(status: RunStatus): StatusTone {
@@ -37,6 +38,24 @@ export function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+/** What an event's resource is called by the provider it came from. */
+const RESOURCE_LABELS: Readonly<Record<ActivityProvider, string>> = {
+  github: "Repository",
+  slack: "Workspace",
+  discord: "Server",
+  linear: "Project",
+  schedule: "Resource",
+  webhook: "Resource",
+  manual: "Resource",
+};
+
+export function resourceLabel(provider: ActivityProvider): string {
+  return RESOURCE_LABELS[provider];
+}
+
+/** Said beside stored JSON the drawer shows only the start of. */
+export const PREVIEW_CUT = `Preview cut at ${PAYLOAD_PREVIEW_CHARACTERS.toLocaleString("en-US")} characters`;
 
 export const RANGE_LABELS: Readonly<Record<ActivityRange, string>> = {
   "24h": "Last 24 hours",

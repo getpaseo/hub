@@ -243,7 +243,11 @@ function ProviderConnections({
               actions: (
                 <>
                   <Button variant="outline" size="sm" asChild>
-                    <ActivityLink organizationSlug={organizationSlug} search={{ provider }}>
+                    <ActivityLink
+                      organizationSlug={organizationSlug}
+                      search={{ provider }}
+                      aria-label={`View ${label} runs`}
+                    >
                       View runs
                     </ActivityLink>
                   </Button>
@@ -251,6 +255,7 @@ function ProviderConnections({
                     <ActivityLink
                       organizationSlug={organizationSlug}
                       search={{ view: "unmatched", provider }}
+                      aria-label={`${label} unmatched events`}
                     >
                       Unmatched events
                     </ActivityLink>

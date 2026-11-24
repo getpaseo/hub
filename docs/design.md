@@ -178,8 +178,11 @@ missing app component.
 | `TabNav`, `TabNavSkeleton`                                              | Navigate between sibling routes under one page.                                       |
 | `Combobox`                                                              | Pick one of many with search.                                                         |
 | `CopyField`, `CopyButton`, `CopyBlock`, `CodeBlock`                     | Show a value to copy, or a block of code.                                             |
+| `CopyPageLink`                                                          | Copy the view's address, or say where to find it if blocked.                          |
 | `Disclosure`                                                            | Open and close a bordered section.                                                    |
 | `RowActions`                                                            | Put a record's actions behind one kebab.                                              |
+| `DetailSheet`                                                           | Open one record beside its list, stepping with `j` and `k`.                           |
+| `FilterBar`, `FilterSelect`, `FilterSearch`                             | Narrow a list from one row of filters above it.                                       |
 | `RelativeTime`                                                          | Show when. There is no absolute-date formatter in screens.                            |
 | `AuthLayout`, `AuthCard`, `AuthCardSkeleton`                            | Frame a pre-auth screen.                                                              |
 | `SiteHeader`, `SiteHeaderActions`, `SidebarSwitcher`, `NavigationGroup` | The shell, in `src/shell`. Header actions render from `sm` up only.                   |

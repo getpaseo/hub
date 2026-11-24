@@ -2,6 +2,7 @@ import { expect } from "@playwright/test";
 import { test } from "./app.js";
 import { OrganizationActivity } from "./helpers/activity.js";
 import { OrganizationHome } from "./helpers/home.js";
+import { OrganizationIntegrations } from "./helpers/integrations.js";
 import { OrganizationTriggers } from "./helpers/triggers.js";
 
 const SHOTS = "e2e/screenshots/home";
@@ -24,6 +25,8 @@ test("walks a hosted organization from sign-in to its first run", async ({ hub, 
   const home = new OrganizationHome(page);
   const triggers = new OrganizationTriggers(page);
   const activity = new OrganizationActivity(page);
+  const integrations = new OrganizationIntegrations(page);
+  let firstRun: Awaited<ReturnType<typeof hub.runManualInput>> = { status: 0 };
 
   await test.step("a fresh organization lands on Home with only the first step open", async () => {
     await home.expectOpen();
@@ -99,12 +102,12 @@ test("walks a hosted organization from sign-in to its first run", async ({ hub, 
 
   await test.step("the first run completes the list, which collapses and stays toggleable", async () => {
     const apiKey = await hub.createRunApiKey("owner");
-    const run = await hub.runManualInput({
+    firstRun = await hub.runManualInput({
       rawInput: "run it",
       deliveryKey: "home-first-run",
       apiKey,
     });
-    expect(run.workflowStatus).toBe("running");
+    expect(firstRun.workflowStatus).toBe("running");
     await home.open();
     await home.expectProgress("4 of 4");
     await home.expectCollapsed();
@@ -121,6 +124,15 @@ test("walks a hosted organization from sign-in to its first run", async ({ hub, 
     ]);
     await home.reload();
     await home.expectCollapsed();
+  });
+
+  await test.step("the run's execution link opens that run in Activity", async () => {
+    const runId = firstRun.triggerRunId!;
+    await hub.viewRunFromExecutionLink(await hub.executionOfRun(runId));
+    await activity.expectUrl({ selected: runId });
+    await activity.expectRecord("deploy");
+    await activity.closeRecordWithEscape();
+    await home.open();
   });
 
   await test.step("the overview counts every run in the range, past the first 50", async () => {
@@ -185,6 +197,17 @@ test("walks a hosted organization from sign-in to its first run", async ({ hub, 
     await home.open();
     await home.expectConnectionFault("Acme Engineering needs reauthorizing on Slack");
     await home.openIntegrationsFromAlert();
+  });
+
+  await test.step("a provider's card opens Activity on that provider's runs and events", async () => {
+    await integrations.openProviderRuns("GitHub");
+    await activity.expectOpen();
+    await activity.expectUrl({ view: null, provider: "github" });
+    await integrations.open();
+    await integrations.openProviderUnmatchedEvents("GitHub");
+    await activity.expectOpen();
+    await activity.expectUrl({ view: "unmatched", provider: "github" });
+    await activity.expectRows("Unmatched events", 2);
   });
 });
 

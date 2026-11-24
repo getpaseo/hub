@@ -41,6 +41,8 @@ export interface DataTablePagination {
   total: number;
   /** `total` is a floor: there are more records than were counted. */
   totalCapped?: boolean;
+  /** A page follows this one. The caller knows; a capped total cannot say. */
+  hasNext: boolean;
   onPage: (page: number) => void;
 }
 
@@ -269,19 +271,18 @@ function Pagination({
   shown,
   total,
   totalCapped = false,
+  hasNext,
   onPage,
 }: DataTablePagination & { label: string }) {
   const first = shown === 0 ? 0 : (page - 1) * pageSize + 1;
   const last = first + Math.max(shown - 1, 0);
-  // Past a capped count the total says nothing about what follows; a full page says there may be more.
-  const hasNext = totalCapped ? shown === pageSize : page * pageSize < total;
   return (
     <nav
       aria-label={`${label} pages`}
       className="flex h-11 items-center justify-between gap-4 border-t px-4"
     >
       <p className="text-xs text-muted-foreground tabular-nums">
-        {formatCount(first)}–{formatCount(last)} of {formatCount(Math.max(total, last))}
+        {formatCount(first)}–{formatCount(last)} of {formatCount(total)}
         {totalCapped ? "+" : ""}
       </p>
       <div className="flex items-center gap-1">

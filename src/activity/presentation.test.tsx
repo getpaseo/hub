@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runSession } from "./presentation.js";
+import { resourceLabel, runSession } from "./presentation.js";
 
 const agent = (daemonAgentId: string | null) => ({ execution: { id: "execution", daemonAgentId } });
 
@@ -16,5 +16,13 @@ describe("runSession", () => {
 
   it("offers nothing when no step reached an agent", () => {
     expect(runSession([{ execution: null }, agent(null)])).toBeUndefined();
+  });
+});
+
+describe("resourceLabel", () => {
+  it("names an event's resource as its provider does", () => {
+    expect(
+      (["github", "slack", "discord", "linear", "webhook"] as const).map(resourceLabel),
+    ).toEqual(["Repository", "Workspace", "Server", "Project", "Resource"]);
   });
 });

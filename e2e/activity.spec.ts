@@ -71,10 +71,18 @@ test("pages, filters, sorts, and opens runs and unmatched events from the URL", 
     await activity.nextPage("Runs");
     await activity.expectRows("Runs", 6);
     await activity.expectPageRange("Runs", "26–31 of 31");
+    await activity.expectLastPage("Runs");
     await activity.expectUrl({ page: "2" });
     await activity.previousPage("Runs");
     await activity.expectPageRange("Runs", "1–25 of 31");
     await activity.expectUrl({ page: null });
+  });
+
+  await test.step("a link past the last page leads back to the first", async () => {
+    await activity.visitPage(3);
+    await activity.returnToFirstPage("No more runs");
+    await activity.expectUrl({ page: null });
+    await activity.expectPageRange("Runs", "1–25 of 31");
   });
 
   await test.step("a failure filter narrows the list, survives a reload, and clears", async () => {

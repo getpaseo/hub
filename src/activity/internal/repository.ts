@@ -80,26 +80,34 @@ const TRIGGER_SOURCES = `(
   from organization_trigger_revisions revisions
   join organization_triggers triggers on triggers.id = revisions.trigger_id
   where revisions.organization_id = $1 and revisions.source_kind = 'project_migration'
+    and triggers.organization_id = $1
 )`;
 
 /** A run belongs to the trigger whose source it came from. */
 const RUN_OF_TRIGGER = `runs.project_id = triggers.project_id
   and (triggers.former_name is null or runs.configured_trigger_name = triggers.former_name)`;
 
-const RUN_FROM = `from trigger_runs runs
+/** Runs with the event that started them, for reads that need the provider but not the trigger. */
+const RUN_EVENT_FROM = `from trigger_runs runs
   join provider_event_receipts receipts
     on receipts.id = runs.provider_event_receipt_id
-   and receipts.organization_id = runs.organization_id
+   and receipts.organization_id = runs.organization_id`;
+
+const RUN_FROM = `${RUN_EVENT_FROM}
   left join ${TRIGGER_SOURCES} triggers on ${RUN_OF_TRIGGER}`;
 
 /** A run that ended badly, in the terms Activity's failure filter uses. */
 const FAILED_RUN = `runs.status in (${FAILED_RUN_STATUSES.map((status) => `'${status}'`).join(", ")})`;
 
+/** A run's own columns, read over `RUN_FROM`. */
 const RUN_COLUMNS = `runs.id, triggers.id as trigger_id,
   coalesce(triggers.name, runs.configured_trigger_name) as trigger_name,
   receipts.provider, receipts.source, receipts.repo, runs.status, receipts.received_at,
-  ${RUN_DURATION_MS} as duration_ms,
-  execution.daemon_id, execution.daemon_slug, execution.agent_provider, execution.agent_model`;
+  ${RUN_DURATION_MS} as duration_ms`;
+
+/** What `LATEST_EXECUTION` adds to a run. */
+const EXECUTION_COLUMNS = `execution.daemon_id, execution.daemon_slug, execution.agent_provider,
+  execution.agent_model`;
 
 interface RunRow extends Record<string, unknown> {
   id: string;
@@ -133,9 +141,25 @@ interface PayloadRow {
   payload_truncated: boolean;
 }
 
+/**
+ * Stored JSON indented once, as `<name>.printed`. `offset 0` keeps the planner from folding the
+ * subquery into the preview's two uses of it, which would print the JSON twice.
+ */
+function printed(json: string, name: string): string {
+  return `cross join lateral (select jsonb_pretty(${json}) as printed offset 0) ${name}`;
+}
+
+/** The first `PAYLOAD_PREVIEW_CHARACTERS` of JSON `printed` as `name`, and whether it goes on. */
+function previewColumns(name: string, prefix: string): string {
+  const cap = String(PAYLOAD_PREVIEW_CHARACTERS);
+  return `left(${name}.printed, ${cap}) as ${prefix}_preview,
+  length(${name}.printed) > ${cap} as ${prefix}_truncated`;
+}
+
+const PAYLOAD_PRINTED = printed("receipts.payload", "payload_printed");
+
 const PAYLOAD_COLUMNS = `octet_length(receipts.payload::text) as payload_bytes,
-  left(jsonb_pretty(receipts.payload), ${String(PAYLOAD_PREVIEW_CHARACTERS)}) as payload_preview,
-  length(jsonb_pretty(receipts.payload)) > ${String(PAYLOAD_PREVIEW_CHARACTERS)} as payload_truncated`;
+  ${previewColumns("payload_printed", "payload")}`;
 
 export class ActivityRepository implements ActivityStore {
   constructor(private readonly runtime: QueryHandle) {}
@@ -147,18 +171,25 @@ export class ActivityRepository implements ActivityStore {
   ): Promise<ActivityPage<ActivityRun>> {
     const params = new Parameters([organizationId]);
     const where = runConditions(query, now, params);
-    const order = runOrder(query);
     const nowParameter = params.add(now);
-    const limit = params.add(ACTIVITY_PAGE_SIZE);
-    const offset = params.add((query.page - 1) * ACTIVITY_PAGE_SIZE);
+    const limit = params.add(PAGE_READ);
+    const offset = params.add(pageOffset(query.page));
+    const order = runOrder(query).replaceAll("$NOW", nowParameter);
+    // The page is chosen first and only its runs look up their execution. The inner query is
+    // named `runs` and carries the columns the order reads, so the same order applies to both.
     const [rows, count] = await Promise.all([
       this.runtime.query<RunRow>(
-        `select ${RUN_COLUMNS.replaceAll("$NOW", nowParameter)}
-         ${RUN_FROM}
+        `select runs.*, ${EXECUTION_COLUMNS}
+         from (
+           select ${RUN_COLUMNS.replaceAll("$NOW", nowParameter)},
+                  runs.created_at, runs.completed_at
+           ${RUN_FROM}
+           where ${where}
+           order by ${order}
+           limit ${limit} offset ${offset}
+         ) runs
          ${LATEST_EXECUTION}
-         where ${where}
-         order by ${order.replaceAll("$NOW", nowParameter)}
-         limit ${limit} offset ${offset}`,
+         order by ${order}`,
         params.values,
       ),
       this.runtime.query<{ total: number }>(
@@ -166,11 +197,7 @@ export class ActivityRepository implements ActivityStore {
         params.values.slice(0, params.countBefore(nowParameter)),
       ),
     ]);
-    return {
-      rows: rows.rows.map(toRun),
-      total: count.rows[0]?.total ?? 0,
-      totalCapped: false,
-    };
+    return toPage(rows.rows.map(toRun), query.page, count.rows[0]?.total ?? 0, Infinity);
   }
 
   async listUnmatched(
@@ -181,8 +208,8 @@ export class ActivityRepository implements ActivityStore {
     const params = new Parameters([organizationId]);
     const where = unmatchedConditions(query, now, params);
     const direction = query.dir === "asc" ? "asc" : "desc";
-    const limit = params.add(ACTIVITY_PAGE_SIZE);
-    const offset = params.add((query.page - 1) * ACTIVITY_PAGE_SIZE);
+    const limit = params.add(PAGE_READ);
+    const offset = params.add(pageOffset(query.page));
     const [rows, count] = await Promise.all([
       this.runtime.query<UnmatchedRow>(
         `select receipts.id, receipts.provider, receipts.source, receipts.repo,
@@ -201,12 +228,12 @@ export class ActivityRepository implements ActivityStore {
         params.values.slice(0, params.values.length - 2),
       ),
     ]);
-    const total = count.rows[0]?.total ?? 0;
-    return {
-      rows: rows.rows.map(toUnmatched),
-      total: Math.min(total, UNMATCHED_COUNT_CAP),
-      totalCapped: total > UNMATCHED_COUNT_CAP,
-    };
+    return toPage(
+      rows.rows.map(toUnmatched),
+      query.page,
+      count.rows[0]?.total ?? 0,
+      UNMATCHED_COUNT_CAP,
+    );
   }
 
   async filterOptions(organizationId: string): Promise<ActivityFilterOptions> {
@@ -242,11 +269,12 @@ export class ActivityRepository implements ActivityStore {
           completed_at: Date | null;
         }
     >(
-      `select ${RUN_COLUMNS.replaceAll("$NOW", "$3")},
+      `select ${RUN_COLUMNS.replaceAll("$NOW", "$3")}, ${EXECUTION_COLUMNS},
               receipts.delivery_id, runs.outcome, runs.prompt, runs.failure_reason, runs.rejection,
               runs.created_at, runs.completed_at, ${PAYLOAD_COLUMNS}
        ${RUN_FROM}
        ${LATEST_EXECUTION}
+       ${PAYLOAD_PRINTED}
        where runs.organization_id = $1 and runs.id = $2`,
       [organizationId, runId, now],
     );
@@ -254,7 +282,7 @@ export class ActivityRepository implements ActivityStore {
     const steps = await this.runtime.query<StepRow>(
       `select steps.id, steps.step_id, steps.ordinal, steps.status, steps.failure_reason,
               steps.started_at, steps.completed_at,
-              left(jsonb_pretty(steps.output), ${String(PAYLOAD_PREVIEW_CHARACTERS)}) as output,
+              ${previewColumns("output_printed", "output")},
               executions.id as execution_id, executions.daemon_agent_id,
               executions.agent_session_action,
               executions.launch_intent #>> '{agent,provider}' as agent_provider,
@@ -263,6 +291,7 @@ export class ActivityRepository implements ActivityStore {
        from workflow_step_runs steps
        left join agent_executions executions on executions.id = steps.agent_execution_id
        left join daemons on daemons.id = executions.daemon_id
+       ${printed("steps.output", "output_printed")}
        where steps.trigger_run_id = $1
        order by steps.ordinal`,
       [row.id],
@@ -304,6 +333,7 @@ export class ActivityRepository implements ActivityStore {
          on receipts.provider = 'discord' and discord.id = receipts.connection_id
        left join linear_connections linear
          on receipts.provider = 'linear' and linear.id = receipts.connection_id
+       ${PAYLOAD_PRINTED}
        where receipts.organization_id = $1 and receipts.id = $2 and ${UNMATCHED_PREDICATE}
          and not exists (
            select 1 from trigger_runs runs where runs.provider_event_receipt_id = receipts.id
@@ -337,8 +367,10 @@ export class ActivityRepository implements ActivityStore {
     const failed = FAILED_RUN;
     const [statuses, triggers, daemons] = await Promise.all([
       this.runtime.query<{ status: RunStatus; runs: number }>(
+        // Every run has its receipt (`trigger_runs_receipt_organization_fk`), so the runs alone
+        // count what the list counts.
         `select runs.status, count(*)::int as runs
-         ${RUN_FROM}
+         from trigger_runs runs
          where runs.organization_id = $1 and runs.created_at >= $2
          group by runs.status`,
         [organizationId, since],
@@ -404,7 +436,7 @@ export class ActivityRepository implements ActivityStore {
     }>(
       `select receipts.provider, count(*)::int as runs,
               (count(*) filter (where ${FAILED_RUN}))::int as failed
-       ${RUN_FROM}
+       ${RUN_EVENT_FROM}
        where runs.organization_id = $1 and runs.created_at >= $2
        group by receipts.provider
        order by receipts.provider`,
@@ -464,6 +496,27 @@ export class ActivityRepository implements ActivityStore {
       receivedAt: row.received_at,
     }));
   }
+}
+
+/** One row past the page, so the last page knows it is last without trusting a count. */
+const PAGE_READ = ACTIVITY_PAGE_SIZE + 1;
+
+function pageOffset(page: number): number {
+  return (page - 1) * ACTIVITY_PAGE_SIZE;
+}
+
+/**
+ * A page read `PAGE_READ` rows deep, and what the footer can say about the rest. `counted` is
+ * exact up to `cap` and one past it beyond. Reaching the end makes the total exact whatever was
+ * counted, so the last page of a capped stream reads "1,001–1,025 of 1,025".
+ */
+function toPage<Row>(read: Row[], page: number, counted: number, cap: number): ActivityPage<Row> {
+  const rows = read.slice(0, ACTIVITY_PAGE_SIZE);
+  const hasNext = read.length > ACTIVITY_PAGE_SIZE;
+  const reached = rows.length === 0 ? 0 : pageOffset(page) + rows.length;
+  if (rows.length > 0 && !hasNext) return { rows, total: reached, totalCapped: false, hasNext };
+  if (counted > cap) return { rows, total: Math.max(cap, reached), totalCapped: true, hasNext };
+  return { rows, total: counted, totalCapped: false, hasNext };
 }
 
 /** Positional parameters, numbered as they are added. */
@@ -599,7 +652,8 @@ interface StepRow extends Record<string, unknown> {
   failure_reason: string | null;
   started_at: Date | null;
   completed_at: Date | null;
-  output: string | null;
+  output_preview: string | null;
+  output_truncated: boolean | null;
   execution_id: string | null;
   daemon_agent_id: string | null;
   agent_session_action: string | null;
@@ -618,7 +672,10 @@ function toStep(row: StepRow): ActivityStep {
     failureReason: row.failure_reason,
     startedAt: row.started_at,
     completedAt: row.completed_at,
-    output: row.output,
+    output:
+      row.output_preview === null
+        ? null
+        : { text: row.output_preview, truncated: row.output_truncated === true },
     execution:
       row.execution_id === null
         ? null

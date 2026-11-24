@@ -22,18 +22,22 @@ import {
   activityRecord,
   type ActivityRecord,
   type ActivityRunDetailView,
+  type ActivityStepView,
   type UnmatchedEventDetailView,
 } from "./functions.js";
 import {
   DROP_REASONS,
   formatBytes,
   formatDuration,
+  PREVIEW_CUT,
+  resourceLabel,
   runSession,
   runStatusTone,
   stepStatusTone,
   type DropReasonNextStep,
 } from "./presentation.js";
 import { activityProviderLabel, type ActivitySearch } from "./query-contract.js";
+import type { JsonPreview } from "./store.js";
 
 /**
  * The record open beside the Activity list: a run with its steps, prompt, and payload, or an
@@ -260,13 +264,23 @@ function RunBody({ run }: { run: ActivityRunDetailView }) {
                     : {})}
                 >
                   <TwoLine
-                    primary={`${String(step.ordinal + 1)}. ${step.stepId}`}
+                    primary={stepName(step)}
                     {...(step.failureReason === null ? {} : { secondary: step.failureReason })}
                   />
                 </RecordRow>
               ))}
             </RecordList>
           </Card>
+          {run.steps.map((step) =>
+            step.output === null ? null : (
+              <JsonDisclosure
+                key={step.id}
+                id={`step-output-${step.id}`}
+                title={`${stepName(step)} output`}
+                preview={step.output}
+              />
+            ),
+          )}
         </Section>
       )}
       <Section title="Prompt">
@@ -277,6 +291,10 @@ function RunBody({ run }: { run: ActivityRunDetailView }) {
       </Section>
     </>
   );
+}
+
+function stepName(step: ActivityStepView): string {
+  return `${String(step.ordinal + 1)}. ${step.stepId}`;
 }
 
 function stepDuration(startedAt: string | null, completedAt: string | null): string {
@@ -298,7 +316,7 @@ function UnmatchedBody({
   const rows: SummaryRow[] = [
     { label: "Provider", value: activityProviderLabel(event.provider) },
     { label: "Connection", value: event.connectionSlug ?? "None" },
-    { label: "Repository", value: event.repo ?? event.resourceId ?? "None" },
+    { label: resourceLabel(event.provider), value: event.repo ?? event.resourceId ?? "None" },
     { label: "Drop reason", identifier: event.reason },
     { label: "Received", value: formatAbsolute(event.receivedAt) },
     { label: "Delivery ID", identifier: event.deliveryId },
@@ -365,20 +383,41 @@ function NextStep({
 
 /** The stored event, indented, behind a disclosure: most readers open a record for the facts above it. */
 function Payload({ payload }: { payload: ActivityRunDetailView["payload"] }) {
+  return (
+    <JsonDisclosure
+      id="event-payload"
+      title="Event payload"
+      preview={payload}
+      size={formatBytes(payload.bytes)}
+    />
+  );
+}
+
+/** Stored JSON, closed until asked for, saying when the preview stops short of the whole. */
+function JsonDisclosure({
+  id,
+  title,
+  preview,
+  size,
+}: {
+  id: string;
+  title: string;
+  preview: JsonPreview;
+  size?: string;
+}) {
   const [open, setOpen] = useState(false);
+  const status = [size, preview.truncated ? PREVIEW_CUT : undefined]
+    .filter((part) => part !== undefined)
+    .join(" · ");
   return (
     <Disclosure
-      id="event-payload"
+      id={id}
       open={open}
       onOpenChange={setOpen}
-      title="Event payload"
-      status={
-        payload.truncated
-          ? `${formatBytes(payload.bytes)} · Preview cut at 64 KB`
-          : formatBytes(payload.bytes)
-      }
+      title={title}
+      {...(status === "" ? {} : { status })}
     >
-      <CodeBlock label="Event payload">{payload.text}</CodeBlock>
+      <CodeBlock label={title}>{preview.text}</CodeBlock>
     </Disclosure>
   );
 }

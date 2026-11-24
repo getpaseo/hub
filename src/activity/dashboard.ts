@@ -25,6 +25,7 @@ interface ListPage<Row> {
   rows: Row[];
   total: number;
   totalCapped: boolean;
+  hasNext: boolean;
   page: number;
   pageSize: number;
 }

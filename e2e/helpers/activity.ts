@@ -84,6 +84,27 @@ export class OrganizationActivity {
       .click();
   }
 
+  async expectLastPage(view: ActivityView) {
+    await expect(
+      this.page
+        .getByRole("navigation", { name: `${view} pages` })
+        .getByRole("button", { name: "Next page" }),
+    ).toBeDisabled();
+  }
+
+  /** The same view at another page, the way a stale bookmark or shared link reaches it. */
+  async visitPage(page: number) {
+    const url = new URL(this.page.url());
+    url.searchParams.set("page", String(page));
+    await this.page.goto(url.href);
+  }
+
+  /** A page past the last offers the way back to the first instead of an empty table. */
+  async returnToFirstPage(message: string) {
+    await expect(this.page.getByText(message, { exact: true })).toBeVisible();
+    await this.page.getByRole("button", { name: "First page", exact: true }).click();
+  }
+
   async previousPage(view: ActivityView) {
     await this.page
       .getByRole("navigation", { name: `${view} pages` })

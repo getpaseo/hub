@@ -61,7 +61,7 @@ export function Card({
       {footer === undefined ? null : (
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t pt-4">
           <p className="text-xs text-muted-foreground tabular-nums">{footer.note}</p>
-          <div className="flex shrink-0 items-center gap-4">{footer.actions}</div>
+          <div className="flex shrink-0 items-center gap-2">{footer.actions}</div>
         </div>
       )}
     </section>

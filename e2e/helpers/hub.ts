@@ -291,6 +291,27 @@ export class PaseoHub {
     return `${this.primary.origin}/open/executions/${execution}`;
   }
 
+  /** The agent execution a dispatched run's newest step started, once the step records it. */
+  async executionOfRun(triggerRunId: string): Promise<string> {
+    const read = async () =>
+      z.array(z.object({ agent_execution_id: z.string().uuid() })).parse(
+        await this.queryDatabaseRows(
+          this.primary,
+          `select agent_execution_id from workflow_step_runs
+             where trigger_run_id = $1 and agent_execution_id is not null
+             order by ordinal desc limit 1`,
+          [triggerRunId],
+        ),
+      )[0]?.agent_execution_id;
+    await expect.poll(read).toBeDefined();
+    return (await read())!;
+  }
+
+  /** Follow an execution link's "View run in Hub" address, as the launcher page writes it. */
+  async viewRunFromExecutionLink(executionId: string): Promise<void> {
+    await this.page.goto(`${this.primary.origin}/open/executions/${executionId}?view=run`);
+  }
+
   async expectExecutionLinkRequiresSignIn(url: string): Promise<void> {
     const response = await this.requests.get(url, { maxRedirects: 0 });
     expect(response.status()).toBe(303);

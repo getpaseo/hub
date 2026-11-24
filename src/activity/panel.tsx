@@ -288,6 +288,37 @@ const UNFILTERED_EMPTY = {
   }),
 };
 
+/** What an empty list says, and the one way out of it. */
+function emptyList(
+  list: ActivitySnapshot["list"],
+  search: ActivitySearch,
+  onChange: (next: ActivitySearch) => void,
+) {
+  // A page past the last one is a stale link, or events that expired since it was written.
+  if (list.page > 1) {
+    return {
+      title: list.view === "runs" ? "No more runs" : "No more events",
+      action: (
+        <Button variant="outline" onClick={() => onChange(withPage(search, 1))}>
+          First page
+        </Button>
+      ),
+    };
+  }
+  if (hasFilters(search)) {
+    return {
+      title: list.view === "runs" ? "No runs match these filters" : "No events match these filters",
+      action: (
+        <Button variant="outline" onClick={() => onChange(withoutFilters(search))}>
+          Clear filters
+        </Button>
+      ),
+    };
+  }
+  const range = RANGE_LABELS[activityQuery(search).range].toLowerCase();
+  return UNFILTERED_EMPTY[list.view](range);
+}
+
 /** The list as its query stands: the same table while it loads, the failure, or the rows. */
 function ActivityList({
   snapshot,
@@ -347,7 +378,6 @@ function ActivityTable({
 }) {
   const query = activityQuery(search);
   const { list } = snapshot;
-  const filtered = hasFilters(search);
   const sort = {
     key: query.sort,
     dir: query.dir,
@@ -359,21 +389,12 @@ function ActivityTable({
     shown: list.rows.length,
     total: list.total,
     totalCapped: list.totalCapped,
+    hasNext: list.hasNext,
     onPage: (page: number) => onChange(withPage(search, page)),
   };
   const open = (id: string) => onChange(withSelected(search, id));
   const selectedLink = (id: string) => ({ to: ".", search: withSelected(search, id) }) as const;
-  const empty = filtered
-    ? {
-        title:
-          list.view === "runs" ? "No runs match these filters" : "No events match these filters",
-        action: (
-          <Button variant="outline" onClick={() => onChange(withoutFilters(search))}>
-            Clear filters
-          </Button>
-        ),
-      }
-    : UNFILTERED_EMPTY[list.view](RANGE_LABELS[query.range].toLowerCase());
+  const empty = emptyList(list, search, onChange);
 
   return (
     <div aria-busy={busy} className="grid gap-2">
@@ -384,7 +405,7 @@ function ActivityTable({
         <DataTable
           label="Runs"
           columns={RUN_COLUMNS}
-          isEmpty={list.rows.length === 0 && list.page === 1}
+          isEmpty={list.rows.length === 0}
           empty={empty}
           sort={sort}
           pagination={pagination}
@@ -439,7 +460,7 @@ function ActivityTable({
         <DataTable
           label="Unmatched events"
           columns={UNMATCHED_COLUMNS}
-          isEmpty={list.rows.length === 0 && list.page === 1}
+          isEmpty={list.rows.length === 0}
           empty={empty}
           sort={sort}
           pagination={pagination}

@@ -239,7 +239,7 @@ function Triggers({ snapshot }: { snapshot: HomeSnapshot }) {
               <DataCell>{count(trigger.runs)}</DataCell>
               <DataCell muted={trigger.failed === 0}>{count(trigger.failed)}</DataCell>
               <DataCell muted>
-                {trigger.lastRunAt === null ? "Never" : <RelativeTime value={trigger.lastRunAt} />}
+                {trigger.lastRunAt === null ? "None" : <RelativeTime value={trigger.lastRunAt} />}
               </DataCell>
             </DataRow>
           );

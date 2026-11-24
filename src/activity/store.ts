@@ -83,10 +83,15 @@ export interface LatestRun {
 
 export interface ActivityPage<Row> {
   rows: Row[];
-  /** Every row the filters match, or the cap when there are more than `totalCapped` admits. */
+  /**
+   * Every row the filters match. A noisy event stream is counted only up to a cap, so past the
+   * cap this is the records read so far and `totalCapped` says there are more.
+   */
   total: number;
-  /** True when `total` is a floor: a noisy event stream is counted only up to a cap. */
+  /** True when `total` is a floor: there are more records than were counted. */
   totalCapped: boolean;
+  /** Whether a page follows this one. Read, not inferred from a capped total. */
+  hasNext: boolean;
 }
 
 export interface ActivityRun {
@@ -119,13 +124,17 @@ export interface ActivityFilterOptions {
   daemons: { id: string; slug: string }[];
 }
 
-/** A receipt's payload as far as the drawer will show it. */
-export interface PayloadPreview {
-  /** Size of the stored JSON. */
-  bytes: number;
+/** Stored JSON as far as the drawer will show it. */
+export interface JsonPreview {
   /** Indented JSON, cut at `PAYLOAD_PREVIEW_CHARACTERS`. */
   text: string;
   truncated: boolean;
+}
+
+/** A receipt's payload as far as the drawer will show it. */
+export interface PayloadPreview extends JsonPreview {
+  /** Size of the stored JSON. */
+  bytes: number;
 }
 
 export const PAYLOAD_PREVIEW_CHARACTERS = 65_536;
@@ -150,8 +159,8 @@ export interface ActivityStep {
   failureReason: string | null;
   startedAt: Date | null;
   completedAt: Date | null;
-  /** Indented JSON of what the step reported, cut at `PAYLOAD_PREVIEW_CHARACTERS`. */
-  output: string | null;
+  /** What the step reported, or null when it reported nothing. */
+  output: JsonPreview | null;
   execution: {
     id: string;
     daemon: { id: string; slug: string } | null;
