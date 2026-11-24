@@ -469,22 +469,28 @@ async function findProviderEventConnection(
   receivedAt: Date,
 ) {
   const liveConnection = await findConnection(transaction, provider, externalId);
-  if (liveConnection !== undefined || stopSessionId === undefined) {
+  if (provider !== "linear" || stopSessionId === undefined) {
     return { connection: liveConnection, liveConnection };
   }
+  const sessionConnection = await findLinearStopConnection(
+    transaction,
+    String(externalId),
+    stopSessionId,
+    receivedAt,
+  );
+  if (sessionConnection === undefined) return { connection: liveConnection, liveConnection };
   return {
-    connection: await findDisconnectedLinearStopConnection(
-      transaction,
-      String(externalId),
-      stopSessionId,
-      receivedAt,
-    ),
-    liveConnection,
+    connection: sessionConnection,
+    // A live binding owned by another tenant cannot grant or restrict authority over this session.
+    liveConnection:
+      liveConnection?.organizationId === sessionConnection.organizationId
+        ? liveConnection
+        : undefined,
   };
 }
 
-/** Recover only the durable routing authority of a previously accepted session after disconnect. */
-async function findDisconnectedLinearStopConnection(
+/** Recover the durable routing authority of a previously accepted session before using a live bind. */
+async function findLinearStopConnection(
   transaction: HubTransaction,
   linearOrganizationId: string,
   agentSessionId: string,

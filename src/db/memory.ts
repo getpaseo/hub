@@ -1397,9 +1397,8 @@ class MemoryDatabase implements Database {
 
   async acceptLinearEvent(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance> {
     const binding = await this.findLinearConnection(input.linearOrganizationId);
-    const stoppedConnection =
-      binding === undefined ? this.findDisconnectedLinearStopConnection(input) : undefined;
-    const connection = binding ?? stoppedConnection;
+    const stoppedConnection = this.findLinearStopConnection(input);
+    const connection = stoppedConnection ?? binding;
     const reason =
       stoppedConnection === undefined ? linearDropReason(input, binding) : input.dropReason;
     const resourceIds = [input.projectId, input.teamId].flatMap((id) =>
@@ -3772,7 +3771,7 @@ class MemoryDatabase implements Database {
     return { status: "accepted", events, receiptId: receipt.id };
   }
 
-  private findDisconnectedLinearStopConnection(
+  private findLinearStopConnection(
     input: AcceptLinearEventInput,
   ): Pick<LinearConnectionRecord, "id" | "organizationId"> | undefined {
     const agentSessionId = linearAgentSessionStopId(input);

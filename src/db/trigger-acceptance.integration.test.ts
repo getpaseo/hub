@@ -731,10 +731,54 @@ describe("trigger acceptance persistence", () => {
     }
     assert.deepEqual(
       stoppedAfterReconnect.events.map((event) => ({
+        organizationId: event.organizationId,
         projectId: event.projectId,
         configurationRevisionId: event.configurationRevisionId,
       })),
-      [{ projectId, configurationRevisionId: revision.id }],
+      [{ organizationId, projectId, configurationRevisionId: revision.id }],
+    );
+
+    const reboundOrganizationId = "linear-stop-route-rebound-org";
+    const reboundConnectionId = "50000000-0000-4000-8000-000000000004";
+    const rebindClient = await createPostgresQueryRuntime(databaseUrl);
+    await rebindClient.query(`delete from linear_connections where id = $1`, [
+      replacementConnectionId,
+    ]);
+    await rebindClient.query(
+      `insert into organization (id, name, slug)
+       values ($1, 'Linear Stop Rebound', 'linear-stop-rebound')`,
+      [reboundOrganizationId],
+    );
+    await rebindClient.query(
+      `insert into linear_connections
+         (id, organization_id, linear_organization_id, provider_application_id, slug,
+          linear_organization_name, app_user_id, access_token, refresh_token, scopes)
+       values
+         ($1, $2, 'linear-stop-workspace', 'linear-app', 'linear-stop-rebound',
+          'Linear Stop', 'linear-app-user', 'rebound-access-token',
+          'rebound-refresh-token', '["read", "write", "app:assignable", "app:mentionable"]'::jsonb)`,
+      [reboundConnectionId, reboundOrganizationId],
+    );
+    await rebindClient.close();
+    const stoppedAfterTenantRebind = await database.acceptLinearEvent({
+      linearOrganizationId: "linear-stop-workspace",
+      projectId: "linear-project",
+      deliveryId: "linear-stop-session-stopped-after-tenant-rebind",
+      source: "linear.agent_session",
+      payload: stopPayload("session-1"),
+      receivedAt: new Date("2026-01-01T00:05:00.000Z"),
+    });
+    assert.equal(stoppedAfterTenantRebind.status, "accepted");
+    if (stoppedAfterTenantRebind.status !== "accepted") {
+      throw new Error("expected rebound session stop event to retain its original authority");
+    }
+    assert.deepEqual(
+      stoppedAfterTenantRebind.events.map((event) => ({
+        organizationId: event.organizationId,
+        projectId: event.projectId,
+        configurationRevisionId: event.configurationRevisionId,
+      })),
+      [{ organizationId, projectId, configurationRevisionId: revision.id }],
     );
     await database.close();
   }, 120_000);
