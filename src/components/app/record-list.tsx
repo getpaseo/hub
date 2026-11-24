@@ -38,7 +38,7 @@ export function RecordRow({
   return (
     <li className="flex min-w-0 items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
       <div className="min-w-0">{children}</div>
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="flex shrink-0 items-center gap-3">
         {status}
         {actions}
       </div>

@@ -290,7 +290,7 @@ function Daemons({
                   </StatusPill>
                 }
                 actions={
-                  <Button variant="ghost" size="sm" asChild>
+                  <Button variant="link" size="sm" asChild>
                     <Link
                       to={link.to as never}
                       search={link.search as never}

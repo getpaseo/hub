@@ -117,6 +117,10 @@ background only.
 - A key/value pair is `text-xs muted-foreground` over `text-sm foreground`. Use `SummaryPanel`.
 - Table headers are `text-xs muted-foreground` in sentence case. They are the quietest text in the
   table.
+- A link on its own (a section action, a footer, a row's one action) is `Button variant="link"`:
+  `text-link` at rest, underlined on hover. A link inside a sentence is `variant="inline-link"`,
+  which keeps a faint underline in its own hue at rest, because the link hue against muted prose is
+  1.7:1 and colour alone does not set it apart.
 
 ## Component roster
 
