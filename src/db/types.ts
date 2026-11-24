@@ -1222,6 +1222,7 @@ export interface TerminateMachineFields {
 }
 
 export interface Database {
+  readonly activity: import("../activity/index.js").ActivityStore;
   readonly executionAuthority: import("../execution-authority/index.js").ExecutionAuthorityStore;
   readonly webhooks: import("../triggers/webhook/index.js").WebhookStore;
   readonly schedules: import("../triggers/schedule/index.js").ScheduleStore;

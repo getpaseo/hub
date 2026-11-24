@@ -1,0 +1,474 @@
+import type { QueryHandle } from "../../db/runtime/index.js";
+import type { ProviderEventDropReasonCode } from "../../triggers/drop-reason.js";
+import { parseInvocationRejection } from "../../triggers/invocation.js";
+import {
+  ACTIVITY_PAGE_SIZE,
+  rangeStart,
+  type ActivityProvider,
+  type ActivityQuery,
+  type RunStatus,
+} from "../query-contract.js";
+import {
+  PAYLOAD_PREVIEW_CHARACTERS,
+  type ActivityFilterOptions,
+  type ActivityPage,
+  type ActivityRun,
+  type ActivityRunDetail,
+  type ActivityStep,
+  type ActivityStore,
+  type PayloadPreview,
+  type UnmatchedEvent,
+  type UnmatchedEventDetail,
+} from "../store.js";
+
+/**
+ * Unmatched events are counted only this far. A connected GitHub organization drops events for
+ * every repository nobody routes, and an exact count of that stream is a full index scan for a
+ * number nobody reads past "a lot".
+ */
+const UNMATCHED_COUNT_CAP = 1_000;
+
+/**
+ * Spelled exactly as the partial indexes' predicate, so the planner can prove a query implies it
+ * and use them.
+ */
+const UNMATCHED_PREDICATE = `receipts.dropped_reason in ('no_project_route', 'no_trigger_for_source', 'trigger_filters_rejected', 'configuration_unavailable')`;
+
+/**
+ * Rank by how much a run asks of the reader, so the default descending sort puts busy runs first,
+ * then the ways a run can end badly, then the runs that need nothing.
+ */
+const STATUS_ORDER = `array_position(array['succeeded', 'rejected', 'timed_out', 'failed', 'running']::text[], runs.status)`;
+
+const RUN_DURATION_MS = `(extract(epoch from (coalesce(runs.completed_at, $NOW) - runs.created_at)) * 1000)::bigint`;
+
+/**
+ * The newest step of a run that reached an agent: the daemon it ran on and the agent it asked
+ * for. A lateral read of one row per run, through the step's unique execution index.
+ */
+const LATEST_EXECUTION = `left join lateral (
+    select executions.daemon_id, daemons.slug as daemon_slug,
+           executions.launch_intent #>> '{agent,provider}' as agent_provider,
+           executions.launch_intent #>> '{agent,model}' as agent_model
+    from workflow_step_runs steps
+    join agent_executions executions on executions.id = steps.agent_execution_id
+    left join daemons on daemons.id = executions.daemon_id
+    where steps.trigger_run_id = runs.id
+    order by steps.ordinal desc
+    limit 1
+  ) execution on true`;
+
+const RUN_FROM = `from trigger_runs runs
+  join provider_event_receipts receipts
+    on receipts.id = runs.provider_event_receipt_id
+   and receipts.organization_id = runs.organization_id
+  left join organization_triggers triggers
+    on triggers.runtime_project_id = runs.project_id
+   and triggers.organization_id = runs.organization_id`;
+
+const RUN_COLUMNS = `runs.id, triggers.id as trigger_id,
+  coalesce(triggers.name, runs.configured_trigger_name) as trigger_name,
+  receipts.provider, receipts.source, receipts.repo, runs.status, receipts.received_at,
+  ${RUN_DURATION_MS} as duration_ms,
+  execution.daemon_id, execution.daemon_slug, execution.agent_provider, execution.agent_model`;
+
+interface RunRow extends Record<string, unknown> {
+  id: string;
+  trigger_id: string | null;
+  trigger_name: string;
+  provider: ActivityProvider;
+  source: string;
+  repo: string | null;
+  status: RunStatus;
+  received_at: Date;
+  duration_ms: string | number;
+  daemon_id: string | null;
+  daemon_slug: string | null;
+  agent_provider: string | null;
+  agent_model: string | null;
+}
+
+interface UnmatchedRow extends Record<string, unknown> {
+  id: string;
+  provider: ActivityProvider;
+  source: string;
+  repo: string | null;
+  delivery_id: string;
+  received_at: Date;
+  dropped_reason: ProviderEventDropReasonCode;
+}
+
+interface PayloadRow {
+  payload_bytes: number;
+  payload_preview: string;
+  payload_truncated: boolean;
+}
+
+const PAYLOAD_COLUMNS = `octet_length(receipts.payload::text) as payload_bytes,
+  left(jsonb_pretty(receipts.payload), ${String(PAYLOAD_PREVIEW_CHARACTERS)}) as payload_preview,
+  length(jsonb_pretty(receipts.payload)) > ${String(PAYLOAD_PREVIEW_CHARACTERS)} as payload_truncated`;
+
+export class ActivityRepository implements ActivityStore {
+  constructor(private readonly runtime: QueryHandle) {}
+
+  async listRuns(
+    organizationId: string,
+    query: ActivityQuery,
+    now: Date,
+  ): Promise<ActivityPage<ActivityRun>> {
+    const params = new Parameters([organizationId]);
+    const where = runConditions(query, now, params);
+    const order = runOrder(query);
+    const nowParameter = params.add(now);
+    const limit = params.add(ACTIVITY_PAGE_SIZE);
+    const offset = params.add((query.page - 1) * ACTIVITY_PAGE_SIZE);
+    const [rows, count] = await Promise.all([
+      this.runtime.query<RunRow>(
+        `select ${RUN_COLUMNS.replaceAll("$NOW", nowParameter)}
+         ${RUN_FROM}
+         ${LATEST_EXECUTION}
+         where ${where}
+         order by ${order.replaceAll("$NOW", nowParameter)}
+         limit ${limit} offset ${offset}`,
+        params.values,
+      ),
+      this.runtime.query<{ total: number }>(
+        `select count(*)::int as total ${RUN_FROM} where ${where}`,
+        params.values.slice(0, params.countBefore(nowParameter)),
+      ),
+    ]);
+    return {
+      rows: rows.rows.map(toRun),
+      total: count.rows[0]?.total ?? 0,
+      totalCapped: false,
+    };
+  }
+
+  async listUnmatched(
+    organizationId: string,
+    query: ActivityQuery,
+    now: Date,
+  ): Promise<ActivityPage<UnmatchedEvent>> {
+    const params = new Parameters([organizationId]);
+    const where = unmatchedConditions(query, now, params);
+    const direction = query.dir === "asc" ? "asc" : "desc";
+    const limit = params.add(ACTIVITY_PAGE_SIZE);
+    const offset = params.add((query.page - 1) * ACTIVITY_PAGE_SIZE);
+    const [rows, count] = await Promise.all([
+      this.runtime.query<UnmatchedRow>(
+        `select receipts.id, receipts.provider, receipts.source, receipts.repo,
+                receipts.delivery_id, receipts.received_at, receipts.dropped_reason
+         from provider_event_receipts receipts
+         where ${where}
+         order by receipts.received_at ${direction}, receipts.id ${direction}
+         limit ${limit} offset ${offset}`,
+        params.values,
+      ),
+      this.runtime.query<{ total: number }>(
+        `select count(*)::int as total from (
+           select 1 from provider_event_receipts receipts where ${where}
+           limit ${String(UNMATCHED_COUNT_CAP + 1)}
+         ) capped`,
+        params.values.slice(0, params.values.length - 2),
+      ),
+    ]);
+    const total = count.rows[0]?.total ?? 0;
+    return {
+      rows: rows.rows.map(toUnmatched),
+      total: Math.min(total, UNMATCHED_COUNT_CAP),
+      totalCapped: total > UNMATCHED_COUNT_CAP,
+    };
+  }
+
+  async filterOptions(organizationId: string): Promise<ActivityFilterOptions> {
+    const [triggers, daemons] = await Promise.all([
+      this.runtime.query<{ id: string; name: string }>(
+        `select id, name from organization_triggers where organization_id = $1 order by name`,
+        [organizationId],
+      ),
+      this.runtime.query<{ id: string; slug: string }>(
+        `select id, slug from daemons where organization_id = $1 order by slug`,
+        [organizationId],
+      ),
+    ]);
+    return { triggers: triggers.rows, daemons: daemons.rows };
+  }
+
+  async findRun(
+    organizationId: string,
+    runId: string,
+    now: Date,
+  ): Promise<ActivityRunDetail | undefined> {
+    const {
+      rows: [row],
+    } = await this.runtime.query<
+      RunRow &
+        PayloadRow & {
+          delivery_id: string;
+          outcome: "accepted" | "rejected";
+          prompt: string;
+          failure_reason: string | null;
+          rejection: unknown;
+          created_at: Date;
+          completed_at: Date | null;
+        }
+    >(
+      `select ${RUN_COLUMNS.replaceAll("$NOW", "$3")},
+              receipts.delivery_id, runs.outcome, runs.prompt, runs.failure_reason, runs.rejection,
+              runs.created_at, runs.completed_at, ${PAYLOAD_COLUMNS}
+       ${RUN_FROM}
+       ${LATEST_EXECUTION}
+       where runs.organization_id = $1 and runs.id = $2`,
+      [organizationId, runId, now],
+    );
+    if (row === undefined) return undefined;
+    const steps = await this.runtime.query<StepRow>(
+      `select steps.id, steps.step_id, steps.ordinal, steps.status, steps.failure_reason,
+              steps.started_at, steps.completed_at,
+              left(jsonb_pretty(steps.output), ${String(PAYLOAD_PREVIEW_CHARACTERS)}) as output,
+              executions.id as execution_id, executions.daemon_agent_id,
+              executions.agent_session_action,
+              executions.launch_intent #>> '{agent,provider}' as agent_provider,
+              executions.launch_intent #>> '{agent,model}' as agent_model,
+              daemons.id as daemon_id, daemons.slug as daemon_slug
+       from workflow_step_runs steps
+       left join agent_executions executions on executions.id = steps.agent_execution_id
+       left join daemons on daemons.id = executions.daemon_id
+       where steps.trigger_run_id = $1
+       order by steps.ordinal`,
+      [row.id],
+    );
+    return {
+      ...toRun(row),
+      deliveryId: row.delivery_id,
+      outcome: row.outcome,
+      prompt: row.prompt,
+      failureReason: row.failure_reason,
+      rejection: row.rejection === null ? null : parseInvocationRejection(row.rejection),
+      createdAt: row.created_at,
+      completedAt: row.completed_at,
+      payload: toPayload(row),
+      steps: steps.rows.map(toStep),
+    };
+  }
+
+  async findUnmatched(
+    organizationId: string,
+    receiptId: string,
+  ): Promise<UnmatchedEventDetail | undefined> {
+    const {
+      rows: [row],
+    } = await this.runtime.query<
+      UnmatchedRow & PayloadRow & { connection_slug: string | null; resource_id: string | null }
+    >(
+      `select receipts.id, receipts.provider, receipts.source, receipts.repo,
+              receipts.delivery_id, receipts.received_at, receipts.dropped_reason,
+              receipts.resource_id,
+              coalesce(github.slug, slack.slug, discord.slug, linear.slug) as connection_slug,
+              ${PAYLOAD_COLUMNS}
+       from provider_event_receipts receipts
+       left join github_connections github
+         on receipts.provider = 'github' and github.id = receipts.connection_id
+       left join slack_connections slack
+         on receipts.provider = 'slack' and slack.id = receipts.connection_id
+       left join discord_connections discord
+         on receipts.provider = 'discord' and discord.id = receipts.connection_id
+       left join linear_connections linear
+         on receipts.provider = 'linear' and linear.id = receipts.connection_id
+       where receipts.organization_id = $1 and receipts.id = $2 and ${UNMATCHED_PREDICATE}
+         and not exists (
+           select 1 from trigger_runs runs where runs.provider_event_receipt_id = receipts.id
+         )`,
+      [organizationId, receiptId],
+    );
+    if (row === undefined) return undefined;
+    return {
+      ...toUnmatched(row),
+      connectionSlug: row.connection_slug,
+      resourceId: row.resource_id,
+      payload: toPayload(row),
+    };
+  }
+
+  async findRunIdForExecution(executionId: string): Promise<string | undefined> {
+    const {
+      rows: [row],
+    } = await this.runtime.query<{ trigger_run_id: string }>(
+      `select trigger_run_id from workflow_step_runs where agent_execution_id = $1`,
+      [executionId],
+    );
+    return row?.trigger_run_id;
+  }
+}
+
+/** Positional parameters, numbered as they are added. */
+class Parameters {
+  readonly values: unknown[];
+
+  constructor(initial: unknown[]) {
+    this.values = [...initial];
+  }
+
+  add(value: unknown): string {
+    this.values.push(value);
+    return `$${String(this.values.length)}`;
+  }
+
+  /** How many parameters precede a placeholder: a count query takes only the filter's. */
+  countBefore(placeholder: string): number {
+    return Number(placeholder.slice(1)) - 1;
+  }
+}
+
+function runConditions(query: ActivityQuery, now: Date, params: Parameters): string {
+  const conditions = ["runs.organization_id = $1"];
+  const since = rangeStart(query.range, now);
+  if (since !== null) conditions.push(`runs.created_at >= ${params.add(since)}`);
+  if (query.providers.length > 0) {
+    conditions.push(`receipts.provider = any(${params.add(query.providers)}::text[])`);
+  }
+  if (query.trigger !== null) conditions.push(`triggers.id = ${params.add(query.trigger)}::uuid`);
+  if (query.statuses.length > 0) {
+    conditions.push(`runs.status = any(${params.add(query.statuses)}::text[])`);
+  }
+  if (query.daemon !== null) {
+    conditions.push(`exists (
+      select 1 from workflow_step_runs steps
+      join agent_executions executions on executions.id = steps.agent_execution_id
+      where steps.trigger_run_id = runs.id and executions.daemon_id = ${params.add(query.daemon)}::uuid
+    )`);
+  }
+  if (query.q !== null) {
+    const pattern = params.add(containsPattern(query.q));
+    conditions.push(`(
+      coalesce(triggers.name, runs.configured_trigger_name) ilike ${pattern}
+      or receipts.repo ilike ${pattern}
+      or receipts.source ilike ${pattern}
+      or receipts.delivery_id ilike ${pattern}
+    )`);
+  }
+  return conditions.join(" and ");
+}
+
+function runOrder(query: ActivityQuery): string {
+  const direction = query.dir === "asc" ? "asc" : "desc";
+  const tiebreak = `runs.created_at ${direction}, runs.id ${direction}`;
+  if (query.sort === "duration") return `${RUN_DURATION_MS} ${direction}, ${tiebreak}`;
+  if (query.sort === "status") return `${STATUS_ORDER} ${direction}, ${tiebreak}`;
+  return tiebreak;
+}
+
+function unmatchedConditions(query: ActivityQuery, now: Date, params: Parameters): string {
+  const conditions = ["receipts.organization_id = $1", UNMATCHED_PREDICATE];
+  const since = rangeStart(query.range, now);
+  if (since !== null) conditions.push(`receipts.received_at >= ${params.add(since)}`);
+  if (query.providers.length > 0) {
+    conditions.push(`receipts.provider = any(${params.add(query.providers)}::text[])`);
+  }
+  if (query.reason !== null)
+    conditions.push(`receipts.dropped_reason = ${params.add(query.reason)}`);
+  if (query.q !== null) {
+    const pattern = params.add(containsPattern(query.q));
+    conditions.push(`(
+      receipts.source ilike ${pattern}
+      or receipts.repo ilike ${pattern}
+      or receipts.delivery_id ilike ${pattern}
+    )`);
+  }
+  conditions.push(`not exists (
+    select 1 from trigger_runs runs where runs.provider_event_receipt_id = receipts.id
+  )`);
+  return conditions.join(" and ");
+}
+
+/** The reader's text matched anywhere, with its own `%` and `_` taken literally. */
+function containsPattern(text: string): string {
+  return `%${text.replaceAll(/[\\%_]/gu, (character) => `\\${character}`)}%`;
+}
+
+function toRun(row: RunRow): ActivityRun {
+  return {
+    id: row.id,
+    triggerId: row.trigger_id,
+    triggerName: row.trigger_name,
+    provider: row.provider,
+    source: row.source,
+    repo: row.repo,
+    status: row.status,
+    receivedAt: row.received_at,
+    durationMs: Math.max(0, Number(row.duration_ms)),
+    daemon:
+      row.daemon_id === null || row.daemon_slug === null
+        ? null
+        : { id: row.daemon_id, slug: row.daemon_slug },
+    agent:
+      row.agent_provider === null ? null : { provider: row.agent_provider, model: row.agent_model },
+  };
+}
+
+function toUnmatched(row: UnmatchedRow): UnmatchedEvent {
+  return {
+    id: row.id,
+    provider: row.provider,
+    source: row.source,
+    repo: row.repo,
+    deliveryId: row.delivery_id,
+    receivedAt: row.received_at,
+    reason: row.dropped_reason,
+  };
+}
+
+function toPayload(row: PayloadRow): PayloadPreview {
+  return {
+    bytes: row.payload_bytes,
+    text: row.payload_preview,
+    truncated: row.payload_truncated,
+  };
+}
+
+interface StepRow extends Record<string, unknown> {
+  id: string;
+  step_id: string;
+  ordinal: number;
+  status: ActivityStep["status"];
+  failure_reason: string | null;
+  started_at: Date | null;
+  completed_at: Date | null;
+  output: string | null;
+  execution_id: string | null;
+  daemon_agent_id: string | null;
+  agent_session_action: string | null;
+  agent_provider: string | null;
+  agent_model: string | null;
+  daemon_id: string | null;
+  daemon_slug: string | null;
+}
+
+function toStep(row: StepRow): ActivityStep {
+  return {
+    id: row.id,
+    stepId: row.step_id,
+    ordinal: row.ordinal,
+    status: row.status,
+    failureReason: row.failure_reason,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    output: row.output,
+    execution:
+      row.execution_id === null
+        ? null
+        : {
+            id: row.execution_id,
+            daemon:
+              row.daemon_id === null || row.daemon_slug === null
+                ? null
+                : { id: row.daemon_id, slug: row.daemon_slug },
+            agent:
+              row.agent_provider === null
+                ? null
+                : { provider: row.agent_provider, model: row.agent_model },
+            daemonAgentId: row.daemon_agent_id,
+            sessionAction: row.agent_session_action,
+          },
+  };
+}

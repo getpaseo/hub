@@ -13,9 +13,28 @@ import { StatusPill, type StatusTone } from "./status-pill.js";
  * item is `min-width: auto` by default: without it a table wider than a phone stretches the
  * column instead of scrolling inside its own card, and takes the whole page sideways with it.
  */
-export function Page({ children, className }: { children: ReactNode; className?: string }) {
+export function Page({
+  children,
+  wide = false,
+  className,
+}: {
+  children: ReactNode;
+  /**
+   * The wider column, for a screen whose subject is one table with many columns. Reading
+   * surfaces keep the narrow column: a line of prose or a form row stretched to a wide monitor
+   * is harder to read, not easier.
+   */
+  wide?: boolean;
+  className?: string;
+}) {
   return (
-    <div className={cn("mx-auto grid w-full max-w-5xl gap-6 [&>*]:min-w-0", className)}>
+    <div
+      className={cn(
+        "mx-auto grid w-full gap-6 [&>*]:min-w-0",
+        wide ? "max-w-7xl" : "max-w-5xl",
+        className,
+      )}
+    >
       {children}
     </div>
   );

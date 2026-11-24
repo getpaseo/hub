@@ -1,4 +1,4 @@
-import { useQuery, type QueryKey } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, type QueryKey } from "@tanstack/react-query";
 import { useCallback } from "react";
 import type { Result } from "../contract/respond.js";
 
@@ -21,11 +21,18 @@ export function useSnapshotQuery<T>(options: {
   queryFn: () => Promise<Result<T>>;
   enabled?: boolean;
   refetchInterval?: number;
+  /**
+   * Keep showing the previous key's answer while the next one loads. For a list whose key is its
+   * filters: the rows stay put while a new filter loads instead of flashing back to a skeleton.
+   */
+  keepPrevious?: boolean;
 }): Snapshot<T> & { refetch: () => void; isFetching: boolean } {
+  const { keepPrevious = false, ...read } = options;
   const query = useQuery({
-    ...options,
+    ...read,
+    ...(keepPrevious ? { placeholderData: keepPreviousData } : {}),
     queryFn: async () => {
-      const result = await options.queryFn();
+      const result = await read.queryFn();
       if (result.status === "error") throw new SnapshotFailure(result.error.message);
       return result.data;
     },

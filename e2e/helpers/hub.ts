@@ -326,11 +326,20 @@ export class PaseoHub {
     );
   }
 
-  async viewExecutionInHub(executionUrl: string): Promise<void> {
+  /**
+   * An execution no run started lands on its organization's Activity rather than an error. A
+   * session that signed in from the link has no organization chosen yet, so it chooses first and
+   * stays on the same address.
+   */
+  async viewExecutionInHub(organizationName: string): Promise<void> {
     await this.page.getByRole("link", { name: "View run in Hub" }).click();
-    await expect(this.page).toHaveURL(`${executionUrl}?view=run`);
-    await expect(this.page.getByRole("heading", { name: "Execution details" })).toBeVisible();
-    await expect(this.page.getByText("succeeded", { exact: true })).toBeVisible();
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/activity$/u);
+    await this.page
+      .getByRole("list", { name: "Organizations" })
+      .getByRole("button", { name: organizationName })
+      .click();
+    await expect(this.page).toHaveURL(/\/o\/[^/]+\/activity$/u);
+    await expect(this.page.getByRole("heading", { name: "Activity", level: 1 })).toBeVisible();
   }
 
   async expectExecutionLinkDenied(alias: string, url: string): Promise<void> {
@@ -2126,10 +2135,18 @@ export class PaseoHub {
     await connection.expectCreatedConfiguration(expected);
   }
 
-  /** A finished or running run of a saved trigger, received `minutesAgo` minutes ago. */
+  /**
+   * A finished or running run of a saved trigger, received `minutesAgo` minutes ago. A run given
+   * `durationMinutes` completed that long after it started; a failed one may carry its reason.
+   */
   async seedTriggerRun(
     triggerName: string,
-    run: { minutesAgo: number; status: "running" | "succeeded" | "failed" },
+    run: {
+      minutesAgo: number;
+      status: "running" | "succeeded" | "failed";
+      durationMinutes?: number;
+      failureReason?: string;
+    },
   ): Promise<void> {
     const receivedAt = `now() - make_interval(mins => $3)`;
     await this.queryDatabase(
@@ -2150,11 +2167,19 @@ export class PaseoHub {
        )
        insert into trigger_runs
          (organization_id, project_id, configuration_revision_id, provider_event_receipt_id,
-          configured_trigger_name, status, prompt, deadline_at, created_at)
+          configured_trigger_name, status, prompt, deadline_at, created_at, completed_at,
+          failure_reason)
        select receipt.organization_id, trigger.project_id, trigger.revision_id, receipt.id, $1, $2,
-              'Handle the event.', now() + interval '1 hour', ${receivedAt}
+              'Handle the event.', now() + interval '1 hour', ${receivedAt},
+              ${receivedAt} + make_interval(mins => $4::int), $5
        from receipt, trigger`,
-      [triggerName, run.status, run.minutesAgo],
+      [
+        triggerName,
+        run.status,
+        run.minutesAgo,
+        run.durationMinutes ?? null,
+        run.failureReason ?? null,
+      ],
     );
   }
 

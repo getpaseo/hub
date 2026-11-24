@@ -1,7 +1,9 @@
 /* oxlint-disable eslint-plugin-jsx-a11y/prefer-tag-over-role, eslint-plugin-react-perf/jsx-no-new-function-as-prop -- a table row cannot itself be a <button>, and its onKeyDown handler is scoped per rendered row */
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight } from "lucide-react";
 import { Children, createContext, isValidElement, useContext, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils.js";
+import { Button } from "../ui/button.js";
 import { Skeleton } from "../ui/skeleton.js";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table.js";
 import { EmptyState } from "./empty-state.js";
@@ -18,7 +20,31 @@ export interface DataColumn {
   fill?: boolean;
   /** Responsive visibility for the column, header and cells alike. */
   className?: string;
+  /** The key the table's `sort` uses for this column. Only then is the header a sort control. */
+  sort?: string;
 }
+
+/** Which column the rows are ordered by, and how to ask for another order. */
+export interface DataTableSort {
+  key: string;
+  dir: "asc" | "desc";
+  onSort: (key: string) => void;
+}
+
+/** Which slice of the records the rows are, and how to ask for another. */
+export interface DataTablePagination {
+  /** One-based. */
+  page: number;
+  pageSize: number;
+  /** How many rows this page holds. */
+  shown: number;
+  total: number;
+  /** `total` is a floor: there are more records than were counted. */
+  totalCapped?: boolean;
+  onPage: (page: number) => void;
+}
+
+const TableSort = createContext<DataTableSort | undefined>(undefined);
 
 /** The columns of the table a cell is drawn in, and which of them the cell sits under. */
 const TableColumns = createContext<readonly DataColumn[]>([]);
@@ -36,12 +62,18 @@ export function DataTable({
   columns,
   empty,
   isEmpty,
+  sort,
+  pagination,
   children,
 }: {
   label: string;
   columns: readonly DataColumn[];
   empty: { title: string; description?: string; action?: ReactNode };
   isEmpty: boolean;
+  /** Makes the headers of columns with a `sort` key into sort controls. */
+  sort?: DataTableSort;
+  /** The rows are one page of many: the card ends in the range shown and page controls. */
+  pagination?: DataTablePagination;
   children: ReactNode;
 }) {
   if (isEmpty) {
@@ -55,9 +87,15 @@ export function DataTable({
     );
   }
   return (
-    <TableShell label={label} columns={columns}>
-      {children}
-    </TableShell>
+    <TableSort.Provider value={sort}>
+      <TableShell
+        label={label}
+        columns={columns}
+        {...(pagination === undefined ? {} : { pagination })}
+      >
+        {children}
+      </TableShell>
+    </TableSort.Provider>
   );
 }
 
@@ -105,12 +143,15 @@ function placeholderWidth(columns: readonly DataColumn[], index: number): string
 function TableShell({
   label,
   columns,
+  pagination,
   children,
 }: {
   label: string;
   columns: readonly DataColumn[];
+  pagination?: DataTablePagination;
   children: ReactNode;
 }) {
+  const sort = useContext(TableSort);
   return (
     // Every table is `tabular-nums`. A count, a limit, and a duration all sit in columns here,
     // and figuring out which cells hold digits is not a decision a caller should be making one
@@ -136,8 +177,11 @@ function TableShell({
                   column.align === "end" && "text-right",
                   column.className,
                 )}
+                {...(sort === undefined || column.sort === undefined
+                  ? {}
+                  : { "aria-sort": ariaSort(sort, column.sort) })}
               >
-                {column.header === "" ? <span className="sr-only">Actions</span> : column.header}
+                <HeaderLabel column={column} sort={sort} />
               </TableHead>
             ))}
           </TableRow>
@@ -146,8 +190,107 @@ function TableShell({
           <TableColumns.Provider value={columns}>{children}</TableColumns.Provider>
         </TableBody>
       </Table>
+      {pagination === undefined ? null : <Pagination label={label} {...pagination} />}
     </div>
   );
+}
+
+function HeaderLabel({ column, sort }: { column: DataColumn; sort: DataTableSort | undefined }) {
+  if (column.header === "") return <span className="sr-only">Actions</span>;
+  if (sort === undefined || column.sort === undefined) return column.header;
+  return <SortButton column={column} sortKey={column.sort} sort={sort} />;
+}
+
+function ariaSort(sort: DataTableSort, key: string): "ascending" | "descending" | "none" {
+  if (sort.key !== key) return "none";
+  return sort.dir === "asc" ? "ascending" : "descending";
+}
+
+/**
+ * A header that orders the rows. It reads as the header it replaces — the same size and the same
+ * quiet colour — and only the arrow on the active column says the rows are ordered by it. Hover
+ * promotes the colour, as every other quiet control does.
+ */
+function SortButton({
+  column,
+  sortKey,
+  sort,
+}: {
+  column: DataColumn;
+  sortKey: string;
+  sort: DataTableSort;
+}) {
+  const active = sort.key === sortKey;
+  const Arrow = sort.dir === "asc" ? ArrowUp : ArrowDown;
+  return (
+    <button
+      type="button"
+      onClick={() => sort.onSort(sortKey)}
+      className={cn(
+        "-mx-1 inline-flex items-center gap-1 rounded-sm px-1 transition-colors duration-150 hover:text-foreground",
+        active && "text-foreground",
+        column.align === "end" && "flex-row-reverse",
+      )}
+    >
+      {column.header}
+      {active ? <Arrow aria-hidden="true" className="size-3" /> : null}
+    </button>
+  );
+}
+
+/**
+ * The end of a paged table: which records are on screen, and the way to the next and previous
+ * pages. The range is the one fact a reader checks before paging, so it is the line and the
+ * controls are two quiet arrows.
+ */
+function Pagination({
+  label,
+  page,
+  pageSize,
+  shown,
+  total,
+  totalCapped = false,
+  onPage,
+}: DataTablePagination & { label: string }) {
+  const first = shown === 0 ? 0 : (page - 1) * pageSize + 1;
+  const last = first + Math.max(shown - 1, 0);
+  // Past a capped count the total says nothing about what follows; a full page says there may be more.
+  const hasNext = totalCapped ? shown === pageSize : page * pageSize < total;
+  return (
+    <nav
+      aria-label={`${label} pages`}
+      className="flex h-11 items-center justify-between gap-4 border-t px-4"
+    >
+      <p className="text-xs text-muted-foreground tabular-nums">
+        {formatCount(first)}–{formatCount(last)} of {formatCount(Math.max(total, last))}
+        {totalCapped ? "+" : ""}
+      </p>
+      <div className="flex items-center gap-1">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Previous page"
+          disabled={page <= 1}
+          onClick={() => onPage(page - 1)}
+        >
+          <ChevronLeft />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Next page"
+          disabled={!hasNext}
+          onClick={() => onPage(page + 1)}
+        >
+          <ChevronRight />
+        </Button>
+      </div>
+    </nav>
+  );
+}
+
+function formatCount(value: number): string {
+  return value.toLocaleString("en-US");
 }
 
 function columnKey(column: DataColumn, index: number): string {
@@ -165,7 +308,16 @@ function columnKey(column: DataColumn, index: number): string {
  * `nested-interactive` failure. The keyboard and a screen reader use the link in the row, so
  * `onSelect` requires one.
  */
-export function DataRow({ children, onSelect }: { children: ReactNode; onSelect?: () => void }) {
+export function DataRow({
+  children,
+  onSelect,
+  selected = false,
+}: {
+  children: ReactNode;
+  onSelect?: () => void;
+  /** The row's record is the one open beside the table. */
+  selected?: boolean;
+}) {
   // Each cell learns its column from its position, so a cell never restates how its column
   // reads. A cell left out with `cond ? <DataCell /> : null` drops out here too.
   const cells = Children.toArray(children).map((cell, index) => (
@@ -173,9 +325,10 @@ export function DataRow({ children, onSelect }: { children: ReactNode; onSelect?
       {cell}
     </CellIndex.Provider>
   ));
-  if (onSelect === undefined) return <TableRow>{cells}</TableRow>;
+  const state = selected ? { "data-state": "selected", "aria-current": true } : {};
+  if (onSelect === undefined) return <TableRow {...state}>{cells}</TableRow>;
   return (
-    <TableRow data-navigates="true" className="cursor-pointer" onClick={onSelect}>
+    <TableRow data-navigates="true" className="cursor-pointer" onClick={onSelect} {...state}>
       {cells}
     </TableRow>
   );

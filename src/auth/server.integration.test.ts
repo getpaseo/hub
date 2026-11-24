@@ -97,8 +97,10 @@ describe("account and organization boundary", () => {
     const page = await allowed.text();
     assert.match(page, /href="paseo:\/\/h\/server-launcher\/agent\/agent%2Flauncher"/u);
     assert.match(page, /href=".*[?]view=run"/u);
+    // An execution no trigger run started lands on the organization's Activity.
     const run = await hub.openExecution(owner.request(`${path}?view=run`));
-    assert.match(await run.text(), /Execution details/u);
+    assert.equal(run.status, 303);
+    assert.match(run.headers.get("location") ?? "", /^\/o\/private-studio[\w-]*\/activity$/u);
   });
 
   it("requires an explicit valid active membership and fails closed when it goes stale", async () => {

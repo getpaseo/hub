@@ -638,7 +638,6 @@ export class OrganizationTriggers {
     await expect(this.page).toHaveURL(/\/activity$/u);
     await this.page.reload();
     const row = this.page.getByRole("row").filter({ hasText: name });
-    await expect(row.getByRole("cell", { name: "schedule", exact: true })).toBeVisible();
     await expect(row.getByRole("cell", { name: "schedule.tick", exact: true })).toBeVisible();
     await this.page.screenshot({ path: "e2e/screenshots/schedules/activity.png" });
   }

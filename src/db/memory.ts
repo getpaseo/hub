@@ -161,6 +161,27 @@ export function createMemoryDatabase(options: MemoryDatabaseOptions = {}): Datab
 
 class MemoryDatabase implements Database {
   // This test double has no background work. Scheduling tests use the actual embedded/PG runtime.
+  // Activity reads are SQL aggregates; their tests run against Postgres and embedded PGlite.
+  readonly activity: import("../activity/index.js").ActivityStore = {
+    async listRuns() {
+      return { rows: [], total: 0, totalCapped: false };
+    },
+    async listUnmatched() {
+      return { rows: [], total: 0, totalCapped: false };
+    },
+    async filterOptions() {
+      return { triggers: [], daemons: [] };
+    },
+    async findRun() {
+      return undefined;
+    },
+    async findUnmatched() {
+      return undefined;
+    },
+    async findRunIdForExecution() {
+      return undefined;
+    },
+  };
   readonly webhooks: import("../triggers/webhook/index.js").WebhookStore = {
     async list() {
       return [];

@@ -1,4 +1,5 @@
 import { ExecutionAuthorityRepository } from "../execution-authority/index.js";
+import { ActivityRepository } from "../activity/index.js";
 import { WebhookRepository } from "../triggers/webhook/index.js";
 import { ScheduleRepository } from "../triggers/schedule/index.js";
 import { acceptWorkflowRun } from "./workflow-intake.js";
@@ -140,6 +141,7 @@ export function createDatabase(runtime: DatabaseRuntime, locks: Locks): Database
 }
 
 class PgDatabase implements Database {
+  readonly activity;
   readonly webhooks;
   readonly schedules;
   readonly executionAuthority;
@@ -150,6 +152,7 @@ class PgDatabase implements Database {
     private readonly pool: DatabaseRuntime,
     private readonly locks: Locks,
   ) {
+    this.activity = new ActivityRepository(this.pool);
     this.webhooks = new WebhookRepository(this.pool);
     this.schedules = new ScheduleRepository(this.pool);
     this.executionAuthority = new ExecutionAuthorityRepository(this.pool);

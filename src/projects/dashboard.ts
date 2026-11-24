@@ -10,10 +10,7 @@ import type {
 } from "../db/types.js";
 import { formatInvocationRejection } from "../triggers/invocation.js";
 import { providerEventDropReasonSummary } from "../triggers/drop-reason.js";
-import {
-  decodeEntitlementDenialFailureReason,
-  entitlementDenialSummary,
-} from "../entitlements/denial.js";
+import { displayFailureReason } from "../entitlements/denial.js";
 import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
 import { hasRequiredSlackScopes } from "../providers/slack/client.js";
 import { resolveRouteTenant } from "./access.js";
@@ -391,16 +388,6 @@ function activityRunListView(activity: ProjectActivityRunListRecord) {
     failureReason: displayFailureReason(run.failureReason),
     rejectionReason: null,
   };
-}
-
-/**
- * A run/step `failure_reason` for display. An entitlement denial is stored as a machine-parseable
- * payload (see engine.ts), so it is decoded into a typed denial and summarized here rather than
- * shown as raw JSON; every other reason (timeouts, crashes) passes through unchanged.
- */
-function displayFailureReason(reason: string | null): string | null {
-  const denial = decodeEntitlementDenialFailureReason(reason);
-  return denial === undefined ? reason : entitlementDenialSummary(denial);
 }
 
 function unroutedEventView(receipt: ProviderEventReceiptSummary) {

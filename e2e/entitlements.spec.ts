@@ -154,11 +154,10 @@ test.describe("metered usage", () => {
     await test.step("the denied run fails in organization activity", async () => {
       await app.navigation.openOrganizationSection("Activity");
       const deployRows = page
-        .getByRole("table", { name: "Trigger activity" })
+        .getByRole("table", { name: "Runs" })
         .getByRole("row")
         .filter({ has: page.getByRole("cell", { name: "deploy", exact: true }) });
-      // Organization activity is intentionally compact and has no legacy run-detail route. The
-      // durable-engine suite retains the exact entitlement-reason assertion.
+      // The durable-engine suite retains the exact entitlement-reason assertion.
       await expect(async () => {
         await page.reload();
         await expect(deployRows).toHaveCount(2);
