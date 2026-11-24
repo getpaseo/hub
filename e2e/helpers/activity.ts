@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page } from "@playwright/test";
+import { holdPageData } from "./pending-navigation.js";
 
 export type ActivityView = "Runs" | "Unmatched events";
 export type ActivityFilter = "Range" | "Provider" | "Status" | "Trigger" | "Daemon" | "Reason";
@@ -26,6 +27,22 @@ export class OrganizationActivity {
     const url = this.page.url();
     await this.page.reload();
     await expect(this.page).toHaveURL(url);
+  }
+
+  /**
+   * Switching views while the new list is still loading leaves nothing of the previous view to
+   * click: a run's id opened as an unmatched event would find no record.
+   */
+  async showWhileTheListLoads(view: ActivityView, previous: ActivityView) {
+    const data = await holdPageData(this.page);
+    await this.page
+      .getByRole("radiogroup", { name: "Show" })
+      .getByRole("radio", { name: view })
+      .click();
+    await data.requested;
+    await expect(this.table(previous)).toHaveCount(0);
+    await data.release();
+    await expect(this.table(view)).toBeVisible();
   }
 
   async show(view: ActivityView) {

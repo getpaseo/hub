@@ -300,7 +300,12 @@ function ActivityList({
   search: ActivitySearch;
   onChange: (next: ActivitySearch) => void;
 }) {
-  if (snapshot.status === "pending") {
+  // Kept rows only stand in while the same view refetches. Another view's rows would open
+  // their ids as records of this view, so a view switch waits on the skeleton instead.
+  if (
+    snapshot.status === "pending" ||
+    (snapshot.status === "success" && snapshot.data.list.view !== view)
+  ) {
     return (
       <DataTableSkeleton
         label={tableLabel(view)}

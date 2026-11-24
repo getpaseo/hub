@@ -129,7 +129,7 @@ test("pages, filters, sorts, and opens runs and unmatched events from the URL", 
   });
 
   await test.step("unmatched events say why they started nothing and what to do next", async () => {
-    await activity.show("Unmatched events");
+    await activity.showWhileTheListLoads("Unmatched events", "Runs");
     await activity.expectUrl({ view: "unmatched" });
     await activity.expectRows("Unmatched events", 2);
     await expect(activity.rows("Unmatched events").first()).toContainText("No route for repo");
