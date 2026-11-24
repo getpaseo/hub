@@ -1,14 +1,21 @@
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop, eslint-plugin-react-perf/jsx-no-new-object-as-prop, eslint-plugin-react-perf/jsx-no-new-array-as-prop, eslint-plugin-react-perf/jsx-no-jsx-as-prop -- one screen binds one snapshot; a row's action and status are that row's own slots */
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- generated routes cannot express server-resolved organization URLs */
 import { useSnapshotQuery } from "../queries/index.js";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { Cpu, History, Sparkles } from "lucide-react";
+import { Cpu, History, TriangleAlert } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
+import { RANGE_LABELS } from "../activity/presentation.js";
+import {
+  activityLink,
+  activityProviderLabel,
+  FAILED_RUN_STATUSES,
+} from "../activity/query-contract.js";
 import { useActiveAccount } from "../auth/active-account.js";
 import { Card, CardSkeleton } from "../components/app/card.js";
 import { CopyField } from "../components/app/copy-field.js";
+import { DataCell, DataRow, DataTable, type DataColumn } from "../components/app/data-table.js";
 import { Disclosure } from "../components/app/disclosure.js";
 import { WarningAlert } from "../components/app/failure-alert.js";
 import { PageHeader, PageHeaderSkeleton } from "../components/app/page.js";
@@ -16,36 +23,65 @@ import { ProgressSteps, type ProgressStep } from "../components/app/progress-ste
 import { RecordList, RecordRow } from "../components/app/record-list.js";
 import { RelativeTime } from "../components/app/relative-time.js";
 import { Section } from "../components/app/section.js";
+import { SegmentedControl } from "../components/app/segmented-control.js";
 import { StatGrid, StatTile } from "../components/app/stat-tile.js";
-import { StatusPill, statusLabel, type StatusTone } from "../components/app/status-pill.js";
+import { StatusPill } from "../components/app/status-pill.js";
 import { TwoLine } from "../components/app/two-line.js";
 import { Button } from "../components/ui/button.js";
+import { ProviderGlyph } from "../connections/provider-glyph.js";
 import { daemonLoginCommand, GRANT_EXECUTE_COMMAND } from "../daemons/handoff.js";
 import { queryState } from "../projects/panel-state.js";
 import { useRouteTenant } from "../projects/context.js";
 import { deriveChecklist, type Checklist, type ChecklistStep } from "./checklist.js";
 import { homeSnapshot, type HomeSnapshot } from "./functions.js";
+import { HOME_RANGES, homeRange, isHomeRange, type HomeRange } from "./range.js";
 
-const HOME_DESCRIPTION = "What to do next and what has run";
+const HOME_DESCRIPTION = "Runs and daemon health across this organization";
+const ROUTE = "/_shell/o/$organizationSlug/home";
+const PATH = "/o/$organizationSlug/home";
+
+const RANGE_OPTIONS = HOME_RANGES.map((range) => ({ value: range, label: range }));
+
+const TRIGGER_COLUMNS: readonly DataColumn[] = [
+  { header: "Trigger", fill: true },
+  { header: "Runs", align: "end" },
+  { header: "Failed", align: "end" },
+  { header: "Last run", align: "end", className: "hidden sm:table-cell" },
+];
 
 export function HomePanel() {
   const tenant = useRouteTenant();
   const account = useActiveAccount();
-  const scope = { organizationSlug: tenant.organization.slug };
+  const range = homeRange(useSearch({ from: ROUTE }));
+  const navigate = useNavigate({ from: PATH });
   const load = useServerFn(homeSnapshot);
   const snapshot = useSnapshotQuery({
-    queryKey: ["home", tenant.account.id, tenant.organization.id],
-    queryFn: () => load({ data: scope }),
+    queryKey: ["home", tenant.account.id, tenant.organization.id, range],
+    queryFn: () => load({ data: { organizationSlug: tenant.organization.slug, range } }),
+    keepPrevious: true,
   });
   const home = queryState<HomeSnapshot>(snapshot, "Overview unavailable", <HomeLoading />);
   if (!home.ok) return home.element;
   const data = home.data;
   const base = `/o/${data.organization.slug}`;
   const checklist = deriveChecklist(data);
-  const unroutedCount = data.unrouted.reduce((total, { count }) => total + count, 0);
+  const hasRun = data.latestRun !== null;
   return (
     <>
-      <PageHeader title="Home" description={HOME_DESCRIPTION} />
+      <PageHeader title="Home" description={HOME_DESCRIPTION}>
+        {hasRun ? (
+          <SegmentedControl
+            label="Range"
+            value={range}
+            options={RANGE_OPTIONS}
+            onChange={(value) => {
+              if (!isHomeRange(value)) return;
+              void navigate({ search: value === "7d" ? {} : { range: value } });
+            }}
+          />
+        ) : null}
+      </PageHeader>
+      <ConnectionsNeedingAttention connections={data.connections} base={base} />
       {/* Completing the last step is what collapses the list: the key remounts it with the
           collapsed default, and every toggle before or after that is the reader's own. */}
       <GetStarted
@@ -55,134 +91,223 @@ export function HomePanel() {
         base={base}
         operator={account.isInstanceOperator}
       />
-      {unroutedCount === 0 ? null : (
-        <WarningAlert
-          standalone
-          title="Events are arriving with no trigger listening"
-          action={
-            <Button asChild variant="outline" size="sm">
-              <Link to={`${base}/triggers/new` as never}>Create a trigger</Link>
-            </Button>
-          }
-        >
-          <p>{unroutedSentence(data.unrouted, data.windowDays)}</p>
-        </WarningAlert>
+      {/* Get started is the empty state for everything below: the overview shows once there is
+          a run to count, so a new organization reads one list instead of zeros. */}
+      {hasRun ? (
+        <>
+          <Figures snapshot={data} />
+          <Triggers snapshot={data} />
+        </>
+      ) : null}
+      {data.daemons.length === 0 ? null : (
+        <Daemons daemons={data.daemons} range={data.range} slug={data.organization.slug} />
       )}
-      {/* Get started is the empty state for everything below: a section shows once it has
-          records, so a new organization reads one list instead of zeros and "nothing yet". */}
-      {data.recentRuns.length === 0 ? null : (
-        <Runs
-          runs={data.runs}
-          recentRuns={data.recentRuns}
-          daemons={data.daemons}
-          windowDays={data.windowDays}
-          base={base}
-        />
-      )}
-      {data.daemons.length === 0 ? null : <Daemons daemons={data.daemons} base={base} />}
     </>
   );
 }
 
-function Runs({
-  runs,
-  recentRuns,
-  daemons,
-  windowDays,
+/**
+ * The one fault Home raises: a connection Hub cannot use as it stands, so someone has to act on
+ * the provider's side — GitHub suspended the app, or a Slack or Linear grant is short of what Hub
+ * needs. Events no trigger listens to are not a fault, so they are a quiet link under Triggers.
+ */
+function ConnectionsNeedingAttention({
+  connections,
   base,
 }: {
-  runs: HomeSnapshot["runs"];
-  recentRuns: HomeSnapshot["recentRuns"];
-  daemons: HomeSnapshot["daemons"];
-  windowDays: number;
+  connections: HomeSnapshot["connections"];
   base: string;
 }) {
-  const agents = agentsUsed(runs);
+  const faults = connections.filter(({ status }) => status !== "connected");
+  if (faults.length === 0) return null;
   return (
-    <>
-      <Section title="Overview" description={`Last ${String(windowDays)} days`}>
-        <StatGrid>
-          <StatTile
-            label="Runs"
-            icon={History}
-            value={String(runs.length)}
-            detail={runOutcomes(runs)}
-          />
-          <StatTile
-            label="Daemons connected"
-            icon={Cpu}
-            value={String(daemons.filter(({ presence }) => presence === "connected").length)}
-            detail={daemonDetail(daemons)}
-          />
-          <StatTile
-            label="Agents used"
-            icon={Sparkles}
-            value={String(agents.length)}
-            detail={agentDetail(agents)}
-          />
-        </StatGrid>
-      </Section>
-      <Section
-        title="Recent runs"
-        action={
-          <Button variant="link" asChild>
-            <Link to={`${base}/activity` as never}>View all</Link>
-          </Button>
-        }
-      >
-        <Card>
-          <RecordList label="Recent runs">
-            {recentRuns.map((run) => (
-              <RecordRow
-                key={run.id}
-                status={
-                  <StatusPill tone={runTone(run.status)}>{statusLabel(run.status)}</StatusPill>
-                }
-              >
-                <TwoLine
-                  primary={run.triggerName}
-                  secondary={
-                    <>
-                      {run.source} · <RelativeTime value={run.receivedAt} />
-                    </>
-                  }
-                />
-              </RecordRow>
-            ))}
-          </RecordList>
-        </Card>
-      </Section>
-    </>
+    <WarningAlert
+      standalone
+      title={faults.length === 1 ? "A connection needs attention" : "Connections need attention"}
+      action={
+        <Button asChild variant="outline" size="sm">
+          <Link to={`${base}/integrations` as never}>Open integrations</Link>
+        </Button>
+      }
+    >
+      {faults.map((connection) => (
+        <p key={`${connection.provider}:${connection.slug}`}>{connectionFault(connection)}</p>
+      ))}
+    </WarningAlert>
   );
 }
 
-function Daemons({ daemons, base }: { daemons: HomeSnapshot["daemons"]; base: string }) {
+function connectionFault({ provider, label, status }: HomeSnapshot["connections"][number]): string {
+  const where = activityProviderLabel(provider);
+  return status === "suspended"
+    ? `${label} is suspended on ${where}, so its events stop arriving`
+    : `${label} needs reauthorizing on ${where}`;
+}
+
+function Figures({ snapshot }: { snapshot: HomeSnapshot }) {
+  const slug = snapshot.organization.slug;
+  const { runs, range, daemons } = snapshot;
+  const total = runs.running + runs.succeeded + runs.failed + runs.timed_out + runs.rejected;
+  const failed = runs.failed + runs.timed_out + runs.rejected;
+  const online = daemons.filter(({ presence }) => presence === "connected").length;
+  return (
+    <Section>
+      <StatGrid>
+        <StatTile
+          label="Runs"
+          icon={History}
+          value={count(total)}
+          detail={`${count(runs.succeeded)} succeeded · ${count(runs.running)} running`}
+          link={activityLink(slug, { range })}
+        />
+        <StatTile
+          label="Failed"
+          icon={TriangleAlert}
+          value={count(failed)}
+          detail={
+            total === 0
+              ? "No runs"
+              : `${failureRate(failed, total)} failure rate · ${count(runs.timed_out)} timed out`
+          }
+          link={activityLink(slug, { range, status: FAILED_RUN_STATUSES.join(",") })}
+        />
+        <StatTile
+          label="Daemons"
+          icon={Cpu}
+          value={`${count(online)} of ${count(daemons.length)}`}
+          detail={daemonDetail(daemons, online)}
+          link={{ to: `/o/${slug}/daemons` }}
+        />
+      </StatGrid>
+    </Section>
+  );
+}
+
+/** The triggers that ran most in the range. A row opens Activity on that trigger's runs. */
+function Triggers({ snapshot }: { snapshot: HomeSnapshot }) {
+  const navigate = useNavigate();
+  const slug = snapshot.organization.slug;
+  const range = snapshot.range;
+  return (
+    <Section
+      title="Triggers"
+      description={`Most runs in the ${RANGE_LABELS[range].toLowerCase()}`}
+      action={
+        <Button variant="outline" size="sm" asChild>
+          <Link to={`/o/${slug}/triggers` as never}>All triggers</Link>
+        </Button>
+      }
+    >
+      <DataTable
+        label="Triggers"
+        columns={TRIGGER_COLUMNS}
+        isEmpty={snapshot.busiestTriggers.length === 0}
+        empty={{
+          title: "No triggers",
+          description: "Create a trigger to choose which event starts which agent",
+        }}
+        footer={{
+          note: "Events that started no run",
+          action: <UnmatchedEventsLink link={activityLink(slug, { view: "unmatched", range })} />,
+        }}
+      >
+        {snapshot.busiestTriggers.map((trigger) => {
+          const link = activityLink(slug, { range, trigger: trigger.id });
+          return (
+            <DataRow
+              key={trigger.id}
+              onSelect={() => {
+                void navigate({ to: link.to as never, search: link.search as never });
+              }}
+            >
+              <DataCell>
+                <TwoLine
+                  media={<ProviderGlyph provider={trigger.provider} />}
+                  primary={
+                    <Link
+                      to={link.to as never}
+                      search={link.search as never}
+                      className="hover:underline"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      {trigger.name}
+                    </Link>
+                  }
+                  secondary={trigger.event}
+                />
+              </DataCell>
+              <DataCell>{count(trigger.runs)}</DataCell>
+              <DataCell muted={trigger.failed === 0}>{count(trigger.failed)}</DataCell>
+              <DataCell muted>
+                {trigger.lastRunAt === null ? "None" : <RelativeTime value={trigger.lastRunAt} />}
+              </DataCell>
+            </DataRow>
+          );
+        })}
+      </DataTable>
+    </Section>
+  );
+}
+
+function UnmatchedEventsLink({ link }: { link: ReturnType<typeof activityLink> }) {
+  return (
+    <Button variant="outline" size="sm" asChild>
+      <Link to={link.to as never} search={link.search as never}>
+        Unmatched events
+      </Link>
+    </Button>
+  );
+}
+
+function Daemons({
+  daemons,
+  range,
+  slug,
+}: {
+  daemons: HomeSnapshot["daemons"];
+  range: HomeRange;
+  slug: string;
+}) {
   return (
     <Section
       title="Daemons"
       action={
-        <Button variant="link" asChild>
-          <Link to={`${base}/daemons` as never}>Manage</Link>
+        <Button variant="outline" size="sm" asChild>
+          <Link to={`/o/${slug}/daemons` as never}>Manage</Link>
         </Button>
       }
     >
       <Card>
         <RecordList label="Daemons">
-          {daemons.map((daemon) => (
-            <RecordRow
-              key={daemon.id}
-              status={
-                <StatusPill tone={daemon.presence === "connected" ? "success" : "neutral"}>
-                  {daemon.presence === "connected" ? "Connected" : "Offline"}
-                </StatusPill>
-              }
-            >
-              <TwoLine
-                primary={daemon.slug}
-                secondary={daemon.canExecute ? "Hub automations" : "Connected only"}
-              />
-            </RecordRow>
-          ))}
+          {daemons.map((daemon) => {
+            const link = activityLink(slug, { range, daemon: daemon.id });
+            return (
+              <RecordRow
+                key={daemon.id}
+                status={
+                  <StatusPill tone={daemon.presence === "connected" ? "success" : "neutral"}>
+                    {daemon.presence === "connected" ? "Connected" : "Offline"}
+                  </StatusPill>
+                }
+                actions={
+                  <Button variant="outline" size="sm" asChild>
+                    <Link
+                      to={link.to as never}
+                      search={link.search as never}
+                      aria-label={`View runs on ${daemon.slug}`}
+                    >
+                      View runs
+                    </Link>
+                  </Button>
+                }
+              >
+                <TwoLine
+                  primary={daemon.slug}
+                  secondary={`${daemon.canExecute ? "Hub automations" : "Connected only"} · ${runsIn(daemon.runs, range)}`}
+                />
+              </RecordRow>
+            );
+          })}
         </RecordList>
       </Card>
     </Section>
@@ -199,6 +324,27 @@ function HomeLoading() {
       </div>
     </div>
   );
+}
+
+function count(value: number): string {
+  return value.toLocaleString("en-US");
+}
+
+/** `4.2%`: one decimal, so a handful of failures among thousands still reads as more than none. */
+function failureRate(failed: number, total: number): string {
+  if (failed === 0) return "0%";
+  return `${((failed / total) * 100).toFixed(1)}%`;
+}
+
+function runsIn(runs: number, range: HomeRange): string {
+  return `${count(runs)} ${runs === 1 ? "run" : "runs"} in the ${RANGE_LABELS[range].toLowerCase()}`;
+}
+
+function daemonDetail(daemons: HomeSnapshot["daemons"], online: number): string {
+  const offline = daemons.length - online;
+  const cannot = daemons.filter(({ canExecute }) => !canExecute).length;
+  const health = `${count(online)} online · ${count(offline)} offline`;
+  return cannot === 0 ? health : `${health} · ${count(cannot)} cannot run agents`;
 }
 
 /**
@@ -364,8 +510,8 @@ function runStep(
   snapshot: HomeSnapshot,
 ): ProgressStep {
   const step = { key: "run", title: "Run it" };
-  const latest = snapshot.recentRuns[0];
-  if (state === "done" && latest !== undefined) {
+  const latest = snapshot.latestRun;
+  if (state === "done" && latest !== null) {
     return {
       ...step,
       state: "done",
@@ -401,57 +547,4 @@ function runHint(triggers: HomeSnapshot["triggers"]): string {
     }
   }
   return [...hints].join(" · ");
-}
-
-function unroutedSentence(unrouted: HomeSnapshot["unrouted"], windowDays: number): string {
-  const total = unrouted.reduce((sum, { count }) => sum + count, 0);
-  const sources = unrouted
-    .map(({ provider, count }) => `${String(count)} from ${providerName(provider)}`)
-    .join(", ");
-  return `${String(total)} ${total === 1 ? "event" : "events"} in the last ${String(windowDays)} days were dropped because no trigger handles them: ${sources}`;
-}
-
-function providerName(provider: HomeSnapshot["unrouted"][number]["provider"]): string {
-  if (provider === "github") return "GitHub";
-  if (provider === "slack") return "Slack";
-  if (provider === "discord") return "Discord";
-  if (provider === "linear") return "Linear";
-  return statusLabel(provider);
-}
-
-function runOutcomes(runs: HomeSnapshot["runs"]): string {
-  const succeeded = runs.filter(({ status }) => status === "succeeded").length;
-  const failed = runs.filter(
-    ({ status }) => status === "failed" || status === "timed_out" || status === "rejected",
-  ).length;
-  return `${String(succeeded)} succeeded · ${String(failed)} failed`;
-}
-
-function runTone(status: HomeSnapshot["runs"][number]["status"]): StatusTone {
-  if (status === "succeeded") return "success";
-  if (status === "failed" || status === "timed_out" || status === "rejected") return "danger";
-  return "neutral";
-}
-
-function daemonDetail(daemons: HomeSnapshot["daemons"]): string {
-  const cannot = daemons.filter(({ canExecute }) => !canExecute).length;
-  return `${String(daemons.length)} enrolled${cannot === 0 ? "" : ` · ${String(cannot)} cannot run agents`}`;
-}
-
-function agentsUsed(runs: HomeSnapshot["runs"]): string[] {
-  return [
-    ...new Set(
-      runs.flatMap(({ agent }) =>
-        agent === null
-          ? []
-          : [agent.model === null ? agent.provider : `${agent.provider}/${agent.model}`],
-      ),
-    ),
-  ];
-}
-
-function agentDetail(agents: readonly string[]): string {
-  if (agents.length === 0) return "None yet";
-  const shown = agents.slice(0, 3).join(", ");
-  return agents.length > 3 ? `${shown} and ${String(agents.length - 3)} more` : shown;
 }

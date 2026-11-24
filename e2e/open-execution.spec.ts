@@ -25,9 +25,9 @@ test("a shared execution link returns an organization member to the Paseo launch
     await hub.expectExecutionLinkRequiresSignIn(execution);
   });
 
-  await test.step("the owner signs in and reaches the exact agent and run details", async () => {
+  await test.step("the owner signs in and reaches the agent launcher and the organization's activity", async () => {
     await hub.signInFromExecutionLink(owner);
     await hub.expectExecutionLauncher(execution);
-    await hub.viewExecutionInHub(execution);
+    await hub.viewExecutionInHub("Studio Owner");
   });
 });

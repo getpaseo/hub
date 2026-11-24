@@ -29,6 +29,7 @@ import { CompositionResources } from "./composition-resources.js";
 import { TriggerDashboard } from "./triggers/dashboard.js";
 import type { ProviderApplications } from "./provider-applications/index.js";
 import { DaemonCatalog } from "./daemons/catalog.js";
+import { ActivityDashboard } from "./activity/index.js";
 import { HomeDashboard } from "./home/dashboard.js";
 import type { ProviderConnectionRegistration } from "./providers/registration.js";
 
@@ -144,6 +145,7 @@ async function createOwnedApplicationRuntime(
     triggerDashboard: triggerDashboardFor(options, application.hub),
     daemonCatalog: daemonCatalogFor(options, application.hub),
     homeDashboard: homeDashboardFor(options, connections),
+    activityDashboard: activityDashboardFor(options),
     ...entitlementSurfaces(options),
     testTriggerRoutes: options.testTriggerRoutes ?? false,
     auth: (request) => {
@@ -354,6 +356,11 @@ function triggerDashboardFor(
         hub.agentValidator,
         options.publicBaseUrl,
       );
+}
+
+function activityDashboardFor(options: ApplicationCompositionOptions): ActivityDashboard | null {
+  if (options.database === null || options.auth === null) return null;
+  return new ActivityDashboard(options.database, options.auth);
 }
 
 function homeDashboardFor(

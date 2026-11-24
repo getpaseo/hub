@@ -6,6 +6,8 @@ declare module "@tanstack/react-router" {
     instance?: boolean;
     tabs?: boolean;
     projectSection?: "overview" | "configuration" | "activity" | "settings";
+    /** The screen is one wide table: the shell lays it in the wider column. */
+    wide?: boolean;
   }
 }
 
@@ -18,6 +20,7 @@ export function usePageContext() {
       ),
       instance: matches.some(({ staticData }) => staticData.instance === true),
       tabs: matches.some(({ staticData }) => staticData.tabs === true),
+      wide: matches.at(-1)?.staticData.wide === true,
       projectSection:
         matches
           .flatMap(({ staticData }) =>

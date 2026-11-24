@@ -18,7 +18,6 @@ import {
   hasRequiredLinearAgentSessionScopes,
   linearConnectionRequiresReauthorization,
 } from "../providers/linear/client.js";
-import { launchedAgent } from "./mappers.js";
 import type {
   AgentExecutionRecord,
   AgentExecutionOutputAttempt,
@@ -82,8 +81,6 @@ import type {
   GitHubRepositoryRecord,
   GitHubRepositorySnapshot,
   OrganizationConnectionUsage,
-  OrganizationRunRecord,
-  UnroutedProviderEventCount,
   ProjectTriggerRoute,
   MigrateProjectTriggersInput,
   OrganizationTriggerRecord,
@@ -127,10 +124,7 @@ import {
   mergeOverrides,
 } from "../entitlements/catalog.js";
 import { toProviderEventReceiptRecordSummary } from "./mappers.js";
-import {
-  isUnroutedProviderEventDropReasonCode,
-  type ProviderEventDropReasonCode,
-} from "../triggers/drop-reason.js";
+import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 
 const OUTPUT_ATTEMPT_LEASE_MS = 5 * 60_000;
 
@@ -179,6 +173,43 @@ export function createMemoryDatabase(options: MemoryDatabaseOptions = {}): Datab
 
 class MemoryDatabase implements Database {
   // This test double has no background work. Scheduling tests use the actual embedded/PG runtime.
+  // Activity reads are SQL aggregates; their tests run against Postgres and embedded PGlite.
+  readonly activity: import("../activity/index.js").ActivityStore = {
+    async listRuns() {
+      return { rows: [], total: 0, totalCapped: false, hasNext: false };
+    },
+    async listUnmatched() {
+      return { rows: [], total: 0, totalCapped: false, hasNext: false };
+    },
+    async filterOptions() {
+      return { triggers: [], daemons: [] };
+    },
+    async findRun() {
+      return undefined;
+    },
+    async findUnmatched() {
+      return undefined;
+    },
+    async findRunIdForExecution() {
+      return undefined;
+    },
+    async summarize() {
+      return {
+        statuses: { running: 0, succeeded: 0, failed: 0, timed_out: 0, rejected: 0 },
+        triggers: [],
+        daemons: [],
+      };
+    },
+    async summarizeProviders() {
+      return [];
+    },
+    async latestRun() {
+      return undefined;
+    },
+    async lastRuns() {
+      return [];
+    },
+  };
   readonly webhooks: import("../triggers/webhook/index.js").WebhookStore = {
     async list() {
       return [];
@@ -2911,17 +2942,6 @@ class MemoryDatabase implements Database {
     return revision?.triggerId === triggerId ? revision : undefined;
   }
 
-  async findOrganizationTriggerMigrationRevision(
-    triggerId: string,
-  ): Promise<OrganizationTriggerRevisionRecord | undefined> {
-    return Array.from(this.organizationTriggerRevisions.values())
-      .filter(
-        (revision) =>
-          revision.triggerId === triggerId && revision.sourceKind === "project_migration",
-      )
-      .sort((left, right) => left.version - right.version)[0];
-  }
-
   async saveOrganizationTrigger(
     input: SaveOrganizationTriggerInput,
   ): Promise<OrganizationTriggerRecord> {
@@ -3462,93 +3482,6 @@ class MemoryDatabase implements Database {
             },
           ];
     });
-  }
-
-  async listUnroutedProviderEventsForOrganization(organizationId: string) {
-    const routedReceiptIds = new Set(
-      [...this.triggerRuns.values()].map((run) => run.providerEventReceiptId),
-    );
-    return [...this.providerEventReceipts.values()]
-      .filter(
-        (receipt) =>
-          receipt.organizationId === organizationId &&
-          receipt.droppedReason !== null &&
-          // Same codes as the Postgres query: a stop receipt was handled, not left unrouted.
-          isUnroutedProviderEventDropReasonCode(receipt.droppedReason) &&
-          !routedReceiptIds.has(receipt.id),
-      )
-      .sort(
-        (left, right) =>
-          right.receivedAt.getTime() - left.receivedAt.getTime() || right.id.localeCompare(left.id),
-      )
-      .slice(0, 50)
-      .map(toProviderEventReceiptRecordSummary);
-  }
-
-  async listOrganizationRunsSince(
-    organizationId: string,
-    since: Date,
-    limit: number,
-  ): Promise<OrganizationRunRecord[]> {
-    return [...this.triggerRuns.values()]
-      .filter((run) => run.organizationId === organizationId && run.createdAt >= since)
-      .sort(
-        (left, right) =>
-          right.createdAt.getTime() - left.createdAt.getTime() || right.id.localeCompare(left.id),
-      )
-      .slice(0, limit)
-      .flatMap((run) => {
-        const receipt = this.providerEventReceipts.get(run.providerEventReceiptId);
-        if (receipt === undefined) return [];
-        const step = this.listSteps(run.id).find(
-          (candidate) => candidate.agentExecutionId !== null,
-        );
-        const execution =
-          step?.agentExecutionId == null
-            ? undefined
-            : this.agentExecutions.get(step.agentExecutionId);
-        const trigger = Array.from(this.organizationTriggers.values()).find(
-          ({ runtimeProjectId }) => runtimeProjectId === run.projectId,
-        );
-        return [
-          {
-            id: run.id,
-            triggerName: trigger?.name ?? run.configuredTriggerName,
-            provider: receipt.provider,
-            source: receipt.source,
-            status: run.status,
-            receivedAt: receipt.receivedAt,
-            agent: launchedAgent(execution?.launchIntent?.agent),
-          },
-        ];
-      });
-  }
-
-  async countUnroutedProviderEventsSince(
-    organizationId: string,
-    since: Date,
-  ): Promise<UnroutedProviderEventCount[]> {
-    const routedReceiptIds = new Set(
-      [...this.triggerRuns.values()].map((run) => run.providerEventReceiptId),
-    );
-    const counts = new Map<ProviderEventReceiptRecord["provider"], number>();
-    for (const receipt of this.providerEventReceipts.values()) {
-      if (
-        receipt.organizationId !== organizationId ||
-        receipt.receivedAt < since ||
-        routedReceiptIds.has(receipt.id) ||
-        (receipt.droppedReason !== "no_project_route" &&
-          receipt.droppedReason !== "no_trigger_for_source")
-      ) {
-        continue;
-      }
-      counts.set(receipt.provider, (counts.get(receipt.provider) ?? 0) + 1);
-    }
-    return [...counts.entries()]
-      .map(([provider, count]) => ({ provider, count }))
-      .sort(
-        (left, right) => right.count - left.count || left.provider.localeCompare(right.provider),
-      );
   }
 
   async isOrganizationMember(): Promise<boolean> {

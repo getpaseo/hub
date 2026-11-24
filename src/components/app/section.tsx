@@ -36,7 +36,11 @@ export function Section({
               <p className="text-sm text-muted-foreground">{description}</p>
             )}
           </div>
-          {action === undefined ? null : <div className="shrink-0">{action}</div>}
+          {/* The action sits on the title's line, not the block's top: a box one title line
+              tall centres a control of any height on it. */}
+          {action === undefined ? null : (
+            <div className="flex h-6 shrink-0 items-center">{action}</div>
+          )}
         </div>
       )}
       {children}

@@ -5,10 +5,14 @@ import { respondOk, type Result } from "../contract/respond.js";
 import { respondWithFailure } from "../failures/index.js";
 import { getApplication } from "../server/runtime.js";
 import type { HomeSnapshot } from "./dashboard.js";
+import { HOME_RANGES } from "./range.js";
 
 export type { HomeSnapshot } from "./dashboard.js";
 
-const scopeSchema = z.object({ organizationSlug: z.string().trim().min(1).max(100) });
+const scopeSchema = z.object({
+  organizationSlug: z.string().trim().min(1).max(100),
+  range: z.enum(HOME_RANGES),
+});
 
 export const homeSnapshot = createServerFn({ method: "GET" })
   .validator(scopeSchema)
@@ -16,7 +20,7 @@ export const homeSnapshot = createServerFn({ method: "GET" })
     try {
       const dashboard = (await getApplication()).homeDashboard;
       if (dashboard == null) throw new Error("home dashboard unavailable");
-      return respondOk(await dashboard.snapshot(getRequest(), data.organizationSlug));
+      return respondOk(await dashboard.snapshot(getRequest(), data.organizationSlug, data.range));
     } catch (error) {
       return respondWithFailure(
         error,

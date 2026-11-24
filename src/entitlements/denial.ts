@@ -64,3 +64,12 @@ export function entitlementDenialSummary(denial: EntitlementDenialPayload): stri
   if (denial.kind === "flag") return `Entitlement not enabled: ${denial.entitlement}`;
   return `Entitlement limit reached: ${denial.entitlement} (${denial.current} of ${denial.limit})`;
 }
+
+/**
+ * A run or step `failure_reason` for display. A denial is stored machine-parseable, so it is
+ * summarized; every other reason (timeouts, crashes) passes through unchanged.
+ */
+export function displayFailureReason(reason: string | null): string | null {
+  const denial = decodeEntitlementDenialFailureReason(reason);
+  return denial === undefined ? reason : entitlementDenialSummary(denial);
+}

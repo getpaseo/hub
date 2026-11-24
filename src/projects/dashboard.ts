@@ -1,3 +1,4 @@
+import { rangeStart } from "../activity/query-contract.js";
 import type { AuthServer } from "../auth/server.js";
 import { capabilitiesFor } from "../auth/organization-policy.js";
 import { revisionBundleFiles } from "../configuration/store.js";
@@ -6,14 +7,9 @@ import type {
   AgentExecutionRecord,
   ProjectActivityRunListRecord,
   ProjectActivityRunRecord,
-  ProviderEventReceiptSummary,
 } from "../db/types.js";
 import { formatInvocationRejection } from "../triggers/invocation.js";
-import { providerEventDropReasonSummary } from "../triggers/drop-reason.js";
-import {
-  decodeEntitlementDenialFailureReason,
-  entitlementDenialSummary,
-} from "../entitlements/denial.js";
+import { displayFailureReason } from "../entitlements/denial.js";
 import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
 import { hasRequiredSlackScopes } from "../providers/slack/client.js";
 import { resolveRouteTenant } from "./access.js";
@@ -37,6 +33,7 @@ export class ProjectDashboard {
   constructor(
     private readonly database: Database,
     private readonly auth: AuthServer,
+    private readonly now: () => Date = () => new Date(),
   ) {}
 
   async tenantContext(request: Request, scope: ProjectRouteScope) {
@@ -55,10 +52,14 @@ export class ProjectDashboard {
 
   async organizationSnapshot(request: Request, scope: ProjectRouteScope) {
     const { account, tenant } = await this.resolve(request, organizationScope(scope));
-    const [projects, connections, unroutedEvents, daemons] = await Promise.all([
+    const [projects, connections, providerActivity, daemons] = await Promise.all([
       this.database.listProjectsForOrganization(tenant.organization.id),
       this.database.organizationConnectionUsage(tenant.organization.id),
-      this.database.listUnroutedProviderEventsForOrganization(tenant.organization.id),
+      // The week Activity opens on, so a provider's figures and the runs they link to agree.
+      this.database.activity.summarizeProviders(
+        tenant.organization.id,
+        rangeStart("7d", this.now()) ?? new Date(0),
+      ),
       this.database.listDaemonsForOrganization(tenant.organization.id),
     ]);
     return {
@@ -68,7 +69,7 @@ export class ProjectDashboard {
       capabilities: capabilitiesFor(tenant.membership.role),
       projects: projects.map(projectView),
       connections: connectionUsageView(connections),
-      unroutedEvents: unroutedEvents.map(unroutedEventView),
+      providerActivity,
       daemons: daemons.map(daemonView),
     };
   }
@@ -390,44 +391,6 @@ function activityRunListView(activity: ProjectActivityRunListRecord) {
     deadlineKind: run.deadlineKind,
     failureReason: displayFailureReason(run.failureReason),
     rejectionReason: null,
-  };
-}
-
-/**
- * A run/step `failure_reason` for display. An entitlement denial is stored as a machine-parseable
- * payload (see engine.ts), so it is decoded into a typed denial and summarized here rather than
- * shown as raw JSON; every other reason (timeouts, crashes) passes through unchanged.
- */
-function displayFailureReason(reason: string | null): string | null {
-  const denial = decodeEntitlementDenialFailureReason(reason);
-  return denial === undefined ? reason : entitlementDenialSummary(denial);
-}
-
-function unroutedEventView(receipt: ProviderEventReceiptSummary) {
-  return {
-    id: receipt.id,
-    providerEventReceiptId: receipt.id,
-    provider: receipt.provider,
-    deliveryId: receipt.deliveryId,
-    source: receipt.source,
-    repo: receipt.repo,
-    receivedAt: receipt.receivedAt.toISOString(),
-    configuredTriggerName: null,
-    prompt: null,
-    inputs: {},
-    values: {},
-    triggerContext: {},
-    outputContext: {},
-    createdAt: receipt.receivedAt.toISOString(),
-    completedAt: null,
-    outcome: "dropped" as const,
-    status: "dropped" as const,
-    deadlineAt: null,
-    deadlineKind: null,
-    failureReason:
-      receipt.droppedReason === null ? null : providerEventDropReasonSummary(receipt.droppedReason),
-    rejectionReason: null,
-    steps: [],
   };
 }
 

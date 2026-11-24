@@ -13,11 +13,17 @@ import { cn } from "../../lib/utils.js";
 export function TwoLine({
   primary,
   secondary,
+  media,
   mono = false,
   path = false,
 }: {
   primary: ReactNode;
   secondary?: ReactNode;
+  /**
+   * A mark for the record's kind, e.g. a provider glyph, in a tile on the lines' leading edge.
+   * Decorative: the lines say what the record is.
+   */
+  media?: ReactNode;
   /** The secondary line is an identifier — a key prefix, a slug, an id — not prose. */
   mono?: boolean;
   /**
@@ -26,7 +32,7 @@ export function TwoLine({
    */
   path?: boolean;
 }) {
-  return (
+  const lines = (
     // In a filling cell the record also takes the row it sits in, beside a glyph or not, so its
     // secondary line has the whole column to give way in rather than the primary line's width.
     <span className="flex min-w-0 flex-col gap-0.5 in-data-[slot=fill-cell]:grow">
@@ -52,6 +58,18 @@ export function TwoLine({
           {path ? <bdi dir="ltr">{secondary}</bdi> : secondary}
         </span>
       )}
+    </span>
+  );
+  if (media === undefined) return lines;
+  return (
+    <span className="flex min-w-0 items-center gap-3 in-data-[slot=fill-cell]:grow">
+      <span
+        aria-hidden="true"
+        className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-muted text-foreground"
+      >
+        {media}
+      </span>
+      {lines}
     </span>
   );
 }

@@ -1,7 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { TriggerActivityPanel } from "../../../../triggers/activity-panel.js";
+import { ActivityPanel } from "../../../../activity/panel.js";
+import { parseActivitySearch } from "../../../../activity/query-contract.js";
 
 export const Route = createFileRoute("/_shell/o/$organizationSlug/activity")({
-  staticData: { breadcrumb: "Activity", projectSection: "activity" },
-  component: TriggerActivityPanel,
+  validateSearch: parseActivitySearch,
+  staticData: { breadcrumb: "Activity", projectSection: "activity", wide: true },
+  component: ActivityPanel,
 });

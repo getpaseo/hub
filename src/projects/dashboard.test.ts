@@ -134,20 +134,6 @@ describe("project dashboard activity read models", () => {
       deadlineAt: new Date("2026-08-06T13:00:00.000Z"),
       stepIds: ["step"],
     });
-    const unroutedPayload = { body: "unrouted-".repeat(20_000) };
-    const unroutedReceipt = await database.persistManualEvent({
-      organizationId: "org-1",
-      projectId: project.id,
-      deliveryId: "dashboard-unrouted-large-payload",
-      source: "manual.dashboard",
-      payload: unroutedPayload,
-      receivedAt: new Date("2026-08-06T12:01:00.000Z"),
-    });
-    if (unroutedReceipt.status !== "accepted") throw new Error("unrouted receipt was not accepted");
-    await database.markProviderEventDropped(
-      unroutedReceipt.event.providerEventReceiptId,
-      "trigger_filters_rejected",
-    );
     const dashboard = new ProjectDashboard(database, accountAuth());
     const request = new Request("https://hub.test/o/acme/projects/hub");
     const list = await dashboard.projectSnapshot(request, {
@@ -164,21 +150,6 @@ describe("project dashboard activity read models", () => {
     });
     assert.deepEqual(detail.activity.rawPayload, rawPayload);
     assert.deepEqual(detail.activity.triggerContext, triggerContext);
-
-    const organization = await dashboard.organizationSnapshot(request, {
-      organizationSlug: "acme",
-    });
-    const unroutedEvent = organization.unroutedEvents[0];
-    assert.ok(unroutedEvent);
-    assert.equal(unroutedEvent.deliveryId, "dashboard-unrouted-large-payload");
-    assert.equal(unroutedEvent.status, "dropped");
-    assert.equal(unroutedEvent.providerEventReceiptId, unroutedEvent.id);
-    assert.equal(
-      unroutedEvent.failureReason,
-      "The event did not pass the configured trigger filters.",
-    );
-    assert.equal(JSON.stringify(unroutedEvent).includes("unrouted-unrouted"), false);
-    assert.equal("rawPayload" in unroutedEvent, false);
   });
 });
 

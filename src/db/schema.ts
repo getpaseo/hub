@@ -41,6 +41,14 @@ export type MachineSource =
 export const machineStatus = pgEnum("machine_status", MACHINE_STATUSES);
 export const agentExecutionStatus = pgEnum("agent_execution_status", AGENT_EXECUTION_STATUSES);
 
+/**
+ * The drop codes Activity lists as unmatched events. Spelled as SQL once, so both partial indexes
+ * and the queries that must match their predicate to use them agree.
+ */
+const UNMATCHED_DROP_REASONS = sql.raw(
+  "'no_project_route', 'no_trigger_for_source', 'trigger_filters_rejected', 'configuration_unavailable'",
+);
+
 export const providerEventReceipts = pgTable(
   "provider_event_receipts",
   {
@@ -93,6 +101,14 @@ export const providerEventReceipts = pgTable(
       table.connectionId,
       table.resourceId,
     ),
+    // Activity's unmatched-events list reads only dropped receipts, newest first. Partial, so the
+    // index stays the size of the drops rather than of every delivery the organization receives.
+    index("provider_event_receipts_org_unmatched_received_idx")
+      .on(table.organizationId, table.receivedAt.desc(), table.id.desc())
+      .where(sql`${table.droppedReason} in (${UNMATCHED_DROP_REASONS})`),
+    index("provider_event_receipts_org_provider_unmatched_received_idx")
+      .on(table.organizationId, table.provider, table.receivedAt.desc(), table.id.desc())
+      .where(sql`${table.droppedReason} in (${UNMATCHED_DROP_REASONS})`),
     check(
       "provider_event_receipts_provider_check",
       sql`${table.provider} in ('github', 'slack', 'discord', 'linear', 'manual', 'schedule', 'webhook')`,
@@ -465,6 +481,17 @@ export const triggerRuns = pgTable(
     ),
     index("trigger_runs_status_deadline_idx").on(table.status, table.deadlineAt),
     index("trigger_runs_project_created_idx").on(table.projectId, table.createdAt.desc()),
+    index("trigger_runs_org_created_idx").on(
+      table.organizationId,
+      table.createdAt.desc(),
+      table.id.desc(),
+    ),
+    index("trigger_runs_org_status_created_idx").on(
+      table.organizationId,
+      table.status,
+      table.createdAt.desc(),
+      table.id.desc(),
+    ),
     index("trigger_runs_terminal_notification_idx").on(
       table.terminalNotificationDeliveredAt,
       table.terminalNotificationLeaseExpiresAt,

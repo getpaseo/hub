@@ -1,0 +1,7 @@
+-- IF NOT EXISTS lets a large installation build these indexes beforehand with
+-- CREATE INDEX CONCURRENTLY IF NOT EXISTS under the same names, so this migration then runs
+-- without holding a write lock on provider_event_receipts while the index builds.
+CREATE INDEX IF NOT EXISTS "provider_event_receipts_org_unmatched_received_idx" ON "provider_event_receipts" USING btree ("organization_id","received_at" DESC NULLS LAST,"id" DESC NULLS LAST) WHERE "provider_event_receipts"."dropped_reason" in ('no_project_route', 'no_trigger_for_source', 'trigger_filters_rejected', 'configuration_unavailable');--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "provider_event_receipts_org_provider_unmatched_received_idx" ON "provider_event_receipts" USING btree ("organization_id","provider","received_at" DESC NULLS LAST,"id" DESC NULLS LAST) WHERE "provider_event_receipts"."dropped_reason" in ('no_project_route', 'no_trigger_for_source', 'trigger_filters_rejected', 'configuration_unavailable');--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "trigger_runs_org_created_idx" ON "trigger_runs" USING btree ("organization_id","created_at" DESC NULLS LAST,"id" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "trigger_runs_org_status_created_idx" ON "trigger_runs" USING btree ("organization_id","status","created_at" DESC NULLS LAST,"id" DESC NULLS LAST);

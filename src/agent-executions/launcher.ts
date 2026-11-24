@@ -1,7 +1,8 @@
 import { buildAgentDeepLink } from "@getpaseo/protocol/agent-deep-link";
+import { activityHref } from "../activity/query-contract.js";
 import type { BrowserOrganizationAccess } from "../auth/browser-organization-access.js";
 import { ProductRequestError } from "../auth/organization-access.js";
-import type { AgentExecutionRecord, Database } from "../db/types.js";
+import type { Database } from "../db/types.js";
 import { executionLinkPath, parseExecutionLinkId } from "./link.js";
 
 const privacyHeaders = {
@@ -43,10 +44,19 @@ export function createExecutionLauncher(
     const tenant = await database.resolveTenantRouteAccess(userId, slug);
     if (tenant?.organization.id !== execution.organizationId) return notFound();
 
-    const path = executionLinkPath(executionId);
     if (viewRun) {
-      return executionDetails(execution, path, slug);
+      // The run this execution belongs to, open in Activity. An execution no run started still
+      // lands in the organization's Activity rather than on an error.
+      const runId = await database.activity.findRunIdForExecution(executionId);
+      return new Response(null, {
+        status: 303,
+        headers: {
+          ...privacyHeaders,
+          location: activityHref(slug, runId === undefined ? {} : { selected: runId }),
+        },
+      });
     }
+    const path = executionLinkPath(executionId);
     if (!execution.daemonId || !execution.daemonAgentId?.trim()) return notFound();
     const daemon = await database.findDaemonForOrganization(
       execution.organizationId,
@@ -67,25 +77,6 @@ export function createExecutionLauncher(
       </nav>`,
     );
   };
-}
-
-function executionDetails(execution: AgentExecutionRecord, path: string, slug: string): Response {
-  const activity = `/o/${escapeHtml(encodeURIComponent(slug))}/activity`;
-  const start = execution.startedAt.toISOString();
-  const end = execution.completedAt?.toISOString();
-  const status = execution.status.replaceAll("_", " ");
-  return document(
-    "Execution details",
-    `<dl>
-      <dt>Status</dt><dd>${escapeHtml(status)}</dd>
-      <dt>Started</dt><dd><time datetime="${start}">${start}</time></dd>
-      ${end === undefined ? "" : `<dt>Completed</dt><dd><time datetime="${end}">${end}</time></dd>`}
-    </dl>
-    <nav aria-label="Execution links">
-      <a href="${path}">Open in Paseo</a>
-      <a href="${activity}">Organization activity</a>
-    </nav>`,
-  );
 }
 
 function notFound(): Response {
@@ -111,7 +102,6 @@ function document(title: string, body: string): Response {
     .primary { display: inline-block; padding: .6rem 1rem; border-radius: .5rem;
       background: #e4ecfc; color: #131b2a; text-decoration: none; }
     nav { display: flex; flex-wrap: wrap; gap: .75rem 1rem; }
-    dd { margin: 0 0 .5rem; }
   </style>
 </head>
 <body><main><h1>${title}</h1>${body}</main></body>

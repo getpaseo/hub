@@ -33,9 +33,9 @@ const referenceTheme = `
   --scalar-color-1: var(--foreground);
   --scalar-color-2: var(--muted-foreground);
   --scalar-color-3: var(--extra-muted-foreground);
-  --scalar-color-accent: var(--link);
-  --scalar-link-color: var(--link);
-  --scalar-link-color-hover: var(--link);
+  --scalar-color-accent: var(--brand);
+  --scalar-link-color: var(--foreground);
+  --scalar-link-color-hover: var(--foreground);
   --scalar-border-color: var(--border);
 
   --scalar-radius: var(--radius-md);

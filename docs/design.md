@@ -26,11 +26,14 @@ controls. `src/typography-policy.test.ts` enforces the parts a regex can see; th
    shape that does not exist there, add it there and use it from the screen. Never hand-roll a card,
    field, table, empty state, pill, header, or key/value row in a panel file. Fix the component, not
    the leaf.
+8. **Colour is state.** The page is monochrome. Hue appears only where it means something: a
+   `StatusPill` tone, a destructive action or error, the one `default` button on a surface, and the
+   focus ring. Text is never coloured to say "you can click this"; the control's shape says it.
 
 ## Tokens
 
 All tokens live in `src/styles.css`. Values come from Linear's measured ramp; Paseo green survives only
-as the link and focus hue.
+as the focus ring, the `primary` fill, and code-editor accents. Hub has no link colour.
 
 ### Surfaces and text
 
@@ -47,7 +50,7 @@ as the link and focus hue.
 | `border`                  | `#23252a`             | Every structural rule. Near invisible; that is the point.                                                                                        |
 | `input`                   | `#34343a`             | Control borders, one step stronger than `border`.                                                                                                |
 | `primary` / `-foreground` | `#1b4f4a` / `#bfe6da` | A dark teal fill with a pale mint label; the one place the brand hue is a surface.                                                               |
-| `link`                    | `#7ccba0`             | Text links and the focus ring. The one brand hue.                                                                                                |
+| `brand`                   | `#7ccba0`             | The focus ring and code-editor accents. Never text.                                                                                              |
 | `ring`                    | `#7ccba0`             | Focus. One pixel outline, two pixel offset, nothing else.                                                                                        |
 | `destructive`             | `#e8837a`             | Destructive button fill and error text.                                                                                                          |
 
@@ -118,6 +121,26 @@ background only.
 - Table headers are `text-xs muted-foreground` in sentence case. They are the quietest text in the
   table.
 
+## Actions and links
+
+Every control reads as a control at rest, without colour. Pick by where it sits:
+
+| It sits                                                              | It is                                      |
+| -------------------------------------------------------------------- | ------------------------------------------ |
+| The one action a surface exists for                                  | `Button` (`default`)                       |
+| On its own: a section or card action, a footer, a row, a drawer      | `Button variant="outline" size="sm"`       |
+| An icon with no label: steppers, close, copy, kebab, pager           | `Button variant="ghost"` at an `icon` size |
+| Beside a filled or outline button to back out: Cancel, Do this later | `Button variant="ghost"`                   |
+| Inside a sentence, or a pre-auth card's footer line                  | `Button variant="link"`                    |
+| A record's name in a table cell or list row                          | A plain link, `hover:underline`            |
+
+- `link` is the foreground step with an underline in a tint of its own colour, so it stands out
+  from muted prose by brightness and by shape. It is for text, never for an action on its own.
+- A navigation action that stands alone is an outline button even when it only changes the page.
+  "All triggers", "Manage", "View runs", "Unmatched events" are buttons.
+- A record name is not styled as a link because the row is the control: it has a hover fill and
+  opens on click.
+
 ## Component roster
 
 Everything a screen composes lives in `src/components/app`. The shadcn primitives in
@@ -126,40 +149,43 @@ Everything a screen composes lives in `src/components/app`. The shadcn primitive
 primitives it is composing inside an app component. Anything else a screen wants from `ui` is a
 missing app component.
 
-| Component                                                               | The one way to                                                                      |
-| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| `Page`, `PageHeader`, `PageHeaderSkeleton`                              | Lay out a screen: the column, the one `h1`, its description, status, and actions.   |
-| `Section`                                                               | Group content under a quiet heading with an optional trailing action.               |
-| `Card`, `CardSkeleton`                                                  | Put content in a bordered surface. Icon, title, description, and action optional.   |
-| `Steps`                                                                 | Number a run of cards in order and join them with a rail.                           |
-| `ProgressSteps`                                                         | Walk a checklist inside a card, one open step at a time.                            |
-| `DataTable`, `DataRow`, `DataCell`, `DataTableSkeleton`                 | List records at page level, in columns.                                             |
-| `RecordList`, `RecordRow`                                               | List a card's own few records, with no header row to repeat the card's subject.     |
-| `TwoLine`                                                               | Show a primary fact over a muted secondary one, in a cell or a row.                 |
-| `SummaryPanel`                                                          | Show labelled facts as a description list.                                          |
-| `StatTile`, `StatGrid`                                                  | Show a figure with a label.                                                         |
-| `StatusPill`                                                            | Show state. Never `Badge`, never a coloured span.                                   |
-| `EmptyState`                                                            | Say there is nothing here and what to do about it.                                  |
-| `FormField`, `FieldSkeleton`                                            | Label a control, with optional description and error. Wraps any control.            |
-| `CheckboxField`                                                         | Label a checkbox beside its box, with what ticking it means underneath.             |
-| `FormActions`                                                           | The button row under a form: stacks on phones, right-aligns from `sm`.              |
-| `AuthForm`                                                              | A pre-auth form: fields, submit, optional secondary action, busy state.             |
-| `AuthActions`                                                           | The buttons under a pre-auth card with no form left to submit. Never `FormActions`. |
-| `FormDialog`                                                            | A dialog whose body is one form with one submit.                                    |
-| `ConfirmAction`, `ConfirmMenuItem`                                      | Ask before something irreversible.                                                  |
-| `FailureAlert`, `NoticeAlert`                                           | Show a failed request, or a neutral or success notice as a polite live region.      |
-| `WarningAlert`                                                          | Warn without blocking.                                                              |
-| `StatusLine`                                                            | A polite live region with reserved height.                                          |
-| `Spinner`, `LoadingLine`, `PanelSkeleton`                               | Wait. Skeletons for pages, a spinner for one fact.                                  |
-| `SegmentedControl`                                                      | Pick one of a few modes, with radio semantics.                                      |
-| `TabNav`, `TabNavSkeleton`                                              | Navigate between sibling routes under one page.                                     |
-| `Combobox`                                                              | Pick one of many with search.                                                       |
-| `CopyField`, `CopyButton`, `CopyBlock`, `CodeBlock`                     | Show a value to copy, or a block of code.                                           |
-| `Disclosure`                                                            | Open and close a bordered section.                                                  |
-| `RowActions`                                                            | Put a record's actions behind one kebab.                                            |
-| `RelativeTime`                                                          | Show when. There is no absolute-date formatter in screens.                          |
-| `AuthLayout`, `AuthCard`, `AuthCardSkeleton`                            | Frame a pre-auth screen.                                                            |
-| `SiteHeader`, `SiteHeaderActions`, `SidebarSwitcher`, `NavigationGroup` | The shell, in `src/shell`. Header actions render from `sm` up only.                 |
+| Component                                                               | The one way to                                                                        |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `Page`, `PageHeader`, `PageHeaderSkeleton`                              | Lay out a screen: the column, the one `h1`, its description, status, and actions.     |
+| `Section`                                                               | Group content under a quiet heading with an optional trailing action.                 |
+| `Card`, `CardSkeleton`                                                  | Put content in a bordered surface. Icon, title, description, action, footer optional. |
+| `Steps`                                                                 | Number a run of cards in order and join them with a rail.                             |
+| `ProgressSteps`                                                         | Walk a checklist inside a card, one open step at a time.                              |
+| `DataTable`, `DataRow`, `DataCell`, `DataTableSkeleton`                 | List records in columns, paged or ending in a pointer to what they leave out.         |
+| `RecordList`, `RecordRow`                                               | List a card's own few records, with no header row to repeat the card's subject.       |
+| `TwoLine`                                                               | Show a primary fact over a muted secondary one, in a cell or a row.                   |
+| `SummaryPanel`                                                          | Show labelled facts as a description list.                                            |
+| `StatTile`, `StatGrid`                                                  | Show a figure with a label, as a link to the records it counts.                       |
+| `StatusPill`                                                            | Show state. Never `Badge`, never a coloured span.                                     |
+| `EmptyState`                                                            | Say there is nothing here and what to do about it.                                    |
+| `FormField`, `FieldSkeleton`                                            | Label a control, with optional description and error. Wraps any control.              |
+| `CheckboxField`                                                         | Label a checkbox beside its box, with what ticking it means underneath.               |
+| `FormActions`                                                           | The button row under a form: stacks on phones, right-aligns from `sm`.                |
+| `AuthForm`                                                              | A pre-auth form: fields, submit, optional secondary action, busy state.               |
+| `AuthActions`                                                           | The buttons under a pre-auth card with no form left to submit. Never `FormActions`.   |
+| `FormDialog`                                                            | A dialog whose body is one form with one submit.                                      |
+| `ConfirmAction`, `ConfirmMenuItem`                                      | Ask before something irreversible.                                                    |
+| `FailureAlert`, `NoticeAlert`                                           | Show a failed request, or a neutral or success notice as a polite live region.        |
+| `WarningAlert`                                                          | Warn without blocking.                                                                |
+| `StatusLine`                                                            | A polite live region with reserved height.                                            |
+| `Spinner`, `LoadingLine`, `PanelSkeleton`                               | Wait. Skeletons for pages, a spinner for one fact.                                    |
+| `SegmentedControl`                                                      | Pick one of a few modes, with radio semantics.                                        |
+| `TabNav`, `TabNavSkeleton`                                              | Navigate between sibling routes under one page.                                       |
+| `Combobox`                                                              | Pick one of many with search.                                                         |
+| `CopyField`, `CopyButton`, `CopyBlock`, `CodeBlock`                     | Show a value to copy, or a block of code.                                             |
+| `CopyPageLink`                                                          | Copy the view's address, or say where to find it if blocked.                          |
+| `Disclosure`                                                            | Open and close a bordered section.                                                    |
+| `RowActions`                                                            | Put a record's actions behind one kebab.                                              |
+| `DetailSheet`                                                           | Open one record beside its list, stepping with `j` and `k`.                           |
+| `FilterBar`, `FilterSelect`, `FilterSearch`                             | Narrow a list from one row of filters above it.                                       |
+| `RelativeTime`                                                          | Show when. There is no absolute-date formatter in screens.                            |
+| `AuthLayout`, `AuthCard`, `AuthCardSkeleton`                            | Frame a pre-auth screen.                                                              |
+| `SiteHeader`, `SiteHeaderActions`, `SidebarSwitcher`, `NavigationGroup` | The shell, in `src/shell`. Header actions render from `sm` up only.                   |
 
 Rules for the roster:
 
