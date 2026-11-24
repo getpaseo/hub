@@ -56,25 +56,34 @@ export function migrateLegacyBundle(input: {
         ? dump(trigger, { noRefs: true, lineWidth: -1 })
         : (authoredByPath.get(sourceFile) ?? dump(trigger, { noRefs: true, lineWidth: -1 }));
     const converted = convertSingleRun(trigger, configuration);
-    return converted.success
-      ? {
-          format: "single_run" as const,
-          name: trigger.name,
-          yaml: serializeTriggerDocument(converted.trigger),
-          compiled: compileTriggerDocument(serializeTriggerDocument(converted.trigger)),
-          legacySourceFile: sourceFile,
-          legacyStepIds: trigger.steps.map(({ id }) => id),
-        }
-      : {
-          format: "legacy_multistep" as const,
-          name: trigger.name,
-          yaml: serializeLegacyTrigger({ trigger, environments: configuration.environments }),
-          normalized: { trigger, environments: configuration.environments },
-          legacySourceFile: sourceFile,
-          conversionBlockers: converted.blockers,
-          authoredYaml,
-          legacyStepIds: trigger.steps.map(({ id }) => id),
-        };
+    if (converted.success) {
+      const yaml = serializeTriggerDocument(converted.trigger);
+      const compiled = compileTriggerDocument(yaml);
+      return {
+        format: "single_run" as const,
+        name: trigger.name,
+        yaml,
+        compiled:
+          converted.daemonId === undefined
+            ? compiled
+            : {
+                ...compiled,
+                environment: { ...compiled.environment, daemonId: converted.daemonId },
+              },
+        legacySourceFile: sourceFile,
+        legacyStepIds: trigger.steps.map(({ id }) => id),
+      };
+    }
+    return {
+      format: "legacy_multistep" as const,
+      name: trigger.name,
+      yaml: serializeLegacyTrigger({ trigger, environments: configuration.environments }),
+      normalized: { trigger, environments: configuration.environments },
+      legacySourceFile: sourceFile,
+      conversionBlockers: converted.blockers,
+      authoredYaml,
+      legacyStepIds: trigger.steps.map(({ id }) => id),
+    };
   });
 }
 
@@ -86,7 +95,7 @@ function serializeLegacyTrigger(snapshot: SelfContainedLegacyTrigger): string {
 }
 
 type SingleRunConversion =
-  | { success: true; trigger: TriggerDocument }
+  | { success: true; trigger: TriggerDocument; daemonId?: string }
   | { success: false; blockers: readonly string[] };
 
 function convertSingleRun(
@@ -111,7 +120,11 @@ function convertSingleRun(
     return { success: false, blockers };
   }
 
-  return { success: true, trigger: singleRunDocument(trigger, step, environment) };
+  return {
+    success: true,
+    trigger: singleRunDocument(trigger, step, environment),
+    ...(environment.daemonId === undefined ? {} : { daemonId: environment.daemonId }),
+  };
 }
 
 function singleRunDocument(

@@ -51,6 +51,28 @@ describe("startup project trigger migration", () => {
     assert.equal(environment?.kind === "daemon" ? environment.daemonId : undefined, TEST_DAEMON_ID);
   });
 
+  it("preserves a saved daemon binding for a legacy single-run trigger after a slug change", async () => {
+    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    await enrollMigrationDaemon(database);
+    await activeProject(
+      database,
+      "legacy",
+      [workflow("check", "manual.run", oneStep())],
+      [],
+      TEST_DAEMON_ID,
+    );
+    await database.renameDaemonForOrganization("org", TEST_DAEMON_ID, "renamed-devbox");
+
+    await migrateLegacyProjectTriggers(database);
+
+    const trigger = (await database.listOrganizationTriggers("org"))[0]!;
+    assert.equal(trigger.format, "single_run");
+    const revision = await database.findActiveProjectConfiguration(trigger.runtimeProjectId);
+    assert.notEqual(revision, undefined);
+    const environment = parseProjectConfiguration(revision!).environments[0];
+    assert.equal(environment?.kind === "daemon" ? environment.daemonId : undefined, TEST_DAEMON_ID);
+  });
+
   it("leaves the legacy project active when its daemon target cannot be compiled", async () => {
     const database = createMemoryDatabase({ organizationIds: ["org"] });
     const project = await activeProject(database, "legacy", [
