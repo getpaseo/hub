@@ -8,7 +8,7 @@ const IDLE_DEADLINE = new Date("2026-08-05T12:00:10.000Z");
 const AFTER_IDLE = new Date("2026-08-05T12:00:11.000Z");
 
 describe("completesAtIdleDeadline", () => {
-  it("requires at least one emitted output", () => {
+  it("does not treat optional progress replies as completion", () => {
     assert.equal(completesAtIdleDeadline({ outputEmissions: {}, launchIntent: null }), false);
     assert.equal(
       completesAtIdleDeadline({ outputEmissions: { "linear.reply": 0 }, launchIntent: null }),
@@ -16,7 +16,14 @@ describe("completesAtIdleDeadline", () => {
     );
     assert.equal(
       completesAtIdleDeadline({ outputEmissions: { "linear.reply": 1 }, launchIntent: null }),
-      true,
+      false,
+    );
+    assert.equal(
+      completesAtIdleDeadline({
+        outputEmissions: { "linear.reply": 1 },
+        launchIntent: { allowOutputs: [{ type: "linear.reply", required: false }] },
+      }),
+      false,
     );
   });
 
@@ -57,8 +64,8 @@ describe("completesAtIdleDeadline", () => {
         outputEmissions: { "slack.message": 2 },
         launchIntent: { allowOutputs: [{ type: "slack.message" }] },
       }),
-      true,
-      "without a required output any emission completes the execution",
+      false,
+      "without a required output progress still requires finish_execution",
     );
   });
 
@@ -82,7 +89,7 @@ describe("completesAtIdleDeadline", () => {
 
 describe("memory database idle deadline after an emitted output", () => {
   it("completes the step and wakes the run when the idle deadline sweep finds an emitted output", async () => {
-    const fixture = await workflowExecution({ emitted: true });
+    const fixture = await workflowExecution({ emitted: true, requiredOutput: true });
 
     const recoveries = await fixture.database.recoverWorkflowDeadlines(AFTER_IDLE);
 
@@ -109,8 +116,21 @@ describe("memory database idle deadline after an emitted output", () => {
     );
   });
 
+  it("times out after an optional progress reply without finish_execution", async () => {
+    const fixture = await workflowExecution({ emitted: true, requiredOutput: false });
+
+    const recoveries = await fixture.database.recoverWorkflowDeadlines(AFTER_IDLE);
+
+    assert.deepEqual(recoveries, [
+      { triggerRunId: fixture.runId, executionIds: [fixture.executionId] },
+    ]);
+    const execution = await fixture.database.findAgentExecutionById(fixture.executionId);
+    assert.deepEqual(execution?.outputEmissions, { "linear.reply": 1 });
+    assert.deepEqual(execution?.result, { status: "failed", reason: "step_idle_timeout" });
+  });
+
   it("still times out the step when the sweep finds no emitted output", async () => {
-    const fixture = await workflowExecution({ emitted: false });
+    const fixture = await workflowExecution({ emitted: false, requiredOutput: true });
 
     const recoveries = await fixture.database.recoverWorkflowDeadlines(AFTER_IDLE);
 
@@ -127,7 +147,11 @@ describe("memory database idle deadline after an emitted output", () => {
   });
 
   it("still times out the step when every delivery attempt failed", async () => {
-    const fixture = await workflowExecution({ emitted: false, failedDeliveries: 3 });
+    const fixture = await workflowExecution({
+      emitted: false,
+      requiredOutput: true,
+      failedDeliveries: 3,
+    });
 
     const recoveries = await fixture.database.recoverWorkflowDeadlines(AFTER_IDLE);
 
@@ -140,7 +164,7 @@ describe("memory database idle deadline after an emitted output", () => {
   });
 
   it("turns a late completion into a success instead of an idle timeout once an output was emitted", async () => {
-    const fixture = await workflowExecution({ emitted: true });
+    const fixture = await workflowExecution({ emitted: true, requiredOutput: true });
 
     const transition = await fixture.database.completeWorkflowAgentExecution({
       executionId: fixture.executionId,
@@ -160,7 +184,7 @@ describe("memory database idle deadline after an emitted output", () => {
   });
 
   it("keeps coercing a late completion into an idle timeout without an emitted output", async () => {
-    const fixture = await workflowExecution({ emitted: false });
+    const fixture = await workflowExecution({ emitted: false, requiredOutput: true });
 
     const transition = await fixture.database.completeWorkflowAgentExecution({
       executionId: fixture.executionId,
@@ -178,7 +202,11 @@ describe("memory database idle deadline after an emitted output", () => {
   });
 });
 
-async function workflowExecution(options: { emitted: boolean; failedDeliveries?: number }) {
+async function workflowExecution(options: {
+  emitted: boolean;
+  requiredOutput: boolean;
+  failedDeliveries?: number;
+}) {
   const database = createMemoryDatabase({ now: () => AFTER_IDLE });
   const run = (
     await database.createAcceptedTriggerRun({
@@ -208,6 +236,30 @@ async function workflowExecution(options: { emitted: boolean; failedDeliveries?:
     workflowStepRunId: step.id,
     deadlineAt: new Date("2026-08-05T12:30:00.000Z"),
     idleDeadlineAt: IDLE_DEADLINE,
+    launchIntent: {
+      kind: "launch_machine",
+      organizationId: run.organizationId,
+      projectId: run.projectId,
+      triggerRunId: run.id,
+      workflowStepRunId: step.id,
+      triggerName: run.configuredTriggerName,
+      environmentName: "work",
+      environment: {
+        kind: "daemon",
+        daemonId: "daemon-idle",
+        authoredSlug: "daemon-idle",
+        cwd: "/repo",
+      },
+      prompt: "raw",
+      agent: { provider: "test" },
+      allowOutputs: [{ type: "linear.reply", required: options.requiredOutput }],
+      autoArchive: false,
+      background: false,
+      triggerContext: run.triggerContext,
+      outputContext: run.outputContext,
+      configurationRevisionId: run.configurationRevisionId,
+      hubConfig: {},
+    },
   });
   await database.linkWorkflowStepRunExecution(step.id, execution.id);
   if (options.emitted) {

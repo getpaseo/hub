@@ -333,7 +333,10 @@ describe("agent execution PostgreSQL repository", () => {
     const AFTER_IDLE = new Date("2026-08-05T12:00:08.000Z");
 
     it("completes the step and wakes the run when the idle deadline sweep finds an emitted output", async () => {
-      const fixture = await idleWorkflowFixture(postgres, { emitted: true });
+      const fixture = await idleWorkflowFixture(postgres, {
+        emitted: true,
+        requiredOutput: true,
+      });
       try {
         const recoveries = await fixture.database.recoverWorkflowDeadlines(AFTER_IDLE);
 
@@ -377,8 +380,33 @@ describe("agent execution PostgreSQL repository", () => {
       }
     });
 
+    it("does not complete the step from an optional progress reply", async () => {
+      const fixture = await idleWorkflowFixture(postgres, {
+        emitted: true,
+        requiredOutput: false,
+      });
+      try {
+        const recoveries = await fixture.database.recoverWorkflowDeadlines(AFTER_IDLE);
+
+        assert.deepEqual(recoveries, [
+          { triggerRunId: fixture.run.id, executionIds: [fixture.execution.id] },
+        ]);
+        const execution = await fixture.database.findAgentExecutionById(fixture.execution.id);
+        assert.deepEqual(execution?.outputEmissions, { "linear.reply": 1 });
+        assert.deepEqual(execution?.result, {
+          status: "failed",
+          reason: "step_idle_timeout",
+        });
+      } finally {
+        await fixture.database.close();
+      }
+    });
+
     it("still times out the step when the sweep finds no emitted output", async () => {
-      const fixture = await idleWorkflowFixture(postgres, { emitted: false });
+      const fixture = await idleWorkflowFixture(postgres, {
+        emitted: false,
+        requiredOutput: true,
+      });
       try {
         const recoveries = await fixture.database.recoverWorkflowDeadlines(AFTER_IDLE);
 
@@ -404,7 +432,10 @@ describe("agent execution PostgreSQL repository", () => {
     });
 
     it("turns a late completion into a success instead of an idle timeout once an output was emitted", async () => {
-      const fixture = await idleWorkflowFixture(postgres, { emitted: true });
+      const fixture = await idleWorkflowFixture(postgres, {
+        emitted: true,
+        requiredOutput: true,
+      });
       try {
         const transition = await fixture.database.completeWorkflowAgentExecution({
           executionId: fixture.execution.id,
@@ -432,7 +463,10 @@ describe("agent execution PostgreSQL repository", () => {
     });
 
     it("keeps coercing a late completion into an idle timeout without an emitted output", async () => {
-      const fixture = await idleWorkflowFixture(postgres, { emitted: false });
+      const fixture = await idleWorkflowFixture(postgres, {
+        emitted: false,
+        requiredOutput: true,
+      });
       try {
         const transition = await fixture.database.completeWorkflowAgentExecution({
           executionId: fixture.execution.id,
