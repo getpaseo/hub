@@ -205,7 +205,7 @@ function ActivityFilters({
         onChange={(range) => filter({ range })}
       />
       <FilterSelect
-        label="Source"
+        label="Provider"
         value={search.provider ?? ALL}
         options={withCurrent(PROVIDER_OPTIONS, search.provider, () =>
           query.providers.map(activityProviderLabel).join(", "),

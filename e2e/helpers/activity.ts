@@ -1,7 +1,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
 export type ActivityView = "Runs" | "Unmatched events";
-export type ActivityFilter = "Range" | "Source" | "Status" | "Trigger" | "Daemon" | "Reason";
+export type ActivityFilter = "Range" | "Provider" | "Status" | "Trigger" | "Daemon" | "Reason";
 
 /**
  * The organization's Activity screen: one list of runs or of unmatched events, the filters

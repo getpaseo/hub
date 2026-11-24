@@ -220,6 +220,7 @@ const FAILURE_TITLES: Readonly<Record<string, string>> = {
 function RunBody({ run }: { run: ActivityRunDetailView }) {
   const failure = FAILURE_TITLES[run.status];
   const latest = run.steps.at(-1)?.execution ?? null;
+  const timed = run.steps.some((step) => step.startedAt !== null);
   const rows: SummaryRow[] = [
     { label: "Daemon", value: run.daemon?.slug ?? "None" },
     {
@@ -259,8 +260,8 @@ function RunBody({ run }: { run: ActivityRunDetailView }) {
         <SummaryPanel label="Run" rows={rows} />
       </Section>
       {run.steps.length === 0 ? null : (
-        <Section>
-          <Card title="Steps">
+        <Section title="Steps">
+          <Card>
             <RecordList label="Steps">
               {run.steps.map((step) => (
                 <RecordRow
@@ -270,11 +271,17 @@ function RunBody({ run }: { run: ActivityRunDetailView }) {
                       {statusLabel(step.status)}
                     </StatusPill>
                   }
-                  actions={
-                    <span className="w-16 text-right text-sm text-muted-foreground tabular-nums">
-                      {stepDuration(step.startedAt, step.completedAt)}
-                    </span>
-                  }
+                  // The column only holds its width when a step has a time to put in it, so the
+                  // pills line up across steps without leaving a gap after them when none does.
+                  {...(timed
+                    ? {
+                        actions: (
+                          <span className="w-16 text-right text-sm text-muted-foreground tabular-nums">
+                            {stepDuration(step.startedAt, step.completedAt)}
+                          </span>
+                        ),
+                      }
+                    : {})}
                 >
                   <TwoLine
                     primary={`${String(step.ordinal + 1)}. ${step.stepId}`}

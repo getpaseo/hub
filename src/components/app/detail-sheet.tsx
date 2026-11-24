@@ -1,9 +1,16 @@
 /* oxlint-disable eslint-plugin-react-perf/jsx-no-new-function-as-prop -- the sheet maps its own open-change to the caller's close */
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronUp, XIcon } from "lucide-react";
 import { useEffect, type ReactNode } from "react";
 
 import { Button } from "../ui/button.js";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "../ui/sheet.js";
+import {
+  Sheet,
+  SheetClose,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "../ui/sheet.js";
 import { Skeleton } from "../ui/skeleton.js";
 import { StatusPill, type StatusTone } from "./status-pill.js";
 
@@ -48,6 +55,9 @@ export function DetailSheet({
         // The sheet is wide enough for an indented payload; the list beside it stays readable
         // from `lg`, and below that the sheet is the screen.
         className="w-full gap-0 sm:max-w-xl"
+        // The close button joins the steppers in the header row instead of floating in the
+        // corner, so all three share one size, one line, and one right edge.
+        showCloseButton={false}
         // The sheet takes focus itself, so `j`, `k`, and Escape work at once without lighting a
         // ring on whichever button happens to come first — usually Previous record.
         onOpenAutoFocus={(event) => {
@@ -57,8 +67,7 @@ export function DetailSheet({
         {...(description === undefined ? { "aria-describedby": undefined } : {})}
       >
         <SheetHeader className="gap-3 border-b px-6 pt-5 pb-4">
-          {/* The close button sits in the corner; the steppers sit beside it, clear of the title. */}
-          <div className="flex min-w-0 items-start gap-2 pr-8">
+          <div className="flex min-w-0 items-start gap-4">
             <div className="grid min-w-0 flex-1 gap-1">
               <span className="flex min-w-0 items-center gap-2">
                 {title === undefined ? (
@@ -77,30 +86,39 @@ export function DetailSheet({
                 <SheetDescription className="truncate">{description}</SheetDescription>
               )}
             </div>
-            {onPrevious === undefined && onNext === undefined ? null : (
-              <div className="-my-1 flex shrink-0 items-center">
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="Previous record"
-                  aria-keyshortcuts="k"
-                  disabled={onPrevious === undefined}
-                  onClick={onPrevious}
-                >
-                  <ChevronUp />
+            {/* A 28px control against the title's 24px line: -mt-0.5 centres them on it, and
+                -mr-1.5 sets the close glyph, not its hit area, on the header's right edge. */}
+            <div className="-mt-0.5 -mr-1.5 flex shrink-0 items-center gap-1">
+              {onPrevious === undefined && onNext === undefined ? null : (
+                <div className="flex items-center">
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Previous record"
+                    aria-keyshortcuts="k"
+                    disabled={onPrevious === undefined}
+                    onClick={onPrevious}
+                  >
+                    <ChevronUp />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Next record"
+                    aria-keyshortcuts="j"
+                    disabled={onNext === undefined}
+                    onClick={onNext}
+                  >
+                    <ChevronDown />
+                  </Button>
+                </div>
+              )}
+              <SheetClose asChild>
+                <Button variant="ghost" size="icon-sm" aria-label="Close">
+                  <XIcon />
                 </Button>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="Next record"
-                  aria-keyshortcuts="j"
-                  disabled={onNext === undefined}
-                  onClick={onNext}
-                >
-                  <ChevronDown />
-                </Button>
-              </div>
-            )}
+              </SheetClose>
+            </div>
           </div>
           {actions === undefined ? null : (
             <div className="flex flex-wrap items-center gap-2">{actions}</div>
