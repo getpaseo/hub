@@ -295,7 +295,12 @@ describe("activity store", () => {
       try {
         await runtime.migrate();
         const plans = await runtime.transaction(firstPagePlans);
-        for (const [list, plan] of Object.entries(plans)) {
+        // Each trigger's last run is one read of its own project's runs, not of the organization's.
+        const { lastRuns, ...lists } = plans;
+        expect(lastRuns).toMatch(
+          /trigger_runs_project_created_idx on trigger_runs runs.*\n\s+Index Cond: \(project_id = /u,
+        );
+        for (const [list, plan] of Object.entries(lists)) {
           expect(plan, list).toMatch(/Index/u);
           expect(plan, list).not.toMatch(/\bSort\b/u);
         }
@@ -390,6 +395,7 @@ async function firstPagePlans(transaction: QueryHandle): Promise<Record<string, 
     providerUnmatched: () =>
       activity.listUnmatched(ORG, query({ view: "unmatched", provider: "github" }), NOW),
     latestRun: () => activity.latestRun(ORG),
+    lastRuns: () => activity.lastRuns(ORG),
   };
   const plans: Record<string, string> = {};
   for (const [list, read] of Object.entries(reads)) {

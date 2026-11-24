@@ -70,20 +70,28 @@ const LATEST_EXECUTION = `left join lateral (
  * (docs/trigger-migration.md), so they are matched by the name the migration revision recorded.
  */
 const TRIGGER_SOURCES = `(
-  select id, name, runtime_project_id as project_id, null::text as former_name
-  from organization_triggers
-  where organization_id = $1
+  select triggers.id, triggers.name, projects.id as project_id, null::text as former_name
+  from organization_triggers triggers
+  left join projects
+    on projects.id = triggers.runtime_project_id and projects.organization_id = $1
+  where triggers.organization_id = $1
   union all
-  select triggers.id, triggers.name,
-         (revisions.source_evidence ->> 'legacyProjectId')::uuid as project_id,
+  select triggers.id, triggers.name, projects.id as project_id,
          revisions.normalized_configuration #>> '{triggers,0,name}' as former_name
   from organization_trigger_revisions revisions
   join organization_triggers triggers on triggers.id = revisions.trigger_id
+  join projects
+    on projects.id = (revisions.source_evidence ->> 'legacyProjectId')::uuid
+   and projects.organization_id = $1
   where revisions.organization_id = $1 and revisions.source_kind = 'project_migration'
     and triggers.organization_id = $1
 )`;
 
-/** A run belongs to the trigger whose source it came from. */
+/**
+ * A run belongs to the trigger whose source it came from. Every source's project is checked
+ * against the organization above, and `trigger_runs_project_organization_fk` keeps a run in its
+ * project's organization, so a run of a source's project is already the organization's.
+ */
 const RUN_OF_TRIGGER = `runs.project_id = triggers.project_id
   and (triggers.former_name is null or runs.configured_trigger_name = triggers.former_name)`;
 
@@ -464,7 +472,10 @@ export class ActivityRepository implements ActivityStore {
 
   async lastRuns(organizationId: string): Promise<TriggerLastRun[]> {
     // One indexed read per trigger source, through `trigger_runs_project_created_idx`, then the
-    // newest of a migrated trigger's two sources.
+    // newest of a migrated trigger's two sources. The read names only the project and orders by
+    // `created_at` alone, which is that index's order. Naming the organization or ordering by id
+    // too lets the organization index serve it, and a trigger that never ran then walks the
+    // organization's whole history to find nothing.
     const { rows } = await this.runtime.query<{
       trigger_id: string;
       status: RunStatus;
@@ -481,8 +492,7 @@ export class ActivityRepository implements ActivityStore {
              on receipts.id = runs.provider_event_receipt_id
             and receipts.organization_id = runs.organization_id
            where ${RUN_OF_TRIGGER}
-             and runs.organization_id = $1
-           order by runs.created_at ${indexOrder("desc")}, runs.id ${indexOrder("desc")}
+           order by runs.created_at ${indexOrder("desc")}
            limit 1
          ) latest on true
          order by triggers.id, latest.created_at desc, latest.id desc
