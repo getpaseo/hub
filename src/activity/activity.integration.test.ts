@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { embeddedDatabaseRuntime, type DatabaseRuntime } from "../db/runtime/index.js";
+import {
+  embeddedDatabaseRuntime,
+  type DatabaseRuntime,
+  type QueryHandle,
+} from "../db/runtime/index.js";
 import { createPostgresTestRuntime } from "../db/test-utils/runtime.js";
 import { ActivityRepository } from "./index.js";
 import { activityQuery, parseActivitySearch } from "./query-contract.js";
@@ -281,6 +285,29 @@ describe("activity store", () => {
   );
 
   it.each(["postgres", "embedded"])(
+    "%s reads each list's first page off its index instead of sorting the history",
+    async (driver) => {
+      const directory = await mkdtemp(join(tmpdir(), "hub-activity-plans-"));
+      const { runtime } =
+        driver === "postgres"
+          ? await createPostgresTestRuntime(postgres.getConnectionUri())
+          : await embeddedDatabaseRuntime(directory);
+      try {
+        await runtime.migrate();
+        const plans = await runtime.transaction(firstPagePlans);
+        for (const [list, plan] of Object.entries(plans)) {
+          expect(plan, list).toMatch(/Index/u);
+          expect(plan, list).not.toMatch(/\bSort\b/u);
+        }
+      } finally {
+        await runtime.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
+  it.each(["postgres", "embedded"])(
     "%s attributes a migrated trigger's runs from before the migration to it",
     async (driver) => {
       const directory = await mkdtemp(join(tmpdir(), "hub-activity-migrated-"));
@@ -336,6 +363,42 @@ describe("activity store", () => {
     120_000,
   );
 });
+
+/**
+ * The plan of the first statement each list runs, with sorting priced out. A plan still sorts
+ * only when no index yields the order, so it says whether a page stops after 26 rows however
+ * little history there is.
+ */
+async function firstPagePlans(transaction: QueryHandle): Promise<Record<string, string>> {
+  await transaction.query("set local enable_sort = off");
+  await transaction.query("set local enable_incremental_sort = off");
+  let plan = "";
+  const activity = new ActivityRepository({
+    async query(sql, params) {
+      const { rows } = await transaction.query(`explain ${sql}`, params);
+      if (plan === "") plan = rows.map((row) => Object.values(row).join("")).join("\n");
+      return { rows: [], rowCount: 0 };
+    },
+  });
+  const query = (search: Record<string, unknown>) => activityQuery(parseActivitySearch(search));
+  const reads: Record<string, () => Promise<unknown>> = {
+    runs: () => activity.listRuns(ORG, query({}), NOW),
+    oldestRuns: () => activity.listRuns(ORG, query({ dir: "asc" }), NOW),
+    unmatched: () => activity.listUnmatched(ORG, query({ view: "unmatched" }), NOW),
+    oldestUnmatched: () =>
+      activity.listUnmatched(ORG, query({ view: "unmatched", dir: "asc" }), NOW),
+    providerUnmatched: () =>
+      activity.listUnmatched(ORG, query({ view: "unmatched", provider: "github" }), NOW),
+    latestRun: () => activity.latestRun(ORG),
+  };
+  const plans: Record<string, string> = {};
+  for (const [list, read] of Object.entries(reads)) {
+    plan = "";
+    await read();
+    plans[list] = plan;
+  }
+  return plans;
+}
 
 const MIGRATED_ORG = "migrated-org";
 const LEGACY_PROJECT = "11000000-0000-4000-8000-000000000001";

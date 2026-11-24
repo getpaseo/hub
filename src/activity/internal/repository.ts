@@ -207,7 +207,7 @@ export class ActivityRepository implements ActivityStore {
   ): Promise<ActivityPage<UnmatchedEvent>> {
     const params = new Parameters([organizationId]);
     const where = unmatchedConditions(query, now, params);
-    const direction = query.dir === "asc" ? "asc" : "desc";
+    const direction = indexOrder(query.dir);
     const limit = params.add(PAGE_READ);
     const offset = params.add(pageOffset(query.page));
     const [rows, count] = await Promise.all([
@@ -453,7 +453,7 @@ export class ActivityRepository implements ActivityStore {
               receipts.received_at
        ${RUN_FROM}
        where runs.organization_id = $1
-       order by runs.created_at desc, runs.id desc
+       order by runs.created_at ${indexOrder("desc")}, runs.id ${indexOrder("desc")}
        limit 1`,
       [organizationId],
     );
@@ -482,7 +482,7 @@ export class ActivityRepository implements ActivityStore {
             and receipts.organization_id = runs.organization_id
            where ${RUN_OF_TRIGGER}
              and runs.organization_id = $1
-           order by runs.created_at desc, runs.id desc
+           order by runs.created_at ${indexOrder("desc")}, runs.id ${indexOrder("desc")}
            limit 1
          ) latest on true
          order by triggers.id, latest.created_at desc, latest.id desc
@@ -517,6 +517,17 @@ function toPage<Row>(read: Row[], page: number, counted: number, cap: number): A
   if (rows.length > 0 && !hasNext) return { rows, total: reached, totalCapped: false, hasNext };
   if (counted > cap) return { rows, total: Math.max(cap, reached), totalCapped: true, hasNext };
   return { rows, total: counted, totalCapped: false, hasNext };
+}
+
+/**
+ * A direction in the null order the indexes were built with. Drizzle builds a `desc` index
+ * column `nulls last`, and SQL's `desc` alone means `nulls first`. The planner reads an index in
+ * order only when the query repeats its null order, even on a column that is never null, so a
+ * bare `desc` scans and sorts the whole history for a 26-row page. Read backwards, the same
+ * index serves `asc nulls first`.
+ */
+function indexOrder(dir: "asc" | "desc"): string {
+  return dir === "asc" ? "asc nulls first" : "desc nulls last";
 }
 
 /** Positional parameters, numbered as they are added. */
@@ -569,7 +580,7 @@ function runConditions(query: ActivityQuery, now: Date, params: Parameters): str
 }
 
 function runOrder(query: ActivityQuery): string {
-  const direction = query.dir === "asc" ? "asc" : "desc";
+  const direction = indexOrder(query.dir);
   const tiebreak = `runs.created_at ${direction}, runs.id ${direction}`;
   if (query.sort === "duration") return `${RUN_DURATION_MS} ${direction}, ${tiebreak}`;
   if (query.sort === "status") return `${STATUS_ORDER} ${direction}, ${tiebreak}`;
