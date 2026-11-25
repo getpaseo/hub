@@ -49,7 +49,10 @@ test("creates a webhook with a secret that the copied request already carries", 
     expect(rotated).not.toEqual(created.secret);
     expect(await triggers.copyCurlExample(created.endpoint)).toContain(`Bearer ${rotated}`);
     await triggers.rotateWebhookSecretUnsuccessfully();
-    expect(await triggers.copyCurlExample(created.endpoint)).toContain(`Bearer ${rotated}`);
+    expect(await triggers.copyCurlExample(created.endpoint)).toContain(
+      '-H "Authorization: Bearer $WEBHOOK_SECRET"',
+    );
+    await triggers.rotateWebhookSecret();
     await triggers.returnThroughHistory();
     expect(await triggers.copyCurlExample(created.endpoint)).toContain(
       '-H "Authorization: Bearer $WEBHOOK_SECRET"',

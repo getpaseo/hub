@@ -483,12 +483,10 @@ export class OrganizationTriggers {
   }
 
   /**
-   * A rotation that never reaches Hub leaves the current secret active, so the one on screen
-   * stays the one on screen.
+   * The browser cannot tell a rotation that never reached Hub from one whose answer was lost after
+   * it replaced the secret, so a failed rotation stops vouching for the secret on screen.
    */
   async rotateWebhookSecretUnsuccessfully() {
-    const secret = this.page.getByRole("textbox", { name: "Webhook secret" });
-    const shown = await secret.inputValue();
     const rotation = (request: Request) =>
       request.method() === "POST" && (request.postData() ?? "").includes("rotate");
     await this.page.route("**/*", (route) =>
@@ -498,7 +496,7 @@ export class OrganizationTriggers {
     const dialog = this.page.getByRole("alertdialog", { name: "Rotate webhook secret?" });
     await dialog.getByRole("button", { name: "Rotate secret", exact: true }).click();
     await expect(this.page.getByText("Webhook secret unavailable", { exact: true })).toBeVisible();
-    await expect(secret).toHaveValue(shown);
+    await expect(this.page.getByRole("textbox", { name: "Webhook secret" })).toBeHidden();
     await this.page.unrouteAll();
   }
 

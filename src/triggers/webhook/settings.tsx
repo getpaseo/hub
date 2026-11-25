@@ -34,17 +34,18 @@ export function WebhookSettings({
   const rotate = useServerFn(rotateWebhookSecret);
   const queryClient = useQueryClient();
   // The one secret on screen for this visit: the one the endpoint was created with, until a
-  // rotation succeeds and replaces it. A rotation in flight or one that failed leaves the current
-  // secret active, so it leaves the one on screen too; a replaced secret never comes back.
+  // rotation replaces it. A failed rotation clears it, because the browser cannot tell a request
+  // that never reached Hub from one whose answer was lost after it replaced the secret.
   const [shown, setShown] = useState(initialSecret);
   const secret = useMutation({
     mutationFn: (action: WebhookSecretAction) =>
       rotate({ data: { organizationSlug, triggerId: endpoint.triggerId, action } }),
     gcTime: 0,
     onSuccess: async (result) => {
-      if (result.status === "ok") setShown(result.data.secret);
+      setShown(result.status === "ok" ? result.data.secret : undefined);
       await queryClient.invalidateQueries({ queryKey: ["triggers", organizationSlug] });
     },
+    onError: () => setShown(undefined),
   });
   const { mutate } = secret;
   const createSecret = useCallback(() => mutate("create"), [mutate]);
