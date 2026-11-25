@@ -144,7 +144,9 @@ async function comeBackFromProviderPage(
 ): Promise<void> {
   await page.route(`${providerOrigin}/**`, (route) => route.fulfill({ status: 204 }));
   const button = page.getByRole("button", { name: `Continue with ${provider}` });
+  const leftForProvider = page.waitForResponse(`${providerOrigin}/**`);
   await button.click();
+  await leftForProvider;
   await expect(button).toBeDisabled();
   await page.evaluate(() =>
     window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })),
