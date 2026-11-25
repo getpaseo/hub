@@ -16,7 +16,8 @@ export interface DaemonCreateAgentOptions {
   model?: string;
   thinkingOptionId?: string;
   providerOptions?: Readonly<Record<string, JsonValue>>;
-  toolPolicy: ToolPolicy;
+  /** Omitted when the caller grants nothing; providers without tool-policy support reject even an empty one. */
+  toolPolicy?: ToolPolicy;
   cwd: string;
   env: Record<string, string>;
   mcpServers?: Record<string, McpHttpServerConfig>;

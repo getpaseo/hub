@@ -200,3 +200,12 @@ test.each(["create", "restore", "send"] as const)(
     }
   },
 );
+
+test("a creation without a tool policy sends no toolPolicy field, so policy-less providers accept it", async () => {
+  const requests: Record<string, unknown>[] = [];
+  const agents = connect(requests);
+  const { toolPolicy: _omitted, ...withoutPolicy } = options;
+  await agents.create("key", withoutPolicy);
+  expect(requests[0]).toHaveProperty("config.provider", options.provider);
+  expect(requests[0]).not.toHaveProperty("config.toolPolicy");
+});

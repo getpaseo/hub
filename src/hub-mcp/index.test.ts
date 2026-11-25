@@ -356,8 +356,8 @@ describe("Hub organization MCP", () => {
       model: "chosen-model",
       thinkingOptionId: "high",
       providerOptions: { sandbox_mode: "danger-full-access" },
-      toolPolicy: { preapproved: [] },
     });
+    assert(!("toolPolicy" in z.record(z.string(), z.unknown()).parse(f.requests[0]?.["config"])));
     assert(!("initialPrompt" in f.requests[0]));
     assert.equal(f.requests[2]?.["text"], creation.prompt);
     assert.match(

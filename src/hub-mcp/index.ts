@@ -331,7 +331,6 @@ function toolsFor(options: Options): ToolDefinition[] {
               }
             : {}),
           env: {},
-          toolPolicy: { preapproved: [] },
         });
         await control.send(
           result.id,
