@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, it } from "vitest";
@@ -44,6 +44,21 @@ it("rejects a second process using the same embedded data directory", async () =
   assert.equal(result.exitCode, 23);
   assert.match(result.stderr, /already in use by another Paseo Hub process/);
   assert.match(result.stderr, /Embedded mode supports one process per data directory/);
+});
+
+it("recovers a lock left by an earlier process with the same PID", async () => {
+  // A restarted container runs Hub as PID 1 again, so the stale lock names a live PID: this one.
+  const dataDirectory = join(root, "database");
+  await mkdir(dataDirectory, { recursive: true });
+  await writeFile(
+    join(dataDirectory, ".paseo-hub.lock"),
+    JSON.stringify({ pid: process.pid, token: "left-by-an-earlier-process", hostname: hostname() }),
+  );
+
+  activeRuntime = await embeddedDatabaseRuntime(dataDirectory);
+  const result = await activeRuntime.runtime.query<{ value: number }>(`select 1 as value`);
+
+  assert.deepEqual(result.rows, [{ value: 1 }]);
 });
 
 async function openEmbeddedRuntimeInChild(
