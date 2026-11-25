@@ -60,24 +60,52 @@ export function changeTriggerModel(input: {
 }): TriggerFormValue {
   const previous = selectedProviderModel(input.entries, input.form.agent);
   const selected = selectedProviderModel(input.entries, input.agent);
-  const modes = selected.entry?.modes ?? [];
-  const sameProvider = previous.entry?.provider === selected.entry?.provider;
-  const mode =
-    (sameProvider ? modes.find((candidate) => candidate.id === input.form.mode) : undefined) ??
-    modes.find((candidate) => candidate.id === selected.entry?.defaultModeId) ??
-    modes[0];
-  const thinkingOptions = selected.model?.thinkingOptions ?? [];
+  const previousProvider = previous.entry?.provider ?? safeProviderOf(input.form.agent);
+  const nextProvider = selected.entry?.provider ?? safeProviderOf(input.agent);
+  const sameProvider = previousProvider !== undefined && previousProvider === nextProvider;
+  const switchedProvider = previousProvider !== undefined && previousProvider !== nextProvider;
   const sameModel = sameProvider && previous.model?.id === selected.model?.id;
-  const thinking =
-    (sameModel
-      ? thinkingOptions.find((candidate) => candidate.id === input.form.thinkingOptionId)
-      : undefined) ??
-    thinkingOptions.find((candidate) => candidate.id === selected.model?.defaultThinkingOptionId) ??
-    thinkingOptions[0];
   return {
     ...input.form,
     agent: input.agent,
-    mode: mode?.id ?? "",
-    thinkingOptionId: thinking?.id ?? "",
+    mode: pickMode(selected.entry, sameProvider ? input.form.mode : undefined),
+    thinkingOptionId: pickThinking(
+      selected.model,
+      sameModel ? input.form.thinkingOptionId : undefined,
+    ),
+    ...(switchedProvider ? { providerOptions: "" } : {}),
   };
+}
+
+function pickMode(
+  entry: HubProviderSnapshotEntry | undefined,
+  currentMode: string | undefined,
+): string {
+  const modes = entry?.modes ?? [];
+  const chosen =
+    modes.find((candidate) => candidate.id === currentMode) ??
+    modes.find((candidate) => candidate.id === entry?.defaultModeId) ??
+    modes[0];
+  return chosen?.id ?? "";
+}
+
+function pickThinking(
+  model: NonNullable<HubProviderSnapshotEntry["models"]>[number] | undefined,
+  currentThinking: string | undefined,
+): string {
+  const options = model?.thinkingOptions ?? [];
+  const chosen =
+    options.find((candidate) => candidate.id === currentThinking) ??
+    options.find((candidate) => candidate.id === model?.defaultThinkingOptionId) ??
+    options[0];
+  return chosen?.id ?? "";
+}
+
+function safeProviderOf(agent: string): string | undefined {
+  if (agent.trim() === "") return undefined;
+  try {
+    return splitAgentId(agent).provider;
+  } catch {
+    return undefined;
+  }
 }

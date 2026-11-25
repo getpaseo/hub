@@ -3,6 +3,8 @@ import type { CompiledAgent, JsonValue } from "../config/compiler.js";
 import type {
   HubExecutionAgentSnapshot,
   HubExecutionAgentStreamEvent,
+  HubProviderControls,
+  HubProviderControlsDraftConfig,
   HubProviderSnapshot,
 } from "../hub/protocol.js";
 
@@ -87,6 +89,8 @@ export interface DaemonConnection {
   refreshProviderSnapshot(options: { cwd?: string; providers?: string[] }): Promise<void>;
   /** The daemon's open projects. Empty when the daemon does not share them with Hub. */
   listProjects(): Promise<readonly DaemonProject[]>;
+  /** Provider option controls and effective defaults for a draft agent configuration. */
+  listProviderControls(draftConfig: HubProviderControlsDraftConfig): Promise<HubProviderControls>;
   /** The daemon's own answer about whether it can run this agent as configured in `cwd`. */
   validateAgentConfiguration(
     agent: CompiledAgent,

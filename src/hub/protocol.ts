@@ -2,7 +2,7 @@ import { z } from "zod";
 
 const AgentStatusSchema = z.enum(["error", "initializing", "idle", "running", "closed"]);
 
-type WireJsonValue =
+export type WireJsonValue =
   | string
   | number
   | boolean
@@ -10,7 +10,7 @@ type WireJsonValue =
   | WireJsonValue[]
   | { [key: string]: WireJsonValue };
 
-const JsonValueSchema: z.ZodType<WireJsonValue> = z.lazy(() =>
+export const JsonValueSchema: z.ZodType<WireJsonValue> = z.lazy(() =>
   z.union([
     z.string(),
     z.number().finite(),
@@ -20,6 +20,39 @@ const JsonValueSchema: z.ZodType<WireJsonValue> = z.lazy(() =>
     z.record(z.string(), JsonValueSchema),
   ]),
 );
+
+const AgentOptionChoiceSchema = z.object({
+  value: z.string(),
+  label: z.string(),
+  description: z.string().optional(),
+});
+
+const AgentOptionToggleControlSchema = z.object({
+  type: z.literal("toggle"),
+  key: z.string(),
+  label: z.string(),
+  description: z.string().optional(),
+  tooltip: z.string().optional(),
+  icon: z.string().optional(),
+  defaultValue: z.boolean().optional(),
+});
+
+const AgentOptionSelectControlSchema = z.object({
+  type: z.literal("select"),
+  key: z.string(),
+  label: z.string(),
+  description: z.string().optional(),
+  tooltip: z.string().optional(),
+  icon: z.string().optional(),
+  desktopTrigger: z.enum(["icon", "label"]).optional(),
+  defaultValue: z.string().optional(),
+  choices: z.array(AgentOptionChoiceSchema),
+});
+
+export const AgentOptionControlSchema = z.discriminatedUnion("type", [
+  AgentOptionToggleControlSchema,
+  AgentOptionSelectControlSchema,
+]);
 
 const ProviderSelectOptionSchema = z.object({
   id: z.string(),
@@ -249,6 +282,33 @@ export const ProjectListResponseSchema = z.object({
   }),
 });
 
+export const ProviderControlsDraftConfigSchema = z.object({
+  provider: z.string().min(1),
+  cwd: z.string().min(1),
+  modeId: z.string().optional(),
+  model: z.string().optional(),
+  thinkingOptionId: z.string().optional(),
+  providerOptions: z.record(z.string(), JsonValueSchema).optional(),
+});
+
+export const ProviderControlsListRequestSchema = z.object({
+  type: z.literal("provider.controls.list.request"),
+  draftConfig: ProviderControlsDraftConfigSchema,
+  requestId: z.string(),
+});
+
+export const ProviderControlsListResponseSchema = z.object({
+  type: z.literal("provider.controls.list.response"),
+  payload: z.object({
+    provider: z.string(),
+    controls: z.array(AgentOptionControlSchema).optional(),
+    options: z.record(z.string(), JsonValueSchema).optional(),
+    error: z.string().nullable().optional(),
+    fetchedAt: z.string(),
+    requestId: z.string(),
+  }),
+});
+
 export const HubExecutionControlActionSchema = z.enum(["interrupt", "archive"]);
 
 const RpcErrorSchema = z.object({
@@ -268,6 +328,7 @@ export const HubExecutionOutboundSchema = z.object({
     GetProvidersSnapshotResponseSchema,
     RefreshProvidersSnapshotResponseSchema,
     ProjectListResponseSchema,
+    ProviderControlsListResponseSchema,
     RpcErrorSchema,
   ]),
 });
@@ -277,3 +338,11 @@ export type HubExecutionAgentStreamEvent = z.infer<typeof HubExecutionAgentStrea
 export type HubExecutionControlAction = z.infer<typeof HubExecutionControlActionSchema>;
 export type HubProviderSnapshot = z.infer<typeof GetProvidersSnapshotResponseSchema>["payload"];
 export type HubProviderSnapshotEntry = z.infer<typeof ProviderSnapshotEntrySchema>;
+export type HubAgentOptionControl = z.infer<typeof AgentOptionControlSchema>;
+export type HubAgentOptionToggleControl = z.infer<typeof AgentOptionToggleControlSchema>;
+export type HubAgentOptionSelectControl = z.infer<typeof AgentOptionSelectControlSchema>;
+export type HubProviderControlsDraftConfig = z.infer<typeof ProviderControlsDraftConfigSchema>;
+export interface HubProviderControls {
+  controls: HubAgentOptionControl[];
+  options: Record<string, WireJsonValue>;
+}

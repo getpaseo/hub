@@ -218,8 +218,51 @@ export class OrganizationTriggers {
   }
 
   async openContinuity() {
-    await this.page.getByRole("button", { name: /Advanced.*Agent continuity/u }).click();
+    const header = this.page.getByRole("button", { name: /Advanced.*Agent continuity/u });
+    if ((await header.getAttribute("aria-expanded")) !== "true") await header.click();
     await expect(this.page.getByRole("radiogroup", { name: "Agent continuity" })).toBeVisible();
+  }
+
+  async closeContinuity() {
+    const header = this.page.getByRole("button", { name: /Advanced.*Agent continuity/u });
+    if ((await header.getAttribute("aria-expanded")) === "true") await header.click();
+    await expect(header).toHaveAttribute("aria-expanded", "false");
+  }
+
+  async expectAdvancedSummary(...parts: string[]) {
+    const header = this.page.getByRole("button", { name: /Advanced.*Agent continuity/u });
+    for (const part of parts) await expect(header).toContainText(part);
+  }
+
+  async selectProviderOption(label: string, value: string) {
+    await this.openContinuity();
+    await this.selectOption(label, value);
+  }
+
+  async setProviderOptionToggle(label: string, checked: boolean) {
+    await this.openContinuity();
+    await this.page.getByRole("checkbox", { name: label }).setChecked(checked);
+  }
+
+  async expectProviderOptionSelect(label: string, value: string) {
+    await this.openContinuity();
+    await expect(this.page.getByRole("combobox", { name: label, exact: true })).toHaveAttribute(
+      "data-value",
+      value,
+    );
+  }
+
+  async expectProviderOptionToggle(label: string, checked: boolean) {
+    await this.openContinuity();
+    const control = this.page.getByRole("checkbox", { name: label });
+    if (checked) await expect(control).toBeChecked();
+    else await expect(control).not.toBeChecked();
+  }
+
+  async expectNoProviderOptionControl(label: string) {
+    await this.openContinuity();
+    await expect(this.page.getByRole("combobox", { name: label, exact: true })).toHaveCount(0);
+    await expect(this.page.getByRole("checkbox", { name: label })).toHaveCount(0);
   }
 
   /** Whether the trigger's agents start hidden in Paseo, and whether Paseo archives them after. */
@@ -337,7 +380,7 @@ export class OrganizationTriggers {
     await this.selectAgent(input.agent);
     await this.selectOption("Execution mode", input.mode);
     await this.selectOption("Thinking", input.thinking);
-    await this.page.getByRole("button", { name: "Advanced provider options" }).click();
+    await this.openContinuity();
     await this.page.getByLabel("Provider options (JSON)").fill(input.providerOptions);
     await this.page.getByLabel("Instructions", { exact: true }).fill(input.prompt);
   }
@@ -386,7 +429,7 @@ export class OrganizationTriggers {
     if (input.mode !== undefined) await this.selectOption("Execution mode", input.mode);
     if (input.thinking !== undefined) await this.selectOption("Thinking", input.thinking);
     if (input.providerOptions !== undefined) {
-      await this.page.getByRole("button", { name: "Advanced provider options" }).click();
+      await this.openContinuity();
       await this.page.getByLabel("Provider options (JSON)").fill(input.providerOptions);
     }
     await this.page.getByLabel("Instructions", { exact: true }).fill(input.prompt);
@@ -963,7 +1006,7 @@ export class OrganizationTriggers {
       "data-value",
       input.mode,
     );
-    await this.page.getByRole("button", { name: "Advanced provider options" }).click();
+    await this.openContinuity();
     await expect(this.page.getByLabel("Provider options (JSON)")).toHaveValue(
       input.providerOptions,
     );
@@ -1078,7 +1121,7 @@ export class OrganizationTriggers {
   async expectDisclosureRailsAtPhoneWidth() {
     const viewport = this.page.viewportSize();
     await this.page.setViewportSize({ width: 420, height: 900 });
-    for (const name of ["Advanced provider options", "Agent continuity"]) {
+    for (const name of ["Limits", "Agent continuity"]) {
       const header = this.page.getByRole("button", { name, exact: false }).first();
       await header.scrollIntoViewIfNeeded();
       const rails = await header.evaluate((element: HTMLElement) =>

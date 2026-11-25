@@ -17,12 +17,18 @@ import {
   RefreshProvidersSnapshotResponseSchema,
   ProjectListRequestSchema,
   ProjectListResponseSchema,
+  ProviderControlsListRequestSchema,
+  ProviderControlsListResponseSchema,
   HubExecutionOutboundSchema,
   HubDaemonHelloSchema,
   HubDaemonServerInfoEnvelopeSchema,
 } from "../hub/protocol.js";
 import type { DaemonConnection, DaemonProject } from "./protocol.js";
-import type { HubProviderSnapshot } from "../hub/protocol.js";
+import type {
+  HubProviderControls,
+  HubProviderControlsDraftConfig,
+  HubProviderSnapshot,
+} from "../hub/protocol.js";
 
 interface PendingAgentValidationRequest {
   kind: "agent-validation";
@@ -52,6 +58,13 @@ interface PendingProjectListRequest {
   resolve(value: readonly DaemonProject[]): void;
   reject(error: Error): void;
 }
+interface PendingProviderControlsRequest {
+  kind: "provider-controls";
+  generation: number;
+  timer?: ReturnType<typeof setTimeout>;
+  resolve(value: HubProviderControls): void;
+  reject(error: Error): void;
+}
 interface AgentValidationIssue {
   path: readonly (string | number)[];
   message: string;
@@ -60,13 +73,15 @@ type PendingRequest =
   | PendingAgentValidationRequest
   | PendingProviderSnapshotRequest
   | PendingProviderRefreshRequest
-  | PendingProjectListRequest;
+  | PendingProjectListRequest
+  | PendingProviderControlsRequest;
 
 type PendingRequestInput =
   | Omit<PendingAgentValidationRequest, "timer">
   | Omit<PendingProviderSnapshotRequest, "timer">
   | Omit<PendingProviderRefreshRequest, "timer">
-  | Omit<PendingProjectListRequest, "timer">;
+  | Omit<PendingProjectListRequest, "timer">
+  | Omit<PendingProviderControlsRequest, "timer">;
 
 /**
  * How long Hub waits for optional project suggestions before expiring the request.
@@ -82,11 +97,12 @@ const DEFAULT_PROJECT_LIST_TIMEOUT_MS = 15_000;
 const SHUTDOWN_CLOSE_TIMEOUT_MS = 1_000;
 
 /**
- * How a daemon says it will not list its projects for Hub: one that predates sharing them
- * refuses the session, and one that predates the request does not know its name. Neither is a
- * failure to report; the daemon offers no projects.
+ * How a daemon says it does not expose an optional discovery RPC to Hub: one that predates sharing
+ * it refuses the session, and one that predates the request does not know its name. Neither is a
+ * failure to report; Hub degrades to an empty list.
  */
-const PROJECT_LIST_WITHHELD = new Set(["access_denied", "unknown_schema"]);
+const OPTIONAL_DISCOVERY_WITHHELD = new Set(["access_denied", "unknown_schema"]);
+const EMPTY_PROVIDER_CONTROLS: HubProviderControls = { controls: [], options: {} };
 interface ActiveSocket {
   agents: DaemonAgents;
   generation: number;
@@ -213,6 +229,7 @@ export class ActiveDaemonRegistry {
       getProviderSnapshot: (options) => this.getProviderSnapshot(daemonId, options),
       refreshProviderSnapshot: (options) => this.refreshProviderSnapshot(daemonId, options),
       listProjects: () => this.listProjects(daemonId),
+      listProviderControls: (draftConfig) => this.listProviderControls(daemonId, draftConfig),
       validateAgentConfiguration: (agent, options) =>
         this.validateAgentConfiguration(daemonId, agent, options),
     };
@@ -351,6 +368,35 @@ export class ActiveDaemonRegistry {
     });
   }
 
+  private listProviderControls(
+    daemonId: string,
+    draftConfig: HubProviderControlsDraftConfig,
+  ): Promise<HubProviderControls> {
+    const active = this.active.get(daemonId);
+    if (!active?.ready) return Promise.reject(new Error("daemon_not_connected"));
+    if (active.sessionProtocol === "legacy") return Promise.resolve(EMPTY_PROVIDER_CONTROLS);
+    const requestId = randomUUID();
+    const request = ProviderControlsListRequestSchema.parse({
+      type: "provider.controls.list.request",
+      draftConfig,
+      requestId,
+    });
+    return new Promise((resolve, reject) => {
+      this.registerPending(
+        daemonId,
+        requestId,
+        {
+          kind: "provider-controls",
+          generation: active.generation,
+          resolve,
+          reject,
+        },
+        this.projectListTimeoutMs,
+      );
+      active.socket.send(JSON.stringify({ type: "session", message: request }));
+    });
+  }
+
   private requireProviderSnapshotConnection(daemonId: string): ActiveSocket {
     const active = this.active.get(daemonId);
     if (!active?.ready) throw new Error("daemon_not_connected");
@@ -391,6 +437,9 @@ export class ActiveDaemonRegistry {
     if (providerRefresh.success) return this.receiveProviderRefresh(active, providerRefresh.data);
     const projectList = ProjectListResponseSchema.safeParse(message);
     if (projectList.success) return this.receiveProjectList(active, projectList.data);
+    const providerControls = ProviderControlsListResponseSchema.safeParse(message);
+    if (providerControls.success)
+      return this.receiveProviderControls(active, providerControls.data);
   }
 
   private acceptServerInfo(
@@ -514,6 +563,22 @@ export class ActiveDaemonRegistry {
     );
   }
 
+  private receiveProviderControls(
+    active: ActiveSocket,
+    response: z.infer<typeof ProviderControlsListResponseSchema>,
+  ): void {
+    const pending = this.takePending(active, response.payload.requestId, "provider-controls");
+    if (!pending) return;
+    if (typeof response.payload.error === "string" && response.payload.error.length > 0) {
+      pending.reject(new Error(response.payload.error));
+      return;
+    }
+    pending.resolve({
+      controls: response.payload.controls ?? [],
+      options: response.payload.options ?? {},
+    });
+  }
+
   private receiveRpcError(
     active: ActiveSocket,
     payload: { requestId: string; error: string; code?: string | undefined },
@@ -523,13 +588,15 @@ export class ActiveDaemonRegistry {
     if (pending?.generation !== active.generation) return;
     clearTimeout(pending.timer);
     requests.delete(payload.requestId);
-    if (
-      pending.kind === "project-list" &&
-      payload.code !== undefined &&
-      PROJECT_LIST_WITHHELD.has(payload.code)
-    ) {
-      pending.resolve([]);
-      return;
+    if (payload.code !== undefined && OPTIONAL_DISCOVERY_WITHHELD.has(payload.code)) {
+      if (pending.kind === "project-list") {
+        pending.resolve([]);
+        return;
+      }
+      if (pending.kind === "provider-controls") {
+        pending.resolve(EMPTY_PROVIDER_CONTROLS);
+        return;
+      }
     }
     pending.reject(new Error(payload.error));
   }

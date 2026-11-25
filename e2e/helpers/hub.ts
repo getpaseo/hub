@@ -2241,6 +2241,18 @@ export class PaseoHub {
     connection.holdProjects();
   }
 
+  /** Configures daemon-driven provider option controls served for `provider.controls.list.request`. */
+  setDaemonProviderControls(
+    daemon: string,
+    resolver: (
+      draftConfig: import("../../src/hub/protocol.js").HubProviderControlsDraftConfig,
+    ) => import("../../src/hub/protocol.js").HubProviderControls,
+  ): void {
+    const connection = this.providerDaemons.get(daemon);
+    if (connection === undefined) throw new Error("Provider daemon is not connected");
+    connection.setProviderControls(resolver);
+  }
+
   async launchSavedTrigger(name: string, apiKey: string): Promise<void> {
     const rows = z
       .array(z.object({ slug: z.string() }))
@@ -5995,6 +6007,12 @@ class ContractDaemon {
   private readonly createdBackgrounds: (boolean | undefined)[] = [];
   /** Unset for a daemon that predates project listing, which rejects the request. */
   private projects: readonly DaemonProjectFixture[] | "hold" | undefined;
+  /** Unset for an older daemon that does not expose provider controls to Hub. */
+  private providerControlsResolver:
+    | ((
+        draftConfig: import("../../src/hub/protocol.js").HubProviderControlsDraftConfig,
+      ) => import("../../src/hub/protocol.js").HubProviderControls)
+    | undefined;
   readonly daemonId = randomUUID();
   readonly slug: string;
   private readonly credential = randomUUID();
@@ -6115,11 +6133,20 @@ class ContractDaemon {
     this.projects = "hold";
   }
 
+  setProviderControls(
+    resolver: (
+      draftConfig: import("../../src/hub/protocol.js").HubProviderControlsDraftConfig,
+    ) => import("../../src/hub/protocol.js").HubProviderControls,
+  ): void {
+    this.providerControlsResolver = resolver;
+  }
+
   private acceptExecution(data: RawData): void {
     const value: unknown = JSON.parse(readSocketData(data));
     if (
       this.acceptHello(value) ||
       this.acceptProviderRequest(value) ||
+      this.acceptProviderControls(value) ||
       this.acceptProjectList(value) ||
       this.acceptAgentValidation(value)
     ) {
@@ -6306,6 +6333,41 @@ class ContractDaemon {
     this.sendAgentResponse("project.list.response", {
       requestId: envelope.data.message.requestId,
       projects: this.projects,
+    });
+    return true;
+  }
+
+  private acceptProviderControls(value: unknown): boolean {
+    if (this.providerControlsResolver === undefined) return false;
+    const envelope = z
+      .object({
+        type: z.literal("session"),
+        message: z.object({
+          type: z.literal("provider.controls.list.request"),
+          requestId: z.string(),
+          draftConfig: z.object({
+            provider: z.string().min(1),
+            cwd: z.string().min(1),
+            modeId: z.string().optional(),
+            model: z.string().optional(),
+            thinkingOptionId: z.string().optional(),
+            providerOptions: z.record(z.string(), z.unknown()).optional(),
+          }),
+        }),
+      })
+      .safeParse(value);
+    if (!envelope.success) return false;
+    const request = envelope.data.message;
+    const resolved = this.providerControlsResolver(
+      request.draftConfig as import("../../src/hub/protocol.js").HubProviderControlsDraftConfig,
+    );
+    this.sendAgentResponse("provider.controls.list.response", {
+      requestId: request.requestId,
+      provider: request.draftConfig.provider,
+      controls: resolved.controls,
+      options: resolved.options,
+      error: null,
+      fetchedAt: new Date().toISOString(),
     });
     return true;
   }

@@ -158,6 +158,7 @@ describe("durable Hub action acknowledgement state", () => {
         },
         refreshProviderSnapshot: async () => {},
         listProjects: async () => [],
+        listProviderControls: async () => ({ controls: [], options: {} }),
         validateAgentConfiguration: async () => ({ valid: true }),
       };
       const lifecycle = createDaemonDispatchLifecycle({
@@ -277,6 +278,7 @@ describe("durable Hub action acknowledgement state", () => {
       },
       refreshProviderSnapshot: async () => {},
       listProjects: async () => [],
+      listProviderControls: async () => ({ controls: [], options: {} }),
       validateAgentConfiguration: async () => ({ valid: true }),
     };
     const lifecycle = createDaemonDispatchLifecycle({
@@ -658,6 +660,10 @@ class AcknowledgementConnection implements DaemonConnection {
   }
 
   async listProjects(): Promise<never> {
+    throw new Error("not used");
+  }
+
+  async listProviderControls(): Promise<never> {
     throw new Error("not used");
   }
 

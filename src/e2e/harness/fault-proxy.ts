@@ -22,6 +22,7 @@ export class HubFaultProxy {
   private denial: ((value: Denial) => void) | undefined;
   private providerSnapshot: ((value: Record<string, unknown>) => void) | undefined;
   private projectList: ((value: Record<string, unknown>) => void) | undefined;
+  private providerControls: ((value: Record<string, unknown>) => void) | undefined;
   private readonly creationExecutions = new Map<string, string>();
   private readonly createsByExecution = new Map<string, number>();
   private readonly agentIdsByExecution = new Map<string, Set<string>>();
@@ -121,6 +122,35 @@ export class HubFaultProxy {
       JSON.stringify({
         type: "session",
         message: { type: "project.list.request", requestId },
+      }),
+    );
+    return observed;
+  }
+
+  async requestProviderControls(draftConfig: {
+    provider: string;
+    cwd: string;
+    model?: string;
+    modeId?: string;
+    thinkingOptionId?: string;
+  }): Promise<Record<string, unknown>> {
+    const socket = this.daemonSocket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("Daemon is not connected");
+    const requestId = `hub-e2e-controls-${Date.now()}`;
+    const observed = new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error(`Provider controls were not observed\n${this.evidence()}`)),
+        10_000,
+      );
+      this.providerControls = (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      };
+    });
+    socket.send(
+      JSON.stringify({
+        type: "session",
+        message: { type: "provider.controls.list.request", requestId, draftConfig },
       }),
     );
     return observed;
@@ -299,6 +329,7 @@ export class HubFaultProxy {
     this.observeDenial(message);
     this.observeProviderSnapshot(message);
     this.observeProjectList(message);
+    this.observeProviderControls(message);
     return this.observeCreateResponse(message);
   }
 
@@ -316,6 +347,14 @@ export class HubFaultProxy {
     if (payload === undefined) return;
     this.projectList?.(payload);
     this.projectList = undefined;
+  }
+
+  private observeProviderControls(message: Record<string, unknown> | undefined): void {
+    if (message?.["type"] !== "provider.controls.list.response") return;
+    const payload = recordAt(message, "payload");
+    if (payload === undefined) return;
+    this.providerControls?.(payload);
+    this.providerControls = undefined;
   }
 
   private recordDaemonEvidence(message: Record<string, unknown> | undefined): void {

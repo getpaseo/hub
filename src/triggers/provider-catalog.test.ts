@@ -98,6 +98,44 @@ it("chooses a reported mode rather than inventing an unadvertised preferred valu
   ).toBe("read-only");
 });
 
+it("clears provider options when switching providers and keeps them when switching models on the same provider", () => {
+  const catalog: HubProviderSnapshotEntry[] = [
+    {
+      ...entries[0]!,
+      models: [
+        ...entries[0]!.models!,
+        { provider: "codex", id: "gpt-5.4-mini", label: "GPT-5.4 mini" },
+      ],
+    },
+    {
+      provider: "claude",
+      label: "Claude",
+      status: "ready",
+      enabled: true,
+      modes: [{ id: "bypassPermissions", label: "Full access" }],
+      defaultModeId: "bypassPermissions",
+      models: [{ provider: "claude", id: "claude-opus-4-7", label: "Opus 4.7" }],
+    },
+  ];
+  const withOptions = {
+    ...existingForm(),
+    providerOptions: '{\n  "service_tier": "fast",\n  "sandbox_mode": "workspace-write"\n}',
+  };
+  const sameProvider = changeTriggerModel({
+    entries: catalog,
+    form: withOptions,
+    agent: "codex/gpt-5.4-mini",
+  });
+  expect(sameProvider.providerOptions).toBe(withOptions.providerOptions);
+
+  const differentProvider = changeTriggerModel({
+    entries: catalog,
+    form: withOptions,
+    agent: "claude/claude-opus-4-7",
+  });
+  expect(differentProvider.providerOptions).toBe("");
+});
+
 describe("what the agent step says about providers that failed", () => {
   const claude: HubProviderSnapshotEntry = {
     provider: "claude",

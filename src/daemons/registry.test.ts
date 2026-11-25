@@ -340,6 +340,87 @@ describe("daemon socket generations", () => {
     assert.deepEqual(await daemon.listProjects(), []);
   });
 
+  it("lists provider option controls and effective options for a draft agent", async () => {
+    const pending = await daemon.pendingProviderControls({
+      provider: "codex",
+      cwd: "/workspace",
+      model: "gpt-5.4",
+      modeId: "full-access",
+      thinkingOptionId: "xhigh",
+      providerOptions: { service_tier: "fast" },
+    });
+    assert.deepEqual(pending.request["draftConfig"], {
+      provider: "codex",
+      cwd: "/workspace",
+      model: "gpt-5.4",
+      modeId: "full-access",
+      thinkingOptionId: "xhigh",
+      providerOptions: { service_tier: "fast" },
+    });
+
+    daemon.respondProviderControls(pending, {
+      provider: "codex",
+      controls: [
+        {
+          type: "select",
+          key: "service_tier",
+          label: "Speed",
+          defaultValue: "default",
+          choices: [
+            { value: "default", label: "Normal" },
+            { value: "fast", label: "Fast" },
+          ],
+        },
+        { type: "toggle", key: "plan_mode", label: "Plan" },
+      ],
+      options: { service_tier: "fast" },
+      error: null,
+    });
+
+    assert.deepEqual(await pending.promise, {
+      controls: [
+        {
+          type: "select",
+          key: "service_tier",
+          label: "Speed",
+          defaultValue: "default",
+          choices: [
+            { value: "default", label: "Normal" },
+            { value: "fast", label: "Fast" },
+          ],
+        },
+        { type: "toggle", key: "plan_mode", label: "Plan" },
+      ],
+      options: { service_tier: "fast" },
+    });
+  });
+
+  it.each(["access_denied", "unknown_schema"])(
+    "reads a daemon that answers provider controls with %s as offering no controls",
+    async (code) => {
+      const pending = await daemon.pendingProviderControls();
+      daemon.rejectRequest(pending, code);
+
+      assert.deepEqual(await pending.promise, { controls: [], options: {} });
+    },
+  );
+
+  it("fails provider controls when the daemon returns an application error", async () => {
+    const pending = await daemon.pendingProviderControls();
+    daemon.respondProviderControls(pending, {
+      provider: "codex",
+      error: "Provider 'codex' is not available.",
+    });
+
+    await assert.rejects(pending.promise, /Provider 'codex' is not available/u);
+  });
+
+  it("asks a legacy daemon for nothing and offers no provider controls", async () => {
+    await daemon.replaceConnection(false, "legacy");
+
+    assert.deepEqual(await daemon.listProviderControls(), { controls: [], options: {} });
+  });
+
   it("expires unanswered project list requests without interrupting slow provider refreshes", async () => {
     const timed = await DaemonRegistryHarness.start(createLogger(stream), 50);
     try {

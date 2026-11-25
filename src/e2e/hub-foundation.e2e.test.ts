@@ -143,6 +143,10 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
     const connected = await hub.status();
     const unrelatedAgent = await hub.createUnrelatedLocalAgent();
     const projects = await hub.requestProjectList();
+    const controls = await hub.requestProviderControls({
+      provider: "codex",
+      cwd: hub.workspacePath(),
+    });
     await hub.installProductionConfiguration();
 
     const run = await hub.runManual("canonical-delivery", "payments");
@@ -162,6 +166,9 @@ describeHubE2E("Paseo Hub cross-repository contract", () => {
             project.projectRootPath === hub.workspacePath(),
         ),
     );
+    assert.equal(controls["provider"], "codex");
+    assert.equal(controls["error"], null);
+    assert.ok(Array.isArray(controls["controls"]));
     assert.deepEqual(completed, {
       prompt: "Deploy requested for phase-five-operator",
       output: "phase-five:requested",

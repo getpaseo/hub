@@ -106,6 +106,12 @@ export function projectTriggerForm(yaml: string): TriggerFormProjection {
         "Edit this trigger in YAML because its background or auto-archive setting uses anchors or aliases",
     };
   }
+  if (providerOptionsUseYamlReferences(parsed.document)) {
+    return {
+      status: "yaml_only",
+      reason: "Edit this trigger in YAML because its provider options use anchors or aliases",
+    };
+  }
   const audience = readAudience(event, definition.filters);
   if ("reason" in audience) return { status: "yaml_only", reason: audience.reason };
   return {
@@ -271,7 +277,7 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
     ["run", "agent", "thinkingOptionId"],
     blankToUndefined(value.thinkingOptionId),
   );
-  setOptional(document, ["run", "agent", "options"], parseProviderOptions(value.providerOptions));
+  patchProviderOptions(document, projection.value, value);
   setIfChanged(document, ["run", "continuation"], formContinuation(value));
   setIfChanged(document, ["run", "max_runtime"], value.maxRuntime.trim());
   setIfChanged(document, ["run", "idle_timeout"], value.idleTimeout.trim());
@@ -470,6 +476,48 @@ function integrationToolsUseYamlReferences(document: Document): boolean {
     return visit.BREAK;
   };
   visit(tools, {
+    Alias: found,
+    Value: (_, node) => (node.anchor === undefined ? undefined : found()),
+  });
+  return usesReferences;
+}
+
+function patchProviderOptions(
+  document: Document,
+  previous: TriggerFormValue,
+  value: TriggerFormValue,
+): void {
+  const before = parseProviderOptions(previous.providerOptions);
+  const after = parseProviderOptions(value.providerOptions);
+  if (after === undefined) {
+    deleteIfPresent(document, ["run", "agent", "options"]);
+    return;
+  }
+  if (before === undefined) {
+    setIfChanged(document, ["run", "agent", "options"], after);
+    return;
+  }
+  for (const key of Object.keys(before)) {
+    if (!(key in after)) deleteIfPresent(document, ["run", "agent", "options", key]);
+  }
+  for (const [key, entry] of Object.entries(after)) {
+    setIfChanged(document, ["run", "agent", "options", key], entry);
+  }
+}
+
+function providerOptionsUseYamlReferences(document: Document): boolean {
+  const run = document.get("run", true);
+  if (isNode(run) && (isAlias(run) || run.anchor !== undefined)) return true;
+  const agent = document.getIn(["run", "agent"], true);
+  if (isNode(agent) && (isAlias(agent) || agent.anchor !== undefined)) return true;
+  const options = document.getIn(["run", "agent", "options"], true);
+  if (!isNode(options)) return false;
+  let usesReferences = false;
+  const found = () => {
+    usesReferences = true;
+    return visit.BREAK;
+  };
+  visit(options, {
     Alias: found,
     Value: (_, node) => (node.anchor === undefined ? undefined : found()),
   });

@@ -148,6 +148,50 @@ export class DaemonRegistryHarness {
     });
   }
 
+  listProviderControls(
+    draftConfig: import("../../hub/protocol.js").HubProviderControlsDraftConfig = {
+      provider: "codex",
+      cwd: "/workspace",
+      model: "gpt-5.4",
+      modeId: "full-access",
+    },
+  ) {
+    return this.connection().listProviderControls(draftConfig);
+  }
+
+  async pendingProviderControls(
+    draftConfig?: import("../../hub/protocol.js").HubProviderControlsDraftConfig,
+  ) {
+    const promise = this.listProviderControls(draftConfig);
+    void promise.catch(() => undefined);
+    return {
+      promise,
+      request: await this.currentSocket().next("provider.controls.list.request"),
+    };
+  }
+
+  respondProviderControls(
+    pending: Awaited<ReturnType<DaemonRegistryHarness["pendingProviderControls"]>>,
+    response: {
+      provider?: string;
+      controls?: readonly Record<string, unknown>[];
+      options?: Record<string, unknown>;
+      error?: string | null;
+    },
+  ): void {
+    this.currentSocket().send({
+      type: "provider.controls.list.response",
+      payload: {
+        requestId: pending.request.requestId,
+        provider: response.provider ?? "codex",
+        ...(response.controls === undefined ? {} : { controls: response.controls }),
+        ...(response.options === undefined ? {} : { options: response.options }),
+        ...(response.error === undefined ? {} : { error: response.error }),
+        fetchedAt: new Date().toISOString(),
+      },
+    });
+  }
+
   /** The daemon's own refusal of a request, as it reports one it will not or cannot serve. */
   rejectRequest(pending: { request: { requestId: string; type: string } }, code: string): void {
     this.currentSocket().send({

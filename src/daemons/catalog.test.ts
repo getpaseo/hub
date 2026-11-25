@@ -57,6 +57,53 @@ describe("daemon catalog", () => {
       /daemon_unavailable/u,
     );
   });
+
+  it("lists provider controls for a member of the daemon's organization", async () => {
+    const { catalog, calls } = await catalogFor(connectedDaemon());
+
+    assert.deepEqual(
+      await catalog.providerControls(new Request("https://hub.test/o/acme/triggers"), {
+        organizationSlug: "acme",
+        daemonId: TEST_DAEMON_ID,
+        provider: "codex",
+        cwd: "/repo",
+        model: "gpt-5.4",
+      }),
+      {
+        controls: [{ type: "toggle", key: "plan_mode", label: "Plan" }],
+        options: { plan_mode: true },
+      },
+    );
+    assert.deepEqual(calls, ["controls:codex:/repo:gpt-5.4"]);
+  });
+
+  it("offers no provider controls while the daemon is offline", async () => {
+    const { catalog } = await catalogFor(undefined);
+
+    assert.deepEqual(
+      await catalog.providerControls(new Request("https://hub.test/o/acme/triggers"), {
+        organizationSlug: "acme",
+        daemonId: TEST_DAEMON_ID,
+        provider: "codex",
+        cwd: "/repo",
+      }),
+      { controls: [], options: {} },
+    );
+  });
+
+  it("does not list provider controls for a daemon outside the organization", async () => {
+    const { catalog } = await catalogFor(connectedDaemon());
+
+    await assert.rejects(
+      catalog.providerControls(new Request("https://hub.test/o/acme/triggers"), {
+        organizationSlug: "acme",
+        daemonId: "22222222-2222-4222-8222-222222222222",
+        provider: "codex",
+        cwd: "/repo",
+      }),
+      /daemon_unavailable/u,
+    );
+  });
 });
 
 function connectedDaemon(): { connection: DaemonConnection; calls: string[] } {
@@ -81,6 +128,13 @@ function connectedDaemon(): { connection: DaemonConnection; calls: string[] } {
         };
       },
       listProjects: async () => [{ id: "project-1", name: "hub", rootPath: "/home/dev/hub" }],
+      listProviderControls: async ({ provider, cwd, model }) => {
+        calls.push(`controls:${provider}:${cwd}:${model ?? ""}`);
+        return {
+          controls: [{ type: "toggle", key: "plan_mode", label: "Plan" }],
+          options: { plan_mode: true },
+        };
+      },
     },
   };
 }

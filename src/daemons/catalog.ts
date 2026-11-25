@@ -1,8 +1,14 @@
 import type { AuthServer } from "../auth/server.js";
 import type { Database } from "../db/types.js";
 import { resolveRouteTenant } from "../projects/access.js";
-import type { HubProviderSnapshot } from "../hub/protocol.js";
+import type {
+  HubProviderControls,
+  HubProviderControlsDraftConfig,
+  HubProviderSnapshot,
+} from "../hub/protocol.js";
 import type { DaemonConnection, DaemonProject } from "./protocol.js";
+
+const EMPTY_PROVIDER_CONTROLS: HubProviderControls = { controls: [], options: {} };
 
 interface DaemonScope {
   organizationSlug: string;
@@ -35,6 +41,23 @@ export class DaemonCatalog {
   async projects(request: Request, input: DaemonScope): Promise<readonly DaemonProject[]> {
     const connection = await this.connection(request, input);
     return connection === undefined ? [] : await connection.listProjects();
+  }
+
+  /** Provider option controls are daemon-driven; an offline daemon offers none. */
+  async providerControls(
+    request: Request,
+    input: DaemonScope & HubProviderControlsDraftConfig,
+  ): Promise<HubProviderControls> {
+    const connection = await this.connection(request, input);
+    if (connection === undefined) return EMPTY_PROVIDER_CONTROLS;
+    return await connection.listProviderControls({
+      provider: input.provider,
+      cwd: input.cwd,
+      ...(input.modeId === undefined ? {} : { modeId: input.modeId }),
+      ...(input.model === undefined ? {} : { model: input.model }),
+      ...(input.thinkingOptionId === undefined ? {} : { thinkingOptionId: input.thinkingOptionId }),
+      ...(input.providerOptions === undefined ? {} : { providerOptions: input.providerOptions }),
+    });
   }
 
   private async connection(

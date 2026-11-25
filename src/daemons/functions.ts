@@ -4,7 +4,11 @@ import { z } from "zod";
 import { respondOk, type Result } from "../contract/respond.js";
 import { reportFailure, respondWithFailure } from "../failures/index.js";
 import { getApplication } from "../server/runtime.js";
-import type { HubProviderSnapshot } from "../hub/protocol.js";
+import {
+  ProviderControlsDraftConfigSchema,
+  type HubProviderControls,
+  type HubProviderSnapshot,
+} from "../hub/protocol.js";
 import type { DaemonProject } from "./protocol.js";
 
 const daemonSchema = z.object({
@@ -30,6 +34,7 @@ const providerSnapshotSchema = scopedDaemonIdSchema.extend({
   cwd: z.string().trim().min(1).optional(),
   refresh: z.boolean().optional(),
 });
+const providerControlsSchema = scopedDaemonIdSchema.extend(ProviderControlsDraftConfigSchema.shape);
 
 export type BrowserDaemon = z.infer<typeof daemonSchema>;
 export type BrowserDaemonList = z.infer<typeof daemonListSchema>;
@@ -77,6 +82,22 @@ export const daemonProjects = createServerFn({ method: "GET" })
         error,
         daemonContext("daemon.project.list", data.organizationSlug, data.daemonId),
         { fallback: "Hub couldn't load this daemon's projects" },
+      );
+    }
+  });
+
+export const daemonProviderControls = createServerFn({ method: "POST" })
+  .validator(providerControlsSchema)
+  .handler(async ({ data }): Promise<Result<HubProviderControls>> => {
+    try {
+      const catalog = (await getApplication()).daemonCatalog;
+      if (catalog == null) throw new Error("daemon catalog unavailable");
+      return respondOk(await catalog.providerControls(getRequest(), data));
+    } catch (error) {
+      return respondWithFailure(
+        error,
+        daemonContext("daemon.provider.controls", data.organizationSlug, data.daemonId),
+        { fallback: "Hub couldn't load provider options from this daemon" },
       );
     }
   });

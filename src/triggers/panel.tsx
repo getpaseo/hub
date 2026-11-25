@@ -5,7 +5,17 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { ArrowLeft, Braces, FileText, LockKeyhole, Plus } from "lucide-react";
-import { useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type FormEvent,
+  type ReactNode,
+  type SetStateAction,
+} from "react";
 
 import { Card } from "../components/app/card.js";
 import { Combobox, type ComboboxOption } from "../components/app/combobox.js";
@@ -36,6 +46,7 @@ import {
   changeTriggerEvent,
   mergeTriggerForm,
   projectTriggerForm,
+  splitAgentId,
   triggerFormErrors,
   workingDirectoryError,
   type TriggerFieldErrors,
@@ -48,12 +59,22 @@ import {
   type SavedTrigger,
   type TriggerSnapshot,
 } from "./functions.js";
-import { daemonProviderSnapshot } from "../daemons/functions.js";
-import type { HubProviderSnapshotEntry } from "../hub/protocol.js";
+import { daemonProviderControls, daemonProviderSnapshot } from "../daemons/functions.js";
+import type { HubAgentOptionControl, HubProviderSnapshotEntry } from "../hub/protocol.js";
 import { AudienceFields } from "./audience-fields.js";
 import { IntegrationAccess } from "./integration-access.js";
 import { EventFields } from "./event-fields.js";
 import { TargetFields } from "./target-fields.js";
+import {
+  describeActiveProviderOptions,
+  effectiveProviderOptions,
+  parseFormProviderOptions,
+  ProviderOptionControls,
+  pruneLostProviderOptions,
+  updateFormProviderOption,
+  type ProviderOptionMap,
+  type ResolvedProviderControls,
+} from "./provider-options.js";
 import {
   defaultAudience,
   EDITOR_EVENTS,
@@ -480,6 +501,7 @@ function TriggerEditor({
               errors={editor.errors}
               snapshot={snapshot}
               providerCatalog={editor.providerCatalog}
+              providerControls={editor.providerControls}
               onChange={editor.setForm}
             />
           )}
@@ -544,12 +566,19 @@ function useTriggerEditorState(
   // new trigger is not a page of errors, it is a page nobody has filled in. Once they have asked,
   // the marks stay and follow what they type.
   const [refused, setRefused] = useState(false);
+  const daemonId = mode === "form" ? targetDaemonId(snapshot.daemons, form) : undefined;
   const providerCatalog = useDaemonProviderCatalog(
     snapshot.organization.slug,
-    mode === "form" ? targetDaemonId(snapshot.daemons, form) : undefined,
+    daemonId,
     form.cwd,
     form.agent,
   );
+  const providerControls = useDaemonProviderControls({
+    organizationSlug: snapshot.organization.slug,
+    daemonId,
+    form,
+    setForm,
+  });
   const { entry } = selectedProviderModel(providerCatalog.entries, form.agent);
   const errors = triggerFormErrors(form, entry?.modes);
   const refuse = () => setRefused(true);
@@ -576,6 +605,7 @@ function useTriggerEditorState(
     form,
     errors: refused ? errors : NO_FIELD_ERRORS,
     providerCatalog,
+    providerControls,
     // Legacy workflows are explained by their own alert; repeating the schema error underneath it
     // would say the same thing twice in less useful words.
     blocked: legacy ? undefined : blocked,
@@ -696,6 +726,7 @@ function TriggerForm({
   errors,
   snapshot,
   providerCatalog,
+  providerControls,
   onChange,
 }: {
   form: TriggerFormValue;
@@ -703,6 +734,7 @@ function TriggerForm({
   errors: TriggerFieldErrors;
   snapshot: TriggerSnapshot;
   providerCatalog: ReturnType<typeof useDaemonProviderCatalog>;
+  providerControls: ReturnType<typeof useDaemonProviderControls>;
   onChange: (value: TriggerFormValue) => void;
 }) {
   const { provider, origin } = eventDefinition(form.event);
@@ -813,6 +845,7 @@ function TriggerForm({
               form={form}
               errors={errors}
               providerCatalog={providerCatalog}
+              providerControls={providerControls}
               onChange={onChange}
             />
           ) : null}
@@ -860,23 +893,27 @@ const CONTINUITY: readonly (SegmentedOption & { hint: string })[] = [
 
 /**
  * What runs on the daemon. The agent and its instructions are the whole decision for most
- * triggers; what a provider takes beyond the form's own fields sits closed under the agent, and
- * how arrivals share an agent sits closed under the instructions.
+ * triggers; daemon-exposed provider options, continuity, visibility, and raw option passthrough
+ * stay tucked inside Advanced.
  */
 function AgentFields({
   form,
   errors,
   providerCatalog,
+  providerControls,
   onChange,
 }: {
   form: TriggerFormValue;
   errors: TriggerFieldErrors;
   providerCatalog: ReturnType<typeof useDaemonProviderCatalog>;
+  providerControls: ReturnType<typeof useDaemonProviderControls>;
   onChange: (value: TriggerFormValue) => void;
 }) {
-  const [optionsExpanded, setOptionsExpanded] = useState(false);
-  const [continuityExpanded, setContinuityExpanded] = useState(false);
+  const [advancedExpanded, setAdvancedExpanded] = useState(false);
   const continuity = CONTINUITY.find(({ value }) => value === form.continuationMode);
+  const invalidOptionsJson =
+    form.providerOptions.trim().length > 0 &&
+    parseFormProviderOptions(form.providerOptions) === undefined;
   return (
     <>
       <div className="grid gap-3">
@@ -897,26 +934,6 @@ function AgentFields({
             onRetry={providerCatalog.refresh}
           />
         )}
-        <Disclosure
-          id="trigger-provider-options"
-          // A field that is in the way of saving is never left behind a closed header.
-          open={optionsExpanded || errors.providerOptions !== undefined}
-          onOpenChange={setOptionsExpanded}
-          title="Advanced provider options"
-          description="Passed through to the provider on your daemon"
-        >
-          <FormField
-            id="trigger-provider-options-json"
-            label="Provider options (JSON)"
-            description="Fields the form does not model, and YAML-only agent fields stay untouched"
-            kind="multiline"
-            name="providerOptions"
-            value={form.providerOptions}
-            onChange={(providerOptions) => onChange({ ...form, providerOptions })}
-            placeholder={'{"sandbox_mode":"workspace-write"}'}
-            {...fieldError(errors, "providerOptions")}
-          />
-        </Disclosure>
       </div>
       <PromptEditor
         value={form.prompt}
@@ -926,11 +943,36 @@ function AgentFields({
       <Disclosure
         id="trigger-continuity"
         title="Advanced"
-        description={advancedSummary(form, continuity?.label ?? form.continuationMode)}
-        open={continuityExpanded || errors.continuationKey !== undefined}
-        onOpenChange={setContinuityExpanded}
+        description={advancedSummary(
+          form,
+          continuity?.label ?? form.continuationMode,
+          providerControls.controls,
+          providerControls.options,
+        )}
+        // A field that is in the way of saving is never left behind a closed header.
+        open={
+          advancedExpanded ||
+          errors.continuationKey !== undefined ||
+          errors.providerOptions !== undefined
+        }
+        onOpenChange={setAdvancedExpanded}
       >
         <div className="grid gap-4">
+          {providerControls.controls.length === 0 ? null : (
+            <div className="grid gap-4 border-b pb-4">
+              <ProviderOptionControls
+                controls={providerControls.controls}
+                options={providerControls.options}
+                disabled={invalidOptionsJson}
+                onSetOption={(key, value) =>
+                  onChange({
+                    ...form,
+                    providerOptions: updateFormProviderOption(form.providerOptions, key, value),
+                  })
+                }
+              />
+            </div>
+          )}
           <SegmentedControl
             label="Agent continuity"
             description="Which events share an agent"
@@ -965,6 +1007,19 @@ function AgentFields({
             checked={form.autoArchive}
             onChange={(autoArchive) => onChange({ ...form, autoArchive })}
           />
+          <div className="border-t pt-4">
+            <FormField
+              id="trigger-provider-options-json"
+              label="Provider options (JSON)"
+              description="Passed through to the provider on your daemon"
+              kind="multiline"
+              name="providerOptions"
+              value={form.providerOptions}
+              onChange={(providerOptions) => onChange({ ...form, providerOptions })}
+              placeholder={'{"sandbox_mode":"workspace-write"}'}
+              {...fieldError(errors, "providerOptions")}
+            />
+          </div>
         </div>
       </Disclosure>
     </>
@@ -972,9 +1027,15 @@ function AgentFields({
 }
 
 /** What the closed Advanced header says is set, so nobody opens it to find out. */
-function advancedSummary(form: TriggerFormValue, continuity: string): string {
+function advancedSummary(
+  form: TriggerFormValue,
+  continuity: string,
+  controls: readonly HubAgentOptionControl[],
+  options: ProviderOptionMap,
+): string {
   return [
     `Agent continuity: ${continuity}`,
+    ...describeActiveProviderOptions(controls, options),
     form.background ? "Background" : undefined,
     form.autoArchive ? "Auto-archive" : undefined,
   ]
@@ -1239,6 +1300,131 @@ function useDaemonProviderCatalog(
         : providerCatalogFailure(entries, agent),
     refresh: query.refetch,
   };
+}
+
+/**
+ * The daemon-exposed provider option controls for the selected target and agent draft.
+ *
+ * Follows Paseo's client model: controls are queried via `provider.controls.list.request`, stay
+ * mounted across option toggles in the same scope, clear across provider/model changes until the
+ * new scope answers, and prune drawn controls that a newly chosen model no longer offers.
+ */
+function useDaemonProviderControls({
+  organizationSlug,
+  daemonId,
+  form,
+  setForm,
+}: {
+  organizationSlug: string;
+  daemonId: string | undefined;
+  form: Pick<TriggerFormValue, "cwd" | "agent" | "mode" | "thinkingOptionId" | "providerOptions">;
+  setForm: Dispatch<SetStateAction<TriggerFormValue>>;
+}) {
+  const load = useServerFn(daemonProviderControls);
+  const directory = form.cwd.trim();
+  let selection: { provider: string; model?: string } | undefined;
+  try {
+    selection = form.agent.trim() === "" ? undefined : splitAgentId(form.agent);
+  } catch {
+    selection = undefined;
+  }
+  const provider = selection?.provider;
+  const model = selection?.model;
+  const modeId = form.mode.trim() || undefined;
+  const thinkingOptionId = form.thinkingOptionId.trim() || undefined;
+  const parsedOptions = useMemo(
+    () => parseFormProviderOptions(form.providerOptions),
+    [form.providerOptions],
+  );
+  const enabled = daemonId !== undefined && directory.length > 0 && provider !== undefined;
+  const scopeKey = enabled
+    ? JSON.stringify([
+        daemonId,
+        directory,
+        provider,
+        model ?? "",
+        modeId ?? "",
+        thinkingOptionId ?? "",
+      ])
+    : "";
+  const sortedOptionsKey =
+    parsedOptions === undefined
+      ? ""
+      : JSON.stringify(Object.entries(parsedOptions).sort(([a], [b]) => a.localeCompare(b)));
+  const requestKey = enabled ? `${scopeKey}|${sortedOptionsKey}` : "";
+
+  const query = useSnapshotQuery({
+    queryKey: [
+      "daemon-provider-controls",
+      organizationSlug,
+      daemonId,
+      directory,
+      provider,
+      model ?? "",
+      modeId ?? "",
+      thinkingOptionId ?? "",
+      sortedOptionsKey,
+    ] as const,
+    enabled,
+    queryFn: () =>
+      load({
+        data: {
+          organizationSlug,
+          daemonId: daemonId!,
+          provider: provider!,
+          cwd: directory,
+          ...(model === undefined ? {} : { model }),
+          ...(modeId === undefined ? {} : { modeId }),
+          ...(thinkingOptionId === undefined ? {} : { thinkingOptionId }),
+          ...(parsedOptions === undefined ? {} : { providerOptions: parsedOptions }),
+        },
+      }),
+  });
+
+  const [resolved, setResolved] = useState<ResolvedProviderControls | undefined>(undefined);
+  const drawnRef = useRef<{ provider: string | undefined; keys: Set<string> }>({
+    provider: undefined,
+    keys: new Set(),
+  });
+
+  useEffect(() => {
+    if (drawnRef.current.provider !== provider) {
+      drawnRef.current = { provider, keys: new Set() };
+    }
+  }, [provider]);
+
+  useEffect(() => {
+    if (!enabled || query.status !== "success") return;
+    const data = query.data;
+    if (drawnRef.current.provider !== provider) {
+      drawnRef.current = { provider, keys: new Set() };
+    }
+    const previousDrawn = new Set(drawnRef.current.keys);
+    for (const control of data.controls) drawnRef.current.keys.add(control.key);
+    setResolved({
+      scopeKey,
+      requestKey,
+      requestedOptions: parsedOptions ?? {},
+      controls: data.controls,
+      options: data.options,
+    });
+    if (previousDrawn.size === 0) return;
+    setForm((current) => {
+      const pruned = pruneLostProviderOptions({
+        raw: current.providerOptions,
+        drawnKeys: previousDrawn,
+        controls: data.controls,
+      });
+      return pruned === current.providerOptions ? current : { ...current, providerOptions: pruned };
+    });
+  }, [enabled, query.status, query.data, provider, scopeKey, requestKey, parsedOptions, setForm]);
+
+  return effectiveProviderOptions({
+    resolved,
+    currentScopeKey: scopeKey,
+    currentRequestKey: requestKey,
+    currentOptions: parsedOptions,
+  });
 }
 
 /**

@@ -376,6 +376,7 @@ describe("workflow-owned provider reactions", () => {
         throw new Error("not used");
       },
       listProjects: async () => [],
+      listProviderControls: async () => ({ controls: [], options: {} }),
     };
     const lifecycle = createDaemonDispatchLifecycle({
       database,
@@ -698,6 +699,9 @@ async function runTwoStepWorkflow<
       throw new Error("not used");
     },
     listProjects: async () => {
+      throw new Error("not used");
+    },
+    listProviderControls: async () => {
       throw new Error("not used");
     },
   };

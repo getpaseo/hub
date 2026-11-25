@@ -171,6 +171,54 @@ describe("trigger form YAML bridge", () => {
     expect(value.run.agent.thinkingOptionId).toBe("xhigh");
   });
 
+  test("preserves comments on untouched provider option keys when editing another option", () => {
+    const commented = ADVANCED.replace(
+      "      sandbox_mode: workspace-write\n",
+      "      sandbox_mode: workspace-write # stay inside workspace\n",
+    );
+    const projection = projectTriggerForm(commented);
+    if (projection.status !== "editable") throw new Error(projection.reason);
+    const yaml = patchTriggerYaml(commented, {
+      ...projection.value,
+      providerOptions: JSON.stringify({
+        sandbox_mode: "workspace-write",
+        approval_policy: "never",
+        service_tier: "fast",
+      }),
+    });
+    expect(yaml).toContain("sandbox_mode: workspace-write # stay inside workspace");
+    const value = TriggerDocumentSchema.parse(parseDocument(yaml).toJS());
+    if ("choices" in value.run.agent) throw new Error("expected an inline agent");
+    expect(value.run.agent.options).toEqual({
+      sandbox_mode: "workspace-write",
+      approval_policy: "never",
+      service_tier: "fast",
+    });
+  });
+
+  test.each([
+    ["anchored options map", ADVANCED.replace("    options:\n", "    options: &shared_options\n")],
+    [
+      "anchored option value",
+      ADVANCED.replace(
+        "      sandbox_mode: workspace-write\n",
+        "      sandbox_mode: &sandbox workspace-write\n",
+      ).replace("TEAM: core", "TEAM: core\n    SANDBOX: *sandbox"),
+    ],
+    [
+      "aliased option value",
+      ADVANCED.replace("default: normal", "default: &mode workspace-write").replace(
+        "      sandbox_mode: workspace-write\n",
+        "      sandbox_mode: *mode\n",
+      ),
+    ],
+  ])("keeps provider options in YAML when anchors or aliases link (%s)", (_, yaml) => {
+    expect(TriggerDocumentSchema.safeParse(parseDocument(yaml).toJS()).success).toBe(true);
+    const projection = projectTriggerForm(yaml);
+    if (projection.status !== "yaml_only") throw new Error("Expected the form to be unavailable.");
+    expect(projection.reason).toMatch(/provider options.*anchors or aliases/i);
+  });
+
   test("keeps advanced YAML added before a new trigger's first save", () => {
     const projection = projectTriggerForm(ADVANCED);
     if (projection.status !== "editable") throw new Error(projection.reason);

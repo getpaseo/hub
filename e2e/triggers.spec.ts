@@ -392,6 +392,48 @@ test("round-trips unknown daemon providers and advertised settings through form,
       error: "spawn uninstalled-agent ENOENT",
     },
   ]);
+  hub.setDaemonProviderControls(daemon, (draft) => {
+    if (draft.provider !== "plugin-added-agent") return { controls: [], options: {} };
+    const isFirst = draft.model === "vendor/first";
+    return {
+      controls: [
+        {
+          type: "select",
+          key: "service_tier",
+          label: "Speed",
+          description: "Choose processing speed",
+          defaultValue: "default",
+          choices: isFirst
+            ? [
+                { value: "default", label: "Normal" },
+                { value: "flex", label: "Flex", description: "Slower processing, reduced usage" },
+                { value: "fast", label: "Fast", description: "Faster processing, higher usage" },
+              ]
+            : [
+                { value: "default", label: "Normal" },
+                { value: "flex", label: "Flex", description: "Slower processing, reduced usage" },
+              ],
+        },
+        {
+          type: "toggle",
+          key: "plan_mode",
+          label: "Plan",
+          description: "Switch into planning-only collaboration mode",
+        },
+        ...(isFirst
+          ? [
+              {
+                type: "toggle" as const,
+                key: "turbo_mode",
+                label: "Turbo",
+                description: "Enable model-specific turbo mode",
+              },
+            ]
+          : []),
+      ],
+      options: draft.providerOptions ?? {},
+    };
+  });
   const triggers = new OrganizationTriggers(page);
   await triggers.open();
   await triggers.startNew();
@@ -410,12 +452,22 @@ test("round-trips unknown daemon providers and advertised settings through form,
     prompt: "Perform the task.",
   });
   await triggers.expectMaterializedSelections("inspect", "deliberate");
-  await triggers.setPaseoVisibility({ background: true, autoArchive: false });
+  await test.step("daemon-exposed provider options configure inside Step 3 Advanced and round-trip", async () => {
+    await triggers.selectProviderOption("Speed", "fast");
+    await triggers.setProviderOptionToggle("Plan", true);
+    await triggers.setProviderOptionToggle("Turbo", true);
+    await triggers.closeContinuity();
+    await triggers.expectAdvancedSummary("Speed: Fast", "Plan", "Turbo");
+    await triggers.setPaseoVisibility({ background: true, autoArchive: false });
+  });
   await triggers.switchToYaml();
   await triggers.expectYamlContains(
     "model: vendor/first",
     "mode: inspect",
     "thinkingOptionId: deliberate",
+    "service_tier: fast",
+    "plan_mode: true",
+    "turbo_mode: true",
     "background: true",
     "auto_archive: false",
   );
@@ -426,7 +478,12 @@ test("round-trips unknown daemon providers and advertised settings through form,
     model: "vendor/first",
     modeId: "inspect",
     thinkingOptionId: "deliberate",
-    providerOptions: { custom_setting: { limit: 7 } },
+    providerOptions: {
+      custom_setting: { limit: 7 },
+      service_tier: "fast",
+      plan_mode: true,
+      turbo_mode: true,
+    },
   });
   await test.step("a background run's agent opens straight in Paseo from Activity", async () => {
     await hub.expectProviderLaunchInBackground(daemon, true);
@@ -440,8 +497,31 @@ test("round-trips unknown daemon providers and advertised settings through form,
     await activity.closeRecordWithEscape();
     await triggers.open();
   });
-  await triggers.openTrigger("unknown-run");
-  await triggers.switchToYaml();
+  await test.step("reloading preserves provider options and switching models prunes only lost controls", async () => {
+    await triggers.openTrigger("unknown-run");
+    await triggers.expectProviderOptionSelect("Speed", "fast");
+    await triggers.expectProviderOptionToggle("Plan", true);
+    await triggers.expectProviderOptionToggle("Turbo", true);
+    await triggers.selectAgent("plugin-added-agent/vendor/second");
+    await triggers.expectNoProviderOptionControl("Turbo");
+    await triggers.expectProviderOptionSelect("Speed", "default");
+    await triggers.expectProviderOptionToggle("Plan", true);
+    await triggers.switchToYaml();
+    await triggers.expectYamlMatches({
+      run: {
+        agent: {
+          provider: "plugin-added-agent",
+          model: "vendor/second",
+          options: {
+            custom_setting: { limit: 7 },
+            plan_mode: true,
+          },
+        },
+      },
+    });
+    await triggers.expectYamlOmits("turbo_mode");
+    await triggers.expectYamlOmits("service_tier");
+  });
   await triggers.replaceYaml(`name: unknown-run
 enabled: true
 on:
@@ -462,10 +542,12 @@ run:
     thinkingOptionId: "rapid",
     providerOptions: { custom_setting: { limit: 9 } },
   });
-  await test.step("the form saves and launches a selected model with no execution modes", async () => {
+  await test.step("the form saves and launches a selected model with no execution modes or provider options", async () => {
     await triggers.openTrigger("unknown-run");
     await triggers.selectAgent("modeless-agent/vendor/modeless");
     await triggers.expectNoExecutionModes();
+    await triggers.expectNoProviderOptionControl("Speed");
+    await triggers.expectNoProviderOptionControl("Plan");
     await triggers.save("unknown-run");
     await hub.launchSavedTrigger("unknown-run", apiKey);
     await hub.expectProviderLaunch(daemon, {

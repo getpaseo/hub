@@ -233,6 +233,16 @@ export class HubE2E {
     return this.requireProxy().requestProjectList();
   }
 
+  requestProviderControls(draftConfig: {
+    provider: string;
+    cwd: string;
+    model?: string;
+    modeId?: string;
+    thinkingOptionId?: string;
+  }): Promise<Record<string, unknown>> {
+    return this.requireProxy().requestProviderControls(draftConfig);
+  }
+
   workspacePath(): string {
     return this.workspace;
   }
