@@ -73,6 +73,34 @@ describe("startup project trigger migration", () => {
     assert.equal(environment?.kind === "daemon" ? environment.daemonId : undefined, TEST_DAEMON_ID);
   });
 
+  it.each(["revoked", "non-executable"] as const)(
+    "preserves a saved daemon binding when its target is %s",
+    async (targetState) => {
+      const database = createMemoryDatabase({ organizationIds: ["org"] });
+      await enrollMigrationDaemon(database);
+      await activeProject(
+        database,
+        "legacy",
+        [workflow("check", "manual.run", oneStep())],
+        [],
+        TEST_DAEMON_ID,
+      );
+      if (targetState === "revoked") await database.revokeDaemon(TEST_DAEMON_ID);
+      else await database.setDaemonPermissions(TEST_DAEMON_ID, []);
+
+      await migrateLegacyProjectTriggers(database);
+
+      const trigger = (await database.listOrganizationTriggers("org"))[0]!;
+      const revision = await database.findActiveProjectConfiguration(trigger.runtimeProjectId);
+      assert.notEqual(revision, undefined);
+      const environment = parseProjectConfiguration(revision!).environments[0];
+      assert.equal(
+        environment?.kind === "daemon" ? environment.daemonId : undefined,
+        TEST_DAEMON_ID,
+      );
+    },
+  );
+
   it("leaves the legacy project active when its daemon target cannot be compiled", async () => {
     const database = createMemoryDatabase({ organizationIds: ["org"] });
     const project = await activeProject(database, "legacy", [

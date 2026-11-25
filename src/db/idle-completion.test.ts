@@ -183,6 +183,33 @@ describe("memory database idle deadline after an emitted output", () => {
     );
   });
 
+  it("preserves an explicit cancellation after the idle deadline", async () => {
+    const fixture = await workflowExecution({ emitted: true, requiredOutput: true });
+
+    const transition = await fixture.database.completeWorkflowAgentExecution({
+      executionId: fixture.executionId,
+      executionStatus: "failed",
+      stepStatus: "failed",
+      result: { status: "failed", reason: "stopped_by_user" },
+      failureReason: "stopped_by_user",
+      hubAction: "interrupt",
+      observedAt: AFTER_IDLE,
+    });
+
+    assert.equal(transition.transitioned, true);
+    assert.equal(transition.deadlineKind, undefined);
+    assert.deepEqual(
+      { status: transition.execution.status, result: transition.execution.result },
+      { status: "failed", result: { status: "failed", reason: "stopped_by_user" } },
+    );
+    assert.equal(transition.execution.hubAction, "interrupt");
+    assert.equal(
+      (await fixture.database.findWorkflowStepRunById(fixture.stepId))?.status,
+      "failed",
+    );
+    assert.equal((await fixture.database.findTriggerRunById(fixture.runId))?.status, "failed");
+  });
+
   it("keeps coercing a late completion into an idle timeout without an emitted output", async () => {
     const fixture = await workflowExecution({ emitted: false, requiredOutput: true });
 

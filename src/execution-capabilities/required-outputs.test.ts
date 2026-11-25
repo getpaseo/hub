@@ -64,7 +64,7 @@ describe("required output delivery", () => {
     assert.equal(completesAtIdleDeadline(delivered), true);
   });
 
-  it("reports only required outputs whose attempts all failed", () => {
+  it("defers a failed-delivery verdict while a retry lease is live", () => {
     const execution = {
       outputEmissions: {},
       outputDeliveryAttempts: {
@@ -86,7 +86,11 @@ describe("required output delivery", () => {
       missingRequiredOutputs(execution).map((output) => output.type),
       ["linear.reply", "github.comment"],
     );
-    assert.deepEqual(failedRequiredOutputDeliveries(execution), [
+    assert.deepEqual(
+      failedRequiredOutputDeliveries(execution, new Date(STARTED_AT.getTime() - 1)),
+      [{ type: "github.comment", failedAttempts: 1 }],
+    );
+    assert.deepEqual(failedRequiredOutputDeliveries(execution, STARTED_AT), [
       { type: "linear.reply", failedAttempts: 1 },
       { type: "github.comment", failedAttempts: 1 },
     ]);

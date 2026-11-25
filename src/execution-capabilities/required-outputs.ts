@@ -35,18 +35,26 @@ export function missingRequiredOutputs(execution: OutputEmissionState): readonly
 
 /**
  * The required outputs still missing after at least one delivery attempt
- * failed. The agent did its part and the provider refused, so sending it back
- * to the same tool delivers nothing: an explicit completion ends the execution
- * as failed with `OUTPUT_DELIVERY_FAILED_REASON` instead of recording a success
- * nobody received.
+ * failed and no retry lease remains live. The agent did its part and the
+ * provider refused, so sending it back to the same tool delivers nothing: an
+ * explicit completion ends the execution as failed with
+ * `OUTPUT_DELIVERY_FAILED_REASON` instead of recording a success nobody
+ * received. A live retry keeps that verdict open until it settles or its lease
+ * expires.
  */
 export function failedRequiredOutputDeliveries(
   execution: OutputDeliveryState,
+  observedAt: Date = new Date(),
 ): readonly RequiredOutputDeliveryFailure[] {
   return missingRequiredOutputs(execution).flatMap((output) => {
-    const failedAttempts = Object.values(execution.outputDeliveryAttempts).filter(
-      (attempt) => attempt.outputType === output.type && attempt.status === "failed",
-    ).length;
+    const attempts = Object.values(execution.outputDeliveryAttempts).filter(
+      (attempt) => attempt.outputType === output.type,
+    );
+    const liveRetry = attempts.some(
+      (attempt) => attempt.status === "pending" && attempt.leaseExpiresAt > observedAt,
+    );
+    if (liveRetry) return [];
+    const failedAttempts = attempts.filter((attempt) => attempt.status === "failed").length;
     return failedAttempts === 0 ? [] : [{ type: output.type, failedAttempts }];
   });
 }

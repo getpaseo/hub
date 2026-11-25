@@ -14,7 +14,7 @@ import {
   mergeOverrides,
 } from "../entitlements/catalog.js";
 import { toDatabaseError } from "./errors.js";
-import { completesAtIdleDeadline } from "./idle-completion.js";
+import { completesAtIdleDeadline, deadlineForWorkflowCompletion } from "./idle-completion.js";
 import {
   linearTriggerSuppressionKind,
   type LinearTriggerSuppressionReason,
@@ -1158,7 +1158,10 @@ class PgDatabase implements Database {
           throw new Error(`agent execution not found: ${input.executionId}`);
         const observedAt = input.observedAt ?? new Date();
         if (execution.status === "spawning" || execution.status === "running") {
-          const deadlineKind = workflowDeadlineKind(execution, step, run, observedAt);
+          const deadlineKind = deadlineForWorkflowCompletion(
+            workflowDeadlineKind(execution, step, run, observedAt),
+            input.executionStatus,
+          );
           if (deadlineKind === "whole_run") {
             const recovery = await timeoutWorkflowRunOnClient(client, run, observedAt);
             const terminalRun = await findTriggerRunOnClient(client, run.id);

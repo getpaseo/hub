@@ -912,7 +912,7 @@ export class DaemonDispatchLifecycle {
     }
     const deadlineCompletion = await this.completionAtElapsedDeadline(currentExecution);
     if (deadlineCompletion !== undefined) return deadlineCompletion;
-    const undelivered = failedRequiredOutputDeliveries(currentExecution);
+    const undelivered = failedRequiredOutputDeliveries(currentExecution, new Date(this.now()));
     if (undelivered.length > 0) {
       await this.failUndeliveredExecution(currentExecution, undelivered);
       throw new AgentExecutionCompletionFailure(OUTPUT_DELIVERY_FAILED_REASON);

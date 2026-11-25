@@ -798,6 +798,59 @@ describe("execution capability MCP boundary", () => {
     assert.equal(fixture.outbound.length, 2);
   });
 
+  it("does not fail completion while a required reply retry is live", async () => {
+    let attempts = 0;
+    let markRetryStarted!: () => void;
+    const retryStarted = new Promise<void>((resolve) => {
+      markRetryStarted = resolve;
+    });
+    let releaseRetry!: () => void;
+    const retryGate = new Promise<void>((resolve) => {
+      releaseRetry = resolve;
+    });
+    const fixture = await capabilityFixture(
+      async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("first delivery failed");
+        markRetryStarted();
+        await retryGate;
+      },
+      "succeeded",
+      1,
+      undefined,
+      false,
+      ["slack.reply"],
+    );
+    await fixture.call("tools/call", {
+      name: "reply",
+      arguments: { content: "first" },
+    });
+    const retry = fixture.call("tools/call", {
+      name: "reply",
+      arguments: { content: "second" },
+    });
+    await retryStarted;
+
+    const whileRetrying = await fixture.call("tools/call", {
+      name: "finish_execution",
+      arguments: {},
+    });
+
+    assert.equal(ToolResultSchema.parse(whileRetrying.result).isError, true);
+    assert.deepEqual(fixture.completions, []);
+    assert.equal(
+      (await fixture.database.findAgentExecutionById(fixture.executionId))?.status,
+      "spawning",
+    );
+    releaseRetry();
+    assert.equal(ToolResultSchema.parse((await retry).result).isError, undefined);
+    const completed = await fixture.call("tools/call", {
+      name: "finish_execution",
+      arguments: {},
+    });
+    assert.equal(ToolResultSchema.parse(completed.result).isError, undefined);
+  });
+
   it("ends the execution as failed when finish follows only failed required deliveries", async () => {
     const fixture = await capabilityFixture(
       () => Promise.reject(new Error("parent comment must be a top level comment")),

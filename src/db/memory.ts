@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
-import { completesAtIdleDeadline } from "./idle-completion.js";
+import { completesAtIdleDeadline, deadlineForWorkflowCompletion } from "./idle-completion.js";
 import {
   isLinearAgentSessionStop,
   linearAgentSessionId,
@@ -842,7 +842,10 @@ class MemoryDatabase implements Database {
 
     const observedAt = input.observedAt ?? this.now();
     if (execution.status === "spawning" || execution.status === "running") {
-      const deadlineKind = workflowDeadlineKind(execution, step, run, observedAt);
+      const deadlineKind = deadlineForWorkflowCompletion(
+        workflowDeadlineKind(execution, step, run, observedAt),
+        input.executionStatus,
+      );
       if (deadlineKind === "whole_run") {
         this.timeoutWorkflowRun(run.id, observedAt);
         const terminalRun = this.triggerRuns.get(run.id);

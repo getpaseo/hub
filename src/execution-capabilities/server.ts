@@ -317,7 +317,11 @@ async function finishExecutionCall(
     // An output the agent never attempted is still recoverable: name its tool.
     // One whose delivery failed is not; completion then ends the run as failed.
     const missingOutputs = missingRequiredOutputTools(execution, materializedOutputs);
-    if (missingOutputs.length > 0 && failedRequiredOutputDeliveries(execution).length === 0) {
+    const observedAt = options.now?.() ?? new Date();
+    if (
+      missingOutputs.length > 0 &&
+      failedRequiredOutputDeliveries(execution, observedAt).length === 0
+    ) {
       reportFailure(
         new Error("required execution outputs are missing"),
         {
@@ -357,7 +361,11 @@ async function finishExecutionCall(
     return toolSuccess("Execution finished");
   } catch (error) {
     if (isOutputDeliveryFailure(error)) {
-      return toolFailure(outputDeliveryFailureMessage(failedRequiredOutputDeliveries(execution)));
+      return toolFailure(
+        outputDeliveryFailureMessage(
+          failedRequiredOutputDeliveries(execution, options.now?.() ?? new Date()),
+        ),
+      );
     }
     const failure = reportFailure(error, {
       operation: "execution_capability.finish",

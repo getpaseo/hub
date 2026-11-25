@@ -1,6 +1,14 @@
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
 import { missingRequiredOutputs } from "../execution-capabilities/required-outputs.js";
-import type { AgentExecutionRecord } from "./types.js";
+import type { AgentExecutionRecord, WorkflowDeadlineKind } from "./types.js";
+
+/** Explicit cancellation wins over an elapsed idle deadline; hard deadlines remain authoritative. */
+export function deadlineForWorkflowCompletion(
+  deadlineKind: WorkflowDeadlineKind | undefined,
+  executionStatus: "succeeded" | "failed",
+): WorkflowDeadlineKind | undefined {
+  return deadlineKind === "step_idle" && executionStatus === "failed" ? undefined : deadlineKind;
+}
 
 /**
  * An execution that delivered every explicitly required output and then went

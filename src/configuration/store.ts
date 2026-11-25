@@ -501,10 +501,16 @@ type CompileConfigurationResult =
       validationErrors?: unknown;
     };
 
+interface ResolveCompiledConfigurationOptions {
+  /** Startup migration replays an already-authorized durable binding, even if it is now inactive. */
+  preservePersistedDaemonBindings?: boolean;
+}
+
 async function resolveCompiledConfiguration(
   database: Database,
   organizationId: string,
   configuration: CompiledHubConfig,
+  options: ResolveCompiledConfigurationOptions = {},
 ): Promise<CompileConfigurationResult> {
   const daemons = (await database.listDaemonsForOrganization(organizationId)).filter(
     ({ status, permissions }) => status === "active" && permissions.includes("hub.execute"),
@@ -524,6 +530,7 @@ async function resolveCompiledConfiguration(
   );
   const daemonIssues = resolutions.flatMap(({ environment, daemon }) =>
     environment.kind === "daemon" &&
+    !(options.preservePersistedDaemonBindings === true && environment.daemonId !== undefined) &&
     (daemon === undefined || !daemon.permissions.includes("hub.execute"))
       ? [
           {
@@ -560,6 +567,7 @@ export async function resolveTriggerConfigurationForOrganization(
   database: Database,
   organizationId: string,
   configuration: CompiledHubConfig,
+  options: ResolveCompiledConfigurationOptions = {},
 ): Promise<
   | {
       success: true;
@@ -577,7 +585,12 @@ export async function resolveTriggerConfigurationForOrganization(
       issues: readonly { path: readonly (string | number)[]; message: string }[];
     }
 > {
-  const resolved = await resolveCompiledConfiguration(database, organizationId, configuration);
+  const resolved = await resolveCompiledConfiguration(
+    database,
+    organizationId,
+    configuration,
+    options,
+  );
   if (!resolved.success) {
     return {
       success: false,

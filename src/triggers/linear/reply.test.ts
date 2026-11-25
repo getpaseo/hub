@@ -93,6 +93,26 @@ describe("Linear reply output", () => {
     assert.equal("parentId" in (client.comments[0] ?? {}), false);
   });
 
+  it("posts an issue comment for a context persisted before Agent Sessions existed", async () => {
+    const client = new RecordingLinearClient();
+    const execute = createLinearReplyExecutor({ client });
+    await execute({
+      agentExecutionId: "execution-1",
+      toolType: "linear.reply",
+      args: { content: "Done." },
+      outputContext: {
+        provider: "linear",
+        linearOrganizationId: "linear-org",
+        issueId: "issue-1",
+      },
+    });
+
+    assert.deepEqual(client.comments, [
+      { linearOrganizationId: "linear-org", issueId: "issue-1", body: "Done." },
+    ]);
+    assert.deepEqual(client.activities, []);
+  });
+
   it("responds through a native Linear agent session", async () => {
     const client = new RecordingLinearClient();
     const execute = createLinearReplyExecutor({ client });

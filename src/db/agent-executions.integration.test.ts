@@ -462,6 +462,39 @@ describe("agent execution PostgreSQL repository", () => {
       }
     });
 
+    it("preserves an explicit cancellation after the idle deadline", async () => {
+      const fixture = await idleWorkflowFixture(postgres, {
+        emitted: true,
+        requiredOutput: true,
+      });
+      try {
+        const transition = await fixture.database.completeWorkflowAgentExecution({
+          executionId: fixture.execution.id,
+          executionStatus: "failed",
+          stepStatus: "failed",
+          result: { status: "failed", reason: "stopped_by_user" },
+          failureReason: "stopped_by_user",
+          hubAction: "interrupt",
+          observedAt: AFTER_IDLE,
+        });
+
+        assert.equal(transition.transitioned, true);
+        assert.equal(transition.deadlineKind, undefined);
+        assert.deepEqual(
+          { status: transition.execution.status, result: transition.execution.result },
+          { status: "failed", result: { status: "failed", reason: "stopped_by_user" } },
+        );
+        assert.equal(transition.execution.hubAction, "interrupt");
+        assert.equal(
+          (await fixture.database.findWorkflowStepRunById(fixture.step.id))?.status,
+          "failed",
+        );
+        assert.equal((await fixture.database.findTriggerRunById(fixture.run.id))?.status, "failed");
+      } finally {
+        await fixture.database.close();
+      }
+    });
+
     it("keeps coercing a late completion into an idle timeout without an emitted output", async () => {
       const fixture = await idleWorkflowFixture(postgres, {
         emitted: false,

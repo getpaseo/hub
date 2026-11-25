@@ -19,7 +19,8 @@ const LinearReplyOutputContextSchema = z.object({
   provider: z.literal("linear"),
   linearOrganizationId: z.string().min(1),
   issueId: z.string().min(1),
-  agentSessionId: z.string().min(1).nullable(),
+  // Executions persisted before Agent Sessions existed carry no field at all.
+  agentSessionId: z.string().min(1).nullable().default(null),
   // Optional: executions recorded before threading existed carry no root comment.
   threadRootCommentId: z.string().min(1).nullable().optional(),
 });
