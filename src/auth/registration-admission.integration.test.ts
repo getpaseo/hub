@@ -10,7 +10,7 @@ import {
 } from "../db/test-utils/runtime.js";
 import { createAuthServer, type AuthServer } from "./server.js";
 import { composeEntitlements } from "./entitlements.js";
-import type { SocialSignIn } from "./social-sign-in.js";
+import { readSocialSignIn, type SocialSignIn } from "./social-sign-in.js";
 import { z } from "zod";
 
 describe("registration policy boundary", () => {
@@ -118,6 +118,9 @@ describe("registration policy boundary", () => {
     assert.equal(unverified.status, 401);
     assert.equal(await failureMessage(unverified), "account not linked");
     await verifyEmail(url, "password@example.test");
+    const unmanaged = await googleSignIn(auth, "password@example.test", { unmanaged: true });
+    assert.equal(unmanaged.status, 401);
+    assert.equal(await failureMessage(unmanaged), "account not linked");
     assert.equal((await googleSignIn(auth, "password@example.test")).status, 200);
     assert.deepEqual(await accountProviders(url, "password@example.test"), [
       "credential",
@@ -145,13 +148,17 @@ describe("registration policy boundary", () => {
     const invitation = await seedInvitation(url, "invited-google@example.test", "pending");
     const returnPath = `/?invitation=${invitation}`;
     assert.equal((await googleSignIn(auth, "invited-google@example.test")).status, 401);
-    assert.equal((await googleSignIn(auth, "other@example.test", returnPath)).status, 401);
+    assert.equal((await googleSignIn(auth, "other@example.test", { returnPath })).status, 401);
     assert.equal(
-      (await googleSignIn(auth, "invited-google@example.test", "/?invitation=x")).status,
+      (await googleSignIn(auth, "invited-google@example.test", { returnPath: "/?invitation=x" }))
+        .status,
       401,
     );
     assert.equal(await userCount(url), 1);
-    assert.equal((await googleSignIn(auth, "invited-google@example.test", returnPath)).status, 200);
+    assert.equal(
+      (await googleSignIn(auth, "invited-google@example.test", { returnPath })).status,
+      200,
+    );
     assert.equal(await userCount(url), 2);
     await auth.close();
   }, 120_000);
@@ -175,6 +182,12 @@ describe("registration policy boundary", () => {
     );
     assert.equal(returned.status, 302);
     assert.equal(returned.headers.get("location"), `${returnPath}&error=access_denied`);
+
+    const replayed = await auth.handle(
+      new Request(callback, { headers: { cookie: requestCookies(started) } }),
+    );
+    assert.equal(replayed.status, 302);
+    assert.equal(replayed.headers.get("location"), "/?error=state_mismatch");
 
     for (const elsewhere of [
       "https://elsewhere.example/",
@@ -250,38 +263,40 @@ async function rawSignUp(auth: AuthServer, email: string, invitation?: string): 
 }
 
 /**
- * Google and GitHub both configured. Google signs in through its ID-token flow, which never
- * leaves the process: the token stands for the identity it asserts.
+ * Google and GitHub with the clients Hub reads from its environment. Google signs in through its
+ * ID-token flow, which never leaves the process: the test accepts every token's signature, and
+ * Hub reads the claims from it as it would from Google.
  */
-const SOCIAL_SIGN_IN: SocialSignIn = {
-  google: {
-    clientId: "google-client",
-    clientSecret: "google-secret",
-    verifyIdToken: () => Promise.resolve(true),
-    getUserInfo: (tokens) =>
-      Promise.resolve({ user: googleIdentity.parse(JSON.parse(tokens.idToken ?? "{}")), data: {} }),
-  },
-  github: { clientId: "github-client", clientSecret: "github-secret" },
-};
-
-const googleIdentity = z.object({
-  id: z.string(),
-  email: z.string(),
-  name: z.string(),
-  emailVerified: z.boolean(),
+const CONFIGURED = readSocialSignIn({
+  PASEO_AUTH_GOOGLE_CLIENT_ID: "google-client",
+  PASEO_AUTH_GOOGLE_CLIENT_SECRET: "google-secret",
+  PASEO_AUTH_GITHUB_CLIENT_ID: "github-client",
+  PASEO_AUTH_GITHUB_CLIENT_SECRET: "github-secret",
 });
-type GoogleIdentity = z.infer<typeof googleIdentity>;
+const SOCIAL_SIGN_IN: SocialSignIn = {
+  google: { ...CONFIGURED.google!, verifyIdToken: () => Promise.resolve(true) },
+  github: CONFIGURED.github!,
+};
 
 async function failureMessage(response: Response): Promise<string> {
   return z.object({ message: z.string() }).parse(await response.json()).message;
 }
 
-async function googleSignIn(auth: AuthServer, email: string, returnPath = "/"): Promise<Response> {
-  const identity: GoogleIdentity = {
-    id: `google-${email}`,
+/**
+ * A Google sign-in for a verified address. By default the address is on a Workspace domain, so
+ * Google owns it; `unmanaged` is an address Google verified once but does not host.
+ */
+async function googleSignIn(
+  auth: AuthServer,
+  email: string,
+  { returnPath = "/", unmanaged = false }: { returnPath?: string; unmanaged?: boolean } = {},
+): Promise<Response> {
+  const claims = {
+    sub: `google-${email}`,
     email,
+    email_verified: true,
     name: "Google User",
-    emailVerified: true,
+    ...(unmanaged ? {} : { hd: email.split("@")[1] }),
   };
   return auth.handle(
     new Request("http://localhost:3000/api/auth/sign-in/social", {
@@ -290,10 +305,15 @@ async function googleSignIn(auth: AuthServer, email: string, returnPath = "/"): 
       body: JSON.stringify({
         provider: "google",
         callbackURL: returnPath,
-        idToken: { token: JSON.stringify(identity) },
+        idToken: { token: unsignedJwt(claims) },
       }),
     }),
   );
+}
+
+function unsignedJwt(claims: Record<string, unknown>): string {
+  const encode = (part: unknown) => Buffer.from(JSON.stringify(part)).toString("base64url");
+  return `${encode({ alg: "none", typ: "JWT" })}.${encode(claims)}.`;
 }
 
 async function socialSignIn(

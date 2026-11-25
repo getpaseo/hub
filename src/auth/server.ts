@@ -40,11 +40,7 @@ import { InstanceAppOnboarding } from "../instance-setup/app-onboarding.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 import type { InvitationMailer } from "../invitations/index.js";
 import type { AccountMailer } from "./account-emails.js";
-import {
-  configuredSocialProviders,
-  SOCIAL_PROVIDERS,
-  type SocialSignIn,
-} from "./social-sign-in.js";
+import { configuredSocialProviders, type SocialSignIn } from "./social-sign-in.js";
 
 export interface AuthServer {
   handle(request: Request): Promise<Response>;
@@ -200,12 +196,14 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
           },
         }),
     socialProviders: socialSignIn,
+    // A callback that cannot recover the page it started from lands on the sign-in card, which
+    // reads the error, instead of Better Auth's error route.
+    onAPIError: { errorURL: "/" },
     account: {
       accountLinking: {
         enabled: true,
-        trustedProviders: [...SOCIAL_PROVIDERS],
-        // A provider proves who owns the email; it never takes over an account whose owner has
-        // not proved the same thing locally.
+        // No provider is trusted by name. Linking takes the provider's proof that this person
+        // owns the email now and the account owner's proof of the same thing in Hub.
         requireLocalEmailVerified: true,
       },
     },

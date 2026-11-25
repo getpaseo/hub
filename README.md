@@ -101,7 +101,9 @@ Sign-in with Google or GitHub is optional. Set `PASEO_AUTH_GOOGLE_CLIENT_ID` and
 half of a pair. Register `<PASEO_HUB_APP_URL>/api/auth/callback/google` or `/github` as the
 callback. GitHub sign-in needs its own OAuth App, separate from the GitHub App that sends repository
 events. New accounts from a provider follow `PASEO_REGISTRATION_MODE`. A provider sign-in links
-to an existing account with the same email only after that account has verified its email.
+to an existing account with the same email only when the provider has verified the address and
+the account has verified it in Hub. Hub accepts Google's verification only for Gmail and Workspace
+addresses.
 
 Then start Hub and PostgreSQL:
 
