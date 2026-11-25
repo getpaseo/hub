@@ -21,6 +21,37 @@ export function selectedProviderModel(
   };
 }
 
+/** The models a reader can pick from one provider: none while it is not ready or is switched off. */
+export function selectableModels(entry: HubProviderSnapshotEntry) {
+  if (entry.status !== "ready" || !entry.enabled) return [];
+  return (entry.models ?? []).filter((model) => model.isSelectable !== false);
+}
+
+/**
+ * The provider failures that stand between the reader and an agent, said as one line.
+ *
+ * A daemon reports every provider it knows, installed or not, so a provider that failed is only
+ * news when it is the one the trigger names, or when no provider has a model to offer. Otherwise
+ * the reader picks from the providers that work and never needed the other one.
+ */
+export function providerCatalogFailure(
+  entries: HubProviderSnapshotEntry[] | undefined,
+  agent: string,
+): string | undefined {
+  const failed = blockingFailures(entries ?? [], agent);
+  if (failed.length === 0) return undefined;
+  return failed
+    .map((entry) => `${entry.label ?? entry.provider}: ${entry.error ?? "unavailable"}`)
+    .join(" ");
+}
+
+function blockingFailures(entries: HubProviderSnapshotEntry[], agent: string) {
+  const { entry } = selectedProviderModel(entries, agent);
+  if (entry?.status === "error") return [entry];
+  if (entries.some((candidate) => selectableModels(candidate).length > 0)) return [];
+  return entries.filter((candidate) => candidate.status === "error");
+}
+
 /** A model choice materializes the daemon's advertised selections into the form. */
 export function changeTriggerModel(input: {
   entries: HubProviderSnapshotEntry[];

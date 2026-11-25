@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { eventProvider } from "./events.js";
+import { EDITOR_EVENTS, eventProvider } from "./events.js";
 
 describe("event provider", () => {
   it("names the provider of an event the editor offers", () => {
@@ -18,5 +18,11 @@ describe("event provider", () => {
   it("falls back to manual for an event from no provider Hub knows", () => {
     expect(eventProvider("jira.issue_created")).toBe("manual");
     expect(eventProvider("")).toBe("manual");
+  });
+});
+
+describe("event picker order", () => {
+  it("offers the events Hub sends itself first, since they need no integration", () => {
+    expect(EDITOR_EVENTS.slice(0, 3)).toEqual(["webhook.received", "schedule.tick", "manual.run"]);
   });
 });

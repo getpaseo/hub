@@ -347,9 +347,15 @@ function formEventDefinition(value: TriggerFormValue): TriggerDocument["on"][str
 }
 
 function workingDirectoryErrors(value: TriggerFormValue): TriggerFieldErrors {
-  const cwd = value.cwd.trim();
-  if (cwd.length === 0) return { cwd: "Working directory is required" };
-  return cwd.startsWith("/") ? {} : { cwd: "Working directory must be an absolute path" };
+  const error = workingDirectoryError(value.cwd);
+  return error === undefined ? {} : { cwd: error };
+}
+
+/** What is wrong with a working directory, or `undefined` when a run can start in it. */
+export function workingDirectoryError(cwd: string): string | undefined {
+  const directory = cwd.trim();
+  if (directory.length === 0) return "Working directory is required";
+  return directory.startsWith("/") ? undefined : "Working directory must be an absolute path";
 }
 
 function recurrenceErrors(value: TriggerFormValue): TriggerFieldErrors {

@@ -37,6 +37,7 @@ import {
   mergeTriggerForm,
   projectTriggerForm,
   triggerFormErrors,
+  workingDirectoryError,
   type TriggerFieldErrors,
   type TriggerFormValue,
 } from "./configuration/editor.js";
@@ -54,7 +55,12 @@ import {
   eventDefinition,
   parseEditorEvent,
 } from "./configuration/events.js";
-import { changeTriggerModel, selectedProviderModel } from "./provider-catalog.js";
+import {
+  changeTriggerModel,
+  providerCatalogFailure,
+  selectableModels,
+  selectedProviderModel,
+} from "./provider-catalog.js";
 
 type BrowserTrigger = TriggerSnapshot["triggers"][number];
 type EditorMode = "form" | "yaml";
@@ -495,11 +501,11 @@ function useTriggerEditorState(
   // new trigger is not a page of errors, it is a page nobody has filled in. Once they have asked,
   // the marks stay and follow what they type.
   const [refused, setRefused] = useState(false);
-  const selectedDaemon = snapshot.daemons.find((daemon) => daemon.slug === form.daemon);
   const providerCatalog = useDaemonProviderCatalog(
     snapshot.organization.slug,
-    mode === "form" ? selectedDaemon?.id : undefined,
+    mode === "form" ? targetDaemonId(snapshot.daemons, form) : undefined,
     form.cwd,
+    form.agent,
   );
   const { entry } = selectedProviderModel(providerCatalog.entries, form.agent);
   const errors = triggerFormErrors(form, entry?.modes);
@@ -618,12 +624,28 @@ function fieldError(errors: TriggerFieldErrors, key: keyof TriggerFormValue) {
   return error === undefined ? {} : { error };
 }
 
-function waitingForDaemonReason(
+/**
+ * What the agent and access steps wait for. The agents on offer are the daemon's answer for one
+ * working directory, so both the daemon and an absolute directory come first.
+ */
+function waitingForTargetReason(
   daemons: TriggerSnapshot["daemons"],
-  selectedSlug: string,
+  form: Pick<TriggerFormValue, "daemon" | "cwd">,
 ): string | undefined {
-  if (daemons.some((daemon) => daemon.slug === selectedSlug)) return undefined;
-  return daemons.length === 0 ? "Connect a daemon first" : "Choose a daemon first";
+  if (daemons.length === 0) return "Connect a daemon first";
+  if (!daemons.some((daemon) => daemon.slug === form.daemon)) return "Choose a daemon first";
+  return workingDirectoryError(form.cwd) === undefined
+    ? undefined
+    : "Choose a working directory first";
+}
+
+/** The daemon to ask for agents, once the target is complete enough to ask it. */
+function targetDaemonId(
+  daemons: TriggerSnapshot["daemons"],
+  form: Pick<TriggerFormValue, "daemon" | "cwd">,
+): string | undefined {
+  if (waitingForTargetReason(daemons, form) !== undefined) return undefined;
+  return daemons.find((daemon) => daemon.slug === form.daemon)?.id;
 }
 
 function TriggerForm({
@@ -647,10 +669,10 @@ function TriggerForm({
   const update = <Key extends keyof TriggerFormValue>(key: Key, value: TriggerFormValue[Key]) =>
     onChange({ ...form, [key]: value });
   const noDaemons = snapshot.daemons.length === 0;
-  // Everything after the daemon is the daemon's own answer or runs on it, so those steps keep
+  // Everything after the target is the daemon's own answer or runs on it, so those steps keep
   // their place and say what they are waiting for instead of offering controls with nothing in
   // them.
-  const waiting = waitingForDaemonReason(snapshot.daemons, form.daemon);
+  const waiting = waitingForTargetReason(snapshot.daemons, form);
   return (
     <div className="grid gap-6">
       <Card>
@@ -1035,16 +1057,12 @@ function ProviderCatalogFields({
 }) {
   const selected = selectedProviderModel(entries, form.agent);
   const agentOptions = (entries ?? []).flatMap((entry) =>
-    entry.status !== "ready" || !entry.enabled
-      ? []
-      : (entry.models ?? [])
-          .filter((model) => model.isSelectable !== false)
-          .map((model) => ({
-            value: `${entry.provider}/${model.id}`,
-            label: model.label,
-            detail: `${entry.label ?? entry.provider} · ${entry.provider}/${model.id}`,
-            keywords: [model.label, entry.label ?? entry.provider, model.id],
-          })),
+    selectableModels(entry).map((model) => ({
+      value: `${entry.provider}/${model.id}`,
+      label: model.label,
+      detail: `${entry.label ?? entry.provider} · ${entry.provider}/${model.id}`,
+      keywords: [model.label, entry.label ?? entry.provider, model.id],
+    })),
   ) satisfies ComboboxOption[];
   const modeOptions = (selected.entry?.modes ?? []).map((mode) => ({
     value: mode.id,
@@ -1119,13 +1137,14 @@ function ProviderCatalogFields({
 }
 
 /**
- * The agents a daemon can run. They are read as soon as there is a daemon, so the agent control
- * never opens onto an empty list, and read again from the working directory once one is chosen.
+ * The agents a daemon can run from one working directory. They are read once the target is
+ * complete, which is also when the agent step opens.
  */
 function useDaemonProviderCatalog(
   organizationSlug: string,
   daemonId: string | undefined,
   cwd: string,
+  agent: string,
 ) {
   const load = useServerFn(daemonProviderSnapshot);
   const directory = cwd.trim();
@@ -1137,23 +1156,19 @@ function useDaemonProviderCatalog(
         data: {
           organizationSlug,
           daemonId: daemonId!,
-          ...(directory === "" ? {} : { cwd: directory }),
+          cwd: directory,
           refresh: true,
         },
       }),
   });
   const entries = query.data?.entries;
-  const providerErrors = (entries ?? [])
-    .filter((entry) => entry.status === "error")
-    .map((entry) => `${entry.label ?? entry.provider}: ${entry.error ?? "unavailable"}`);
-  const providerError = providerErrors.length > 0 ? providerErrors.join(" ") : undefined;
   return {
     entries,
     loading: query.isFetching,
     error:
       query.status === "error"
         ? (query.error ?? "Hub couldn't load this daemon's providers")
-        : providerError,
+        : providerCatalogFailure(entries, agent),
     refresh: query.refetch,
   };
 }

@@ -89,7 +89,7 @@ export function TargetFields({
                 loading={projects.loading}
                 value={form.cwd}
                 options={projects.options}
-                placeholder="Select a project"
+                placeholder="Select a project or type a path"
                 searchPlaceholder="Search projects or type a path…"
                 empty="Type an absolute path, like /home/you/repo"
                 custom={typedPath}
