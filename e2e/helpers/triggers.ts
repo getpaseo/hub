@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { parseDocument } from "yaml";
-import { expect, type Page } from "@playwright/test";
+import { expect, type Page, type Request } from "@playwright/test";
 import { allowClipboard } from "./apps.js";
 import type { BuiltApplication } from "./hub.js";
 
@@ -480,6 +480,26 @@ export class OrganizationTriggers {
     const secret = this.page.getByRole("textbox", { name: "Webhook secret" });
     await expect(secret).toHaveValue(/^whsec_[\w-]{43}$/u);
     return secret.inputValue();
+  }
+
+  /**
+   * A rotation that never reaches Hub leaves the current secret active, so the one on screen
+   * stays the one on screen.
+   */
+  async rotateWebhookSecretUnsuccessfully() {
+    const secret = this.page.getByRole("textbox", { name: "Webhook secret" });
+    const shown = await secret.inputValue();
+    const rotation = (request: Request) =>
+      request.method() === "POST" && (request.postData() ?? "").includes("rotate");
+    await this.page.route("**/*", (route) =>
+      rotation(route.request()) ? route.abort() : route.fallback(),
+    );
+    await this.page.getByRole("button", { name: "Rotate secret", exact: true }).click();
+    const dialog = this.page.getByRole("alertdialog", { name: "Rotate webhook secret?" });
+    await dialog.getByRole("button", { name: "Rotate secret", exact: true }).click();
+    await expect(this.page.getByText("Webhook secret unavailable", { exact: true })).toBeVisible();
+    await expect(secret).toHaveValue(shown);
+    await this.page.unrouteAll();
   }
 
   /** After a reload only the hash is left, so the request asks for the secret the reader saved. */

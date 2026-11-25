@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 
@@ -33,19 +33,22 @@ export function WebhookSettings({
 }) {
   const rotate = useServerFn(rotateWebhookSecret);
   const queryClient = useQueryClient();
+  // The one secret on screen for this visit: the one the endpoint was created with, until a
+  // rotation succeeds and replaces it. A rotation in flight or one that failed leaves the current
+  // secret active, so it leaves the one on screen too; a replaced secret never comes back.
+  const [shown, setShown] = useState(initialSecret);
   const secret = useMutation({
     mutationFn: (action: WebhookSecretAction) =>
       rotate({ data: { organizationSlug, triggerId: endpoint.triggerId, action } }),
     gcTime: 0,
-    onSuccess: async () => {
+    onSuccess: async (result) => {
+      if (result.status === "ok") setShown(result.data.secret);
       await queryClient.invalidateQueries({ queryKey: ["triggers", organizationSlug] });
     },
   });
   const { mutate } = secret;
   const createSecret = useCallback(() => mutate("create"), [mutate]);
   const rotateSecret = useCallback(() => mutate("rotate"), [mutate]);
-  const rotated = secret.data?.status === "ok" ? secret.data.data.secret : undefined;
-  const shown = rotated ?? initialSecret;
   const failed = secret.data?.status === "error" || secret.isError;
   return (
     <WebhookSettingsView
