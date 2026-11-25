@@ -392,34 +392,8 @@ test("round-trips unknown daemon providers and advertised settings through form,
       error: "spawn uninstalled-agent ENOENT",
     },
   ]);
-  let holdSecondModel = false;
-  let markSecondModelRequested: (() => void) | undefined;
-  let releaseSecondModel: (() => void) | undefined;
-  let secondModelGate: Promise<void> | undefined;
-  const armSecondModelHold = () => {
-    holdSecondModel = true;
-    const requested = new Promise<void>((resolve) => {
-      markSecondModelRequested = resolve;
-    });
-    secondModelGate = new Promise<void>((resolve) => {
-      releaseSecondModel = resolve;
-    });
-    return {
-      requested,
-      release: () => {
-        holdSecondModel = false;
-        releaseSecondModel?.();
-      },
-    };
-  };
-  hub.setDaemonProviderControls(daemon, async (draft) => {
-    if (draft.provider !== "plugin-added-agent" || draft.cwd === "/workspace/no-controls") {
-      return { controls: [], options: {} };
-    }
-    if (draft.model === "vendor/second" && holdSecondModel) {
-      markSecondModelRequested?.();
-      await secondModelGate;
-    }
+  hub.setDaemonProviderControls(daemon, (draft) => {
+    if (draft.provider !== "plugin-added-agent") return { controls: [], options: {} };
     const isFirst = draft.model === "vendor/first";
     return {
       controls: [
@@ -523,45 +497,12 @@ test("round-trips unknown daemon providers and advertised settings through form,
     await activity.closeRecordWithEscape();
     await triggers.open();
   });
-  await test.step("changing cwd to a directory with no controls preserves authored provider options", async () => {
+  await test.step("reloading preserves provider options and switching models prunes only lost controls", async () => {
     await triggers.openTrigger("unknown-run");
     await triggers.expectProviderOptionSelect("Speed", "fast");
     await triggers.expectProviderOptionToggle("Plan", true);
     await triggers.expectProviderOptionToggle("Turbo", true);
-    await triggers.chooseWorkingDirectory("/workspace/no-controls");
-    await triggers.expectNoProviderOptionControl("Speed");
-    await triggers.switchToYaml();
-    await triggers.expectYamlMatches({
-      run: {
-        target: { cwd: "/workspace/no-controls" },
-        agent: {
-          provider: "plugin-added-agent",
-          model: "vendor/first",
-          options: {
-            custom_setting: { limit: 7 },
-            service_tier: "fast",
-            plan_mode: true,
-            turbo_mode: true,
-          },
-        },
-      },
-    });
-    await triggers.switchToForm();
-    await triggers.chooseWorkingDirectory("/workspace/acme");
-    await triggers.expectProviderOptionSelect("Speed", "fast");
-    await triggers.expectProviderOptionToggle("Turbo", true);
-  });
-  await test.step("saving while a model-switch lookup is pending reconciles lost controls before saving", async () => {
-    const held = armSecondModelHold();
     await triggers.selectAgent("plugin-added-agent/vendor/second");
-    await held.requested;
-    const saving = triggers.save("unknown-run");
-    await expect(
-      page.locator("#trigger-editor-form").getByRole("button", { name: "Save changes" }),
-    ).toHaveAttribute("aria-busy", "true");
-    held.release();
-    await saving;
-    await triggers.openTrigger("unknown-run");
     await triggers.expectNoProviderOptionControl("Turbo");
     await triggers.expectProviderOptionSelect("Speed", "default");
     await triggers.expectProviderOptionToggle("Plan", true);
@@ -636,4 +577,190 @@ run:
   await triggers.expectRefusedOnSubmit("Choose a provider and model");
   await triggers.switchToYaml();
   await triggers.save("unknown-run");
+});
+
+test("reconciles provider options safely across cwd edits, superseded saves, and delayed model lookups", async ({
+  hub,
+  page,
+}) => {
+  await hub.signUpAs("owner", owner);
+  await hub.createOrganization("owner", "Acme");
+  const apiKey = await hub.createRunApiKey("owner");
+  const daemon = await hub.connectProviderDaemon("owner", "Acme", [
+    {
+      provider: "plugin-added-agent",
+      label: "Plugin agent",
+      status: "ready",
+      enabled: true,
+      models: ["vendor/first", "vendor/second"].map((id) => ({
+        provider: "plugin-added-agent",
+        id,
+        label: id,
+      })),
+      defaultModeId: "inspect",
+      modes: [{ id: "inspect", label: "Inspect" }],
+    },
+  ]);
+
+  let holdSecondModel = false;
+  let markSecondModelRequested: (() => void) | undefined;
+  let releaseSecondModel: (() => void) | undefined;
+  let secondModelGate: Promise<void> | undefined;
+  const armSecondModelHold = () => {
+    holdSecondModel = true;
+    const requested = new Promise<void>((resolve) => {
+      markSecondModelRequested = resolve;
+    });
+    secondModelGate = new Promise<void>((resolve) => {
+      releaseSecondModel = resolve;
+    });
+    return {
+      requested,
+      release: () => {
+        holdSecondModel = false;
+        releaseSecondModel?.();
+      },
+    };
+  };
+
+  hub.setDaemonProviderControls(daemon, async (draft) => {
+    if (draft.provider !== "plugin-added-agent" || draft.cwd === "/workspace/no-controls") {
+      return { controls: [], options: {} };
+    }
+    if (draft.model === "vendor/second" && holdSecondModel) {
+      markSecondModelRequested?.();
+      await secondModelGate;
+    }
+    const isFirst = draft.model === "vendor/first";
+    return {
+      controls: [
+        {
+          type: "select",
+          key: "service_tier",
+          label: "Speed",
+          defaultValue: "default",
+          choices: isFirst
+            ? [
+                { value: "default", label: "Normal" },
+                { value: "fast", label: "Fast" },
+              ]
+            : [{ value: "default", label: "Normal" }],
+        },
+        { type: "toggle", key: "plan_mode", label: "Plan" },
+        ...(isFirst ? [{ type: "toggle" as const, key: "turbo_mode", label: "Turbo" }] : []),
+      ],
+      options: draft.providerOptions ?? {},
+    };
+  });
+
+  const triggers = new OrganizationTriggers(page);
+  await triggers.open();
+  await triggers.startNew();
+  await triggers.configureManual({
+    name: "option-reconcile",
+    daemon,
+    cwd: "/workspace/acme",
+    agent: "plugin-added-agent/vendor/first",
+    providerOptions: '{"custom_setting":{"limit":7}}',
+    prompt: "Run the task.",
+  });
+  await triggers.selectProviderOption("Speed", "fast");
+  await triggers.setProviderOptionToggle("Plan", true);
+  await triggers.setProviderOptionToggle("Turbo", true);
+  await triggers.save("option-reconcile");
+
+  await test.step("changing cwd to a directory with no controls preserves authored provider options", async () => {
+    await triggers.openTrigger("option-reconcile");
+    await triggers.expectProviderOptionSelect("Speed", "fast");
+    await triggers.chooseWorkingDirectory("/workspace/no-controls");
+    await triggers.expectNoProviderOptionControl("Speed");
+    await triggers.switchToYaml();
+    await triggers.expectYamlMatches({
+      run: {
+        target: { cwd: "/workspace/no-controls" },
+        agent: {
+          provider: "plugin-added-agent",
+          model: "vendor/first",
+          options: {
+            custom_setting: { limit: 7 },
+            service_tier: "fast",
+            plan_mode: true,
+            turbo_mode: true,
+          },
+        },
+      },
+    });
+    await triggers.switchToForm();
+    await triggers.chooseWorkingDirectory("/workspace/acme");
+    await triggers.expectProviderOptionSelect("Speed", "fast");
+    await triggers.expectProviderOptionToggle("Turbo", true);
+  });
+
+  await test.step("returning to the original model while save waits supersedes the stale lookup and preserves valid options", async () => {
+    const held = armSecondModelHold();
+    await triggers.selectAgent("plugin-added-agent/vendor/second");
+    await held.requested;
+    const saveButton = page
+      .locator("#trigger-editor-form")
+      .getByRole("button", { name: "Save changes" });
+    await saveButton.click();
+    await expect(saveButton).toHaveAttribute("aria-busy", "true");
+    // Return to the original model before the delayed lookup for vendor/second answers.
+    await triggers.selectAgent("plugin-added-agent/vendor/first");
+    await expect(saveButton).toHaveAttribute("aria-busy", "false");
+    await triggers.expectProviderOptionSelect("Speed", "fast");
+    await triggers.expectProviderOptionToggle("Turbo", true);
+    // Let the stale vendor/second reply arrive; it must not save or strip vendor/first's options.
+    held.release();
+    await expect(page).toHaveURL(/\/triggers\/[^/]+$/u);
+    await triggers.expectProviderOptionSelect("Speed", "fast");
+    await triggers.expectProviderOptionToggle("Turbo", true);
+    await triggers.save("option-reconcile");
+    await hub.launchSavedTrigger("option-reconcile", apiKey);
+    await hub.expectProviderLaunch(daemon, {
+      provider: "plugin-added-agent",
+      model: "vendor/first",
+      modeId: "inspect",
+      providerOptions: {
+        custom_setting: { limit: 7 },
+        service_tier: "fast",
+        plan_mode: true,
+        turbo_mode: true,
+      },
+    });
+  });
+
+  await test.step("saving while a model-switch lookup is pending reconciles lost controls before saving", async () => {
+    await triggers.openTrigger("option-reconcile");
+    await triggers.expectProviderOptionSelect("Speed", "fast");
+    await triggers.expectProviderOptionToggle("Turbo", true);
+    const held = armSecondModelHold();
+    await triggers.selectAgent("plugin-added-agent/vendor/second");
+    await held.requested;
+    const saving = triggers.save("option-reconcile");
+    await expect(
+      page.locator("#trigger-editor-form").getByRole("button", { name: "Save changes" }),
+    ).toHaveAttribute("aria-busy", "true");
+    held.release();
+    await saving;
+    await triggers.openTrigger("option-reconcile");
+    await triggers.expectNoProviderOptionControl("Turbo");
+    await triggers.expectProviderOptionSelect("Speed", "default");
+    await triggers.expectProviderOptionToggle("Plan", true);
+    await triggers.switchToYaml();
+    await triggers.expectYamlMatches({
+      run: {
+        agent: {
+          provider: "plugin-added-agent",
+          model: "vendor/second",
+          options: {
+            custom_setting: { limit: 7 },
+            plan_mode: true,
+          },
+        },
+      },
+    });
+    await triggers.expectYamlOmits("turbo_mode");
+    await triggers.expectYamlOmits("service_tier");
+  });
 });

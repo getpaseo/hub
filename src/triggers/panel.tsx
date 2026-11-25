@@ -569,8 +569,7 @@ function useTriggerEditorState(
   // the marks stay and follow what they type.
   const [refused, setRefused] = useState(false);
   const [reconcilingSave, setReconcilingSave] = useState(false);
-  const formRef = useRef(form);
-  formRef.current = form;
+  const draftRevisionRef = useRef(0);
   const unmountedRef = useRef(false);
   useEffect(
     () => () => {
@@ -578,6 +577,11 @@ function useTriggerEditorState(
     },
     [],
   );
+  const editForm = (next: TriggerFormValue) => {
+    draftRevisionRef.current += 1;
+    setReconcilingSave(false);
+    setForm(next);
+  };
   const daemonId = mode === "form" ? targetDaemonId(snapshot.daemons, form) : undefined;
   const providerCatalog = useDaemonProviderCatalog(
     snapshot.organization.slug,
@@ -602,27 +606,32 @@ function useTriggerEditorState(
       refuse();
       return;
     }
+    draftRevisionRef.current += 1;
+    setReconcilingSave(false);
     providerControls.cancelPendingReconcile();
     setMode(next);
     window.scrollTo({ top: 0 });
   };
   const submitReconciled = async () => {
+    const submittedRevision = draftRevisionRef.current;
+    const submittedForm = form;
+    const isStillCurrent = () =>
+      !unmountedRef.current && draftRevisionRef.current === submittedRevision;
     setReconcilingSave(true);
     try {
-      const reconciled = await providerControls.reconcileBeforeSave();
-      if (unmountedRef.current) return;
-      const latest = formRef.current;
+      const outcome = await providerControls.reconcileBeforeSave(submittedForm, isStillCurrent);
+      if (outcome.status === "superseded" || !isStillCurrent()) return;
       const nextForm =
-        reconciled === undefined || reconciled === latest.providerOptions
-          ? latest
-          : { ...latest, providerOptions: reconciled };
-      if (nextForm !== latest) setForm(nextForm);
+        outcome.providerOptions === submittedForm.providerOptions
+          ? submittedForm
+          : { ...submittedForm, providerOptions: outcome.providerOptions };
+      if (nextForm !== submittedForm) setForm(nextForm);
       const merged = mergeTriggerForm(yaml, nextForm);
       const nextErrors = triggerFormErrors(nextForm, entry?.modes);
       if (merged.status === "ok" && Object.keys(nextErrors).length === 0) onSave(merged.yaml);
       else refuse();
     } finally {
-      if (!unmountedRef.current) setReconcilingSave(false);
+      if (isStillCurrent()) setReconcilingSave(false);
     }
   };
   const submit = (event: FormEvent) => {
@@ -653,7 +662,7 @@ function useTriggerEditorState(
     canEditAsForm: mode === "form" || other.status === "editable",
     yamlOnly: initialProjection.status === "yaml_only",
     setYaml,
-    setForm,
+    setForm: editForm,
     switchMode,
     submit,
   };
@@ -1347,9 +1356,12 @@ function useDaemonProviderCatalog(
 }
 
 interface PendingOptionReconcile {
+  targetScopeKey: string;
   provider: string;
   drawnKeys: ReadonlySet<string>;
 }
+
+type SaveReconcileOutcome = { status: "superseded" } | { status: "ready"; providerOptions: string };
 
 function safeSplitAgent(agent: string): { provider: string; model?: string } | undefined {
   if (agent.trim() === "") return undefined;
@@ -1360,13 +1372,30 @@ function safeSplitAgent(agent: string): { provider: string; model?: string } | u
   }
 }
 
+function providerControlsScopeKey(
+  daemonId: string | undefined,
+  form: Pick<TriggerFormValue, "cwd" | "agent" | "mode" | "thinkingOptionId">,
+): string {
+  const directory = form.cwd.trim();
+  const selection = safeSplitAgent(form.agent);
+  if (daemonId === undefined || directory.length === 0 || selection === undefined) return "";
+  return JSON.stringify([
+    daemonId,
+    directory,
+    selection.provider,
+    selection.model ?? "",
+    form.mode.trim(),
+    form.thinkingOptionId.trim(),
+  ]);
+}
+
 /**
  * The daemon-exposed provider option controls for the selected target and agent draft.
  *
  * Follows Paseo's client model: controls are queried via `provider.controls.list.request`, stay
  * mounted across option toggles in the same scope, clear across provider/model changes until the
  * new scope answers, and reconcile drawn options only across explicit same-provider model, mode,
- * or thinking changes once the daemon returns an authoritative answer.
+ * or thinking changes once the daemon returns an authoritative answer for that exact draft scope.
  */
 function useDaemonProviderControls({
   organizationSlug,
@@ -1392,16 +1421,7 @@ function useDaemonProviderControls({
     [form.providerOptions],
   );
   const enabled = daemonId !== undefined && directory.length > 0 && provider !== undefined;
-  const scopeKey = enabled
-    ? JSON.stringify([
-        daemonId,
-        directory,
-        provider,
-        model ?? "",
-        modeId ?? "",
-        thinkingOptionId ?? "",
-      ])
-    : "";
+  const scopeKey = providerControlsScopeKey(daemonId, form);
   const sortedOptionsKey =
     parsedOptions === undefined
       ? ""
@@ -1447,8 +1467,8 @@ function useDaemonProviderControls({
     undefined,
   );
   const pendingReconcileRef = useRef<PendingOptionReconcile | undefined>(undefined);
-  const formOptionsRef = useRef(form.providerOptions);
-  formOptionsRef.current = form.providerOptions;
+  const scopeKeyRef = useRef(scopeKey);
+  scopeKeyRef.current = scopeKey;
 
   const setReconcile = (next: PendingOptionReconcile | undefined) => {
     pendingReconcileRef.current = next;
@@ -1464,7 +1484,7 @@ function useDaemonProviderControls({
   useEffect(() => {
     if (!enabled || query.status === "pending" || query.isFetching) return;
     if (query.status === "error") {
-      if (pendingReconcileRef.current !== undefined) setReconcile(undefined);
+      if (pendingReconcileRef.current?.targetScopeKey === scopeKey) setReconcile(undefined);
       return;
     }
     const data = query.data;
@@ -1482,10 +1502,11 @@ function useDaemonProviderControls({
       options: data.options,
     });
     const pending = pendingReconcileRef.current;
-    if (pending === undefined || pending.provider !== provider) return;
+    if (pending === undefined || pending.targetScopeKey !== scopeKey) return;
     setReconcile(undefined);
     if (!data.available) return;
     setForm((current) => {
+      if (providerControlsScopeKey(daemonId, current) !== scopeKey) return current;
       const pruned = pruneLostProviderOptions({
         raw: current.providerOptions,
         drawnKeys: pending.drawnKeys,
@@ -1495,6 +1516,7 @@ function useDaemonProviderControls({
     });
   }, [
     enabled,
+    daemonId,
     query.status,
     query.data,
     query.isFetching,
@@ -1523,16 +1545,27 @@ function useDaemonProviderControls({
     if (pendingReconcileRef.current?.provider === nextSelection.provider) {
       for (const key of pendingReconcileRef.current.drawnKeys) candidateKeys.add(key);
     }
-    if (hasDrawnProviderOptions(next.providerOptions, candidateKeys)) {
-      setReconcile({ provider: nextSelection.provider, drawnKeys: candidateKeys });
+    const targetScopeKey = providerControlsScopeKey(daemonId, next);
+    if (targetScopeKey.length > 0 && hasDrawnProviderOptions(next.providerOptions, candidateKeys)) {
+      setReconcile({
+        targetScopeKey,
+        provider: nextSelection.provider,
+        drawnKeys: candidateKeys,
+      });
     } else {
       setReconcile(undefined);
     }
   };
 
-  const reconcileBeforeSave = async (): Promise<string | undefined> => {
+  const reconcileBeforeSave = async (
+    submittedForm: TriggerFormValue,
+    isStillCurrent: () => boolean,
+  ): Promise<SaveReconcileOutcome> => {
     const pending = pendingReconcileRef.current;
-    if (pending === undefined || !enabled || pending.provider !== provider) return undefined;
+    const submittedScopeKey = scopeKey;
+    if (pending === undefined || !enabled || pending.targetScopeKey !== submittedScopeKey) {
+      return { status: "ready", providerOptions: submittedForm.providerOptions };
+    }
     try {
       const data = await queryClient.fetchQuery({
         queryKey,
@@ -1543,16 +1576,27 @@ function useDaemonProviderControls({
           return result.data;
         },
       });
-      setReconcile(undefined);
-      if (!data.available) return undefined;
-      return pruneLostProviderOptions({
-        raw: formOptionsRef.current,
-        drawnKeys: pending.drawnKeys,
-        controls: data.controls,
-      });
+      if (!isStillCurrent() || scopeKeyRef.current !== submittedScopeKey) {
+        return { status: "superseded" };
+      }
+      if (pendingReconcileRef.current === pending) setReconcile(undefined);
+      if (!data.available) {
+        return { status: "ready", providerOptions: submittedForm.providerOptions };
+      }
+      return {
+        status: "ready",
+        providerOptions: pruneLostProviderOptions({
+          raw: submittedForm.providerOptions,
+          drawnKeys: pending.drawnKeys,
+          controls: data.controls,
+        }),
+      };
     } catch {
-      setReconcile(undefined);
-      return undefined;
+      if (!isStillCurrent() || scopeKeyRef.current !== submittedScopeKey) {
+        return { status: "superseded" };
+      }
+      if (pendingReconcileRef.current === pending) setReconcile(undefined);
+      return { status: "ready", providerOptions: submittedForm.providerOptions };
     }
   };
 
@@ -1565,7 +1609,9 @@ function useDaemonProviderControls({
     }),
     onAgentSelectionChange,
     cancelPendingReconcile: () => setReconcile(undefined),
-    hasPendingReconcile: () => pendingReconcileRef.current !== undefined,
+    hasPendingReconcile: () =>
+      pendingReconcileRef.current !== undefined &&
+      pendingReconcileRef.current.targetScopeKey === scopeKey,
     reconcileBeforeSave,
   };
 }
