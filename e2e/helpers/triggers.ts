@@ -485,6 +485,20 @@ export class OrganizationTriggers {
   /** After a reload only the hash is left, so the request asks for the secret the reader saved. */
   async reloadWebhookSettings() {
     await this.page.reload();
+    await this.expectSecretHidden();
+  }
+
+  /** Back to the page before the trigger and forward again: a shown secret is not shown twice. */
+  async returnThroughHistory() {
+    const trigger = this.page.url();
+    await this.page.goBack();
+    await expect(this.page).not.toHaveURL(trigger);
+    await this.page.goForward();
+    await expect(this.page).toHaveURL(trigger);
+    await this.expectSecretHidden();
+  }
+
+  private async expectSecretHidden() {
     await expect(this.page.getByText("Secret active", { exact: true })).toBeVisible();
     await expect(
       this.page.getByRole("button", { name: "Rotate secret", exact: true }),

@@ -32,6 +32,10 @@ test("creates a webhook with a secret that the copied request already carries", 
     );
   });
 
+  await test.step("forget the secret once the reader leaves through history", async () => {
+    await triggers.returnThroughHistory();
+  });
+
   await test.step("hide the secret after a reload and ask for the saved one", async () => {
     await triggers.reloadWebhookSettings();
     expect(await triggers.copyCurlExample(created.endpoint)).toContain(
@@ -44,7 +48,10 @@ test("creates a webhook with a secret that the copied request already carries", 
     const rotated = await triggers.rotateWebhookSecret();
     expect(rotated).not.toEqual(created.secret);
     expect(await triggers.copyCurlExample(created.endpoint)).toContain(`Bearer ${rotated}`);
-    await triggers.reloadWebhookSettings();
+    await triggers.returnThroughHistory();
+    expect(await triggers.copyCurlExample(created.endpoint)).toContain(
+      '-H "Authorization: Bearer $WEBHOOK_SECRET"',
+    );
   });
 
   await test.step("say where the secret is once the trigger exists", async () => {

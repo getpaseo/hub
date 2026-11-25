@@ -238,6 +238,7 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
   const saveCommand = useServerFn(saveTrigger) as (input: {
     data: { organizationSlug: string; triggerId?: string; yaml: string };
   }) => Promise<Result<SavedTrigger>>;
+  const createdSecret = useCreatedWebhookSecret(triggerId);
   const save = useMutation({
     mutationFn: saveCommand,
     // The result can hold a webhook secret in plaintext. Drop it as soon as this screen does.
@@ -245,13 +246,15 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
     onSuccess: async (result) => {
       if (result.status !== "ok") return;
       await queryClient.invalidateQueries({ queryKey: ["triggers", organizationSlug] });
+      const { triggerId: savedId, initialWebhookSecret } = result.data;
+      if (initialWebhookSecret === undefined) {
+        await navigate({ to: `/o/${organizationSlug}/triggers` as never });
+        return;
+      }
       // A save that created a webhook endpoint opens that endpoint: its URL and its secret, shown
       // this once, are what the reader needs next. Every other save returns to the list.
-      await navigate({
-        to: (result.data.initialWebhookSecret === undefined
-          ? `/o/${organizationSlug}/triggers`
-          : `/o/${organizationSlug}/triggers/${result.data.triggerId}`) as never,
-      });
+      createdSecret.reveal(savedId, initialWebhookSecret);
+      await navigate({ to: `/o/${organizationSlug}/triggers/${savedId}` as never });
     },
   });
   if (snapshot.status === "pending") return <TriggerEditorSkeleton />;
@@ -270,12 +273,7 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
     );
   }
   const webhook = data.webhooks.find((endpoint) => endpoint.triggerId === trigger?.id);
-  // `/triggers/new` and `/triggers/<id>` are one route, so this panel and its save result outlive
-  // the redirect after creating. The secret lives only there: never in the URL, history state,
-  // storage, or the snapshot cache, so a reload or leaving the page forgets it.
-  const saved = save.data?.status === "ok" ? save.data.data : undefined;
-  const initialSecret =
-    saved !== undefined && saved.triggerId === trigger?.id ? saved.initialWebhookSecret : undefined;
+  const initialSecret = createdSecret.secret;
   const returnToList = () => {
     void navigate({ to: `/o/${organizationSlug}/triggers` as never });
   };
@@ -312,6 +310,26 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
           })}
     />
   );
+}
+
+/**
+ * The secret a create returned, for the one visit that create opens. `/triggers/new` and
+ * `/triggers/<id>` are one route, so this panel outlives the redirect and can hand the secret to
+ * the trigger it belongs to. Leaving that trigger, by a link or through history, forgets it: the
+ * secret is never in the URL, history state, storage, or the snapshot cache, so neither Back and
+ * Forward nor a reload can show it again.
+ */
+function useCreatedWebhookSecret(triggerId: string) {
+  const [created, setCreated] = useState<{ triggerId: string; secret: string }>();
+  const [visiting, setVisiting] = useState(triggerId);
+  if (visiting !== triggerId) {
+    setVisiting(triggerId);
+    if (created !== undefined && created.triggerId !== triggerId) setCreated(undefined);
+  }
+  return {
+    secret: created?.triggerId === triggerId ? created.secret : undefined,
+    reveal: (id: string, secret: string) => setCreated({ triggerId: id, secret }),
+  };
 }
 
 function useTriggerSnapshot(organizationSlug: string) {
