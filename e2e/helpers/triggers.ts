@@ -534,11 +534,31 @@ export class OrganizationTriggers {
     return {
       /** Delivers the held answer and waits for the trigger list it refreshes. */
       answer: async () => {
-        const refreshed = this.page.waitForRequest(
-          (request) => request.method() === "GET" && request.url().includes("_serverFn"),
-        );
+        const refreshed = this.page.waitForRequest(isRefresh);
         release();
         await refreshed;
+        await this.page.unrouteAll();
+      },
+    };
+  }
+
+  /**
+   * Holds every trigger list refresh until the returned `release` is called, the way a slow
+   * network delivers it.
+   */
+  async holdTriggerRefresh() {
+    let release = (): void => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await this.page.route("**/*", async (route) => {
+      if (!isRefresh(route.request())) return route.fallback();
+      await released;
+      await route.fallback();
+    });
+    return {
+      release: async () => {
+        release();
         await this.page.unrouteAll();
       },
     };
@@ -1079,4 +1099,8 @@ export class OrganizationTriggers {
 
 function isRotation(request: Request): boolean {
   return request.method() === "POST" && (request.postData() ?? "").includes("rotate");
+}
+
+function isRefresh(request: Request): boolean {
+  return request.method() === "GET" && request.url().includes("_serverFn");
 }

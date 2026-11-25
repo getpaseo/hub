@@ -45,9 +45,11 @@ test("creates a webhook with a secret that the copied request already carries", 
   });
 
   await test.step("rotate to a new secret that the request carries instead", async () => {
+    const refresh = await triggers.holdTriggerRefresh();
     const rotated = await triggers.rotateWebhookSecret();
     expect(rotated).not.toEqual(created.secret);
     expect(await triggers.copyCurlExample(created.endpoint)).toContain(`Bearer ${rotated}`);
+    await refresh.release();
     await triggers.rotateWebhookSecretUnsuccessfully();
     expect(await triggers.copyCurlExample(created.endpoint)).toContain(
       '-H "Authorization: Bearer $WEBHOOK_SECRET"',

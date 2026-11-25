@@ -40,7 +40,11 @@ export function WebhookSettings({
     mutationFn: (action: WebhookSecretAction) =>
       rotate({ data: { organizationSlug, triggerId: endpoint.triggerId, action } }),
     gcTime: 0,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["triggers", organizationSlug] }),
+    // The refresh is not awaited: the per-call callbacks below run once this settles, and the
+    // secret a rotation produced must replace the revoked one on screen without waiting for it.
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["triggers", organizationSlug] });
+    },
   });
   const { mutate } = secret;
   // The secret a request produced belongs to the card that sent it. Per-call callbacks run only
