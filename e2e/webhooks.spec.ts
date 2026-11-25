@@ -59,6 +59,14 @@ test("creates a webhook with a secret that the copied request already carries", 
     );
   });
 
+  await test.step("keep the newest secret when an earlier rotation answers late", async () => {
+    const late = await triggers.rotateWebhookSecretAnsweredLate();
+    await triggers.returnThroughHistory();
+    const newest = await triggers.rotateWebhookSecret();
+    await late.answer();
+    expect(await triggers.copyCurlExample(created.endpoint)).toContain(`Bearer ${newest}`);
+  });
+
   await test.step("say where the secret is once the trigger exists", async () => {
     await home.open();
     await home.expectCurrentStep("Run it");

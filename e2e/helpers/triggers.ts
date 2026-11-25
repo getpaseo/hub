@@ -494,10 +494,8 @@ export class OrganizationTriggers {
    * it replaced the secret, so a failed rotation stops vouching for the secret on screen.
    */
   async rotateWebhookSecretUnsuccessfully() {
-    const rotation = (request: Request) =>
-      request.method() === "POST" && (request.postData() ?? "").includes("rotate");
     await this.page.route("**/*", (route) =>
-      rotation(route.request()) ? route.abort() : route.fallback(),
+      isRotation(route.request()) ? route.abort() : route.fallback(),
     );
     await this.page.getByRole("button", { name: "Rotate secret", exact: true }).click();
     const dialog = this.page.getByRole("alertdialog", { name: "Rotate webhook secret?" });
@@ -505,6 +503,45 @@ export class OrganizationTriggers {
     await expect(this.page.getByText("Webhook secret unavailable", { exact: true })).toBeVisible();
     await expect(this.page.getByRole("textbox", { name: "Webhook secret" })).toBeHidden();
     await this.page.unrouteAll();
+  }
+
+  /**
+   * Starts a rotation that Hub carries out but whose answer reaches the page only when the returned
+   * `answer` is called, the way a slow network delivers it.
+   */
+  async rotateWebhookSecretAnsweredLate() {
+    let release = (): void => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let carriedOut = (): void => {};
+    const rotated = new Promise<void>((resolve) => {
+      carriedOut = resolve;
+    });
+    let held = false;
+    await this.page.route("**/*", async (route) => {
+      if (held || !isRotation(route.request())) return route.fallback();
+      held = true;
+      const response = await route.fetch();
+      carriedOut();
+      await released;
+      await route.fulfill({ response });
+    });
+    await this.page.getByRole("button", { name: "Rotate secret", exact: true }).click();
+    const dialog = this.page.getByRole("alertdialog", { name: "Rotate webhook secret?" });
+    await dialog.getByRole("button", { name: "Rotate secret", exact: true }).click();
+    await rotated;
+    return {
+      /** Delivers the held answer and waits for the trigger list it refreshes. */
+      answer: async () => {
+        const refreshed = this.page.waitForRequest(
+          (request) => request.method() === "GET" && request.url().includes("_serverFn"),
+        );
+        release();
+        await refreshed;
+        await this.page.unrouteAll();
+      },
+    };
   }
 
   /** After a reload only the hash is left, so the request asks for the secret the reader saved. */
@@ -1038,4 +1075,8 @@ export class OrganizationTriggers {
   private yamlEditor() {
     return this.page.getByRole("textbox", { name: "Trigger YAML" });
   }
+}
+
+function isRotation(request: Request): boolean {
+  return request.method() === "POST" && (request.postData() ?? "").includes("rotate");
 }

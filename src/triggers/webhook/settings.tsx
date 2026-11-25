@@ -40,17 +40,25 @@ export function WebhookSettings({
     mutationFn: (action: WebhookSecretAction) =>
       rotate({ data: { organizationSlug, triggerId: endpoint.triggerId, action } }),
     gcTime: 0,
-    onSuccess: async (result) => {
-      onSecretChange(result.status === "ok" ? result.data.secret : undefined);
-      await queryClient.invalidateQueries({ queryKey: ["triggers", organizationSlug] });
-    },
-    // A failed rotation clears the secret on screen: the browser cannot tell a request that never
-    // reached Hub from one whose answer was lost after it replaced the secret.
-    onError: () => onSecretChange(undefined),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["triggers", organizationSlug] }),
   });
   const { mutate } = secret;
-  const createSecret = useCallback(() => mutate("create"), [mutate]);
-  const rotateSecret = useCallback(() => mutate("rotate"), [mutate]);
+  // The secret a request produced belongs to the card that sent it. Per-call callbacks run only
+  // while that card is mounted, so an answer that arrives after the reader left and came back
+  // cannot replace the secret a later visit is showing. A failed request clears the secret on
+  // screen: the browser cannot tell a request that never reached Hub from one whose answer was
+  // lost after it replaced the secret.
+  const send = useCallback(
+    (action: WebhookSecretAction) =>
+      mutate(action, {
+        onSuccess: (result) =>
+          onSecretChange(result.status === "ok" ? result.data.secret : undefined),
+        onError: () => onSecretChange(undefined),
+      }),
+    [mutate, onSecretChange],
+  );
+  const createSecret = useCallback(() => send("create"), [send]);
+  const rotateSecret = useCallback(() => send("rotate"), [send]);
   const failed = secret.data?.status === "error" || secret.isError;
   return (
     <WebhookSettingsView
