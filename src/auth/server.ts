@@ -132,6 +132,7 @@ const RAW_PRODUCT_PATHS = new Set([
   "/api/auth/verify-email",
 ]);
 const SOCIAL_SIGN_IN_PATH = "/api/auth/sign-in/social";
+const SOCIAL_SIGN_IN_FAILURE_PAGE = "/";
 
 export function createAuthServer(options: AuthServerOptions): AuthServer {
   const database = options.database.drizzle();
@@ -198,7 +199,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     socialProviders: socialSignIn,
     // A callback that cannot recover the page it started from lands on the sign-in card, which
     // reads the error, instead of Better Auth's error route.
-    onAPIError: { errorURL: "/" },
+    onAPIError: { errorURL: SOCIAL_SIGN_IN_FAILURE_PAGE },
     account: {
       accountLinking: {
         enabled: true,
@@ -319,7 +320,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
         if (rejected !== undefined) return Promise.resolve(rejected);
         return startSocialSignIn(request);
       }
-      if (socialCallbackPaths.has(path)) return auth.handler(request);
+      if (socialCallbackPaths.has(path)) return finishSocialSignIn(request);
       if (!RAW_PRODUCT_PATHS.has(path) && !path.startsWith("/api/auth/reset-password/")) {
         return Promise.resolve(Response.json({ error: "not_found" }, { status: 404 }));
       }
@@ -443,6 +444,18 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
       return Response.json({ error: "invalid_sign_in" }, { status: 400 });
     }
     return auth.handler(request);
+  }
+
+  /**
+   * Better Auth redirects every callback failure it anticipates. One it does not, such as the
+   * provider dropping the connection while Hub reads the profile, comes back as a bare 500, so
+   * Hub sends the browser to the sign-in card instead.
+   */
+  async function finishSocialSignIn(request: Request): Promise<Response> {
+    const response = await auth.handler(request);
+    if (response.status < 500) return response;
+    const failure = `${SOCIAL_SIGN_IN_FAILURE_PAGE}?error=internal_server_error`;
+    return new Response(null, { status: 302, headers: { location: failure } });
   }
 
   async function changePassword(request: Request): Promise<Response> {

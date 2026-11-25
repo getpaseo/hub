@@ -28,7 +28,11 @@ import { ACCOUNT_MUTATION_KEY, useAccountMutationError } from "./account-mutatio
 import { ForgotPasswordEntry, VerificationPendingEntry } from "./account-recovery.js";
 import { ProviderGlyph } from "../connections/provider-glyph.js";
 import type { SocialProvider } from "./social-sign-in.js";
-import { beginSocialSignIn, socialSignInFailure } from "./social-sign-in-browser.js";
+import {
+  beginSocialSignIn,
+  onBackFromProvider,
+  socialSignInFailure,
+} from "./social-sign-in-browser.js";
 
 type EmptyResult = Result<Record<string, never>>;
 type AuthenticationResult = Result<{ state: "complete" | "verificationRequired" }>;
@@ -86,7 +90,10 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
     },
   });
   const socialSignIn = useMutation({ mutationFn: beginSocialSignIn });
-  // A started provider sign-in stays busy: the page is on its way to the provider.
+  const { reset: resetSocialSignIn } = socialSignIn;
+  useEffect(() => onBackFromProvider(resetSocialSignIn), [resetSocialSignIn]);
+  // A started provider sign-in stays busy while the page is on its way to the provider, until
+  // Back brings the page back.
   const busy =
     signInMutation.isPending ||
     signUpMutation.isPending ||

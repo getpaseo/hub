@@ -131,6 +131,27 @@ async function continueWithProviderPage(
   return new URL(page.url());
 }
 
+/**
+ * Presses the provider's button, then comes Back the way the browser's back-forward cache brings
+ * the page back: with the state it left with, announced by `pageshow` with `persisted`.
+ * Playwright's request routing turns that cache off, so the provider answers 204, which keeps the
+ * browser on this page, and the step fires the restore itself.
+ */
+async function comeBackFromProviderPage(
+  page: Page,
+  provider: "Google" | "GitHub",
+  providerOrigin: string,
+): Promise<void> {
+  await page.route(`${providerOrigin}/**`, (route) => route.fulfill({ status: 204 }));
+  const button = page.getByRole("button", { name: `Continue with ${provider}` });
+  await button.click();
+  await expect(button).toBeDisabled();
+  await page.evaluate(() =>
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })),
+  );
+  await page.unroute(`${providerOrigin}/**`);
+}
+
 export interface Account {
   name: string;
   email: string;
@@ -660,6 +681,11 @@ export class PaseoHub {
       await expectSocialSignInOptions(page);
       await expectAccessible(page);
       await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+      await comeBackFromProviderPage(page, "GitHub", "https://github.com");
+      await expect(page).toHaveURL(deepLink);
+      await expect(page.getByRole("button", { name: "Continue with GitHub" })).toBeEnabled();
+      await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
 
       const authorization = await continueWithProviderPage(page, "GitHub", "https://github.com");
       expect(authorization.searchParams.get("redirect_uri")).toBe(

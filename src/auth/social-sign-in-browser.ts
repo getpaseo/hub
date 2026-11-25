@@ -24,6 +24,18 @@ export async function beginSocialSignIn(provider: SocialProvider): Promise<void>
   window.location.assign(startedSignIn.parse(await response.json()).url);
 }
 
+/**
+ * Calls `returned` when the browser restores this page from its back-forward cache, which is what
+ * Back from the provider's page does. The restored page still holds the state it left with.
+ */
+export function onBackFromProvider(returned: () => void): () => void {
+  const restore = (event: PageTransitionEvent) => {
+    if (event.persisted) returned();
+  };
+  window.addEventListener("pageshow", restore);
+  return () => window.removeEventListener("pageshow", restore);
+}
+
 /** Why the provider sign-in that returned to this page failed, when one did. */
 export function socialSignInFailure(): string | undefined {
   if (typeof window === "undefined") return undefined;

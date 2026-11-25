@@ -200,6 +200,21 @@ describe("registration policy boundary", () => {
     await auth.close();
   }, 120_000);
 
+  it("sends a provider failure after the token exchange to the sign-in card", async () => {
+    const { auth } = await startAuth("open", SOCIAL_SIGN_IN);
+    const started = await socialSignIn(auth, "github", "/cli-login?code=ABCD-EFGH");
+    const authorization = new URL(z.object({ url: z.string() }).parse(await started.json()).url);
+    const callback = new URL("http://localhost:3000/api/auth/callback/github");
+    callback.searchParams.set("state", authorization.searchParams.get("state") ?? "");
+    callback.searchParams.set("code", "granted");
+    const returned = await whileGitHubDropsTheEmailLookup(() =>
+      auth.handle(new Request(callback, { headers: { cookie: requestCookies(started) } })),
+    );
+    assert.equal(returned.status, 302);
+    assert.equal(returned.headers.get("location"), "/?error=internal_server_error");
+    await auth.close();
+  }, 120_000);
+
   it("keeps social routes closed for providers this Hub has not configured", async () => {
     const closed = await startAuth("open");
     assert.equal((await socialSignIn(closed.auth, "google", "/")).status, 404);
@@ -333,6 +348,34 @@ async function socialSignIn(
       }),
     }),
   );
+}
+
+/**
+ * Stands in for GitHub: the token exchange and profile succeed, then the connection drops while
+ * Hub reads the account's email addresses.
+ */
+async function whileGitHubDropsTheEmailLookup<T>(run: () => Promise<T>): Promise<T> {
+  const network = globalThis.fetch;
+  globalThis.fetch = (input, init) => {
+    const url = input instanceof Request ? input.url : input.toString();
+    if (url.startsWith("https://github.com/login/oauth/access_token")) {
+      return Promise.resolve(
+        Response.json({ access_token: "token", token_type: "bearer", scope: "user:email" }),
+      );
+    }
+    if (url === "https://api.github.com/user") {
+      return Promise.resolve(Response.json({ id: 1, login: "octocat", name: "Octo", email: null }));
+    }
+    if (url === "https://api.github.com/user/emails") {
+      return Promise.reject(new TypeError("fetch failed"));
+    }
+    return network(input, init);
+  };
+  try {
+    return await run();
+  } finally {
+    globalThis.fetch = network;
+  }
 }
 
 function requestCookies(response: Response): string {
