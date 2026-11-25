@@ -14,6 +14,10 @@ function digest(value: string): Buffer {
   return createHash("sha256").update(value).digest();
 }
 
+function generateSecret(): string {
+  return `whsec_${randomBytes(32).toString("base64url")}`;
+}
+
 function matchesSecret(token: string, hash: string | null | undefined): boolean {
   const stored = hash == null ? emptyDigest : Buffer.from(hash, "hex");
   return timingSafeEqual(digest(token), stored) && hash != null;
@@ -22,17 +26,27 @@ function matchesSecret(token: string, hash: string | null | undefined): boolean 
 export class WebhookRepository implements WebhookStore {
   constructor(private readonly runtime: DatabaseRuntime) {}
 
-  /** Trigger save owns the trigger row lock and activates the endpoint with its revision. */
-  static async synchronize(client: QueryHandle, triggerId: string, configured: boolean) {
+  /**
+   * Trigger save owns the trigger row lock and activates the endpoint with its revision. Every
+   * delivery needs a bearer secret, so an endpoint is born with one, and its plaintext is returned
+   * this once. An endpoint that already exists keeps its secret.
+   */
+  static async synchronize(
+    client: QueryHandle,
+    triggerId: string,
+    configured: boolean,
+  ): Promise<string | undefined> {
     if (!configured) {
       await client.query("delete from trigger_webhooks where trigger_id = $1", [triggerId]);
-      return;
+      return undefined;
     }
-    await client.query(
-      `insert into trigger_webhooks (trigger_id, endpoint_id) values ($1, $2)
-       on conflict (trigger_id) do nothing`,
-      [triggerId, `wh_${randomBytes(24).toString("base64url")}`],
+    const secret = generateSecret();
+    const { rows } = await client.query(
+      `insert into trigger_webhooks (trigger_id, endpoint_id, secret_hash) values ($1, $2, $3)
+       on conflict (trigger_id) do nothing returning endpoint_id`,
+      [triggerId, `wh_${randomBytes(24).toString("base64url")}`, digest(secret).toString("hex")],
     );
+    return rows.length === 0 ? undefined : secret;
   }
 
   async list(organizationId: string): Promise<WebhookEndpoint[]> {
@@ -52,7 +66,7 @@ export class WebhookRepository implements WebhookStore {
     triggerId: string,
     action: NonNullable<Parameters<WebhookStore["rotate"]>[2]> = "rotate",
   ) {
-    const secret = `whsec_${randomBytes(32).toString("base64url")}`;
+    const secret = generateSecret();
     const {
       rows: [endpoint],
     } = await this.runtime.query<{ endpoint_id: string }>(

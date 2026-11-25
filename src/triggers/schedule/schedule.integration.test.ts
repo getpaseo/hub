@@ -34,7 +34,7 @@ describe.each(["embedded", "postgres"] as const)("schedule on %s", (kind) => {
     const fixture = await setup(kind);
     try {
       const { database, store } = fixture;
-      let trigger = await store.save({ yaml: scheduleYaml, userId: null });
+      let { trigger } = await store.save({ yaml: scheduleYaml, userId: null });
       const firstDue = await fixture.due();
       expect(await database.schedules.tick(new Date(firstDue.getTime() - 1))).toBe(0);
       const catchUpAt = new Date(firstDue.getTime() + 3 * 86400_000);
@@ -47,11 +47,11 @@ describe.each(["embedded", "postgres"] as const)("schedule on %s", (kind) => {
       expect(await fixture.count("workflow_wakeups")).toBe(1);
       expect(await database.schedules.tick(await fixture.due())).toBe(0);
       const beforeEdit = await fixture.due();
-      trigger = await store.save({
+      ({ trigger } = await store.save({
         triggerId: trigger.id,
         yaml: scheduleYaml.replace("Scan at", "Inspect at"),
         userId: null,
-      });
+      }));
       expect(await fixture.due()).toEqual(beforeEdit);
       await store.save({
         triggerId: trigger.id,
@@ -83,7 +83,7 @@ describe.each(["embedded", "postgres"] as const)("schedule on %s", (kind) => {
         .replace("2026-01-01T09:00:00", start)
         .replace("FREQ=DAILY;BYHOUR=9,17", "FREQ=MINUTELY;COUNT=1")
         .replace("Europe/Berlin", "UTC");
-      const trigger = await fixture.store.save({ yaml, userId: null });
+      const { trigger } = await fixture.store.save({ yaml, userId: null });
       const due = await fixture.due();
       expect(await fixture.database.schedules.tick(new Date(due.getTime() + 86400_000))).toBe(1);
       const state = await fixture.bundle.runtime.query<{ next_at: Date | null }>(

@@ -39,7 +39,7 @@ describe("home read model", () => {
     await enrollTestDaemon(database, "org-1");
     await enrollConnectedOnlyDaemon(database);
     await database.setDaemonPresence(TEST_DAEMON_ID, "connected");
-    const trigger = await new OrganizationTriggerStore(
+    const { trigger } = await new OrganizationTriggerStore(
       database,
       "org-1",
       acceptingAgentValidator(),

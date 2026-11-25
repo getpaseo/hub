@@ -3,6 +3,7 @@ import type {
   Database,
   OrganizationTriggerRecord,
   OrganizationTriggerRevisionRecord,
+  SavedOrganizationTrigger,
 } from "../db/types.js";
 import {
   resolveTriggerConfigurationForOrganization,
@@ -73,7 +74,7 @@ export class OrganizationTriggerStore {
     return revision;
   }
 
-  async save(input: SaveTriggerInput): Promise<OrganizationTriggerRecord> {
+  async save(input: SaveTriggerInput): Promise<SavedOrganizationTrigger> {
     const previousYaml = await this.activeYaml(input.triggerId);
     const prepared = await this.validate(
       input.yaml,

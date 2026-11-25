@@ -37,7 +37,7 @@ run:
   prompt: Summarize the alert and call finish_execution with the summary.
 ```
 
-Hub assigns a random endpoint path of the form `/webhooks/wh_<random-id>`. Open the saved trigger and choose **Create secret**, or send `POST /api/v1/triggers/webhook-secret` with `{"triggerId":"<trigger-id>"}` and an organization credential with `configuration:install`. The API returns `{ path, secret }`. Each call replaces the previous secret. Copy the new secret when Hub shows it and store it in the sender's secret store. Redeploying the same trigger name with `webhook.received` preserves the endpoint and its secret.
+Hub assigns a random endpoint path of the form `/webhooks/wh_<random-id>` and a bearer secret. Only the secret's hash is stored. A trigger created in the editor opens on its endpoint and shows the secret once, with an example request that already carries it. Store the secret in the sender's secret store before you leave the page. A trigger created with `paseo hub deploy` gets a secret that is never shown, so open the trigger and choose **Rotate secret**, or send `POST /api/v1/triggers/webhook-secret` with `{"triggerId":"<trigger-id>"}` and an organization credential with `configuration:install`. The API returns `{ path, secret }`. Each rotation replaces the previous secret. An endpoint created before Hub generated secrets shows **Secret required** and **Create secret**. Redeploying the same trigger name with `webhook.received` preserves the endpoint and its secret.
 
 ```sh
 curl -X POST "$WEBHOOK_URL" \
