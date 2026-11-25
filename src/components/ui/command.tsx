@@ -36,14 +36,83 @@ function CommandInput({
   );
 }
 
-function CommandList({ className, ...props }: React.ComponentProps<typeof CommandPrimitive.List>) {
+/**
+ * The scrolling list of options. A fade covers whichever edge has options beyond it, and the
+ * height stops partway through a row, so a list with more below never looks finished.
+ */
+function CommandList({
+  className,
+  ...props
+}: Omit<React.ComponentProps<typeof CommandPrimitive.List>, "ref">) {
+  const list = React.useRef<HTMLDivElement>(null);
+  const overflow = useScrollOverflow(list);
   return (
-    <CommandPrimitive.List
-      data-slot="command-list"
-      className={cn("max-h-64 scroll-py-1 overflow-x-hidden overflow-y-auto", className)}
-      {...props}
+    <div className="relative">
+      <CommandPrimitive.List
+        ref={list}
+        data-slot="command-list"
+        className={cn(
+          // 14.5rem ends partway through a row, whether the options are one line or two.
+          "max-h-58 scroll-py-1 overflow-x-hidden overflow-y-auto [scrollbar-color:var(--input)_transparent] [scrollbar-width:thin]",
+          className,
+        )}
+        {...props}
+      />
+      {overflow.above ? <CommandListFade edge="top" /> : null}
+      {overflow.below ? <CommandListFade edge="bottom" /> : null}
+    </div>
+  );
+}
+
+function CommandListFade({ edge }: { edge: "top" | "bottom" }) {
+  return (
+    <div
+      aria-hidden="true"
+      data-slot="command-list-fade"
+      data-edge={edge}
+      className={cn(
+        "pointer-events-none absolute inset-x-0 h-8 from-popover to-transparent",
+        edge === "top" ? "top-0 bg-linear-to-b" : "bottom-0 bg-linear-to-t",
+      )}
     />
   );
+}
+
+interface ScrollOverflow {
+  above: boolean;
+  below: boolean;
+}
+
+const NO_OVERFLOW: ScrollOverflow = { above: false, below: false };
+
+/**
+ * Whether a scrolling element has content past its top or bottom edge. It is measured again on
+ * scroll and whenever the element or its content changes size, which is how a search that
+ * narrows the options is noticed.
+ */
+function useScrollOverflow(ref: React.RefObject<HTMLElement | null>): ScrollOverflow {
+  const [overflow, setOverflow] = React.useState(NO_OVERFLOW);
+  React.useLayoutEffect(() => {
+    const element = ref.current;
+    if (element === null) return undefined;
+    const measure = () => {
+      const above = element.scrollTop > 1;
+      const below = element.scrollHeight - element.clientHeight - element.scrollTop > 1;
+      setOverflow((current) =>
+        current.above === above && current.below === below ? current : { above, below },
+      );
+    };
+    measure();
+    element.addEventListener("scroll", measure, { passive: true });
+    const resize = new ResizeObserver(measure);
+    resize.observe(element);
+    for (const child of element.children) resize.observe(child);
+    return () => {
+      element.removeEventListener("scroll", measure);
+      resize.disconnect();
+    };
+  }, [ref]);
+  return overflow;
 }
 
 function CommandEmpty({ ...props }: React.ComponentProps<typeof CommandPrimitive.Empty>) {

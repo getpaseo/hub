@@ -53,7 +53,9 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
   await test.step("the common setup stays in one small form", async () => {
     await triggers.startNew();
     await triggers.expectDaemonPreselected(daemon);
+    await triggers.expectWaitingForWorkingDirectory();
     await page.screenshot({ path: `${SHOTS}/01b-daemon-required.png`, fullPage: true });
+    await triggers.expectEventPickerScrolls(`${SHOTS}/01c-event-picker-scrolls.png`);
     await triggers.expectRefusedOnSubmit("Working directory is required");
     await triggers.configureSlackMention({
       name: "slack-help",
@@ -379,6 +381,14 @@ test("round-trips unknown daemon providers and advertised settings through form,
       models: [{ provider: "modeless-agent", id: "vendor/modeless", label: "vendor/modeless" }],
       modes: [],
     },
+    // An agent the daemon has no binary for fails to report, beside agents that work.
+    {
+      provider: "uninstalled-agent",
+      label: "Uninstalled agent",
+      status: "error",
+      enabled: true,
+      error: "spawn uninstalled-agent ENOENT",
+    },
   ]);
   const triggers = new OrganizationTriggers(page);
   await triggers.open();
@@ -388,6 +398,7 @@ test("round-trips unknown daemon providers and advertised settings through form,
     "vendor/second",
     "vendor/modeless",
   ]);
+  await triggers.expectNoProviderFailure();
   await triggers.configureManual({
     name: "unknown-run",
     daemon,

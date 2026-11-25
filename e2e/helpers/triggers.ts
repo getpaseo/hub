@@ -60,6 +60,61 @@ export class OrganizationTriggers {
     await expect(this.page.getByRole("button", { name: "Add integration" })).toBeHidden();
   }
 
+  /**
+   * A daemon but no working directory yet: the agent and its access are read from that directory,
+   * so those steps wait for it rather than offering controls a submit would then refuse.
+   */
+  async expectWaitingForWorkingDirectory() {
+    await expect(
+      this.page.getByText("Choose a working directory first", { exact: true }),
+    ).toHaveCount(2);
+    await expect(
+      this.page.getByRole("combobox", { name: "Working directory", exact: true }),
+    ).toContainText("Select a project or type a path");
+    await expect(this.page.getByRole("combobox", { name: "Agent" })).toBeHidden();
+    await expect(this.page.getByLabel("Instructions", { exact: true })).toBeHidden();
+    await expect(this.page.getByRole("button", { name: "Add integration" })).toBeHidden();
+  }
+
+  /**
+   * The event picker opens on the events Hub sends itself, which need no integration, and says
+   * there is more below: a row cut by the bottom edge under a fade that lifts at the end.
+   */
+  async expectEventPickerScrolls(path: string) {
+    await this.page.getByRole("combobox", { name: "Event", exact: true }).click();
+    const list = this.page.getByRole("listbox");
+    const options = list.getByRole("option");
+    await expect(options.nth(0)).toHaveAttribute("data-value", "webhook.received");
+    await expect(options.nth(1)).toHaveAttribute("data-value", "schedule.tick");
+    await expect(options.nth(2)).toHaveAttribute("data-value", "manual.run");
+    const above = this.page.locator('[data-slot="command-list-fade"][data-edge="top"]');
+    const below = this.page.locator('[data-slot="command-list-fade"][data-edge="bottom"]');
+    await expect(below).toBeVisible();
+    await expect(above).toBeHidden();
+    // Some option starts inside the list and ends past its bottom edge.
+    const cut = await list.evaluate((element) => {
+      const bottom = element.getBoundingClientRect().bottom;
+      return Array.from(element.querySelectorAll('[role="option"]')).some((option) => {
+        const box = option.getBoundingClientRect();
+        return box.top < bottom - 8 && box.bottom > bottom + 8;
+      });
+    });
+    expect(cut).toBe(true);
+    await this.page.screenshot({ path });
+    await list.evaluate((element) => element.scrollTo({ top: element.scrollHeight }));
+    await expect(below).toBeHidden();
+    await expect(above).toBeVisible();
+    await this.page.keyboard.press("Escape");
+  }
+
+  /** A provider that failed on the daemon is not news while another one offers models. */
+  async expectNoProviderFailure() {
+    await expect(this.page.getByRole("combobox", { name: "Agent", exact: true })).toBeVisible();
+    await expect(
+      this.page.getByRole("alert").filter({ hasText: "Providers unavailable" }),
+    ).toHaveCount(0);
+  }
+
   async chooseDaemon(daemon: string) {
     await this.selectOption("Daemon", daemon);
   }
@@ -259,12 +314,13 @@ export class OrganizationTriggers {
     await this.chooseAudience("Specific people");
     await this.page.getByLabel("User IDs").fill(input.users);
     await this.selectOption("Daemon", input.daemon);
+    await this.expectWaitingForWorkingDirectory();
+    await this.chooseWorkingDirectory(input.cwd);
     await expect(this.page.getByRole("combobox", { name: "Agent" })).toHaveAttribute(
       "data-value",
       "",
     );
     await expect(this.page.getByRole("combobox", { name: "Execution mode" })).toBeHidden();
-    await this.chooseWorkingDirectory(input.cwd);
     await this.selectAgent(input.agent);
     await this.selectOption("Execution mode", input.mode);
     await this.selectOption("Thinking", input.thinking);
