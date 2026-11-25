@@ -169,6 +169,21 @@ export class OrganizationActivity {
     await expect(this.record().getByRole("heading", { name: title })).toBeVisible();
   }
 
+  /** Open in Paseo goes to the agent itself, not through Hub's page for links shared elsewhere. */
+  async expectOpensInPaseo(deepLink: string) {
+    await expect(this.record().getByRole("link", { name: "Open in Paseo" })).toHaveAttribute(
+      "href",
+      deepLink,
+    );
+  }
+
+  /** The note that says where Paseo keeps an agent its sidebar does not list. */
+  async expectAgentVisibilityNote(text: string) {
+    await expect(
+      this.record().getByRole("status").filter({ hasText: "Where to find this agent" }),
+    ).toContainText(text);
+  }
+
   async expectNoRecord() {
     await expect(this.record()).toHaveCount(0);
   }

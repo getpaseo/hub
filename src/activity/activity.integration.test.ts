@@ -210,6 +210,9 @@ describe("activity store", () => {
                 daemon: { id: DAEMON, slug: "devbox" },
                 agent: { provider: "claude", model: "opus" },
                 daemonAgentId: "agent-1",
+                deepLink: "paseo://h/activity-server/agent/agent-1",
+                background: true,
+                autoArchive: true,
               },
             },
           ],
@@ -541,7 +544,7 @@ async function seed(runtime: DatabaseRuntime) {
     values
       ('${EXECUTION}', '${ORG}', '10000000-0000-4000-8000-000000000002', 'failed',
        '20000000-0000-4000-8000-000000000002', '${DAEMON}', 'agent-1',
-       '{"agent":{"provider":"claude","model":"opus"}}');
+       '{"agent":{"provider":"claude","model":"opus"},"background":true,"autoArchive":true}');
     insert into workflow_step_runs
       (trigger_run_id, step_id, ordinal, status, agent_execution_id, failure_reason, output)
     values ('${TRIAGE_RUN}', 'triage', 0, 'failed', '${EXECUTION}', 'agent crashed',

@@ -57,6 +57,10 @@ export interface TriggerFormValue {
   continuationKey: string;
   maxRuntime: string;
   idleTimeout: string;
+  /** The agent is created hidden from Paseo's sidebar and notifications. */
+  background: boolean;
+  /** Paseo archives the agent once the run finishes. */
+  autoArchive: boolean;
   githubEnabled?: boolean;
   githubConnection: string;
   githubRepositories: string;
@@ -178,6 +182,8 @@ function toFormValue(
     continuationKey: trigger.run.continuation.mode === "key" ? trigger.run.continuation.key : "",
     maxRuntime: trigger.run.max_runtime,
     idleTimeout: trigger.run.idle_timeout,
+    background: trigger.run.background,
+    autoArchive: trigger.run.auto_archive,
     githubConnection: trigger.run.github?.connection ?? "",
     githubRepositories: trigger.run.github?.repositories?.join(", ") ?? "",
     githubPermissions:
@@ -262,6 +268,12 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   setIfChanged(document, ["run", "continuation"], formContinuation(value));
   setIfChanged(document, ["run", "max_runtime"], value.maxRuntime.trim());
   setIfChanged(document, ["run", "idle_timeout"], value.idleTimeout.trim());
+  // Written only when the reader changed them, so a document that leaves them to their defaults
+  // keeps leaving them there.
+  if (value.background !== projection.value.background)
+    document.setIn(["run", "background"], value.background);
+  if (value.autoArchive !== projection.value.autoArchive)
+    document.setIn(["run", "auto_archive"], value.autoArchive);
   setOptional(document, ["run", "github"], githubAuthority(value));
   patchIntegrationToolGrants(document, projection.value, value);
   setIfChanged(document, ["run", "prompt"], value.prompt);
@@ -327,6 +339,8 @@ export function createTriggerYaml(value: TriggerFormValue): string {
         continuation: formContinuation(value),
         max_runtime: value.maxRuntime.trim(),
         idle_timeout: value.idleTimeout.trim(),
+        ...(value.background ? { background: true } : {}),
+        ...(value.autoArchive ? {} : { auto_archive: false }),
         ...(github === undefined ? {} : { github }),
         ...(tools === undefined ? {} : { tools }),
         prompt: value.prompt,

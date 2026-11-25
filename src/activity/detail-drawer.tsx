@@ -3,13 +3,12 @@ import { Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { ExternalLink } from "lucide-react";
 import { useState } from "react";
-import { executionLinkPath } from "../agent-executions/link.js";
 import { Card, CardSkeleton } from "../components/app/card.js";
 import { CodeBlock, CopyPageLink } from "../components/app/copy-field.js";
 import { DetailSheet } from "../components/app/detail-sheet.js";
 import { Disclosure } from "../components/app/disclosure.js";
 import { EmptyState } from "../components/app/empty-state.js";
-import { FailureAlert } from "../components/app/failure-alert.js";
+import { FailureAlert, NoticeAlert } from "../components/app/failure-alert.js";
 import { RecordList, RecordRow } from "../components/app/record-list.js";
 import { formatAbsolute } from "../components/app/relative-time.js";
 import { Section } from "../components/app/section.js";
@@ -33,6 +32,8 @@ import {
   resourceLabel,
   runSession,
   runStatusTone,
+  sessionLink,
+  sessionVisibility,
   stepStatusTone,
   type DropReasonNextStep,
 } from "./presentation.js";
@@ -171,7 +172,7 @@ function RunActions({
     <>
       {execution === undefined ? null : (
         <Button asChild size="sm">
-          <a href={executionLinkPath(execution.id)}>
+          <a href={sessionLink(execution)}>
             <ExternalLink aria-hidden="true" /> Open in Paseo
           </a>
         </Button>
@@ -200,6 +201,7 @@ const FAILURE_TITLES: Readonly<Record<string, string>> = {
 function RunBody({ run }: { run: ActivityRunDetailView }) {
   const failure = FAILURE_TITLES[run.status];
   const session = runSession(run.steps);
+  const visibility = session === undefined ? undefined : sessionVisibility(session);
   const timed = run.steps.some((step) => step.startedAt !== null);
   const rows: SummaryRow[] = [
     { label: "Daemon", value: run.daemon?.slug ?? "None" },
@@ -234,6 +236,13 @@ function RunBody({ run }: { run: ActivityRunDetailView }) {
             error={run.failureReason}
             fallback="No reason was recorded"
           />
+        </Section>
+      )}
+      {visibility === undefined ? null : (
+        <Section>
+          <NoticeAlert tone="neutral" title="Where to find this agent">
+            {visibility}
+          </NoticeAlert>
         </Section>
       )}
       <Section>

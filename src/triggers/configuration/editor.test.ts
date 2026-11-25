@@ -217,6 +217,8 @@ describe("trigger form YAML bridge", () => {
       continuationKey: "",
       maxRuntime: "2h",
       idleTimeout: "10m",
+      background: false,
+      autoArchive: true,
       githubConnection: "",
       githubRepositories: "",
       githubPermissions: "",
@@ -258,6 +260,8 @@ describe("trigger form YAML bridge", () => {
       continuationKey: "",
       maxRuntime: "2h",
       idleTimeout: "10m",
+      background: false,
+      autoArchive: true,
       githubConnection: "",
       githubRepositories: "",
       githubPermissions: "",
@@ -271,6 +275,59 @@ describe("trigger form YAML bridge", () => {
     const merged = mergeTriggerForm(initial, { ...projection.value, name: "release" });
     if (merged.status !== "ok") throw new Error(merged.reason);
     expect(merged.yaml).toContain("name: release");
+  });
+
+  test("round-trips background and auto-archive through the form", () => {
+    const projection = projectTriggerForm(ADVANCED);
+    if (projection.status !== "editable") throw new Error(projection.reason);
+    expect(projection.value).toMatchObject({ background: false, autoArchive: false });
+
+    const patched = patchTriggerYaml(ADVANCED, { ...projection.value, background: true });
+    expect(parseDocument(patched).toJS()).toMatchObject({
+      run: { background: true, auto_archive: false },
+    });
+    expect(patched).toContain("# keep this heading");
+    const reprojected = projectTriggerForm(patched);
+    if (reprojected.status !== "editable") throw new Error(reprojected.reason);
+    expect(reprojected.value).toMatchObject({ background: true, autoArchive: false });
+
+    const archived = patchTriggerYaml(patched, { ...reprojected.value, autoArchive: true });
+    expect(parseDocument(archived).toJS()).toMatchObject({
+      run: { background: true, auto_archive: true },
+    });
+  });
+
+  test("leaves the defaults out of a new trigger and writes only what differs", () => {
+    const projection = projectTriggerForm(ADVANCED);
+    if (projection.status !== "editable") throw new Error(projection.reason);
+    const defaults = createTriggerYaml({
+      ...projection.value,
+      background: false,
+      autoArchive: true,
+    });
+    expect(parseDocument(defaults).toJS()).not.toHaveProperty("run.background");
+    expect(parseDocument(defaults).toJS()).not.toHaveProperty("run.auto_archive");
+
+    const changed = createTriggerYaml({
+      ...projection.value,
+      background: true,
+      autoArchive: false,
+    });
+    expect(parseDocument(changed).toJS()).toMatchObject({
+      run: { background: true, auto_archive: false },
+    });
+  });
+
+  test("does not write the defaults when another field changes", () => {
+    const projection = projectTriggerForm(ADVANCED.replace("  auto_archive: false\n", ""));
+    if (projection.status !== "editable") throw new Error(projection.reason);
+    expect(projection.value).toMatchObject({ background: false, autoArchive: true });
+    const yaml = patchTriggerYaml(ADVANCED.replace("  auto_archive: false\n", ""), {
+      ...projection.value,
+      name: "renamed",
+    });
+    expect(yaml).not.toContain("background");
+    expect(yaml).not.toContain("auto_archive");
   });
 
   test("splits only the first slash in a full agent ID", () => {

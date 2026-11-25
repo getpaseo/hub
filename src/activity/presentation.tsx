@@ -1,3 +1,4 @@
+import { executionLinkPath } from "../agent-executions/link.js";
 import type { StatusTone } from "../components/app/status-pill.js";
 import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 import type { ActivityProvider, ActivityRange, RunStatus } from "./query-contract.js";
@@ -126,6 +127,32 @@ export function runSession<Execution extends { daemonAgentId: string | null }>(
     if (execution != null && execution.daemonAgentId !== null) {
       return { ...execution, daemonAgentId: execution.daemonAgentId };
     }
+  }
+  return undefined;
+}
+
+/**
+ * Where Open in Paseo goes. Inside Hub the reader already signed in, so the `paseo://` link opens
+ * the agent in one click. Hub's open page is for links posted outside Hub, and for an execution
+ * whose daemon or agent Hub cannot name yet.
+ */
+export function sessionLink(session: { id: string; deepLink: string | null }): string {
+  return session.deepLink ?? executionLinkPath(session.id);
+}
+
+/** Why Paseo's sidebar does not list the run's agent, and how to find it, when it does not. */
+export function sessionVisibility(session: {
+  background: boolean;
+  autoArchive: boolean;
+}): string | undefined {
+  if (session.background && session.autoArchive) {
+    return "It runs in the background, and Paseo archives it when the run finishes. Open in Paseo still opens it";
+  }
+  if (session.background) {
+    return "It runs in the background. Turn on Show background in Paseo to list it";
+  }
+  if (session.autoArchive) {
+    return "Paseo archives it when the run finishes. Open in Paseo still opens it";
   }
   return undefined;
 }

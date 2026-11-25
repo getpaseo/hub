@@ -36,6 +36,8 @@ const BASE_FORM: TriggerFormValue = {
   continuationKey: "",
   maxRuntime: "2h",
   idleTimeout: "10m",
+  background: false,
+  autoArchive: true,
   githubConnection: "",
   githubRepositories: "",
   githubPermissions: "",

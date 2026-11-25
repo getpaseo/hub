@@ -926,7 +926,7 @@ function AgentFields({
       <Disclosure
         id="trigger-continuity"
         title="Advanced"
-        description={`Agent continuity: ${continuity?.label ?? form.continuationMode}`}
+        description={advancedSummary(form, continuity?.label ?? form.continuationMode)}
         open={continuityExpanded || errors.continuationKey !== undefined}
         onOpenChange={setContinuityExpanded}
       >
@@ -951,10 +951,35 @@ function AgentFields({
               {...fieldError(errors, "continuationKey")}
             />
           ) : null}
+          <CheckboxField
+            id="trigger-background"
+            label="Run in background"
+            description="Hidden in Paseo until you turn on Show background"
+            checked={form.background}
+            onChange={(background) => onChange({ ...form, background })}
+          />
+          <CheckboxField
+            id="trigger-auto-archive"
+            label="Auto-archive after completion"
+            description="Paseo archives the agent when the run finishes"
+            checked={form.autoArchive}
+            onChange={(autoArchive) => onChange({ ...form, autoArchive })}
+          />
         </div>
       </Disclosure>
     </>
   );
+}
+
+/** What the closed Advanced header says is set, so nobody opens it to find out. */
+function advancedSummary(form: TriggerFormValue, continuity: string): string {
+  return [
+    `Agent continuity: ${continuity}`,
+    form.background ? "Background" : undefined,
+    form.autoArchive ? "Auto-archive" : undefined,
+  ]
+    .filter((part) => part !== undefined)
+    .join(" · ");
 }
 
 /**
@@ -1244,6 +1269,8 @@ function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
     continuationKey: "",
     maxRuntime: "2h",
     idleTimeout: "10m",
+    background: false,
+    autoArchive: true,
     githubConnection: "",
     githubRepositories: "",
     githubPermissions: "",
