@@ -100,6 +100,14 @@ export function updateFormProviderOption(raw: string, key: string, value: WireJs
   return JSON.stringify({ ...current, [key]: value }, null, 2);
 }
 
+/** Whether form JSON currently sets at least one key previously drawn as a daemon control. */
+export function hasDrawnProviderOptions(raw: string, drawnKeys: ReadonlySet<string>): boolean {
+  if (drawnKeys.size === 0) return false;
+  const current = parseFormProviderOptions(raw);
+  if (current === undefined) return false;
+  return Object.keys(current).some((key) => drawnKeys.has(key));
+}
+
 /**
  * Drops keys previously drawn as controls when the new model no longer exposes them, and drops
  * select choices the new model no longer offers. Unmodeled options (such as `sandbox_mode`) are

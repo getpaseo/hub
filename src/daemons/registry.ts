@@ -102,7 +102,11 @@ const SHUTDOWN_CLOSE_TIMEOUT_MS = 1_000;
  * failure to report; Hub degrades to an empty list.
  */
 const OPTIONAL_DISCOVERY_WITHHELD = new Set(["access_denied", "unknown_schema"]);
-const EMPTY_PROVIDER_CONTROLS: HubProviderControls = { controls: [], options: {} };
+const UNAVAILABLE_PROVIDER_CONTROLS: HubProviderControls = {
+  available: false,
+  controls: [],
+  options: {},
+};
 interface ActiveSocket {
   agents: DaemonAgents;
   generation: number;
@@ -374,7 +378,7 @@ export class ActiveDaemonRegistry {
   ): Promise<HubProviderControls> {
     const active = this.active.get(daemonId);
     if (!active?.ready) return Promise.reject(new Error("daemon_not_connected"));
-    if (active.sessionProtocol === "legacy") return Promise.resolve(EMPTY_PROVIDER_CONTROLS);
+    if (active.sessionProtocol === "legacy") return Promise.resolve(UNAVAILABLE_PROVIDER_CONTROLS);
     const requestId = randomUUID();
     const request = ProviderControlsListRequestSchema.parse({
       type: "provider.controls.list.request",
@@ -574,6 +578,7 @@ export class ActiveDaemonRegistry {
       return;
     }
     pending.resolve({
+      available: true,
       controls: response.payload.controls ?? [],
       options: response.payload.options ?? {},
     });
@@ -594,7 +599,7 @@ export class ActiveDaemonRegistry {
         return;
       }
       if (pending.kind === "provider-controls") {
-        pending.resolve(EMPTY_PROVIDER_CONTROLS);
+        pending.resolve(UNAVAILABLE_PROVIDER_CONTROLS);
         return;
       }
     }

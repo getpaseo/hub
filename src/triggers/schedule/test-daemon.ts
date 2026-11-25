@@ -31,7 +31,7 @@ export class ScheduleTestDaemon implements DaemonConnection {
     return [];
   }
   async listProviderControls() {
-    return { controls: [], options: {} };
+    return { available: false, controls: [], options: {} };
   }
   async validateAgentConfiguration(): Promise<{ valid: true }> {
     return { valid: true };

@@ -2246,7 +2246,11 @@ export class PaseoHub {
     daemon: string,
     resolver: (
       draftConfig: import("../../src/hub/protocol.js").HubProviderControlsDraftConfig,
-    ) => import("../../src/hub/protocol.js").HubProviderControls,
+    ) =>
+      | Pick<import("../../src/hub/protocol.js").HubProviderControls, "controls" | "options">
+      | Promise<
+          Pick<import("../../src/hub/protocol.js").HubProviderControls, "controls" | "options">
+        >,
   ): void {
     const connection = this.providerDaemons.get(daemon);
     if (connection === undefined) throw new Error("Provider daemon is not connected");
@@ -6011,7 +6015,11 @@ class ContractDaemon {
   private providerControlsResolver:
     | ((
         draftConfig: import("../../src/hub/protocol.js").HubProviderControlsDraftConfig,
-      ) => import("../../src/hub/protocol.js").HubProviderControls)
+      ) =>
+        | Pick<import("../../src/hub/protocol.js").HubProviderControls, "controls" | "options">
+        | Promise<
+            Pick<import("../../src/hub/protocol.js").HubProviderControls, "controls" | "options">
+          >)
     | undefined;
   readonly daemonId = randomUUID();
   readonly slug: string;
@@ -6136,7 +6144,11 @@ class ContractDaemon {
   setProviderControls(
     resolver: (
       draftConfig: import("../../src/hub/protocol.js").HubProviderControlsDraftConfig,
-    ) => import("../../src/hub/protocol.js").HubProviderControls,
+    ) =>
+      | Pick<import("../../src/hub/protocol.js").HubProviderControls, "controls" | "options">
+      | Promise<
+          Pick<import("../../src/hub/protocol.js").HubProviderControls, "controls" | "options">
+        >,
   ): void {
     this.providerControlsResolver = resolver;
   }
@@ -6358,16 +6370,20 @@ class ContractDaemon {
       .safeParse(value);
     if (!envelope.success) return false;
     const request = envelope.data.message;
-    const resolved = this.providerControlsResolver(
-      request.draftConfig as import("../../src/hub/protocol.js").HubProviderControlsDraftConfig,
-    );
-    this.sendAgentResponse("provider.controls.list.response", {
-      requestId: request.requestId,
-      provider: request.draftConfig.provider,
-      controls: resolved.controls,
-      options: resolved.options,
-      error: null,
-      fetchedAt: new Date().toISOString(),
+    const resolver = this.providerControlsResolver;
+    void Promise.resolve(
+      resolver(
+        request.draftConfig as import("../../src/hub/protocol.js").HubProviderControlsDraftConfig,
+      ),
+    ).then((resolved) => {
+      this.sendAgentResponse("provider.controls.list.response", {
+        requestId: request.requestId,
+        provider: request.draftConfig.provider,
+        controls: resolved.controls,
+        options: resolved.options,
+        error: null,
+        fetchedAt: new Date().toISOString(),
+      });
     });
     return true;
   }

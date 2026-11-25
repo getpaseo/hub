@@ -343,6 +343,8 @@ export type HubAgentOptionToggleControl = z.infer<typeof AgentOptionToggleContro
 export type HubAgentOptionSelectControl = z.infer<typeof AgentOptionSelectControlSchema>;
 export type HubProviderControlsDraftConfig = z.infer<typeof ProviderControlsDraftConfigSchema>;
 export interface HubProviderControls {
+  /** False when the daemon is offline, legacy, or predates provider controls discovery. */
+  available: boolean;
   controls: HubAgentOptionControl[];
   options: Record<string, WireJsonValue>;
 }

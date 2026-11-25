@@ -4,6 +4,7 @@ import type { HubAgentOptionControl } from "../hub/protocol.js";
 import {
   describeActiveProviderOptions,
   effectiveProviderOptions,
+  hasDrawnProviderOptions,
   isControlActive,
   parseFormProviderOptions,
   ProviderOptionControls,
@@ -128,6 +129,15 @@ describe("provider option control helpers", () => {
         controls: [],
       }),
     ).toBe("");
+  });
+
+  test("detects whether raw provider options contain any previously drawn control key", () => {
+    const drawn = new Set(["service_tier", "plan_mode"]);
+    expect(hasDrawnProviderOptions("", drawn)).toBe(false);
+    expect(hasDrawnProviderOptions('{"sandbox_mode":"workspace-write"}', drawn)).toBe(false);
+    expect(hasDrawnProviderOptions('{"service_tier":"fast"}', drawn)).toBe(true);
+    expect(hasDrawnProviderOptions("not json", drawn)).toBe(false);
+    expect(hasDrawnProviderOptions('{"service_tier":"fast"}', new Set())).toBe(false);
   });
 
   test("keeps controls mounted across option edits in the same scope and hides them across scope changes", () => {

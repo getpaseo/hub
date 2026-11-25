@@ -68,6 +68,7 @@ import { TargetFields } from "./target-fields.js";
 import {
   describeActiveProviderOptions,
   effectiveProviderOptions,
+  hasDrawnProviderOptions,
   parseFormProviderOptions,
   ProviderOptionControls,
   pruneLostProviderOptions,
@@ -400,7 +401,8 @@ function TriggerEditor({
   // Saving is refused only for what the reader cannot act on here: a request in flight, a
   // read-only role, a legacy document. A half-filled form is something they can act on, so the
   // button stays live and pressing it says which fields are in the way.
-  const saveDisabled = saving || !snapshot.canManage || legacy;
+  const busy = saving || editor.reconcilingSave;
+  const saveDisabled = busy || !snapshot.canManage || legacy;
   // Nor is the YAML view a dead segment. A form that cannot serialise yet is a form with fields
   // to fix, and pressing YAML marks them instead of doing nothing at all. Only the legacy
   // document has a mode that is genuinely unreachable, and its own alert says why.
@@ -430,9 +432,9 @@ function TriggerEditor({
           form="trigger-editor-form"
           size="sm"
           disabled={saveDisabled}
-          aria-busy={saving}
+          aria-busy={busy}
         >
-          {saving ? <Spinner /> : null}
+          {busy ? <Spinner /> : null}
           {submitLabel}
         </Button>
       </SiteHeaderActions>
@@ -509,8 +511,8 @@ function TriggerEditor({
             <Button type="button" variant="ghost" onClick={onCancel}>
               Cancel
             </Button>
-            <Button type="submit" disabled={saveDisabled} aria-busy={saving}>
-              {saving ? <Spinner /> : null}
+            <Button type="submit" disabled={saveDisabled} aria-busy={busy}>
+              {busy ? <Spinner /> : null}
               {submitLabel}
             </Button>
           </FormActions>
@@ -566,6 +568,16 @@ function useTriggerEditorState(
   // new trigger is not a page of errors, it is a page nobody has filled in. Once they have asked,
   // the marks stay and follow what they type.
   const [refused, setRefused] = useState(false);
+  const [reconcilingSave, setReconcilingSave] = useState(false);
+  const formRef = useRef(form);
+  formRef.current = form;
+  const unmountedRef = useRef(false);
+  useEffect(
+    () => () => {
+      unmountedRef.current = true;
+    },
+    [],
+  );
   const daemonId = mode === "form" ? targetDaemonId(snapshot.daemons, form) : undefined;
   const providerCatalog = useDaemonProviderCatalog(
     snapshot.organization.slug,
@@ -590,20 +602,49 @@ function useTriggerEditorState(
       refuse();
       return;
     }
+    providerControls.cancelPendingReconcile();
     setMode(next);
     window.scrollTo({ top: 0 });
   };
+  const submitReconciled = async () => {
+    setReconcilingSave(true);
+    try {
+      const reconciled = await providerControls.reconcileBeforeSave();
+      if (unmountedRef.current) return;
+      const latest = formRef.current;
+      const nextForm =
+        reconciled === undefined || reconciled === latest.providerOptions
+          ? latest
+          : { ...latest, providerOptions: reconciled };
+      if (nextForm !== latest) setForm(nextForm);
+      const merged = mergeTriggerForm(yaml, nextForm);
+      const nextErrors = triggerFormErrors(nextForm, entry?.modes);
+      if (merged.status === "ok" && Object.keys(nextErrors).length === 0) onSave(merged.yaml);
+      else refuse();
+    } finally {
+      if (!unmountedRef.current) setReconcilingSave(false);
+    }
+  };
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (mode === "yaml") onSave(yaml);
-    else if (other.status === "ok" && Object.keys(errors).length === 0) onSave(other.yaml);
-    else refuse();
+    if (mode === "yaml") {
+      onSave(yaml);
+      return;
+    }
+    if (reconcilingSave) return;
+    if (!providerControls.hasPendingReconcile()) {
+      if (other.status === "ok" && Object.keys(errors).length === 0) onSave(other.yaml);
+      else refuse();
+      return;
+    }
+    void submitReconciled();
   };
   return {
     mode,
     yaml,
     form,
     errors: refused ? errors : NO_FIELD_ERRORS,
+    reconcilingSave,
     providerCatalog,
     providerControls,
     // Legacy workflows are explained by their own alert; repeating the schema error underneath it
@@ -923,7 +964,10 @@ function AgentFields({
             errors={errors}
             entries={providerCatalog.entries}
             loading={providerCatalog.loading}
-            onChange={onChange}
+            onChange={(next) => {
+              providerControls.onAgentSelectionChange(form, next);
+              onChange(next);
+            }}
           />
         </div>
         {providerCatalog.error === undefined ? null : (
@@ -1302,12 +1346,27 @@ function useDaemonProviderCatalog(
   };
 }
 
+interface PendingOptionReconcile {
+  provider: string;
+  drawnKeys: ReadonlySet<string>;
+}
+
+function safeSplitAgent(agent: string): { provider: string; model?: string } | undefined {
+  if (agent.trim() === "") return undefined;
+  try {
+    return splitAgentId(agent);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The daemon-exposed provider option controls for the selected target and agent draft.
  *
  * Follows Paseo's client model: controls are queried via `provider.controls.list.request`, stay
  * mounted across option toggles in the same scope, clear across provider/model changes until the
- * new scope answers, and prune drawn controls that a newly chosen model no longer offers.
+ * new scope answers, and reconcile drawn options only across explicit same-provider model, mode,
+ * or thinking changes once the daemon returns an authoritative answer.
  */
 function useDaemonProviderControls({
   organizationSlug,
@@ -1320,14 +1379,10 @@ function useDaemonProviderControls({
   form: Pick<TriggerFormValue, "cwd" | "agent" | "mode" | "thinkingOptionId" | "providerOptions">;
   setForm: Dispatch<SetStateAction<TriggerFormValue>>;
 }) {
+  const queryClient = useQueryClient();
   const load = useServerFn(daemonProviderControls);
   const directory = form.cwd.trim();
-  let selection: { provider: string; model?: string } | undefined;
-  try {
-    selection = form.agent.trim() === "" ? undefined : splitAgentId(form.agent);
-  } catch {
-    selection = undefined;
-  }
+  const selection = safeSplitAgent(form.agent);
   const provider = selection?.provider;
   const model = selection?.model;
   const modeId = form.mode.trim() || undefined;
@@ -1352,33 +1407,35 @@ function useDaemonProviderControls({
       ? ""
       : JSON.stringify(Object.entries(parsedOptions).sort(([a], [b]) => a.localeCompare(b)));
   const requestKey = enabled ? `${scopeKey}|${sortedOptionsKey}` : "";
+  const queryKey = [
+    "daemon-provider-controls",
+    organizationSlug,
+    daemonId,
+    directory,
+    provider,
+    model ?? "",
+    modeId ?? "",
+    thinkingOptionId ?? "",
+    sortedOptionsKey,
+  ] as const;
+  const loadControls = () =>
+    load({
+      data: {
+        organizationSlug,
+        daemonId: daemonId!,
+        provider: provider!,
+        cwd: directory,
+        ...(model === undefined ? {} : { model }),
+        ...(modeId === undefined ? {} : { modeId }),
+        ...(thinkingOptionId === undefined ? {} : { thinkingOptionId }),
+        ...(parsedOptions === undefined ? {} : { providerOptions: parsedOptions }),
+      },
+    });
 
   const query = useSnapshotQuery({
-    queryKey: [
-      "daemon-provider-controls",
-      organizationSlug,
-      daemonId,
-      directory,
-      provider,
-      model ?? "",
-      modeId ?? "",
-      thinkingOptionId ?? "",
-      sortedOptionsKey,
-    ] as const,
+    queryKey,
     enabled,
-    queryFn: () =>
-      load({
-        data: {
-          organizationSlug,
-          daemonId: daemonId!,
-          provider: provider!,
-          cwd: directory,
-          ...(model === undefined ? {} : { model }),
-          ...(modeId === undefined ? {} : { modeId }),
-          ...(thinkingOptionId === undefined ? {} : { thinkingOptionId }),
-          ...(parsedOptions === undefined ? {} : { providerOptions: parsedOptions }),
-        },
-      }),
+    queryFn: loadControls,
   });
 
   const [resolved, setResolved] = useState<ResolvedProviderControls | undefined>(undefined);
@@ -1386,6 +1443,17 @@ function useDaemonProviderControls({
     provider: undefined,
     keys: new Set(),
   });
+  const [pendingReconcile, setPendingReconcile] = useState<PendingOptionReconcile | undefined>(
+    undefined,
+  );
+  const pendingReconcileRef = useRef<PendingOptionReconcile | undefined>(undefined);
+  const formOptionsRef = useRef(form.providerOptions);
+  formOptionsRef.current = form.providerOptions;
+
+  const setReconcile = (next: PendingOptionReconcile | undefined) => {
+    pendingReconcileRef.current = next;
+    setPendingReconcile(next);
+  };
 
   useEffect(() => {
     if (drawnRef.current.provider !== provider) {
@@ -1394,13 +1462,18 @@ function useDaemonProviderControls({
   }, [provider]);
 
   useEffect(() => {
-    if (!enabled || query.status !== "success") return;
+    if (!enabled || query.status === "pending" || query.isFetching) return;
+    if (query.status === "error") {
+      if (pendingReconcileRef.current !== undefined) setReconcile(undefined);
+      return;
+    }
     const data = query.data;
     if (drawnRef.current.provider !== provider) {
       drawnRef.current = { provider, keys: new Set() };
     }
-    const previousDrawn = new Set(drawnRef.current.keys);
-    for (const control of data.controls) drawnRef.current.keys.add(control.key);
+    if (data.available) {
+      for (const control of data.controls) drawnRef.current.keys.add(control.key);
+    }
     setResolved({
       scopeKey,
       requestKey,
@@ -1408,23 +1481,93 @@ function useDaemonProviderControls({
       controls: data.controls,
       options: data.options,
     });
-    if (previousDrawn.size === 0) return;
+    const pending = pendingReconcileRef.current;
+    if (pending === undefined || pending.provider !== provider) return;
+    setReconcile(undefined);
+    if (!data.available) return;
     setForm((current) => {
       const pruned = pruneLostProviderOptions({
         raw: current.providerOptions,
-        drawnKeys: previousDrawn,
+        drawnKeys: pending.drawnKeys,
         controls: data.controls,
       });
       return pruned === current.providerOptions ? current : { ...current, providerOptions: pruned };
     });
-  }, [enabled, query.status, query.data, provider, scopeKey, requestKey, parsedOptions, setForm]);
+  }, [
+    enabled,
+    query.status,
+    query.data,
+    query.isFetching,
+    provider,
+    scopeKey,
+    requestKey,
+    parsedOptions,
+    pendingReconcile,
+    setForm,
+  ]);
 
-  return effectiveProviderOptions({
-    resolved,
-    currentScopeKey: scopeKey,
-    currentRequestKey: requestKey,
-    currentOptions: parsedOptions,
-  });
+  const onAgentSelectionChange = (previous: TriggerFormValue, next: TriggerFormValue) => {
+    const prevSelection = safeSplitAgent(previous.agent);
+    const nextSelection = safeSplitAgent(next.agent);
+    if (prevSelection?.provider !== nextSelection?.provider) {
+      drawnRef.current = { provider: nextSelection?.provider, keys: new Set() };
+      setReconcile(undefined);
+      return;
+    }
+    const selectionChanged =
+      prevSelection?.model !== nextSelection?.model ||
+      previous.mode !== next.mode ||
+      previous.thinkingOptionId !== next.thinkingOptionId;
+    if (!selectionChanged || nextSelection === undefined) return;
+    const candidateKeys = new Set<string>(drawnRef.current.keys);
+    if (pendingReconcileRef.current?.provider === nextSelection.provider) {
+      for (const key of pendingReconcileRef.current.drawnKeys) candidateKeys.add(key);
+    }
+    if (hasDrawnProviderOptions(next.providerOptions, candidateKeys)) {
+      setReconcile({ provider: nextSelection.provider, drawnKeys: candidateKeys });
+    } else {
+      setReconcile(undefined);
+    }
+  };
+
+  const reconcileBeforeSave = async (): Promise<string | undefined> => {
+    const pending = pendingReconcileRef.current;
+    if (pending === undefined || !enabled || pending.provider !== provider) return undefined;
+    try {
+      const data = await queryClient.fetchQuery({
+        queryKey,
+        staleTime: Infinity,
+        queryFn: async () => {
+          const result = await loadControls();
+          if (result.status === "error") throw new Error(result.error.message);
+          return result.data;
+        },
+      });
+      setReconcile(undefined);
+      if (!data.available) return undefined;
+      return pruneLostProviderOptions({
+        raw: formOptionsRef.current,
+        drawnKeys: pending.drawnKeys,
+        controls: data.controls,
+      });
+    } catch {
+      setReconcile(undefined);
+      return undefined;
+    }
+  };
+
+  return {
+    ...effectiveProviderOptions({
+      resolved,
+      currentScopeKey: scopeKey,
+      currentRequestKey: requestKey,
+      currentOptions: parsedOptions,
+    }),
+    onAgentSelectionChange,
+    cancelPendingReconcile: () => setReconcile(undefined),
+    hasPendingReconcile: () => pendingReconcileRef.current !== undefined,
+    reconcileBeforeSave,
+  };
 }
 
 /**

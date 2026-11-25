@@ -70,6 +70,7 @@ describe("daemon catalog", () => {
         model: "gpt-5.4",
       }),
       {
+        available: true,
         controls: [{ type: "toggle", key: "plan_mode", label: "Plan" }],
         options: { plan_mode: true },
       },
@@ -87,7 +88,7 @@ describe("daemon catalog", () => {
         provider: "codex",
         cwd: "/repo",
       }),
-      { controls: [], options: {} },
+      { available: false, controls: [], options: {} },
     );
   });
 
@@ -131,6 +132,7 @@ function connectedDaemon(): { connection: DaemonConnection; calls: string[] } {
       listProviderControls: async ({ provider, cwd, model }) => {
         calls.push(`controls:${provider}:${cwd}:${model ?? ""}`);
         return {
+          available: true,
           controls: [{ type: "toggle", key: "plan_mode", label: "Plan" }],
           options: { plan_mode: true },
         };

@@ -8,7 +8,11 @@ import type {
 } from "../hub/protocol.js";
 import type { DaemonConnection, DaemonProject } from "./protocol.js";
 
-const EMPTY_PROVIDER_CONTROLS: HubProviderControls = { controls: [], options: {} };
+const UNAVAILABLE_PROVIDER_CONTROLS: HubProviderControls = {
+  available: false,
+  controls: [],
+  options: {},
+};
 
 interface DaemonScope {
   organizationSlug: string;
@@ -49,7 +53,7 @@ export class DaemonCatalog {
     input: DaemonScope & HubProviderControlsDraftConfig,
   ): Promise<HubProviderControls> {
     const connection = await this.connection(request, input);
-    if (connection === undefined) return EMPTY_PROVIDER_CONTROLS;
+    if (connection === undefined) return UNAVAILABLE_PROVIDER_CONTROLS;
     return await connection.listProviderControls({
       provider: input.provider,
       cwd: input.cwd,

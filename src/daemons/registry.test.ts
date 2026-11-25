@@ -378,6 +378,7 @@ describe("daemon socket generations", () => {
     });
 
     assert.deepEqual(await pending.promise, {
+      available: true,
       controls: [
         {
           type: "select",
@@ -401,7 +402,7 @@ describe("daemon socket generations", () => {
       const pending = await daemon.pendingProviderControls();
       daemon.rejectRequest(pending, code);
 
-      assert.deepEqual(await pending.promise, { controls: [], options: {} });
+      assert.deepEqual(await pending.promise, { available: false, controls: [], options: {} });
     },
   );
 
@@ -418,7 +419,11 @@ describe("daemon socket generations", () => {
   it("asks a legacy daemon for nothing and offers no provider controls", async () => {
     await daemon.replaceConnection(false, "legacy");
 
-    assert.deepEqual(await daemon.listProviderControls(), { controls: [], options: {} });
+    assert.deepEqual(await daemon.listProviderControls(), {
+      available: false,
+      controls: [],
+      options: {},
+    });
   });
 
   it("expires unanswered project list requests without interrupting slow provider refreshes", async () => {

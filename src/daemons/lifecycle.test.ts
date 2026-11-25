@@ -158,7 +158,7 @@ describe("durable Hub action acknowledgement state", () => {
         },
         refreshProviderSnapshot: async () => {},
         listProjects: async () => [],
-        listProviderControls: async () => ({ controls: [], options: {} }),
+        listProviderControls: async () => ({ available: false, controls: [], options: {} }),
         validateAgentConfiguration: async () => ({ valid: true }),
       };
       const lifecycle = createDaemonDispatchLifecycle({
@@ -278,7 +278,7 @@ describe("durable Hub action acknowledgement state", () => {
       },
       refreshProviderSnapshot: async () => {},
       listProjects: async () => [],
-      listProviderControls: async () => ({ controls: [], options: {} }),
+      listProviderControls: async () => ({ available: false, controls: [], options: {} }),
       validateAgentConfiguration: async () => ({ valid: true }),
     };
     const lifecycle = createDaemonDispatchLifecycle({
