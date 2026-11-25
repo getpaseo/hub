@@ -487,7 +487,8 @@ export class PaseoHub {
       deliverSlackSocketMention: (eventId) => application.deliverSlackSocketMention(eventId),
       slackSocketEvidence: (eventId) => application.slackSocketEvidence(eventId),
       restart: () => application.restart(),
-      connectDaemon: () => this.enrollOperatorDaemon(application),
+      connectDaemon: () => this.enrollOperatorDaemon(application, { connect: true }),
+      enrollOfflineDaemon: () => this.enrollOperatorDaemon(application, { connect: false }),
       openMember: async (member) => {
         const memberContext = await this.browser.newContext();
         const memberPage = await memberContext.newPage();
@@ -2730,14 +2731,17 @@ export class PaseoHub {
    * their organization and holding a live connection. The enrollment token is written straight
    * to the database because the CLI's own path through it is the Paseo repository's to prove.
    */
-  private async enrollOperatorDaemon(application: BuiltApplication): Promise<string> {
+  private async enrollOperatorDaemon(
+    application: BuiltApplication,
+    { connect }: { connect: boolean },
+  ): Promise<string> {
     const enrollmentToken = randomUUID();
     await application.issueDaemonEnrollment(
       createHash("sha256").update(enrollmentToken).digest("base64url"),
     );
     const daemon = new ContractDaemon(application, this.requests);
     await daemon.enroll(enrollmentToken);
-    await daemon.connect();
+    if (connect) await daemon.connect();
     return daemon.slug;
   }
 
@@ -5762,6 +5766,8 @@ export interface AppSetupSession {
   restart(): Promise<void>;
   /** Enrolls and connects a daemon into the operator's organization; answers with its slug. */
   connectDaemon(): Promise<string>;
+  /** Enrolls a daemon that never connects, so Daemons lists it as Offline; answers with its slug. */
+  enrollOfflineDaemon(): Promise<string>;
   /** A second, ordinary account on the same instance. Never its operator. */
   openMember(member: Account): Promise<{ page: Page; close(): Promise<void> }>;
   close(): Promise<void>;

@@ -33,7 +33,7 @@ import type { Result } from "../contract/respond.js";
 import { DAEMON_MUTATION_KEY } from "../auth/tenant-mutation.js";
 import { ActivityLink } from "../activity/link.js";
 import { daemonLoginCommand, GRANT_EXECUTE_COMMAND } from "./handoff.js";
-import { daemonsQueryKey, refreshDaemons } from "./status.js";
+import { connectedDaemon, daemonsQueryKey, refreshDaemons } from "./status.js";
 
 const DAEMON_COLUMNS: readonly DataColumn[] = [
   { header: "Slug", fill: true },
@@ -47,10 +47,11 @@ const DAEMON_COLUMNS: readonly DataColumn[] = [
 const DAEMONS_DESCRIPTION = "Stable daemon identities registered to this organization";
 const DAEMON_DOCS_URL = "https://paseo.sh/docs/hub/daemons";
 /**
- * An empty list is waiting on a terminal, not on the reader: `paseo hub login` finishes in the
- * browser and the daemon enrolls a moment later, so the list looks again until one arrives.
+ * A list with no connected daemon is waiting on a terminal, not on the reader: `paseo hub login`
+ * finishes in the browser and the daemon enrolls and connects a moment later. Offline and revoked
+ * rows are not a daemon to run on, so the list looks again until one connects.
  */
-const EMPTY_POLL_MS = 3_000;
+const WAITING_POLL_MS = 3_000;
 const DAEMONS_EMPTY = {
   title: "No daemons connected",
   description:
@@ -97,7 +98,8 @@ export function DaemonsPanel({
   const snapshot = useSnapshotQuery({
     queryKey,
     queryFn: () => loadDaemons({ data: { organizationSlug } }),
-    refetchInterval: (list) => (list?.daemons.length === 0 ? EMPTY_POLL_MS : false),
+    refetchInterval: (list) =>
+      list !== undefined && connectedDaemon(list.daemons) === undefined ? WAITING_POLL_MS : false,
   });
   const rename = useMutation({
     mutationKey: DAEMON_MUTATION_KEY,

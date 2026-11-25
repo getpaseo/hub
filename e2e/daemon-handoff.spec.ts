@@ -70,8 +70,13 @@ test("an operator with no daemon yet does it later and stays out of onboarding",
     // Daemons waits for the first daemon the way the handoff did: it arrives without a reload.
     await page.getByRole("link", { name: "Daemons", exact: true }).click();
     await expect(page.getByText("No daemons connected", { exact: true })).toBeVisible();
+    const offline = await session.enrollOfflineDaemon();
+    const daemons = page.getByRole("table", { name: "Daemons", exact: true });
+    await expect(daemons).toContainText(offline);
+
+    // A row that is not connected is still no daemon to run on, so the page keeps waiting.
     const slug = await session.connectDaemon();
-    await expect(page.getByRole("table", { name: "Daemons", exact: true })).toContainText(slug);
+    await expect(daemons).toContainText(slug);
   } finally {
     await session.close();
   }
