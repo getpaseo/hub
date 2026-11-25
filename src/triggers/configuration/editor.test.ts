@@ -297,6 +297,17 @@ describe("trigger form YAML bridge", () => {
     });
   });
 
+  test("keeps background and auto-archive in YAML when the document links them", () => {
+    const linked = ADVANCED.replace(
+      "  auto_archive: false\n",
+      "  auto_archive: &quiet true\n  background: *quiet\n",
+    );
+    expect(TriggerDocumentSchema.safeParse(parseDocument(linked).toJS()).success).toBe(true);
+    const projection = projectTriggerForm(linked);
+    if (projection.status !== "yaml_only") throw new Error("Expected the form to be unavailable.");
+    expect(projection.reason).toMatch(/background or auto-archive.*anchors or aliases/i);
+  });
+
   test("leaves the defaults out of a new trigger and writes only what differs", () => {
     const projection = projectTriggerForm(ADVANCED);
     if (projection.status !== "editable") throw new Error(projection.reason);

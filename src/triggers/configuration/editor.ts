@@ -99,6 +99,13 @@ export function projectTriggerForm(yaml: string): TriggerFormProjection {
         "Edit this trigger in YAML because its integration tool grants use anchors or aliases",
     };
   }
+  if (visibilityUsesYamlReferences(parsed.document)) {
+    return {
+      status: "yaml_only",
+      reason:
+        "Edit this trigger in YAML because its background or auto-archive setting uses anchors or aliases",
+    };
+  }
   const audience = readAudience(event, definition.filters);
   if ("reason" in audience) return { status: "yaml_only", reason: audience.reason };
   return {
@@ -467,6 +474,20 @@ function integrationToolsUseYamlReferences(document: Document): boolean {
     Value: (_, node) => (node.anchor === undefined ? undefined : found()),
   });
   return usesReferences;
+}
+
+/**
+ * The form writes `run.background` and `run.auto_archive` in place. Writing an anchored node
+ * would also change every alias that reads it, so a linked pair stays in YAML.
+ */
+function visibilityUsesYamlReferences(document: Document): boolean {
+  return [
+    ["run", "background"],
+    ["run", "auto_archive"],
+  ].some((path) => {
+    const node = document.getIn(path, true);
+    return isNode(node) && (isAlias(node) || node.anchor !== undefined);
+  });
 }
 
 const INTEGRATION_TOOL_LABELS: Record<IntegrationProvider, string> = {
