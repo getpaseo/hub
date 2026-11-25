@@ -42,7 +42,12 @@ import {
   type TriggerFormValue,
 } from "./configuration/editor.js";
 import { WebhookSettings } from "./webhook/settings.js";
-import { saveTrigger, triggerSnapshot, type TriggerSnapshot } from "./functions.js";
+import {
+  saveTrigger,
+  triggerSnapshot,
+  type SavedTrigger,
+  type TriggerSnapshot,
+} from "./functions.js";
 import { daemonProviderSnapshot } from "../daemons/functions.js";
 import type { HubProviderSnapshotEntry } from "../hub/protocol.js";
 import { AudienceFields } from "./audience-fields.js";
@@ -232,13 +237,21 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
   const queryClient = useQueryClient();
   const saveCommand = useServerFn(saveTrigger) as (input: {
     data: { organizationSlug: string; triggerId?: string; yaml: string };
-  }) => Promise<Result<{ state: "complete" }>>;
+  }) => Promise<Result<SavedTrigger>>;
   const save = useMutation({
     mutationFn: saveCommand,
+    // The result can hold a webhook secret in plaintext. Drop it as soon as this screen does.
+    gcTime: 0,
     onSuccess: async (result) => {
       if (result.status !== "ok") return;
       await queryClient.invalidateQueries({ queryKey: ["triggers", organizationSlug] });
-      await navigate({ to: `/o/${organizationSlug}/triggers` as never });
+      // A save that created a webhook endpoint opens that endpoint: its URL and its secret, shown
+      // this once, are what the reader needs next. Every other save returns to the list.
+      await navigate({
+        to: (result.data.initialWebhookSecret === undefined
+          ? `/o/${organizationSlug}/triggers`
+          : `/o/${organizationSlug}/triggers/${result.data.triggerId}`) as never,
+      });
     },
   });
   if (snapshot.status === "pending") return <TriggerEditorSkeleton />;
@@ -257,6 +270,12 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
     );
   }
   const webhook = data.webhooks.find((endpoint) => endpoint.triggerId === trigger?.id);
+  // `/triggers/new` and `/triggers/<id>` are one route, so this panel and its save result outlive
+  // the redirect after creating. The secret lives only there: never in the URL, history state,
+  // storage, or the snapshot cache, so a reload or leaving the page forgets it.
+  const saved = save.data?.status === "ok" ? save.data.data : undefined;
+  const initialSecret =
+    saved !== undefined && saved.triggerId === trigger?.id ? saved.initialWebhookSecret : undefined;
   const returnToList = () => {
     void navigate({ to: `/o/${organizationSlug}/triggers` as never });
   };
@@ -280,13 +299,14 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
       {...(webhook === undefined
         ? {}
         : {
-            footer: (
+            endpoint: (
               <WebhookSettings
                 key={webhook.endpointId}
                 organizationSlug={organizationSlug}
                 origin={data.webhookOrigin}
                 endpoint={webhook}
                 canManage={data.canManage}
+                {...(initialSecret === undefined ? {} : { initialSecret })}
               />
             ),
           })}
@@ -319,7 +339,7 @@ function TriggerEditor({
   saveError,
   onCancel,
   onSave,
-  footer,
+  endpoint,
 }: {
   trigger: BrowserTrigger | null;
   snapshot: TriggerSnapshot;
@@ -327,7 +347,8 @@ function TriggerEditor({
   saveError: string | undefined;
   onCancel: () => void;
   onSave: (yaml: string) => void;
-  footer?: ReactNode;
+  /** How the trigger is reached from outside, shown above the form that configures it. */
+  endpoint?: ReactNode;
 }) {
   const legacy = trigger?.format === "legacy_multistep";
   const editor = useTriggerEditorState(trigger, snapshot, legacy, onSave);
@@ -407,6 +428,7 @@ function TriggerEditor({
             fallback="Hub couldn't save this trigger"
           />
         )}
+        {endpoint}
         {editor.mode === "form" ? <TriggerRefusalSummary errors={editor.errors} /> : null}
         <div className="sm:hidden">{modeSwitch}</div>
         {/*
@@ -449,7 +471,6 @@ function TriggerEditor({
             </Button>
           </FormActions>
         </form>
-        {footer}
       </div>
     </>
   );

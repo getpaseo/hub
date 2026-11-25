@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { parseDocument } from "yaml";
 import { expect, type Page } from "@playwright/test";
 import { allowClipboard } from "./apps.js";
@@ -404,6 +406,37 @@ export class OrganizationTriggers {
     await this.replaceYaml(document.toString({ lineWidth: 0 }));
   }
 
+  /**
+   * Creating a webhook trigger lands on its endpoint, above the form, with the secret it was born
+   * with on screen. The response that carries that secret is never cached.
+   */
+  async createWebhookTrigger(name: string) {
+    const saved = this.page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        (response.request().postData() ?? "").includes("webhook.received"),
+    );
+    await this.page
+      .locator("#trigger-editor-form")
+      .getByRole("button", { name: "Create trigger" })
+      .click();
+    expect((await saved).headers()["cache-control"]).toBe("no-store");
+    await expect(this.page).toHaveURL(/\/triggers\/[0-9a-f-]{36}$/u);
+    await expect(this.page.getByRole("heading", { name, level: 1 })).toBeVisible();
+    const endpoint = await this.expectWebhookEndpoint();
+    const card = await this.page.getByRole("heading", { name: "Webhook endpoint" }).boundingBox();
+    const form = await this.page
+      .getByRole("heading", { name: "When it runs", exact: true })
+      .boundingBox();
+    // The endpoint is what a new webhook trigger is for, so it comes before the form.
+    expect(card!.y).toBeLessThan(form!.y);
+    await expect(this.page.getByText("Secret active", { exact: true })).toBeVisible();
+    await expect(this.page.getByText("Save this secret now", { exact: true })).toBeVisible();
+    const secret = this.page.getByRole("textbox", { name: "Webhook secret" });
+    await expect(secret).toHaveValue(/^whsec_[\w-]{43}$/u);
+    return { endpoint, secret: await secret.inputValue() };
+  }
+
   async expectWebhookEndpoint() {
     await expect(this.page.getByRole("heading", { name: "Webhook endpoint" })).toBeVisible();
     const url = this.page.getByText(/https?:\/\/[^ ]+\/webhooks\/wh_[\w-]{32}$/u);
@@ -412,43 +445,31 @@ export class OrganizationTriggers {
     return url.innerText();
   }
 
-  async copyWebhookConnectionDetails(endpoint: string) {
+  async copyWebhookUrl(endpoint: string) {
     await allowClipboard(this.page, new URL(this.page.url()).origin);
     await this.page.getByRole("button", { name: "Copy Webhook URL" }).click();
     await expect
       .poll(() => this.page.evaluate(() => navigator.clipboard.readText()))
       .toBe(endpoint);
+  }
+
+  async copyCurlExample(endpoint: string) {
+    await allowClipboard(this.page, new URL(this.page.url()).origin);
+    await this.page.evaluate(() => navigator.clipboard.writeText(""));
     await this.page.getByRole("button", { name: "Copy curl example" }).click();
     await expect
       .poll(() => this.page.evaluate(() => navigator.clipboard.readText()))
       .toContain(`curl -X POST '${endpoint}'`);
+    return this.page.evaluate(() => navigator.clipboard.readText());
   }
 
-  async createWebhookSecret() {
-    await expect(this.page.getByText("No secret", { exact: true })).toBeVisible();
-    await this.page.getByRole("button", { name: "Create secret", exact: true }).click();
-    await expect(this.page.getByText("Save this secret now", { exact: true })).toBeVisible();
-    const secret = this.page.getByRole("textbox", { name: "Webhook secret" });
-    await expect(secret).toHaveValue(/^whsec_[\w-]{43}$/u);
-    await expect(this.page.getByText("Secret active", { exact: true })).toBeVisible();
-    return secret.inputValue();
-  }
-
-  async expectStaleWebhookCreationRefused() {
-    await this.page.getByRole("button", { name: "Create secret", exact: true }).click();
-    await expect(this.page.getByText("Webhook secret unavailable", { exact: true })).toBeVisible();
-    await expect(this.page.getByText("Secret active", { exact: true })).toBeVisible();
-    await expect(
-      this.page.getByRole("button", { name: "Rotate secret", exact: true }),
-    ).toBeVisible();
-    await expect(this.page.getByRole("textbox", { name: "Webhook secret" })).toBeHidden();
-  }
-
-  async openWebhookInAnotherTab() {
-    const tab = await this.page.context().newPage();
-    await tab.goto(this.page.url());
-    await expect(tab.getByRole("button", { name: "Create secret", exact: true })).toBeVisible();
-    return new OrganizationTriggers(tab);
+  /** Paste a copied command into a shell, and answer with the HTTP status it printed. */
+  async runInShell(command: string) {
+    const { stdout } = await promisify(execFile)("sh", [
+      "-c",
+      `${command} -sS -o /dev/null -w '%{http_code}'`,
+    ]);
+    return stdout;
   }
 
   async rotateWebhookSecret() {
@@ -461,6 +482,7 @@ export class OrganizationTriggers {
     return secret.inputValue();
   }
 
+  /** After a reload only the hash is left, so the request asks for the secret the reader saved. */
   async reloadWebhookSettings() {
     await this.page.reload();
     await expect(this.page.getByText("Secret active", { exact: true })).toBeVisible();
@@ -468,6 +490,12 @@ export class OrganizationTriggers {
       this.page.getByRole("button", { name: "Rotate secret", exact: true }),
     ).toBeVisible();
     await expect(this.page.getByRole("textbox", { name: "Webhook secret" })).toBeHidden();
+    await expect(
+      this.page.getByText(
+        "Replace $WEBHOOK_SECRET with your saved secret, or rotate to generate a new one",
+        { exact: true },
+      ),
+    ).toBeVisible();
   }
 
   async configureSchedule(daemon: string) {

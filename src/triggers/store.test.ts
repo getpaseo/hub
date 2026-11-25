@@ -13,8 +13,8 @@ describe("organization trigger store", () => {
   it("creates and updates one hidden runtime without exposing a project", async () => {
     const database = await enrolledDatabase();
     const store = new OrganizationTriggerStore(database, "org", acceptingAgentValidator());
-    const first = await store.save({ yaml: triggerYaml(true), userId: null });
-    const second = await store.save({
+    const { trigger: first } = await store.save({ yaml: triggerYaml(true), userId: null });
+    const { trigger: second } = await store.save({
       triggerId: first.id,
       yaml: triggerYaml(false),
       userId: null,
@@ -147,10 +147,10 @@ describe("organization trigger store", () => {
   it("still saves a prompt edit while the daemon is offline when the agent is unchanged", async () => {
     const database = await enrolledDatabase();
     const connected = new OrganizationTriggerStore(database, "org", acceptingAgentValidator());
-    const trigger = await connected.save({ yaml: triggerYaml(true), userId: null });
+    const { trigger } = await connected.save({ yaml: triggerYaml(true), userId: null });
     const offline = new OrganizationTriggerStore(database, "org", disconnectedAgentValidator());
 
-    const edited = await offline.save({
+    const { trigger: edited } = await offline.save({
       triggerId: trigger.id,
       yaml: triggerYaml(true).replace("prompt: Handle it", "prompt: Handle it carefully"),
       userId: null,

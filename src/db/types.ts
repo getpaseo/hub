@@ -1140,6 +1140,13 @@ export interface SaveOrganizationTriggerInput {
   routes: readonly OrganizationTriggerRoute[];
 }
 
+/** A saved trigger, and what the save created that is shown only once. */
+export interface SavedOrganizationTrigger {
+  trigger: OrganizationTriggerRecord;
+  /** The plaintext bearer secret of a webhook endpoint this save created. Only its hash is stored. */
+  initialWebhookSecret?: string;
+}
+
 export interface SwitchProjectConfigurationToManualInput {
   projectId: string;
   userId: string;
@@ -1543,7 +1550,7 @@ export interface Database {
     triggerId: string,
     revisionId: string,
   ): Promise<OrganizationTriggerRevisionRecord | undefined>;
-  saveOrganizationTrigger(input: SaveOrganizationTriggerInput): Promise<OrganizationTriggerRecord>;
+  saveOrganizationTrigger(input: SaveOrganizationTriggerInput): Promise<SavedOrganizationTrigger>;
   listProjectsForOrganization(organizationId: string): Promise<ProjectRecord[]>;
   findProjectForOrganization(
     organizationId: string,

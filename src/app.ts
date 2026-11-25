@@ -401,7 +401,7 @@ function createAppPublicOperations(
             const existing = (await store.list()).find(
               ({ name }) => name === prepared.compiled.authored.name,
             );
-            const trigger = await store.save({
+            const { trigger } = await store.save({
               ...(existing === undefined ? {} : { triggerId: existing.id }),
               yaml: input.yaml,
               userId: null,

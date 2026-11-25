@@ -16,7 +16,7 @@ describe("public manual-run project resolution", () => {
       slug: "default",
       createdByUserId: null,
     });
-    const trigger = await new OrganizationTriggerStore(
+    const { trigger } = await new OrganizationTriggerStore(
       database,
       "org",
       acceptingAgentValidator(),

@@ -57,7 +57,9 @@ function CopyControl({
       variant="ghost"
       size={children === undefined ? "icon-sm" : "sm"}
       aria-label={children === undefined ? label : undefined}
-      className="shrink-0"
+      // A labelled ghost button is seen by its text, so its padding hangs past the trailing edge
+      // to put that text on the same rail as the bordered controls above and below it.
+      className={children === undefined ? "shrink-0" : "-mr-2 shrink-0"}
       onClick={onCopy}
     >
       {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
@@ -250,11 +252,14 @@ export function CopyBlock({
   label,
   value,
   action,
+  description,
 }: {
   label: string;
   value: string;
   /** The visible button text, e.g. "Copy manifest". */
   action: string;
+  /** What the reader has to change in the value before it works, under the block. */
+  description?: string;
 }) {
   const read = useCallback(() => value, [value]);
   const { state, copy, announcement } = useCopy(label, read);
@@ -267,6 +272,7 @@ export function CopyBlock({
         </CopyControl>
       </div>
       <CodeBlock label={`${label} value`}>{value}</CodeBlock>
+      {description === undefined ? null : <FieldDescription>{description}</FieldDescription>}
       {state === "manual" ? (
         <FieldDescription>Select the value and copy it</FieldDescription>
       ) : null}

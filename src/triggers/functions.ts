@@ -28,15 +28,23 @@ export const triggerSnapshot = createServerFn({ method: "GET" })
 
 export const saveTrigger = createServerFn({ method: "POST" })
   .validator(saveSchema)
-  .handler(async ({ data }): Promise<Result<{ state: "complete" }>> => {
+  .handler(async ({ data }): Promise<Result<SavedTrigger>> => {
     try {
       const dashboard = (await getApplication()).triggerDashboard;
       if (dashboard == null) throw new Error("trigger dashboard unavailable");
-      await dashboard.save(getRequest(), data.organizationSlug, {
-        ...(data.triggerId === undefined ? {} : { triggerId: data.triggerId }),
-        yaml: data.yaml,
-      });
-      return respondOk({ state: "complete" });
+      const { trigger, initialWebhookSecret } = await dashboard.save(
+        getRequest(),
+        data.organizationSlug,
+        {
+          ...(data.triggerId === undefined ? {} : { triggerId: data.triggerId }),
+          yaml: data.yaml,
+        },
+      );
+      if (initialWebhookSecret === undefined) {
+        return respondOk({ state: "complete", triggerId: trigger.id });
+      }
+      setResponseHeader("cache-control", "no-store");
+      return respondOk({ state: "complete", triggerId: trigger.id, initialWebhookSecret });
     } catch (error) {
       return respondWithFailure(error, triggerContext("trigger.save", data.organizationSlug), {
         fallback: error instanceof Error ? error.message : "Hub couldn't save this trigger.",
@@ -78,6 +86,13 @@ export const rotateWebhookSecret = createServerFn({ method: "POST" })
   });
 
 export type TriggerSnapshot = Awaited<ReturnType<TriggerDashboard["snapshot"]>>;
+
+export interface SavedTrigger {
+  state: "complete";
+  triggerId: string;
+  /** Present when the save created a webhook endpoint. Shown once, never stored in plaintext. */
+  initialWebhookSecret?: string;
+}
 
 function triggerContext(operation: string, organizationSlug: string) {
   return { operation, component: "triggers", organizationSlug } as const;
