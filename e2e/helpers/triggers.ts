@@ -222,6 +222,17 @@ export class OrganizationTriggers {
     await expect(this.page.getByRole("radiogroup", { name: "Agent continuity" })).toBeVisible();
   }
 
+  /** Whether the trigger's agents start hidden in Paseo, and whether Paseo archives them after. */
+  async setPaseoVisibility(visibility: { background: boolean; autoArchive: boolean }) {
+    await this.openContinuity();
+    await this.page
+      .getByRole("checkbox", { name: "Run in background" })
+      .setChecked(visibility.background);
+    await this.page
+      .getByRole("checkbox", { name: "Auto-archive after completion" })
+      .setChecked(visibility.autoArchive);
+  }
+
   private audienceDisclosure() {
     return this.page.getByRole("button", { name: /Advanced.*Audience/u });
   }
@@ -1042,6 +1053,28 @@ export class OrganizationTriggers {
    * there is no mark: the title used to sit 12px right of every other line in the card, on
    * phones only, because from `sm` the header is a flex row where an absent mark takes no space.
    */
+  /**
+   * Every option and checkbox in the open Advanced section stays inside it on a phone. The
+   * continuity options are wider than a phone together; they used to widen the section's grid
+   * and cut off the right edge of everything under them.
+   */
+  async expectAdvancedFitsAtPhoneWidth() {
+    const viewport = this.page.viewportSize();
+    await this.page.setViewportSize({ width: 390, height: 844 });
+    const header = this.page.getByRole("button", { name: /Advanced.*Agent continuity/u });
+    await expect(header).toHaveAttribute("aria-expanded", "true");
+    const section = this.page.getByRole("region", { name: /Advanced.*Agent continuity/u });
+    const bounds = await section.boundingBox();
+    if (bounds === null) throw new Error("The Advanced section is not on screen");
+    const controls = section.locator('[role="radio"], label');
+    for (const control of await controls.all()) {
+      const box = await control.boundingBox();
+      if (box === null) throw new Error("An Advanced control is not on screen");
+      expect(box.x + box.width).toBeLessThanOrEqual(bounds.x + bounds.width);
+    }
+    if (viewport !== null) await this.page.setViewportSize(viewport);
+  }
+
   async expectDisclosureRailsAtPhoneWidth() {
     const viewport = this.page.viewportSize();
     await this.page.setViewportSize({ width: 420, height: 900 });

@@ -1,3 +1,4 @@
+import { executionLinkPath } from "../agent-executions/link.js";
 import type { StatusTone } from "../components/app/status-pill.js";
 import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 import type { ActivityProvider, ActivityRange, RunStatus } from "./query-contract.js";
@@ -128,4 +129,32 @@ export function runSession<Execution extends { daemonAgentId: string | null }>(
     }
   }
   return undefined;
+}
+
+/**
+ * Where Open in Paseo goes. Inside Hub the reader already signed in, so the `paseo://` link opens
+ * the agent in one click. Hub's open page is for links posted outside Hub, and for an execution
+ * whose daemon or agent Hub cannot name yet.
+ */
+export function sessionLink(session: { id: string; deepLink: string | null }): string {
+  return session.deepLink ?? executionLinkPath(session.id);
+}
+
+/** The launch requested these settings. Activity does not track the agent's current visibility. */
+export function sessionVisibility(session: {
+  background: boolean;
+  autoArchive: boolean;
+}): string | undefined {
+  const notes: string[] = [];
+  if (session.background) {
+    notes.push(
+      "This run requested a background workspace. If the agent is hidden, turn on Show background in Paseo.",
+    );
+  }
+  if (session.autoArchive) {
+    notes.push(
+      "Auto-archive is on for this run. Hub skips archiving if another run is using the agent.",
+    );
+  }
+  return notes.length === 0 ? undefined : notes.join(" ");
 }

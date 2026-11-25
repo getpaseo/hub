@@ -64,7 +64,10 @@ export function SegmentedControl({
   return (
     // A block, and a track only as wide as its options. Left inline the control stretched to
     // fill whichever grid track a caller put it in, and every caller wrapped it in a div.
-    <div className="grid gap-2">
+    // `min-w-0` and a track that wraps keep a row of options wider than a phone from widening
+    // the caller's grid track, which clipped every sibling in it instead. Wrapping, not
+    // scrolling, so no option is out of sight.
+    <div className="grid min-w-0 gap-2">
       {description === undefined ? null : (
         <p id={descriptionId} className="text-sm text-muted-foreground">
           {description}
@@ -79,7 +82,7 @@ export function SegmentedControl({
           ? {}
           : { "aria-describedby": descriptionId })}
         onKeyDown={move}
-        className="inline-flex w-fit items-center gap-0.5 rounded-md bg-muted p-0.5"
+        className="inline-flex w-fit max-w-full flex-wrap items-center gap-0.5 rounded-md bg-muted p-0.5"
       >
         {options.map((option) => {
           const active = option.value === value;

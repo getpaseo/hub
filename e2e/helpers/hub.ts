@@ -2264,6 +2264,37 @@ export class PaseoHub {
     expect(response.status()).toBe(200);
   }
 
+  /** The newest agent the daemon created was asked to start hidden, or visible, in Paseo. */
+  async expectProviderLaunchInBackground(daemon: string, background: boolean): Promise<void> {
+    const connection = this.providerDaemons.get(daemon);
+    if (connection === undefined) throw new Error("Provider daemon is not connected");
+    await connection.expectCreatedInBackground(background);
+  }
+
+  /**
+   * The `paseo://` link Paseo opens the newest run's agent with, built from what Hub stored: the
+   * daemon's server ID and the agent the daemon created.
+   */
+  async agentDeepLinkOfLatestRun(triggerName: string): Promise<string> {
+    const read = async () =>
+      z.array(z.object({ server_id: z.string(), daemon_agent_id: z.string() })).parse(
+        await this.queryDatabaseRows(
+          this.primary,
+          `select daemons.server_id, executions.daemon_agent_id
+               from trigger_runs runs
+               join workflow_step_runs steps on steps.trigger_run_id = runs.id
+               join agent_executions executions on executions.id = steps.agent_execution_id
+               join daemons on daemons.id = executions.daemon_id
+              where runs.configured_trigger_name = $1 and executions.daemon_agent_id is not null
+              order by runs.created_at desc, steps.ordinal desc limit 1`,
+          [triggerName],
+        ),
+      )[0];
+    await expect.poll(read).toBeDefined();
+    const row = (await read())!;
+    return `paseo://h/${encodeURIComponent(row.server_id)}/agent/${encodeURIComponent(row.daemon_agent_id)}`;
+  }
+
   async expectProviderLaunch(daemon: string, expected: Record<string, unknown>): Promise<void> {
     const connection = this.providerDaemons.get(daemon);
     if (connection === undefined) throw new Error("Provider daemon is not connected");
@@ -5960,6 +5991,8 @@ export interface DaemonProjectFixture {
 
 class ContractDaemon {
   private readonly createdConfigurations: Record<string, unknown>[] = [];
+  /** Whether each created agent was asked to start as a background agent. */
+  private readonly createdBackgrounds: (boolean | undefined)[] = [];
   /** Unset for a daemon that predates project listing, which rejects the request. */
   private projects: readonly DaemonProjectFixture[] | "hold" | undefined;
   readonly daemonId = randomUUID();
@@ -6016,6 +6049,10 @@ class ContractDaemon {
       socket.once("open", resolve);
       socket.once("error", reject);
     });
+  }
+
+  async expectCreatedInBackground(background: boolean): Promise<void> {
+    await expect.poll(() => this.createdBackgrounds.at(-1)).toBe(background);
   }
 
   async expectCreatedConfiguration(expected: Record<string, unknown>): Promise<void> {
@@ -6096,6 +6133,7 @@ class ContractDaemon {
     const request = envelope.data.message;
     if (request.type === "create_agent_request") {
       this.createdConfigurations.push(request.config);
+      this.createdBackgrounds.push(request.background);
       const capability = request.config.mcpServers["hub"];
       if (!capability) throw new Error("Hub execution capability is missing");
       const executionId = new URL(capability.url).pathname.split("/")[2];
@@ -6666,6 +6704,7 @@ const ExecutionRequestSchema = z.object({
     z.object({
       type: z.literal("create_agent_request"),
       requestId: z.string(),
+      background: z.boolean().optional(),
       config: z
         .object({
           mcpServers: z.record(

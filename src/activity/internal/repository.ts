@@ -1,3 +1,4 @@
+import { buildAgentDeepLink } from "@getpaseo/protocol/agent-deep-link";
 import type { QueryHandle } from "../../db/runtime/index.js";
 import type { ProviderEventDropReasonCode } from "../../triggers/drop-reason.js";
 import { parseInvocationRejection } from "../../triggers/invocation.js";
@@ -295,7 +296,10 @@ export class ActivityRepository implements ActivityStore {
               executions.agent_session_action,
               executions.launch_intent #>> '{agent,provider}' as agent_provider,
               executions.launch_intent #>> '{agent,model}' as agent_model,
-              daemons.id as daemon_id, daemons.slug as daemon_slug
+              coalesce((executions.launch_intent ->> 'background')::boolean, false) as background,
+              coalesce((executions.launch_intent ->> 'autoArchive')::boolean, false) as auto_archive,
+              daemons.id as daemon_id, daemons.slug as daemon_slug,
+              daemons.server_id as daemon_server_id
        from workflow_step_runs steps
        left join agent_executions executions on executions.id = steps.agent_execution_id
        left join daemons on daemons.id = executions.daemon_id
@@ -680,8 +684,11 @@ interface StepRow extends Record<string, unknown> {
   agent_session_action: string | null;
   agent_provider: string | null;
   agent_model: string | null;
+  background: boolean | null;
+  auto_archive: boolean | null;
   daemon_id: string | null;
   daemon_slug: string | null;
+  daemon_server_id: string | null;
 }
 
 function toStep(row: StepRow): ActivityStep {
@@ -712,6 +719,16 @@ function toStep(row: StepRow): ActivityStep {
                 : { provider: row.agent_provider, model: row.agent_model },
             daemonAgentId: row.daemon_agent_id,
             sessionAction: row.agent_session_action,
+            deepLink: agentDeepLink(row.daemon_server_id, row.daemon_agent_id),
+            background: row.background === true,
+            autoArchive: row.auto_archive === true,
           },
   };
+}
+
+/** Where the Paseo app opens the agent, once both the daemon and its agent are known. */
+function agentDeepLink(serverId: string | null, agentId: string | null): string | null {
+  if (serverId === null || agentId === null) return null;
+  if (serverId.trim() === "" || agentId.trim() === "") return null;
+  return buildAgentDeepLink({ serverId, agentId });
 }
