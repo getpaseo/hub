@@ -77,6 +77,13 @@ export class RegistrationAdmission {
     });
   }
 
+  /** Whether this Hub lets `email` have a new account, carrying `invitationId` if any. */
+  async admits(email: string, invitationId: string | undefined): Promise<boolean> {
+    if (this.policy.registrationMode === "open") return true;
+    if (invitationId === undefined) return false;
+    return this.isAdmitted(email, invitationId);
+  }
+
   async lockInvitation(client: TransactionHandle, invitationId: string): Promise<void> {
     await this.locks.withTxLock(client, invitationLockName(invitationId));
   }

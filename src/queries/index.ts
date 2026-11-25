@@ -20,17 +20,27 @@ export function useSnapshotQuery<T>(options: {
   queryKey: QueryKey;
   queryFn: () => Promise<Result<T>>;
   enabled?: boolean;
-  refetchInterval?: number;
+  /** A fixed period, or one decided from the current answer: poll an empty list until it fills. */
+  refetchInterval?: number | ((data: T | undefined) => number | false);
   /**
    * Keep showing the previous key's answer while the next one loads. For a list whose key is its
    * filters: the rows stay put while a new filter loads instead of flashing back to a skeleton.
    */
   keepPrevious?: boolean;
 }): Snapshot<T> & { refetch: () => void; isFetching: boolean } {
-  const { keepPrevious = false, ...read } = options;
+  const { keepPrevious = false, refetchInterval, ...read } = options;
   const query = useQuery({
     ...read,
     ...(keepPrevious ? { placeholderData: keepPreviousData } : {}),
+    ...(refetchInterval === undefined
+      ? {}
+      : {
+          refetchInterval:
+            typeof refetchInterval === "number"
+              ? refetchInterval
+              : (current: { state: { data: T | undefined } }) =>
+                  refetchInterval(current.state.data),
+        }),
     queryFn: async () => {
       const result = await read.queryFn();
       if (result.status === "error") throw new SnapshotFailure(result.error.message);

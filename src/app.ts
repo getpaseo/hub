@@ -50,7 +50,7 @@ import {
 } from "./triggers/manual/source.js";
 import { createManualRunProvider } from "./triggers/manual/provider.js";
 import { OrganizationTriggerStore } from "./triggers/store.js";
-import { DaemonRegistration } from "./daemons/registration.js";
+import { DaemonRegistration, type OrganizationDaemonScope } from "./daemons/registration.js";
 import { CliAuthorizations } from "./cli-authorizations/index.js";
 import type { BrowserOrganizationAccess } from "./auth/browser-organization-access.js";
 import { createPublicApi, type PublicApi, type PublicApiComposition } from "./public-api/index.js";
@@ -103,9 +103,15 @@ export interface HubOperations {
   handleCliAuthorizationPoll(request: Request): Promise<Response>;
   handleCliAuthorizationInspect(request: Request): Promise<Response>;
   handleCliAuthorizationDecision(request: Request): Promise<Response>;
-  handleOrganizationDaemons(request: Request): Promise<Response>;
-  handleOrganizationDaemonRename(request: Request, daemonId: string): Promise<Response>;
-  handleOrganizationDaemonRevocation(request: Request, daemonId: string): Promise<Response>;
+  handleOrganizationDaemons(request: Request, organizationSlug: string): Promise<Response>;
+  handleOrganizationDaemonRename(
+    request: Request,
+    input: OrganizationDaemonScope & { slug: string },
+  ): Promise<Response>;
+  handleOrganizationDaemonRevocation(
+    request: Request,
+    input: OrganizationDaemonScope,
+  ): Promise<Response>;
   handleSessionCapabilities(request: Request, sessionId: string): Promise<Response>;
   handleExecutionCapabilities(request: Request, executionId: string): Promise<Response>;
   handleExecutionLauncher(request: Request, executionId: string): Promise<Response>;
@@ -315,12 +321,12 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
       cliAuthorizations === null ? databaseUnavailable() : cliAuthorizations.inspect(request),
     handleCliAuthorizationDecision: (request) =>
       cliAuthorizations === null ? databaseUnavailable() : cliAuthorizations.decide(request),
-    handleOrganizationDaemons: (request) =>
-      registration === null ? databaseUnavailable() : registration.list(request),
-    handleOrganizationDaemonRename: (request, daemonId) =>
-      registration === null ? databaseUnavailable() : registration.rename(request, daemonId),
-    handleOrganizationDaemonRevocation: (request, daemonId) =>
-      registration === null ? databaseUnavailable() : registration.revoke(request, daemonId),
+    handleOrganizationDaemons: (request, organizationSlug) =>
+      registration === null ? databaseUnavailable() : registration.list(request, organizationSlug),
+    handleOrganizationDaemonRename: (request, input) =>
+      registration === null ? databaseUnavailable() : registration.rename(request, input),
+    handleOrganizationDaemonRevocation: (request, input) =>
+      registration === null ? databaseUnavailable() : registration.revoke(request, input),
     handleSessionCapabilities: (request, sessionId) =>
       capabilityServer === null
         ? databaseUnavailable()
@@ -407,7 +413,7 @@ function createAppPublicOperations(
             const existing = (await store.list()).find(
               ({ name }) => name === prepared.compiled.authored.name,
             );
-            const trigger = await store.save({
+            const { trigger } = await store.save({
               ...(existing === undefined ? {} : { triggerId: existing.id }),
               yaml: input.yaml,
               userId: null,

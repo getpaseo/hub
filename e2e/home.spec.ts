@@ -28,29 +28,28 @@ test("walks a hosted organization from sign-in to its first run", async ({ hub, 
   const integrations = new OrganizationIntegrations(page);
   let firstRun: Awaited<ReturnType<typeof hub.runManualInput>> = { status: 0 };
 
-  await test.step("a fresh organization lands on Home with only the first step open", async () => {
+  await test.step("a fresh organization lands on Home with the daemon step open", async () => {
     await home.expectOpen();
-    await home.expectProgress("0 of 4");
-    await home.expectCurrentStep("Connect an integration");
-    await home.expectStep("Connect a daemon", "to do");
-    await expect(home.command("Connect a daemon")).toHaveCount(0);
+    await home.expectProgress("0 of 3");
+    await home.expectCurrentStep("Connect a daemon");
+    await expect(home.command("Connect a daemon")).toHaveText(
+      `paseo hub login ${hub.primaryApplication().origin}`,
+    );
     await home.expectStep("Create a trigger", "to do");
     await home.expectStep("Run it", "to do");
+    await home.expectIntegrationOffer("Start runs from GitHub, Slack, Discord, or Linear events");
     await home.expectNoAlert();
     await home.expectNoOverview();
     await home.capture(`${SHOTS}/01-fresh.png`);
   });
 
-  await test.step("connecting GitHub completes the first step and opens the daemon step", async () => {
-    await home.followStepAction("Connect an integration", "Connect integration");
+  await test.step("connecting GitHub from the offer retires it and leaves the daemon step open", async () => {
+    await home.followIntegrationOffer("Connect integration");
     await hub.connectGitHub("owner");
     await home.open();
-    await home.expectStep("Connect an integration", "done");
-    await home.expectStepText("Connect an integration", "acme-inc");
+    await home.expectNoIntegrationOffer();
     await home.expectCurrentStep("Connect a daemon");
-    await expect(home.command("Connect a daemon")).toHaveText(
-      `paseo hub login ${hub.primaryApplication().origin}`,
-    );
+    await home.expectProgress("0 of 3");
   });
 
   await test.step("a daemon enrolled without execute permission is connected but cannot run agents", async () => {
@@ -65,11 +64,11 @@ test("walks a hosted organization from sign-in to its first run", async ({ hub, 
   });
 
   let daemon = "";
-  await test.step("a daemon that can run agents completes the second step", async () => {
+  await test.step("a daemon that can run agents completes the first step", async () => {
     daemon = await hub.connectProviderDaemon("owner", "Acme");
     await home.reload();
     await home.expectStep("Connect a daemon", "done");
-    await home.expectProgress("2 of 4");
+    await home.expectProgress("1 of 3");
   });
 
   await test.step("events no trigger listens to raise no alert, and the trigger step leads on", async () => {
@@ -81,7 +80,7 @@ test("walks a hosted organization from sign-in to its first run", async ({ hub, 
     await home.followStepAction("Create a trigger", "New trigger");
   });
 
-  await test.step("the editor starts from the connected daemon, and saving completes the third step", async () => {
+  await test.step("the editor starts from the connected daemon, and saving completes the second step", async () => {
     await triggers.expectDaemonPreselected(daemon);
     await triggers.configureManual({
       name: "deploy",
@@ -97,7 +96,7 @@ test("walks a hosted organization from sign-in to its first run", async ({ hub, 
     await home.expectStep("Create a trigger", "done");
     await home.expectCurrentStep("Run it");
     await home.expectStepText("Run it", "POST /api/v1/manual-runs");
-    await home.expectProgress("3 of 4");
+    await home.expectProgress("2 of 3");
   });
 
   await test.step("the first run completes the list, which collapses and stays toggleable", async () => {
@@ -109,19 +108,14 @@ test("walks a hosted organization from sign-in to its first run", async ({ hub, 
     });
     expect(firstRun.workflowStatus).toBe("running");
     await home.open();
-    await home.expectProgress("4 of 4");
+    await home.expectProgress("3 of 3");
     await home.expectCollapsed();
     await home.expectFigure("Runs", "1", "0 succeeded · 1 running");
     await home.expectTrigger("deploy", { runs: 1, failed: 0 });
     await home.toggle();
     await home.expectExpanded();
     await home.expectStep("Run it", "done");
-    await home.expectWholeTitlesAtPhoneWidth([
-      "Connect an integration",
-      "Connect a daemon",
-      "Create a trigger",
-      "Run it",
-    ]);
+    await home.expectWholeTitlesAtPhoneWidth(["Connect a daemon", "Create a trigger", "Run it"]);
     await home.reload();
     await home.expectCollapsed();
   });
@@ -211,7 +205,7 @@ test("walks a hosted organization from sign-in to its first run", async ({ hub, 
   });
 });
 
-/** A self-hosted operator who deferred app setup is sent back to it from the first step. */
+/** A self-hosted operator who deferred app setup is offered it beside the checklist. */
 test("sends a self-hosted operator with no provider app to app setup", async ({ hub }) => {
   const session = await hub.openAppSetup({
     account: owner,
@@ -221,9 +215,10 @@ test("sends a self-hosted operator with no provider app to app setup", async ({ 
     await session.surface.leave("Do this later");
     const home = new OrganizationHome(session.page);
     await home.expectOpen();
-    await home.expectStep("Connect an integration", "needs attention");
+    await home.expectCurrentStep("Connect a daemon");
+    await home.expectIntegrationOffer("Start runs from GitHub, Slack, Discord, or Linear events");
     await home.capture(`${SHOTS}/05-self-hosted-setup.png`);
-    await home.followStepAction("Connect an integration", "Set up apps");
+    await home.followIntegrationOffer("Set up apps");
     await expect(session.page).toHaveURL(/\/apps$/u);
     await session.surface.expectManagement();
   } finally {

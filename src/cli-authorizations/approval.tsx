@@ -1,7 +1,9 @@
 import { useSnapshotQuery } from "../queries/index.js";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useCallback, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useMemo, type FormEvent, type ReactNode } from "react";
+import { AuthActions } from "../components/app/auth-form.js";
 import { AuthCard } from "../components/app/auth-layout.js";
 import { FailureAlert, WarningAlert } from "../components/app/failure-alert.js";
 import { FormActions } from "../components/app/form-actions.js";
@@ -13,16 +15,36 @@ import { Skeleton } from "../components/ui/skeleton.js";
 import type { Result } from "../contract/respond.js";
 import { decideCliAuthorization, inspectCliAuthorization } from "./functions.js";
 
-/** What the reader is deciding about: who gets in, and how long they have to decide. */
+/**
+ * What the reader is deciding about: the code to match against their terminal, who gets in, and
+ * how long they have to decide. The code is the first fact because a prefilled link skips the
+ * step where the reader typed it, so this is the only place they can check it.
+ */
+const CODE_LABEL = "Verification code";
 const RECIPIENT_LABEL = "Organization receiving access";
 const EXPIRY_LABEL = "Request expires";
 
-export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity) {
-  const [code, setCode] = useState(() =>
-    typeof window === "undefined"
-      ? undefined
-      : (new URLSearchParams(window.location.search).get("code") ?? undefined),
-  );
+export interface CliLoginSearch {
+  code?: string;
+}
+
+/** The route owns `?code=`, so the server render and the first client render agree on it. */
+export function parseCliLoginSearch(search: Record<string, unknown>): CliLoginSearch {
+  const code = typeof search["code"] === "string" ? search["code"].trim() : "";
+  return code === "" ? {} : { code };
+}
+
+export function CliLoginApproval({
+  accountId,
+  organizationId,
+  code,
+  onCode,
+}: ApprovalIdentity & {
+  code: string | undefined;
+  /** The reader typed a code: the route puts it in the address, which brings it back here. */
+  onCode: (code: string) => void;
+}) {
+  const queryClient = useQueryClient();
   const inspect = useServerFn(inspectCliAuthorization);
   const snapshot = useSnapshotQuery({
     queryKey: ["cli-authorization", accountId, organizationId, code],
@@ -34,6 +56,14 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
     mutationFn: useServerFn(decideCliAuthorization) as (
       input: Parameters<typeof decideCliAuthorization>[0],
     ) => Promise<Result<{ decision: "approved" | "denied" }>>,
+    onSuccess: async (result) => {
+      if (result.status !== "ok" || result.data.decision !== "approved") return;
+      // The terminal goes on to connect a daemon, so whatever counts daemons is already stale.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["daemons"] }),
+        queryClient.invalidateQueries({ queryKey: ["home"] }),
+      ]);
+    },
   });
   const submitDecision = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
@@ -57,6 +87,7 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
   const expiresAt = resolved?.expiresAt;
   const facts = useMemo<SummaryRow[]>(
     () => [
+      { label: CODE_LABEL, value: <span className="font-mono">{code}</span> },
       { label: RECIPIENT_LABEL, value: organizationName ?? <Skeleton className="h-5 w-40" /> },
       {
         label: EXPIRY_LABEL,
@@ -68,7 +99,7 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
           ),
       },
     ],
-    [expiresAt, organizationName],
+    [code, expiresAt, organizationName],
   );
 
   if (code !== undefined && snapshot.status === "pending") return <Loading rows={facts} />;
@@ -83,20 +114,17 @@ export function CliLoginApproval({ accountId, organizationId }: ApprovalIdentity
       </Centered>
     );
   }
-  if (decide.data?.status === "ok") {
+  if (decide.data?.status === "ok" && resolved !== undefined) {
     return (
       <Centered>
-        <AuthCard
-          titleId="approval-outcome-heading"
-          title={`CLI login ${decide.data.data.decision}`}
-          description="You can close this window and return to the terminal"
-        >
-          <p role="status">The terminal has received the decision</p>
-        </AuthCard>
+        <Decided
+          decision={decide.data.data.decision}
+          organizationSlug={resolved.organization.slug}
+        />
       </Centered>
     );
   }
-  if (code === undefined || snapshot.data === undefined) return <CodeEntry onCode={setCode} />;
+  if (code === undefined || snapshot.data === undefined) return <CodeEntry onCode={onCode} />;
   const request = snapshot.data;
   const failed = decide.isError || decide.data?.status === "error";
   return (
@@ -150,14 +178,56 @@ interface ApprovalIdentity {
   organizationId: string;
 }
 
+/**
+ * The decision is recorded and the terminal has it. An approved login goes on to connect a daemon
+ * from that terminal, so the way on is the list where it will show up.
+ */
+function Decided({
+  decision,
+  organizationSlug,
+}: {
+  decision: "approved" | "denied";
+  organizationSlug: string;
+}) {
+  const daemonsParams = useMemo(() => ({ organizationSlug }), [organizationSlug]);
+  if (decision === "denied") {
+    return (
+      <AuthCard
+        titleId="approval-outcome-heading"
+        title="CLI login denied"
+        description="You can close this window and return to the terminal"
+      >
+        <p role="status">The terminal has received the decision</p>
+      </AuthCard>
+    );
+  }
+  return (
+    <AuthCard
+      titleId="approval-outcome-heading"
+      title="CLI login approved"
+      description="Return to the terminal to finish"
+    >
+      <p role="status" className="sr-only">
+        The terminal has received the decision
+      </p>
+      <AuthActions>
+        <Button asChild size="lg" variant="outline">
+          <Link to="/o/$organizationSlug/daemons" params={daemonsParams}>
+            View daemons
+          </Link>
+        </Button>
+      </AuthActions>
+    </AuthCard>
+  );
+}
+
 function CodeEntry({ onCode }: { onCode: (code: string) => void }) {
   const submit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       const code = new FormData(event.currentTarget).get("code");
-      if (typeof code !== "string") return;
-      window.history.replaceState({}, "", `/cli-login?code=${encodeURIComponent(code)}`);
-      onCode(code);
+      if (typeof code !== "string" || code.trim() === "") return;
+      onCode(code.trim());
     },
     [onCode],
   );

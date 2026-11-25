@@ -13,7 +13,7 @@ import {
   FAILED_RUN_STATUSES,
 } from "../activity/query-contract.js";
 import { useActiveAccount } from "../auth/active-account.js";
-import { Card, CardSkeleton } from "../components/app/card.js";
+import { Card, CardSkeleton, type SurfaceFooter } from "../components/app/card.js";
 import { CopyField } from "../components/app/copy-field.js";
 import { DataCell, DataRow, DataTable, type DataColumn } from "../components/app/data-table.js";
 import { Disclosure } from "../components/app/disclosure.js";
@@ -32,7 +32,12 @@ import { ProviderGlyph } from "../connections/provider-glyph.js";
 import { daemonLoginCommand, GRANT_EXECUTE_COMMAND } from "../daemons/handoff.js";
 import { queryState } from "../projects/panel-state.js";
 import { useRouteTenant } from "../projects/context.js";
-import { deriveChecklist, type Checklist, type ChecklistStep } from "./checklist.js";
+import {
+  deriveChecklist,
+  type Checklist,
+  type ChecklistStep,
+  type IntegrationState,
+} from "./checklist.js";
 import { homeSnapshot, type HomeSnapshot } from "./functions.js";
 import { HOME_RANGES, homeRange, isHomeRange, type HomeRange } from "./range.js";
 
@@ -348,9 +353,12 @@ function daemonDetail(daemons: HomeSnapshot["daemons"], online: number): string 
 }
 
 /**
- * The four steps between an empty organization and its first run, one open at a time. Open until
+ * The three steps between an empty organization and its first run, one open at a time. Open until
  * the last step is done, collapsed after, and always the reader's to toggle; nothing about it is
  * stored, so revoking the daemon reopens it truthfully.
+ *
+ * An integration is offered on the list's closing line, never as a step: a webhook, schedule, or
+ * manual run needs none, and a step would hold the trigger step closed until one was connected.
  */
 function GetStarted({
   checklist,
@@ -368,7 +376,8 @@ function GetStarted({
   // is a route, so it can be rendered on the server, where there is no window: the command is
   // simply absent from that render and arrives with the client.
   const origin = typeof window === "undefined" ? undefined : window.location.origin;
-  const context = { base, operator, origin };
+  const context = { base, origin };
+  const offer = integrationOffer(checklist.integration, base, operator);
   return (
     <Section>
       <Disclosure
@@ -377,6 +386,7 @@ function GetStarted({
         onOpenChange={setOpen}
         title="Get started"
         status={`${String(checklist.completed)} of ${String(checklist.steps.length)}`}
+        {...(offer === undefined ? {} : { footer: offer })}
       >
         <ProgressSteps
           label="Get started"
@@ -387,10 +397,9 @@ function GetStarted({
   );
 }
 
-/** What the page knows that the snapshot does not: where it is, who is reading, and from where. */
+/** What the page knows that the snapshot does not: where it is, and from where. */
 interface StepContext {
   base: string;
-  operator: boolean;
   /** This Hub's address as the browser sees it; absent in a server render. */
   origin: string | undefined;
 }
@@ -400,7 +409,6 @@ function stepPresentation(
   snapshot: HomeSnapshot,
   context: StepContext,
 ): ProgressStep {
-  if (step.key === "app") return integrationStep(step.state, snapshot, context);
   if (step.key === "daemon") return daemonStep(step.state, snapshot, context.origin);
   if (step.key === "trigger") return triggerStep(step.state, snapshot, context.base);
   return runStep(step.state, snapshot);
@@ -414,39 +422,37 @@ function stepAction(to: string, label: string): ReactNode {
   );
 }
 
-function integrationStep(
-  state: Extract<ChecklistStep, { key: "app" }>["state"],
-  snapshot: HomeSnapshot,
-  { base, operator }: StepContext,
-): ProgressStep {
-  const step = { key: "app", title: "Connect an integration" };
-  if (state === "done") {
+/**
+ * Where events come from besides Hub itself: offered on the checklist's closing line until one is
+ * connected, because no step waits for it. A webhook, schedule, or manual run needs none.
+ */
+function integrationOffer(
+  state: IntegrationState,
+  base: string,
+  operator: boolean,
+): SurfaceFooter | undefined {
+  if (state === "done") return undefined;
+  const note = "Start runs from GitHub, Slack, Discord, or Linear events";
+  if (state === "pending") {
     return {
-      ...step,
-      state: "done",
-      result: snapshot.connections.map(({ label }) => label).join(", "),
+      note,
+      actions: (
+        <Button asChild variant="outline" size="sm">
+          <Link to={`${base}/integrations` as never}>Connect integration</Link>
+        </Button>
+      ),
     };
   }
-  if (state === "setup") {
-    return operator
-      ? {
-          ...step,
-          state: "blocked",
-          hint: "Set up GitHub, Slack, Discord, or Linear on this Hub first",
-          action: stepAction("/apps", "Set up apps"),
-        }
-      : {
-          ...step,
-          state: "blocked",
-          hint: "Ask whoever runs this Hub to set up GitHub, Slack, Discord, or Linear",
-        };
-  }
-  return {
-    ...step,
-    state: "todo",
-    hint: "Pick where events come from: GitHub, Slack, Discord, or Linear",
-    action: stepAction(`${base}/integrations`, "Connect integration"),
-  };
+  return operator
+    ? {
+        note,
+        actions: (
+          <Button asChild variant="outline" size="sm">
+            <Link to="/apps">Set up apps</Link>
+          </Button>
+        ),
+      }
+    : { note: "Ask whoever runs this Hub to set up GitHub, Slack, Discord, or Linear" };
 }
 
 function daemonStep(

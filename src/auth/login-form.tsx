@@ -7,12 +7,18 @@ export function LoginForm({
   mode,
   busy,
   onSubmit,
+  onSwitchMode,
   emailValue,
   emailReadOnly = false,
 }: {
   mode: "signIn" | "signUp";
   busy: boolean;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  /**
+   * The other side of the same decision, under the submit: "Create an account" under "Sign in",
+   * "Sign in" under "Create account". Absent when this Hub admits no new accounts.
+   */
+  onSwitchMode?: () => void;
   emailValue?: string;
   emailReadOnly?: boolean;
 }) {
@@ -32,7 +38,18 @@ export function LoginForm({
     }
   }
   return (
-    <AuthForm label={action} busy={busy} submitLabel={action} onSubmit={onSubmit}>
+    <AuthForm
+      label={action}
+      busy={busy}
+      submitLabel={action}
+      onSubmit={onSubmit}
+      {...(onSwitchMode === undefined
+        ? {}
+        : {
+            secondaryLabel: mode === "signIn" ? "Create an account" : "Sign in",
+            onSecondary: onSwitchMode,
+          })}
+    >
       {mode === "signUp" && (
         <FormField
           kind="text"

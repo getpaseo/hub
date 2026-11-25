@@ -22,21 +22,33 @@ afterAll(async () => {
 
 it("authorizes, deduplicates, meters and queues durable webhook work across redeploys and rotation", async () => {
   const { app, database, store, entitlements, runtime } = fixture;
-  const trigger = await store.save({ yaml: webhookYaml, userId: null });
+  const { trigger, initialWebhookSecret } = await store.save({ yaml: webhookYaml, userId: null });
   const [endpoint] = await database.webhooks.list("webhook-org");
-  expect(endpoint).toMatchObject({ triggerId: trigger.id, hasSecret: false });
+  expect(endpoint).toMatchObject({ triggerId: trigger.id, hasSecret: true });
   expect(endpoint!.endpointId).toMatch(/^wh_[\w-]{32}$/u);
+  expect(initialWebhookSecret).toMatch(/^whsec_[\w-]{43}$/u);
   const endpointId = endpoint!.endpointId;
+  const storedHash = async () =>
+    (
+      await runtime.query<{ secret_hash: string | null }>(
+        "select secret_hash from trigger_webhooks where trigger_id = $1",
+        [trigger.id],
+      )
+    ).rows[0]!.secret_hash;
+  const sha256 = (secret: string) => createHash("sha256").update(secret).digest("hex");
+  expect(await storedHash()).toBe(sha256(initialWebhookSecret!));
+  expect(await database.webhooks.authenticate(endpointId, initialWebhookSecret!)).toBe(
+    "webhook-org",
+  );
   expect(await database.webhooks.rotate("different-org", trigger.id)).toBeUndefined();
+  expect(await database.webhooks.rotate("webhook-org", trigger.id, "create")).toBeUndefined();
+  // A row from before secrets were generated on creation is the only one "create" still fills.
+  await runtime.query("update trigger_webhooks set secret_hash = null where trigger_id = $1", [
+    trigger.id,
+  ]);
   const first = (await database.webhooks.rotate("webhook-org", trigger.id, "create"))!;
   expect(await database.webhooks.rotate("webhook-org", trigger.id, "create")).toBeUndefined();
-  const {
-    rows: [stored],
-  } = await runtime.query<{ secret_hash: string }>(
-    "select secret_hash from trigger_webhooks where trigger_id = $1",
-    [trigger.id],
-  );
-  expect(stored!.secret_hash).toBe(createHash("sha256").update(first.secret).digest("hex"));
+  expect(await storedHash()).toBe(sha256(first.secret));
 
   const payload = '{"alert":"disk full","note":"${{ paseo.prompt }}"}';
   const post = (
@@ -95,12 +107,14 @@ it("authorizes, deduplicates, meters and queues durable webhook work across rede
   });
   expect((await runtime.query("select run.* from workflow_wakeups run")).rows).toHaveLength(1);
 
-  await store.save({
+  const edited = await store.save({
     triggerId: trigger.id,
     yaml: webhookYaml.replace("Summarize", "Inspect"),
     userId: null,
   });
-  expect(await database.webhooks.list("webhook-org")).toEqual([{ ...endpoint, hasSecret: true }]);
+  expect(edited.initialWebhookSecret).toBeUndefined();
+  expect(await database.webhooks.list("webhook-org")).toEqual([endpoint]);
+  expect(await storedHash()).toBe(sha256(first.secret));
   expect(
     (await post(first.secret, "plain text alert", undefined, { contentType: "text/plain" })).status,
   ).toBe(202);

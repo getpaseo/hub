@@ -34,11 +34,22 @@ interface DaemonRegistrationOptions {
   access?: BrowserOrganizationAccess;
 }
 
+/** Which organization's daemon a browser command addresses, as the dashboard route names it. */
+export interface OrganizationDaemonScope {
+  organizationSlug: string;
+  daemonId: string;
+}
+
+/**
+ * The dashboard's daemon list and its commands. Each takes the browser's own request for its
+ * session and origin, and the organization and daemon as typed values from the server function
+ * that validated them — nothing is read back out of a URL or a body.
+ */
 export class DaemonRegistration {
   constructor(private readonly options: DaemonRegistrationOptions) {}
 
-  async list(request: Request): Promise<Response> {
-    const access = await this.browserRouteAccess(request, false);
+  async list(request: Request, organizationSlug: string): Promise<Response> {
+    const access = await this.browserRouteAccess(request, organizationSlug, false);
     if (access instanceof Response) return access;
     const daemons = await this.options.database.listDaemonsForOrganization(access.organization.id);
     return Response.json({
@@ -47,26 +58,32 @@ export class DaemonRegistration {
     });
   }
 
-  async rename(request: Request, daemonId: string): Promise<Response> {
-    const access = await this.browserRouteAccess(request, true);
+  async rename(
+    request: Request,
+    { organizationSlug, daemonId, slug }: OrganizationDaemonScope & { slug: string },
+  ): Promise<Response> {
+    const access = await this.browserRouteAccess(request, organizationSlug, true);
     if (access instanceof Response) return access;
     if (!access.capabilities.manageResources) {
       return Response.json({ error: "forbidden" }, { status: 403 });
     }
-    const input = await parseRequest(request, renameBody);
-    if (input instanceof Response) return input;
+    const input = renameBody.safeParse({ slug });
+    if (!input.success) return Response.json({ error: "invalid_request" }, { status: 400 });
     const daemon = await this.options.database.renameDaemonForOrganization(
       access.organization.id,
       daemonId,
-      slugify(input.slug, "daemon"),
+      slugify(input.data.slug, "daemon"),
     );
     if (daemon === undefined) return unavailableDaemon();
     if (daemon.status === "slug_conflict") return daemonSlugConflict(daemon.slug);
     return Response.json(daemonSummary(daemon));
   }
 
-  async revoke(request: Request, daemonId: string): Promise<Response> {
-    const access = await this.browserRouteAccess(request, true);
+  async revoke(
+    request: Request,
+    { organizationSlug, daemonId }: OrganizationDaemonScope,
+  ): Promise<Response> {
+    const access = await this.browserRouteAccess(request, organizationSlug, true);
     if (access instanceof Response) return access;
     if (!access.capabilities.manageResources) {
       return Response.json({ error: "forbidden" }, { status: 403 });
@@ -83,6 +100,7 @@ export class DaemonRegistration {
 
   private async browserRouteAccess(
     request: Request,
+    organizationSlug: string,
     mutation: boolean,
   ): Promise<OrganizationAccessValue | Response> {
     if (this.options.access === undefined) {
@@ -91,10 +109,6 @@ export class DaemonRegistration {
     if (mutation) {
       const rejected = this.options.access.rejectCookieMutation(request);
       if (rejected !== undefined) return rejected;
-    }
-    const organizationSlug = new URL(request.url).searchParams.get("organizationSlug");
-    if (organizationSlug === null) {
-      return Response.json({ error: "organization_required" }, { status: 403 });
     }
     try {
       const account = await this.options.access.resolveAccount(request);
@@ -228,16 +242,6 @@ function matchesVerifier(value: string, expectedVerifier: string): boolean {
 
 function bearer(value: string | undefined): string | undefined {
   return value?.startsWith("Bearer ") ? value.slice(7) : undefined;
-}
-
-async function parseRequest<TSchema extends z.ZodType>(
-  request: Request,
-  schema: TSchema,
-): Promise<z.output<TSchema> | Response> {
-  const parsed = schema.safeParse(await parsedJson(request, "daemon.request.parse"));
-  return parsed.success
-    ? parsed.data
-    : Response.json({ error: "invalid_request" }, { status: 400 });
 }
 
 async function parsedJson(request: Request, operation: string): Promise<unknown> {

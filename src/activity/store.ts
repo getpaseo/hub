@@ -168,6 +168,12 @@ export interface ActivityStep {
     /** The daemon's id for the agent; present once the agent exists and can be opened. */
     daemonAgentId: string | null;
     sessionAction: string | null;
+    /** The `paseo://` link that opens the agent in the Paseo app, once it can be opened. */
+    deepLink: string | null;
+    /** The agent ran as a background agent, hidden from Paseo until Show background is on. */
+    background: boolean;
+    /** The agent is archived in Paseo once the run finishes. */
+    autoArchive: boolean;
   } | null;
 }
 

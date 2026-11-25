@@ -84,6 +84,7 @@ import type {
   ProjectTriggerRoute,
   MigrateProjectTriggersInput,
   OrganizationTriggerRecord,
+  SavedOrganizationTrigger,
   OrganizationTriggerRevisionRecord,
   PendingProjectTriggerMigration,
   SaveOrganizationTriggerInput,
@@ -2945,7 +2946,7 @@ class MemoryDatabase implements Database {
 
   async saveOrganizationTrigger(
     input: SaveOrganizationTriggerInput,
-  ): Promise<OrganizationTriggerRecord> {
+  ): Promise<SavedOrganizationTrigger> {
     const existing =
       input.triggerId === undefined ? undefined : this.organizationTriggers.get(input.triggerId);
     if (existing !== undefined && existing.organizationId !== input.organizationId) {
@@ -3028,7 +3029,7 @@ class MemoryDatabase implements Database {
           input.name,
       })),
     );
-    return trigger;
+    return { trigger };
   }
 
   private createTriggerRuntimeProject(input: {

@@ -15,18 +15,24 @@ import type { WebhookEndpoint, WebhookSecretAction } from "./index.js";
 
 const WEBHOOK_ICON = <ProviderGlyph provider="webhook" />;
 const SECRET_ACTIVE_PILL = <StatusPill tone="success">Secret active</StatusPill>;
-const NO_SECRET_PILL = <StatusPill tone="neutral">No secret</StatusPill>;
+const SECRET_REQUIRED_PILL = <StatusPill tone="warning">Secret required</StatusPill>;
 
 export function WebhookSettings({
   organizationSlug,
   origin,
   endpoint,
   canManage,
+  secret: shown,
+  onSecretChange,
 }: {
   organizationSlug: string;
   origin: string;
   endpoint: WebhookEndpoint;
   canManage: boolean;
+  /** The plaintext secret on screen for this visit, owned by the caller. */
+  secret?: string;
+  /** Reports the secret a create or rotation produced, or `undefined` once none can be shown. */
+  onSecretChange: (secret: string | undefined) => void;
 }) {
   const rotate = useServerFn(rotateWebhookSecret);
   const queryClient = useQueryClient();
@@ -34,23 +40,79 @@ export function WebhookSettings({
     mutationFn: (action: WebhookSecretAction) =>
       rotate({ data: { organizationSlug, triggerId: endpoint.triggerId, action } }),
     gcTime: 0,
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["triggers", organizationSlug] });
+    // The refresh is not awaited: the per-call callbacks below run once this settles, and the
+    // secret a rotation produced must replace the revoked one on screen without waiting for it.
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["triggers", organizationSlug] });
     },
   });
   const { mutate } = secret;
-  const createSecret = useCallback(() => mutate("create"), [mutate]);
-  const rotateSecret = useCallback(() => mutate("rotate"), [mutate]);
-  const shown = secret.data?.status === "ok" ? secret.data.data.secret : undefined;
-  const url = `${origin}/webhooks/${endpoint.endpointId}`;
-  const curlUrl = url.replaceAll("'", "'\\''");
+  // The secret a request produced belongs to the card that sent it. Per-call callbacks run only
+  // while that card is mounted, so an answer that arrives after the reader left and came back
+  // cannot replace the secret a later visit is showing. A failed request clears the secret on
+  // screen: the browser cannot tell a request that never reached Hub from one whose answer was
+  // lost after it replaced the secret.
+  const send = useCallback(
+    (action: WebhookSecretAction) =>
+      mutate(action, {
+        onSuccess: (result) =>
+          onSecretChange(result.status === "ok" ? result.data.secret : undefined),
+        onError: () => onSecretChange(undefined),
+      }),
+    [mutate, onSecretChange],
+  );
+  const createSecret = useCallback(() => send("create"), [send]);
+  const rotateSecret = useCallback(() => send("rotate"), [send]);
+  const failed = secret.data?.status === "error" || secret.isError;
+  return (
+    <WebhookSettingsView
+      url={`${origin}/webhooks/${endpoint.endpointId}`}
+      hasSecret={endpoint.hasSecret}
+      {...(shown === undefined ? {} : { secret: shown })}
+      canManage={canManage}
+      pending={secret.isPending}
+      {...(failed
+        ? {
+            error: { message: secret.data?.status === "error" ? secret.data.error.message : null },
+          }
+        : {})}
+      onCreateSecret={createSecret}
+      onRotateSecret={rotateSecret}
+    />
+  );
+}
 
+/**
+ * The endpoint as the reader needs it: its URL, whether requests can authenticate, and a request
+ * to copy. While a secret is on screen the request carries it, so the copied command runs as it
+ * is; once only the hash is left, the request names the variable to fill in.
+ */
+export function WebhookSettingsView({
+  url,
+  hasSecret,
+  secret,
+  canManage,
+  pending,
+  error,
+  onCreateSecret,
+  onRotateSecret,
+}: {
+  url: string;
+  hasSecret: boolean;
+  /** The plaintext secret, only while it is shown once after creating or rotating it. */
+  secret?: string;
+  canManage: boolean;
+  pending: boolean;
+  error?: { message: string | null };
+  onCreateSecret: () => void;
+  onRotateSecret: () => void;
+}) {
   return (
     <Card
       icon={WEBHOOK_ICON}
       title="Webhook endpoint"
       description="Send an authenticated POST request to start this trigger"
-      action={endpoint.hasSecret ? SECRET_ACTIVE_PILL : NO_SECRET_PILL}
+      action={hasSecret ? SECRET_ACTIVE_PILL : SECRET_REQUIRED_PILL}
     >
       <CopyField label="Webhook URL" value={url} />
       <div className="grid gap-3 border-t pt-4">
@@ -58,14 +120,14 @@ export function WebhookSettings({
           <div className="grid min-w-0 gap-0.5">
             <p className="text-sm text-foreground">Bearer secret</p>
             <p className="text-xs text-muted-foreground">
-              {endpoint.hasSecret
+              {hasSecret
                 ? "Active. Rotating replaces the current secret immediately"
-                : "Create a secret to authenticate incoming POST requests"}
+                : "Requests return 401 until you create a secret"}
             </p>
           </div>
           {canManage ? (
             <div className="shrink-0">
-              {endpoint.hasSecret ? (
+              {hasSecret ? (
                 <ConfirmAction
                   label="Rotate secret"
                   title="Rotate webhook secret?"
@@ -73,48 +135,73 @@ export function WebhookSettings({
                   confirmLabel="Rotate secret"
                   cancelLabel="Cancel"
                   destructive
-                  busy={secret.isPending}
-                  onConfirm={rotateSecret}
+                  busy={pending}
+                  onConfirm={onRotateSecret}
                 />
               ) : (
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
-                  disabled={secret.isPending}
-                  aria-busy={secret.isPending}
-                  onClick={createSecret}
+                  disabled={pending}
+                  aria-busy={pending}
+                  onClick={onCreateSecret}
                 >
-                  {secret.isPending ? <Spinner /> : null}
+                  {pending ? <Spinner /> : null}
                   Create secret
                 </Button>
               )}
             </div>
           ) : null}
         </div>
-        {shown === undefined ? null : (
+        {secret === undefined ? null : (
           <>
             <WarningAlert title="Save this secret now">
               Hub shows this secret only once. Store it before leaving this page
             </WarningAlert>
-            <CopyField label="Webhook secret" value={shown} focusOnMount />
+            <CopyField label="Webhook secret" value={secret} focusOnMount />
           </>
         )}
-        {secret.data?.status === "error" || secret.isError ? (
+        {error === undefined ? null : (
           <FailureAlert
             title="Webhook secret unavailable"
-            error={secret.data?.status === "error" ? secret.data.error.message : null}
+            error={error.message}
             fallback="Try again"
           />
-        ) : null}
+        )}
       </div>
       <div className="border-t pt-4">
         <CopyBlock
           label="Example request"
           action="Copy curl example"
-          value={`curl -X POST '${curlUrl}' \\\n  -H "Authorization: Bearer $WEBHOOK_SECRET" \\\n  -H 'Content-Type: application/json' \\\n  -d '{"alert":"example"}'`}
+          value={curlExample(url, secret)}
+          {...(secret === undefined
+            ? { description: secretPlaceholderHint(hasSecret, canManage) }
+            : {})}
         />
       </div>
     </Card>
   );
+}
+
+function curlExample(url: string, secret: string | undefined): string {
+  // A secret is base64url, so single quotes hold it as it is; the variable needs double quotes
+  // for the shell to expand it.
+  const authorization =
+    secret === undefined
+      ? `-H "Authorization: Bearer $WEBHOOK_SECRET"`
+      : `-H 'Authorization: Bearer ${secret}'`;
+  return [
+    `curl -X POST '${url.replaceAll("'", "'\\''")}'`,
+    `  ${authorization}`,
+    "  -H 'Content-Type: application/json'",
+    `  -d '{"alert":"example"}'`,
+  ].join(" \\\n");
+}
+
+function secretPlaceholderHint(hasSecret: boolean, canManage: boolean): string {
+  if (!hasSecret) return "Create a secret, then replace $WEBHOOK_SECRET with it";
+  return canManage
+    ? "Replace $WEBHOOK_SECRET with your saved secret, or rotate to generate a new one"
+    : "Replace $WEBHOOK_SECRET with the saved secret";
 }

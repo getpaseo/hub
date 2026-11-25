@@ -37,11 +37,17 @@ import {
   mergeTriggerForm,
   projectTriggerForm,
   triggerFormErrors,
+  workingDirectoryError,
   type TriggerFieldErrors,
   type TriggerFormValue,
 } from "./configuration/editor.js";
 import { WebhookSettings } from "./webhook/settings.js";
-import { saveTrigger, triggerSnapshot, type TriggerSnapshot } from "./functions.js";
+import {
+  saveTrigger,
+  triggerSnapshot,
+  type SavedTrigger,
+  type TriggerSnapshot,
+} from "./functions.js";
 import { daemonProviderSnapshot } from "../daemons/functions.js";
 import type { HubProviderSnapshotEntry } from "../hub/protocol.js";
 import { AudienceFields } from "./audience-fields.js";
@@ -54,7 +60,12 @@ import {
   eventDefinition,
   parseEditorEvent,
 } from "./configuration/events.js";
-import { changeTriggerModel, selectedProviderModel } from "./provider-catalog.js";
+import {
+  changeTriggerModel,
+  providerCatalogFailure,
+  selectableModels,
+  selectedProviderModel,
+} from "./provider-catalog.js";
 
 type BrowserTrigger = TriggerSnapshot["triggers"][number];
 type EditorMode = "form" | "yaml";
@@ -130,7 +141,7 @@ export function TriggersPanel() {
           isEmpty={data.triggers.length === 0}
           empty={{
             title: "No triggers",
-            description: "Connect a provider and daemon, then create your first trigger",
+            description: "Connect a daemon, then create your first trigger",
           }}
         >
           {data.triggers.map((trigger) => (
@@ -226,13 +237,26 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
   const queryClient = useQueryClient();
   const saveCommand = useServerFn(saveTrigger) as (input: {
     data: { organizationSlug: string; triggerId?: string; yaml: string };
-  }) => Promise<Result<{ state: "complete" }>>;
+  }) => Promise<Result<SavedTrigger>>;
+  const shownSecret = useShownWebhookSecret(triggerId);
   const save = useMutation({
     mutationFn: saveCommand,
+    // The result can hold a webhook secret in plaintext. Drop it as soon as this screen does.
+    gcTime: 0,
     onSuccess: async (result) => {
       if (result.status !== "ok") return;
+      const { triggerId: savedId, initialWebhookSecret } = result.data;
+      // Hold the secret before the refresh, so the endpoint card renders with it the moment the
+      // refreshed snapshot shows the endpoint.
+      if (initialWebhookSecret !== undefined) shownSecret.show(savedId, initialWebhookSecret);
       await queryClient.invalidateQueries({ queryKey: ["triggers", organizationSlug] });
-      await navigate({ to: `/o/${organizationSlug}/triggers` as never });
+      // A save that created a webhook endpoint opens that endpoint: its URL and its secret, shown
+      // this once, are what the reader needs next. Every other save returns to the list.
+      await navigate({
+        to: (initialWebhookSecret === undefined
+          ? `/o/${organizationSlug}/triggers`
+          : `/o/${organizationSlug}/triggers/${savedId}`) as never,
+      });
     },
   });
   if (snapshot.status === "pending") return <TriggerEditorSkeleton />;
@@ -274,18 +298,42 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
       {...(webhook === undefined
         ? {}
         : {
-            footer: (
+            endpoint: (
               <WebhookSettings
                 key={webhook.endpointId}
                 organizationSlug={organizationSlug}
                 origin={data.webhookOrigin}
                 endpoint={webhook}
                 canManage={data.canManage}
+                {...(shownSecret.secret === undefined ? {} : { secret: shownSecret.secret })}
+                onSecretChange={(secret) => shownSecret.show(webhook.triggerId, secret)}
               />
             ),
           })}
     />
   );
+}
+
+/**
+ * The one webhook secret on screen, for the visit that produced it: the one a save created the
+ * endpoint with, until a rotation replaces or a failed rotation clears it. `/triggers/new` and
+ * `/triggers/<id>` are one route, so this panel outlives the redirect and can hand the secret to
+ * the trigger it belongs to. Leaving that trigger, by a link or through history, forgets it: the
+ * secret is never in the URL, history state, storage, or the snapshot cache, so neither Back and
+ * Forward inside Hub nor a reload can show it again.
+ */
+function useShownWebhookSecret(triggerId: string) {
+  const [shown, setShown] = useState<{ triggerId: string; secret: string }>();
+  const [visiting, setVisiting] = useState(triggerId);
+  if (visiting !== triggerId) {
+    setVisiting(triggerId);
+    if (shown !== undefined && shown.triggerId !== triggerId) setShown(undefined);
+  }
+  return {
+    secret: shown?.triggerId === triggerId ? shown.secret : undefined,
+    show: (id: string, secret: string | undefined) =>
+      setShown(secret === undefined ? undefined : { triggerId: id, secret }),
+  };
 }
 
 function useTriggerSnapshot(organizationSlug: string) {
@@ -313,7 +361,7 @@ function TriggerEditor({
   saveError,
   onCancel,
   onSave,
-  footer,
+  endpoint,
 }: {
   trigger: BrowserTrigger | null;
   snapshot: TriggerSnapshot;
@@ -321,7 +369,8 @@ function TriggerEditor({
   saveError: string | undefined;
   onCancel: () => void;
   onSave: (yaml: string) => void;
-  footer?: ReactNode;
+  /** How the trigger is reached from outside, shown above the form that configures it. */
+  endpoint?: ReactNode;
 }) {
   const legacy = trigger?.format === "legacy_multistep";
   const editor = useTriggerEditorState(trigger, snapshot, legacy, onSave);
@@ -401,6 +450,7 @@ function TriggerEditor({
             fallback="Hub couldn't save this trigger"
           />
         )}
+        {endpoint}
         {editor.mode === "form" ? <TriggerRefusalSummary errors={editor.errors} /> : null}
         <div className="sm:hidden">{modeSwitch}</div>
         {/*
@@ -443,7 +493,6 @@ function TriggerEditor({
             </Button>
           </FormActions>
         </form>
-        {footer}
       </div>
     </>
   );
@@ -495,11 +544,11 @@ function useTriggerEditorState(
   // new trigger is not a page of errors, it is a page nobody has filled in. Once they have asked,
   // the marks stay and follow what they type.
   const [refused, setRefused] = useState(false);
-  const selectedDaemon = snapshot.daemons.find((daemon) => daemon.slug === form.daemon);
   const providerCatalog = useDaemonProviderCatalog(
     snapshot.organization.slug,
-    mode === "form" ? selectedDaemon?.id : undefined,
+    mode === "form" ? targetDaemonId(snapshot.daemons, form) : undefined,
     form.cwd,
+    form.agent,
   );
   const { entry } = selectedProviderModel(providerCatalog.entries, form.agent);
   const errors = triggerFormErrors(form, entry?.modes);
@@ -618,12 +667,28 @@ function fieldError(errors: TriggerFieldErrors, key: keyof TriggerFormValue) {
   return error === undefined ? {} : { error };
 }
 
-function waitingForDaemonReason(
+/**
+ * What the agent and access steps wait for. The agents on offer are the daemon's answer for one
+ * working directory, so both the daemon and an absolute directory come first.
+ */
+function waitingForTargetReason(
   daemons: TriggerSnapshot["daemons"],
-  selectedSlug: string,
+  form: Pick<TriggerFormValue, "daemon" | "cwd">,
 ): string | undefined {
-  if (daemons.some((daemon) => daemon.slug === selectedSlug)) return undefined;
-  return daemons.length === 0 ? "Connect a daemon first" : "Choose a daemon first";
+  if (daemons.length === 0) return "Connect a daemon first";
+  if (!daemons.some((daemon) => daemon.slug === form.daemon)) return "Choose a daemon first";
+  return workingDirectoryError(form.cwd) === undefined
+    ? undefined
+    : "Choose a working directory first";
+}
+
+/** The daemon to ask for agents, once the target is complete enough to ask it. */
+function targetDaemonId(
+  daemons: TriggerSnapshot["daemons"],
+  form: Pick<TriggerFormValue, "daemon" | "cwd">,
+): string | undefined {
+  if (waitingForTargetReason(daemons, form) !== undefined) return undefined;
+  return daemons.find((daemon) => daemon.slug === form.daemon)?.id;
 }
 
 function TriggerForm({
@@ -647,10 +712,10 @@ function TriggerForm({
   const update = <Key extends keyof TriggerFormValue>(key: Key, value: TriggerFormValue[Key]) =>
     onChange({ ...form, [key]: value });
   const noDaemons = snapshot.daemons.length === 0;
-  // Everything after the daemon is the daemon's own answer or runs on it, so those steps keep
+  // Everything after the target is the daemon's own answer or runs on it, so those steps keep
   // their place and say what they are waiting for instead of offering controls with nothing in
   // them.
-  const waiting = waitingForDaemonReason(snapshot.daemons, form.daemon);
+  const waiting = waitingForTargetReason(snapshot.daemons, form);
   return (
     <div className="grid gap-6">
       <Card>
@@ -861,7 +926,7 @@ function AgentFields({
       <Disclosure
         id="trigger-continuity"
         title="Advanced"
-        description={`Agent continuity: ${continuity?.label ?? form.continuationMode}`}
+        description={advancedSummary(form, continuity?.label ?? form.continuationMode)}
         open={continuityExpanded || errors.continuationKey !== undefined}
         onOpenChange={setContinuityExpanded}
       >
@@ -886,10 +951,35 @@ function AgentFields({
               {...fieldError(errors, "continuationKey")}
             />
           ) : null}
+          <CheckboxField
+            id="trigger-background"
+            label="Run in background"
+            description="On daemons that support background workspaces, turn on Show background in Paseo to see the agent"
+            checked={form.background}
+            onChange={(background) => onChange({ ...form, background })}
+          />
+          <CheckboxField
+            id="trigger-auto-archive"
+            label="Auto-archive after completion"
+            description="Archives the agent after this run unless another run is using it"
+            checked={form.autoArchive}
+            onChange={(autoArchive) => onChange({ ...form, autoArchive })}
+          />
         </div>
       </Disclosure>
     </>
   );
+}
+
+/** What the closed Advanced header says is set, so nobody opens it to find out. */
+function advancedSummary(form: TriggerFormValue, continuity: string): string {
+  return [
+    `Agent continuity: ${continuity}`,
+    form.background ? "Background" : undefined,
+    form.autoArchive ? "Auto-archive" : undefined,
+  ]
+    .filter((part) => part !== undefined)
+    .join(" · ");
 }
 
 /**
@@ -1035,16 +1125,12 @@ function ProviderCatalogFields({
 }) {
   const selected = selectedProviderModel(entries, form.agent);
   const agentOptions = (entries ?? []).flatMap((entry) =>
-    entry.status !== "ready" || !entry.enabled
-      ? []
-      : (entry.models ?? [])
-          .filter((model) => model.isSelectable !== false)
-          .map((model) => ({
-            value: `${entry.provider}/${model.id}`,
-            label: model.label,
-            detail: `${entry.label ?? entry.provider} · ${entry.provider}/${model.id}`,
-            keywords: [model.label, entry.label ?? entry.provider, model.id],
-          })),
+    selectableModels(entry).map((model) => ({
+      value: `${entry.provider}/${model.id}`,
+      label: model.label,
+      detail: `${entry.label ?? entry.provider} · ${entry.provider}/${model.id}`,
+      keywords: [model.label, entry.label ?? entry.provider, model.id],
+    })),
   ) satisfies ComboboxOption[];
   const modeOptions = (selected.entry?.modes ?? []).map((mode) => ({
     value: mode.id,
@@ -1119,13 +1205,14 @@ function ProviderCatalogFields({
 }
 
 /**
- * The agents a daemon can run. They are read as soon as there is a daemon, so the agent control
- * never opens onto an empty list, and read again from the working directory once one is chosen.
+ * The agents a daemon can run from one working directory. They are read once the target is
+ * complete, which is also when the agent step opens.
  */
 function useDaemonProviderCatalog(
   organizationSlug: string,
   daemonId: string | undefined,
   cwd: string,
+  agent: string,
 ) {
   const load = useServerFn(daemonProviderSnapshot);
   const directory = cwd.trim();
@@ -1137,23 +1224,19 @@ function useDaemonProviderCatalog(
         data: {
           organizationSlug,
           daemonId: daemonId!,
-          ...(directory === "" ? {} : { cwd: directory }),
+          cwd: directory,
           refresh: true,
         },
       }),
   });
   const entries = query.data?.entries;
-  const providerErrors = (entries ?? [])
-    .filter((entry) => entry.status === "error")
-    .map((entry) => `${entry.label ?? entry.provider}: ${entry.error ?? "unavailable"}`);
-  const providerError = providerErrors.length > 0 ? providerErrors.join(" ") : undefined;
   return {
     entries,
     loading: query.isFetching,
     error:
       query.status === "error"
         ? (query.error ?? "Hub couldn't load this daemon's providers")
-        : providerError,
+        : providerCatalogFailure(entries, agent),
     refresh: query.refetch,
   };
 }
@@ -1186,6 +1269,8 @@ function defaultForm(snapshot: TriggerSnapshot): TriggerFormValue {
     continuationKey: "",
     maxRuntime: "2h",
     idleTimeout: "10m",
+    background: false,
+    autoArchive: true,
     githubConnection: "",
     githubRepositories: "",
     githubPermissions: "",

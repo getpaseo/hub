@@ -116,7 +116,11 @@ it("keeps an interactive claim across a restart and then shows ordinary sign-in"
   // still signs the operator in without a temporary-password gate.
   const restarted = await startProductionRuntime();
   const state = await restarted.browserAccount!(new Request(`${APP_URL}/api/auth/paseo/state`));
-  assert.deepEqual(await state.json(), { status: "signedOut", registration: "invite_only" });
+  assert.deepEqual(await state.json(), {
+    status: "signedOut",
+    registration: "invite_only",
+    socialProviders: [],
+  });
   await restarted.signInEmail!(
     { email: operator.email, password: operator.password },
     new Headers({ origin: APP_URL }),

@@ -94,6 +94,7 @@ import type {
   ProjectTriggerRoute,
   MigrateProjectTriggersInput,
   OrganizationTriggerRecord,
+  SavedOrganizationTrigger,
   OrganizationTriggerRevisionRecord,
   PendingProjectTriggerMigration,
   SaveOrganizationTriggerInput,
@@ -3416,7 +3417,7 @@ class PgDatabase implements Database {
 
   async saveOrganizationTrigger(
     input: SaveOrganizationTriggerInput,
-  ): Promise<OrganizationTriggerRecord> {
+  ): Promise<SavedOrganizationTrigger> {
     return this.pool.transaction(async (client) => {
       let trigger: OrganizationTriggerRow;
       if (input.triggerId === undefined) {
@@ -3556,12 +3557,15 @@ class PgDatabase implements Database {
       );
       const recurrence = input.enabled ? input.recurrence : undefined;
       await ScheduleRepository.synchronize(client, trigger.id, recurrence, new Date());
-      await WebhookRepository.synchronize(
+      const initialWebhookSecret = await WebhookRepository.synchronize(
         client,
         trigger.id,
         configuration.triggers.some(({ on }) => on === "webhook.received"),
       );
-      return toOrganizationTriggerRecord(activated.rows[0]!);
+      return {
+        trigger: toOrganizationTriggerRecord(activated.rows[0]!),
+        ...(initialWebhookSecret === undefined ? {} : { initialWebhookSecret }),
+      };
     });
   }
 

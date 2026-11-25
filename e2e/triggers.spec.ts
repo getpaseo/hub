@@ -1,5 +1,6 @@
 import { expect } from "@playwright/test";
 import { test } from "./app.js";
+import { OrganizationActivity } from "./helpers/activity.js";
 import { OrganizationTriggers } from "./helpers/triggers.js";
 
 const SHOTS = "e2e/screenshots/triggers";
@@ -53,7 +54,9 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
   await test.step("the common setup stays in one small form", async () => {
     await triggers.startNew();
     await triggers.expectDaemonPreselected(daemon);
+    await triggers.expectWaitingForWorkingDirectory();
     await page.screenshot({ path: `${SHOTS}/01b-daemon-required.png`, fullPage: true });
+    await triggers.expectEventPickerScrolls(`${SHOTS}/01c-event-picker-scrolls.png`);
     await triggers.expectRefusedOnSubmit("Working directory is required");
     await triggers.configureSlackMention({
       name: "slack-help",
@@ -73,6 +76,7 @@ test("creates a trigger visually, preserves advanced YAML through the form, and 
     await triggers.expectComboboxes();
     await triggers.changePrompt("Handle the Slack request.");
     await triggers.expectDisclosureRailsAtPhoneWidth();
+    await triggers.expectAdvancedFitsAtPhoneWidth();
     await page.evaluate(() => window.scrollTo({ top: 0 }));
     await triggers.capture(`${SHOTS}/02-configured-form.png`);
     await triggers.captureInstructions(`${SHOTS}/02b-agent-instructions.png`);
@@ -379,6 +383,14 @@ test("round-trips unknown daemon providers and advertised settings through form,
       models: [{ provider: "modeless-agent", id: "vendor/modeless", label: "vendor/modeless" }],
       modes: [],
     },
+    // An agent the daemon has no binary for fails to report, beside agents that work.
+    {
+      provider: "uninstalled-agent",
+      label: "Uninstalled agent",
+      status: "error",
+      enabled: true,
+      error: "spawn uninstalled-agent ENOENT",
+    },
   ]);
   const triggers = new OrganizationTriggers(page);
   await triggers.open();
@@ -388,6 +400,7 @@ test("round-trips unknown daemon providers and advertised settings through form,
     "vendor/second",
     "vendor/modeless",
   ]);
+  await triggers.expectNoProviderFailure();
   await triggers.configureManual({
     name: "unknown-run",
     daemon,
@@ -397,11 +410,14 @@ test("round-trips unknown daemon providers and advertised settings through form,
     prompt: "Perform the task.",
   });
   await triggers.expectMaterializedSelections("inspect", "deliberate");
+  await triggers.setPaseoVisibility({ background: true, autoArchive: false });
   await triggers.switchToYaml();
   await triggers.expectYamlContains(
     "model: vendor/first",
     "mode: inspect",
     "thinkingOptionId: deliberate",
+    "background: true",
+    "auto_archive: false",
   );
   await triggers.save("unknown-run");
   await hub.launchSavedTrigger("unknown-run", apiKey);
@@ -411,6 +427,18 @@ test("round-trips unknown daemon providers and advertised settings through form,
     modeId: "inspect",
     thinkingOptionId: "deliberate",
     providerOptions: { custom_setting: { limit: 7 } },
+  });
+  await test.step("a background run's agent opens straight in Paseo from Activity", async () => {
+    await hub.expectProviderLaunchInBackground(daemon, true);
+    const activity = new OrganizationActivity(page);
+    await activity.open();
+    await activity.openRecord("Runs", "unknown-run");
+    await activity.expectRecord("unknown-run");
+    await activity.expectOpensInPaseo(await hub.agentDeepLinkOfLatestRun("unknown-run"));
+    await activity.expectAgentVisibilityNote("This run requested a background workspace");
+    await activity.expectAgentVisibilityNote("If the agent is hidden, turn on Show background");
+    await activity.closeRecordWithEscape();
+    await triggers.open();
   });
   await triggers.openTrigger("unknown-run");
   await triggers.switchToYaml();

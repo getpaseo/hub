@@ -3,7 +3,11 @@ import { projectTriggerForm, createTriggerYaml } from "./configuration/editor.js
 import { parseDocument } from "yaml";
 import { describe, expect, it } from "vitest";
 import type { HubProviderSnapshotEntry } from "../hub/protocol.js";
-import { changeTriggerModel, selectedProviderModel } from "./provider-catalog.js";
+import {
+  changeTriggerModel,
+  providerCatalogFailure,
+  selectedProviderModel,
+} from "./provider-catalog.js";
 
 const entries: HubProviderSnapshotEntry[] = [
   {
@@ -92,4 +96,54 @@ it("chooses a reported mode rather than inventing an unadvertised preferred valu
       agent: "codex/gpt-5.4",
     }).mode,
   ).toBe("read-only");
+});
+
+describe("what the agent step says about providers that failed", () => {
+  const claude: HubProviderSnapshotEntry = {
+    provider: "claude",
+    label: "Claude",
+    status: "ready",
+    enabled: true,
+    models: [{ provider: "claude", id: "opus", label: "Opus" }],
+  };
+  const codex: HubProviderSnapshotEntry = {
+    provider: "codex",
+    label: "Codex",
+    status: "error",
+    enabled: true,
+    error: "spawn codex ENOENT",
+  };
+  const opencode: HubProviderSnapshotEntry = {
+    provider: "opencode",
+    status: "error",
+    enabled: true,
+  };
+
+  it("says nothing about a provider that failed while another offers models", () => {
+    expect(providerCatalogFailure([claude, codex], "")).toBeUndefined();
+    expect(providerCatalogFailure([claude, codex], "claude/opus")).toBeUndefined();
+  });
+
+  it("names every failed provider when none offers a model", () => {
+    expect(providerCatalogFailure([codex, opencode], "")).toBe(
+      "Codex: spawn codex ENOENT opencode: unavailable",
+    );
+    expect(
+      providerCatalogFailure(
+        [{ ...claude, models: [{ ...claude.models![0]!, isSelectable: false }] }, codex],
+        "",
+      ),
+    ).toBe("Codex: spawn codex ENOENT");
+  });
+
+  it("names the chosen provider when it is the one that failed", () => {
+    expect(providerCatalogFailure([claude, codex, opencode], "codex/gpt-5.4")).toBe(
+      "Codex: spawn codex ENOENT",
+    );
+  });
+
+  it("says nothing while the daemon has not answered or reports no failure", () => {
+    expect(providerCatalogFailure(undefined, "")).toBeUndefined();
+    expect(providerCatalogFailure([claude], "")).toBeUndefined();
+  });
 });

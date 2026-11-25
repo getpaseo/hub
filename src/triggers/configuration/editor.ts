@@ -57,6 +57,10 @@ export interface TriggerFormValue {
   continuationKey: string;
   maxRuntime: string;
   idleTimeout: string;
+  /** The agent is created hidden from Paseo's sidebar and notifications. */
+  background: boolean;
+  /** Paseo archives the agent once the run finishes. */
+  autoArchive: boolean;
   githubEnabled?: boolean;
   githubConnection: string;
   githubRepositories: string;
@@ -93,6 +97,13 @@ export function projectTriggerForm(yaml: string): TriggerFormProjection {
       status: "yaml_only",
       reason:
         "Edit this trigger in YAML because its integration tool grants use anchors or aliases",
+    };
+  }
+  if (visibilityUsesYamlReferences(parsed.document)) {
+    return {
+      status: "yaml_only",
+      reason:
+        "Edit this trigger in YAML because its background or auto-archive setting uses anchors or aliases",
     };
   }
   const audience = readAudience(event, definition.filters);
@@ -178,6 +189,8 @@ function toFormValue(
     continuationKey: trigger.run.continuation.mode === "key" ? trigger.run.continuation.key : "",
     maxRuntime: trigger.run.max_runtime,
     idleTimeout: trigger.run.idle_timeout,
+    background: trigger.run.background,
+    autoArchive: trigger.run.auto_archive,
     githubConnection: trigger.run.github?.connection ?? "",
     githubRepositories: trigger.run.github?.repositories?.join(", ") ?? "",
     githubPermissions:
@@ -262,6 +275,12 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   setIfChanged(document, ["run", "continuation"], formContinuation(value));
   setIfChanged(document, ["run", "max_runtime"], value.maxRuntime.trim());
   setIfChanged(document, ["run", "idle_timeout"], value.idleTimeout.trim());
+  // Written only when the reader changed them, so a document that leaves them to their defaults
+  // keeps leaving them there.
+  if (value.background !== projection.value.background)
+    document.setIn(["run", "background"], value.background);
+  if (value.autoArchive !== projection.value.autoArchive)
+    document.setIn(["run", "auto_archive"], value.autoArchive);
   setOptional(document, ["run", "github"], githubAuthority(value));
   patchIntegrationToolGrants(document, projection.value, value);
   setIfChanged(document, ["run", "prompt"], value.prompt);
@@ -327,6 +346,8 @@ export function createTriggerYaml(value: TriggerFormValue): string {
         continuation: formContinuation(value),
         max_runtime: value.maxRuntime.trim(),
         idle_timeout: value.idleTimeout.trim(),
+        ...(value.background ? { background: true } : {}),
+        ...(value.autoArchive ? {} : { auto_archive: false }),
         ...(github === undefined ? {} : { github }),
         ...(tools === undefined ? {} : { tools }),
         prompt: value.prompt,
@@ -347,9 +368,15 @@ function formEventDefinition(value: TriggerFormValue): TriggerDocument["on"][str
 }
 
 function workingDirectoryErrors(value: TriggerFormValue): TriggerFieldErrors {
-  const cwd = value.cwd.trim();
-  if (cwd.length === 0) return { cwd: "Working directory is required" };
-  return cwd.startsWith("/") ? {} : { cwd: "Working directory must be an absolute path" };
+  const error = workingDirectoryError(value.cwd);
+  return error === undefined ? {} : { cwd: error };
+}
+
+/** What is wrong with a working directory, or `undefined` when a run can start in it. */
+export function workingDirectoryError(cwd: string): string | undefined {
+  const directory = cwd.trim();
+  if (directory.length === 0) return "Working directory is required";
+  return directory.startsWith("/") ? undefined : "Working directory must be an absolute path";
 }
 
 function recurrenceErrors(value: TriggerFormValue): TriggerFieldErrors {
@@ -447,6 +474,20 @@ function integrationToolsUseYamlReferences(document: Document): boolean {
     Value: (_, node) => (node.anchor === undefined ? undefined : found()),
   });
   return usesReferences;
+}
+
+/**
+ * The form writes `run.background` and `run.auto_archive` in place. Writing an anchored node
+ * would also change every alias that reads it, so a linked pair stays in YAML.
+ */
+function visibilityUsesYamlReferences(document: Document): boolean {
+  return [
+    ["run", "background"],
+    ["run", "auto_archive"],
+  ].some((path) => {
+    const node = document.getIn(path, true);
+    return isNode(node) && (isAlias(node) || node.anchor !== undefined);
+  });
 }
 
 const INTEGRATION_TOOL_LABELS: Record<IntegrationProvider, string> = {

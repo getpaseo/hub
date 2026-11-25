@@ -70,6 +70,8 @@ test("shows the referenced failure on an initial read and reload recovers", asyn
 
 test("retains daemon and usage content when their reads fail", async ({ hub, page }) => {
   const snapshot = new SnapshotRecovery(page, hub.primaryApplication());
+  // A listed daemon, so the read below is the background one alone: an empty list polls.
+  await hub.seedDaemonSlug("owner", "snapshot-studio");
   await snapshot.openDaemons();
   await snapshot.interruptDaemons();
   await snapshot.returnToTab();
@@ -83,6 +85,25 @@ test("retains daemon and usage content when their reads fail", async ({ hub, pag
   await snapshot.expectUsage();
   await snapshot.capture("usage-background-failure");
   await snapshot.restoreUsage();
+});
+
+test("recovers a failed first daemon read in place, and refreshes on request", async ({
+  hub,
+  page,
+}) => {
+  const snapshot = new SnapshotRecovery(page, hub.primaryApplication());
+  await hub.seedDaemonSlug("owner", "snapshot-studio");
+  await snapshot.openDaemons();
+  await snapshot.interruptDaemons();
+  await snapshot.reload();
+  await snapshot.expectDaemonsUnavailable();
+  await snapshot.capture("daemons-initial-failure");
+  await snapshot.restoreDaemons();
+  await snapshot.retryDaemons();
+  await snapshot.expectDaemons();
+  await snapshot.renameDaemon("renamed-studio");
+  await snapshot.refreshDaemons();
+  await snapshot.expectDaemons("renamed-studio");
 });
 
 test("does not reuse another organization's trigger snapshot when a new scope fails", async ({
