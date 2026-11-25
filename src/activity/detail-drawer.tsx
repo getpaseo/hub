@@ -240,7 +240,7 @@ function RunBody({ run }: { run: ActivityRunDetailView }) {
       )}
       {visibility === undefined ? null : (
         <Section>
-          <NoticeAlert tone="neutral" title="Where to find this agent">
+          <NoticeAlert tone="neutral" title="Agent visibility settings">
             {visibility}
           </NoticeAlert>
         </Section>

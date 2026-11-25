@@ -435,7 +435,8 @@ test("round-trips unknown daemon providers and advertised settings through form,
     await activity.openRecord("Runs", "unknown-run");
     await activity.expectRecord("unknown-run");
     await activity.expectOpensInPaseo(await hub.agentDeepLinkOfLatestRun("unknown-run"));
-    await activity.expectAgentVisibilityNote("Show background");
+    await activity.expectAgentVisibilityNote("This run requested a background workspace");
+    await activity.expectAgentVisibilityNote("If the agent is hidden, turn on Show background");
     await activity.closeRecordWithEscape();
     await triggers.open();
   });

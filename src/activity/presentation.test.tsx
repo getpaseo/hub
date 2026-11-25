@@ -44,11 +44,14 @@ describe("sessionVisibility", () => {
     expect(sessionVisibility({ background: false, autoArchive: false })).toBeUndefined();
   });
 
-  it("points a background agent at Show background", () => {
-    expect(sessionVisibility({ background: true, autoArchive: false })).toContain(
-      "Show background",
-    );
-  });
+  it.each([false, true])(
+    "describes background as a request when auto-archive is %s",
+    (autoArchive) => {
+      const note = sessionVisibility({ background: true, autoArchive });
+      expect(note).toContain("This run requested a background workspace");
+      expect(note).toContain("If the agent is hidden, turn on Show background");
+    },
+  );
 
   it.each([false, true])(
     "describes the run's auto-archive setting without promising the agent will be archived (background %s)",
@@ -56,8 +59,6 @@ describe("sessionVisibility", () => {
       const note = sessionVisibility({ background, autoArchive: true });
       expect(note).toContain("Auto-archive is on for this run");
       expect(note).toContain("Hub skips archiving if another run is using the agent");
-      expect(note).toContain("Open in Paseo still opens it");
-      if (background) expect(note).toContain("runs in the background");
     },
   );
 });

@@ -140,18 +140,21 @@ export function sessionLink(session: { id: string; deepLink: string | null }): s
   return session.deepLink ?? executionLinkPath(session.id);
 }
 
-/** How this run's visibility settings affect where to find its agent in Paseo. */
+/** The launch requested these settings. Activity does not track the agent's current visibility. */
 export function sessionVisibility(session: {
   background: boolean;
   autoArchive: boolean;
 }): string | undefined {
-  if (session.autoArchive) {
-    const note =
-      "Auto-archive is on for this run. Hub skips archiving if another run is using the agent. Open in Paseo still opens it";
-    return session.background ? `It runs in the background. ${note}` : note;
-  }
+  const notes: string[] = [];
   if (session.background) {
-    return "It runs in the background. Turn on Show background in Paseo to list it";
+    notes.push(
+      "This run requested a background workspace. If the agent is hidden, turn on Show background in Paseo.",
+    );
   }
-  return undefined;
+  if (session.autoArchive) {
+    notes.push(
+      "Auto-archive is on for this run. Hub skips archiving if another run is using the agent.",
+    );
+  }
+  return notes.length === 0 ? undefined : notes.join(" ");
 }

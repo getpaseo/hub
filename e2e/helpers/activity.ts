@@ -177,10 +177,10 @@ export class OrganizationActivity {
     );
   }
 
-  /** The note that says where Paseo keeps an agent its sidebar does not list. */
+  /** The note describing the run's requested workspace visibility. */
   async expectAgentVisibilityNote(text: string) {
     await expect(
-      this.record().getByRole("status").filter({ hasText: "Where to find this agent" }),
+      this.record().getByRole("status").filter({ hasText: "Agent visibility settings" }),
     ).toContainText(text);
   }
 

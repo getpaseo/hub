@@ -954,7 +954,7 @@ function AgentFields({
           <CheckboxField
             id="trigger-background"
             label="Run in background"
-            description="Hidden in Paseo until you turn on Show background"
+            description="On daemons that support background workspaces, turn on Show background in Paseo to see the agent"
             checked={form.background}
             onChange={(background) => onChange({ ...form, background })}
           />
