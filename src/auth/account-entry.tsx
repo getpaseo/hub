@@ -115,6 +115,9 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
   const submit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
+      // The card reports the latest attempt, so a provider that failed to start stops speaking
+      // for it.
+      resetSocialSignIn();
       const data = new FormData(event.currentTarget);
       const email = formValue(data, "email");
       const password = formValue(data, "password");
@@ -137,7 +140,7 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
         });
       }
     },
-    [account.invitation, mode, signInMutation, signUpMutation],
+    [account.invitation, mode, resetSocialSignIn, signInMutation, signUpMutation],
   );
   const mutation = mode === "signIn" ? signInMutation : signUpMutation;
   const message = socialSignIn.isError

@@ -154,6 +154,12 @@ async function comeBackFromProviderPage(
   await page.unroute(`${providerOrigin}/**`);
 }
 
+/** Presses the provider's button while the request that starts the sign-in cannot reach Hub. */
+async function failToStartProviderSignIn(page: Page, provider: "Google" | "GitHub"): Promise<void> {
+  await page.route("**/api/auth/sign-in/social", (route) => route.abort(), { times: 1 });
+  await page.getByRole("button", { name: `Continue with ${provider}` }).click();
+}
+
 export interface Account {
   name: string;
   email: string;
@@ -688,6 +694,16 @@ export class PaseoHub {
       await expect(page).toHaveURL(deepLink);
       await expect(page.getByRole("button", { name: "Continue with GitHub" })).toBeEnabled();
       await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
+
+      await failToStartProviderSignIn(page, "GitHub");
+      await expect(page.getByRole("alert")).toHaveText(
+        "Hub couldn't start that sign-in. Check your connection and try again",
+      );
+      const signInForm = page.getByRole("form", { name: "Sign in" });
+      await signInForm.getByLabel("Email").fill("nobody@example.com");
+      await signInForm.getByLabel("Password").fill("not-the-password");
+      await signInForm.getByRole("button", { name: "Sign in" }).click();
+      await expect(page.getByRole("alert")).toHaveText("The email or password is incorrect.");
 
       const authorization = await continueWithProviderPage(page, "GitHub", "https://github.com");
       expect(authorization.searchParams.get("redirect_uri")).toBe(
