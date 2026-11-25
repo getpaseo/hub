@@ -239,6 +239,7 @@ interface ApplicationEnvironmentInput {
   providerScenario?: BrowserProviderScenario;
   providerApplications?: boolean;
   environmentApps?: readonly ("github" | "slack" | "discord" | "linear")[];
+  socialSignIn?: BuiltApplicationOptions["socialSignIn"];
   machineKeyFile: string;
   databaseProfile?: BuiltApplicationOptions["databaseProfile"];
   bootstrap?: BuiltApplicationOptions["bootstrap"];
@@ -279,6 +280,14 @@ function applicationEnvironment(input: ApplicationEnvironmentInput): NodeJS.Proc
       ? {}
       : { PASEO_E2E_TLS_KEY: input.tls.key, PASEO_E2E_TLS_CERT: input.tls.cert }),
     ...environmentAppVariables(input.environmentApps ?? []),
+    ...(input.socialSignIn === true
+      ? {
+          PASEO_AUTH_GOOGLE_CLIENT_ID: "e2e-google-client",
+          PASEO_AUTH_GOOGLE_CLIENT_SECRET: "e2e-google-secret",
+          PASEO_AUTH_GITHUB_CLIENT_ID: "e2e-github-client",
+          PASEO_AUTH_GITHUB_CLIENT_SECRET: "e2e-github-secret",
+        }
+      : {}),
     ...(input.bootstrap === undefined
       ? {}
       : {

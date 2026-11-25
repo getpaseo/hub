@@ -12,6 +12,7 @@ import { OrganizationApiKeys } from "./api-keys.js";
 import { OrganizationCliCredentials } from "./cli-credentials.js";
 import { apiKeyScopeSchema } from "./api-key-contract.js";
 import type { InstanceAuthPolicy } from "./instance-policy.js";
+import type { SocialProvider } from "./social-sign-in.js";
 import type { InstanceSetup } from "../instance-setup/index.js";
 import type { InstanceAppOnboarding } from "../instance-setup/app-onboarding.js";
 import type {
@@ -92,6 +93,8 @@ interface OrganizationAccessOptions {
   sessions: AccountSessionReader;
   baseURL: string;
   policy: InstanceAuthPolicy;
+  /** The identity providers a signed-out visitor may continue with. */
+  socialProviders: SocialProvider[];
   /** Decides whether a signed-out visitor sees the first-run welcome or ordinary sign-in. */
   instanceSetup: InstanceSetup;
   appOnboarding: InstanceAppOnboarding;
@@ -247,6 +250,7 @@ export class OrganizationAccess {
       return Response.json({
         status: "signedOut",
         registration: this.options.policy.registrationMode,
+        socialProviders: this.options.socialProviders,
         ...(invitation === undefined ? {} : { invitation: invitationSummary(invitation, true) }),
         ...(invitationId !== null && invitation === undefined
           ? { invitationUnavailable: true }

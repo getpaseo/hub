@@ -1,4 +1,5 @@
 import { betterAuth } from "better-auth";
+import { APIError, getOAuthState } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { z } from "zod";
@@ -39,6 +40,11 @@ import { InstanceAppOnboarding } from "../instance-setup/app-onboarding.js";
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../http/request-origin.js";
 import type { InvitationMailer } from "../invitations/index.js";
 import type { AccountMailer } from "./account-emails.js";
+import {
+  configuredSocialProviders,
+  SOCIAL_PROVIDERS,
+  type SocialSignIn,
+} from "./social-sign-in.js";
 
 export interface AuthServer {
   handle(request: Request): Promise<Response>;
@@ -98,6 +104,8 @@ export interface AuthServerOptions {
   invitationMailer?: InvitationMailer;
   /** Optional account email delivery. Configured public instances require verification. */
   accountMailer?: AccountMailer;
+  /** Identity providers people may sign in with. Absent providers expose no route. */
+  socialSignIn?: SocialSignIn;
 }
 
 const sessionSchema = z.object({
@@ -127,6 +135,7 @@ const RAW_PRODUCT_PATHS = new Set([
   "/api/auth/change-password",
   "/api/auth/verify-email",
 ]);
+const SOCIAL_SIGN_IN_PATH = "/api/auth/sign-in/social";
 
 export function createAuthServer(options: AuthServerOptions): AuthServer {
   const database = options.database.drizzle();
@@ -144,6 +153,11 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
   });
   const appOnboarding = new InstanceAppOnboarding(options.database);
   const accountMailer = options.accountMailer;
+  const socialSignIn = options.socialSignIn ?? {};
+  const socialProviders = configuredSocialProviders(socialSignIn);
+  const socialCallbackPaths = new Set(
+    socialProviders.map((provider) => `/api/auth/callback/${provider}`),
+  );
   const authSchema = {
     user: schema.users,
     session: schema.sessions,
@@ -185,6 +199,32 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
               accountMailer.sendVerificationEmail(email),
           },
         }),
+    socialProviders: socialSignIn,
+    account: {
+      accountLinking: {
+        enabled: true,
+        trustedProviders: [...SOCIAL_PROVIDERS],
+        // A provider proves who owns the email; it never takes over an account whose owner has
+        // not proved the same thing locally.
+        requireLocalEmailVerified: true,
+      },
+    },
+    databaseHooks: {
+      user: {
+        create: {
+          // Email sign-up is admitted before Better Auth sees it, under the invitation lock. Every
+          // other account Better Auth creates comes from a provider, and is admitted here.
+          before: async (user, context) => {
+            if (context?.path === "/sign-up/email") return;
+            const admitted = await registration.admits(
+              user.email,
+              invitationInReturnPath(await socialReturnPath(context), options.baseURL),
+            );
+            if (!admitted) throw new APIError("FORBIDDEN", { message: "registration closed" });
+          },
+        },
+      },
+    },
     user: {
       additionalFields: {
         mustChangePassword: {
@@ -228,6 +268,7 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     sessions,
     baseURL: options.baseURL,
     policy,
+    socialProviders,
     apiKeys,
     cliCredentials,
     entitlements: options.entitlements,
@@ -272,6 +313,15 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
         if (rejected !== undefined) return Promise.resolve(rejected);
         return changePassword(request);
       }
+      if (path === SOCIAL_SIGN_IN_PATH && socialProviders.length > 0) {
+        const rejected = rejectCrossOriginCookieMutation(
+          request,
+          requestBrowserOrigin(request, browserOrigin),
+        );
+        if (rejected !== undefined) return Promise.resolve(rejected);
+        return startSocialSignIn(request);
+      }
+      if (socialCallbackPaths.has(path)) return auth.handler(request);
       if (!RAW_PRODUCT_PATHS.has(path) && !path.startsWith("/api/auth/reset-password/")) {
         return Promise.resolve(Response.json({ error: "not_found" }, { status: 404 }));
       }
@@ -382,6 +432,21 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     close: () => Promise.resolve(),
   };
 
+  /**
+   * Better Auth only checks a sign-in's return URLs when the browser already holds a cookie, so
+   * Hub checks them every time: a provider sign-in ends on a page of this Hub or not at all.
+   */
+  async function startSocialSignIn(request: Request): Promise<Response> {
+    const body: unknown = await request
+      .clone()
+      .json()
+      .catch(() => undefined);
+    if (!socialSignInBody(options.baseURL).safeParse(body).success) {
+      return Response.json({ error: "invalid_sign_in" }, { status: 400 });
+    }
+    return auth.handler(request);
+  }
+
   async function changePassword(request: Request): Promise<Response> {
     const session = await sessions.read(request.headers);
     const body = await request
@@ -406,6 +471,48 @@ export function createAuthServer(options: AuthServerOptions): AuthServer {
     }
     return response;
   }
+}
+
+function socialSignInBody(baseURL: string) {
+  const returnPath = z.string().refine((value) => isSameOriginPath(value, baseURL));
+  return z
+    .object({
+      callbackURL: returnPath,
+      errorCallbackURL: returnPath.optional(),
+      newUserCallbackURL: returnPath.optional(),
+    })
+    .passthrough();
+}
+
+/** A path on this Hub, written as a path: `//host` and `/\host` name another origin. */
+function isSameOriginPath(value: string, baseURL: string): boolean {
+  if (!value.startsWith("/") || value.startsWith("//") || value.startsWith("/\\")) return false;
+  try {
+    return new URL(value, baseURL).origin === new URL(baseURL).origin;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Where a provider sign-in returns once it finishes: the page that started it. The redirect flow
+ * carries it in the OAuth state; Google's ID-token flow sends it with the token.
+ */
+async function socialReturnPath(context: { body?: unknown } | null): Promise<string | undefined> {
+  const fromState = (await getOAuthState())?.callbackURL;
+  if (fromState !== undefined) return fromState;
+  const body: unknown = context?.body;
+  if (typeof body !== "object" || body === null) return undefined;
+  const callbackURL: unknown = Reflect.get(body, "callbackURL");
+  return typeof callbackURL === "string" ? callbackURL : undefined;
+}
+
+function invitationInReturnPath(
+  returnPath: string | undefined,
+  baseURL: string,
+): string | undefined {
+  if (returnPath === undefined) return undefined;
+  return new URL(returnPath, baseURL).searchParams.get("invitation") ?? undefined;
 }
 
 function requestBrowserOrigin(request: Request, fallback: string): string {

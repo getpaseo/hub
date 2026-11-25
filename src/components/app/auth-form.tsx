@@ -63,3 +63,17 @@ export function AuthForm({
 export function AuthActions({ children }: { children: ReactNode }) {
   return <div className="grid gap-2 [&>*]:w-full">{children}</div>;
 }
+
+/**
+ * The line between two ways into the same account, such as provider buttons above an email
+ * form. The word sits on the rule; the rule is the card's own border colour.
+ */
+export function AuthDivider({ label }: { label: string }) {
+  return (
+    <div role="separator" className="flex items-center gap-3 text-xs text-muted-foreground">
+      <span aria-hidden="true" className="h-px flex-1 bg-border" />
+      {label}
+      <span aria-hidden="true" className="h-px flex-1 bg-border" />
+    </div>
+  );
+}

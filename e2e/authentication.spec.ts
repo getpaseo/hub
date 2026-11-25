@@ -38,6 +38,10 @@ test("disabled registration removes the signup path", async ({ hub }) => {
   await hub.proveDisabledRegistrationPresentation();
 });
 
+test("social sign-in returns to the page it started from", async ({ hub }) => {
+  await hub.proveSocialSignInReturnsToItsPage();
+});
+
 test("disabled organization creation leaves invitation as the path forward", async ({ hub }) => {
   await hub.proveOrganizationCreationDisabled();
 });

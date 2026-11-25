@@ -95,6 +95,14 @@ invitations, signup verification links, and password-reset links through Resend.
 instances require new password accounts to verify their email before sign-in. Without delivery
 configuration, managers retain the existing copy-and-share invitation workflow.
 
+Sign-in with Google or GitHub is optional. Set `PASEO_AUTH_GOOGLE_CLIENT_ID` and
+`PASEO_AUTH_GOOGLE_CLIENT_SECRET`, or `PASEO_AUTH_GITHUB_CLIENT_ID` and
+`PASEO_AUTH_GITHUB_CLIENT_SECRET`, to show that provider's button. Hub refuses to start with only
+half of a pair. Register `<PASEO_HUB_APP_URL>/api/auth/callback/google` or `/github` as the
+callback. GitHub sign-in needs its own OAuth App, separate from the GitHub App that sends repository
+events. New accounts from a provider follow `PASEO_REGISTRATION_MODE`. A provider sign-in links
+to an existing account with the same email only after that account has verified its email.
+
 Then start Hub and PostgreSQL:
 
 ```sh
