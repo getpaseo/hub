@@ -93,6 +93,8 @@ export interface BuiltApplicationOptions {
   providerApplications?: boolean;
   /** Providers the instance environment configures, which the surface must render read-only. */
   environmentApps?: readonly ("github" | "slack" | "discord" | "linear")[];
+  /** Configures Google and GitHub sign-in with fixture OAuth clients. Default: neither. */
+  socialSignIn?: boolean;
   /** Run the built app with direct local TLS for provider journeys that require real HTTPS. */
   https?: boolean;
   /** Terminate HTTPS at a trusted proxy and intentionally omit PASEO_HUB_APP_URL. */
@@ -105,6 +107,57 @@ export interface BuiltApplicationOptions {
   /** Configures billing with the fixture Stripe catalog (the Free plan plus the one purchasable
    * plan). Default: unconfigured. */
   billing?: boolean;
+}
+
+async function expectSocialSignInOptions(page: Page): Promise<void> {
+  await expect(page.getByRole("button", { name: /^Continue with / })).toHaveText([
+    "Continue with Google",
+    "Continue with GitHub",
+  ]);
+  await expect(page.getByRole("separator").filter({ hasText: "or" })).toBeVisible();
+}
+
+/** Presses the provider's button and answers the browser's arrival at the provider. */
+async function continueWithProviderPage(
+  page: Page,
+  provider: "Google" | "GitHub",
+  providerOrigin: string,
+): Promise<URL> {
+  await page.route(`${providerOrigin}/**`, (route) =>
+    route.fulfill({ contentType: "text/html", body: "<title>Provider</title>" }),
+  );
+  await page.getByRole("button", { name: `Continue with ${provider}` }).click();
+  await page.waitForURL(`${providerOrigin}/**`);
+  return new URL(page.url());
+}
+
+/**
+ * Presses the provider's button, then comes Back the way the browser's back-forward cache brings
+ * the page back: with the state it left with, announced by `pageshow` with `persisted`.
+ * Playwright's request routing turns that cache off, so the provider answers 204, which keeps the
+ * browser on this page, and the step fires the restore itself.
+ */
+async function comeBackFromProviderPage(
+  page: Page,
+  provider: "Google" | "GitHub",
+  providerOrigin: string,
+): Promise<void> {
+  await page.route(`${providerOrigin}/**`, (route) => route.fulfill({ status: 204 }));
+  const button = page.getByRole("button", { name: `Continue with ${provider}` });
+  const leftForProvider = page.waitForResponse(`${providerOrigin}/**`);
+  await button.click();
+  await leftForProvider;
+  await expect(button).toBeDisabled();
+  await page.evaluate(() =>
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })),
+  );
+  await page.unroute(`${providerOrigin}/**`);
+}
+
+/** Presses the provider's button while the request that starts the sign-in cannot reach Hub. */
+async function failToStartProviderSignIn(page: Page, provider: "Google" | "GitHub"): Promise<void> {
+  await page.route("**/api/auth/sign-in/social", (route) => route.abort(), { times: 1 });
+  await page.getByRole("button", { name: `Continue with ${provider}` }).click();
 }
 
 export interface Account {
@@ -593,6 +646,7 @@ export class PaseoHub {
       await expect(page.getByRole("heading", { name: "Sign in to Paseo Hub" })).toBeVisible();
       await expect(page.getByRole("button", { name: "Create an account" })).toHaveCount(0);
       await expect(page.getByText("Paseo Hub isn't accepting new accounts")).toBeVisible();
+      await expect(page.getByRole("button", { name: /^Continue with / })).toHaveCount(0);
       await expectAccessible(page);
       const response = await page.evaluate(async (origin) => {
         const result = await fetch(`${origin}/api/auth/sign-up/email`, {
@@ -607,6 +661,61 @@ export class PaseoHub {
         return { status: result.status, body: await result.json() };
       }, application.origin);
       expect(response).toEqual({ status: 403, body: { error: "registration_closed" } });
+    } finally {
+      await context.close();
+    }
+  }
+
+  /**
+   * A provider sign-in started from a deep link comes back to that link. The provider itself is
+   * outside the test: the browser's trip to it is answered here, and the provider's refusal is
+   * replayed as the callback it would send.
+   */
+  async proveSocialSignInReturnsToItsPage(): Promise<void> {
+    const application = await this.startApplication({
+      databaseProfile: "fresh",
+      registrationMode: "open",
+      socialSignIn: true,
+    });
+    const context = await this.browser.newContext();
+    const page = await context.newPage();
+    const deepLink = `${application.origin}/cli-login?code=ABCD-EFGH`;
+    try {
+      await page.goto(deepLink);
+      await expect(page.getByRole("heading", { name: "Sign in to Paseo Hub" })).toBeVisible();
+      await expectSocialSignInOptions(page);
+      await page.getByRole("button", { name: "Create an account" }).click();
+      await expect(page.getByRole("heading", { name: "Create an account" })).toBeVisible();
+      await expectSocialSignInOptions(page);
+      await expectAccessible(page);
+      await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+      await comeBackFromProviderPage(page, "GitHub", "https://github.com");
+      await expect(page).toHaveURL(deepLink);
+      await expect(page.getByRole("button", { name: "Continue with GitHub" })).toBeEnabled();
+      await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
+
+      await failToStartProviderSignIn(page, "GitHub");
+      await expect(page.getByRole("alert")).toHaveText(
+        "Hub couldn't start that sign-in. Check your connection and try again",
+      );
+      const signInForm = page.getByRole("form", { name: "Sign in" });
+      await signInForm.getByLabel("Email").fill("nobody@example.com");
+      await signInForm.getByLabel("Password").fill("not-the-password");
+      await signInForm.getByRole("button", { name: "Sign in" }).click();
+      await expect(page.getByRole("alert")).toHaveText("The email or password is incorrect.");
+
+      const authorization = await continueWithProviderPage(page, "GitHub", "https://github.com");
+      expect(authorization.searchParams.get("redirect_uri")).toBe(
+        `${application.origin}/api/auth/callback/github`,
+      );
+      const refusal = new URL(`${application.origin}/api/auth/callback/github`);
+      refusal.searchParams.set("state", authorization.searchParams.get("state") ?? "");
+      refusal.searchParams.set("error", "access_denied");
+      await page.goto(refusal.toString());
+      await expect(page).toHaveURL(`${deepLink}&error=access_denied`);
+      await expect(page.getByRole("alert")).toHaveText("Sign-in was canceled");
+      await expectSocialSignInOptions(page);
     } finally {
       await context.close();
     }

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { REGISTRATION_MODES } from "./instance-policy.js";
+import { SOCIAL_PROVIDERS } from "./social-sign-in.js";
 
 export const ORGANIZATION_ROLES = ["owner", "admin", "member"] as const;
 export const INVITATION_ROLES = ["admin", "member"] as const;
@@ -52,6 +53,7 @@ export const accountStateSchema = z.discriminatedUnion("status", [
   z.object({
     status: z.literal("signedOut"),
     registration: z.enum(REGISTRATION_MODES),
+    socialProviders: z.array(z.enum(SOCIAL_PROVIDERS)),
     invitation: invitationSchema.optional(),
     invitationUnavailable: z.literal(true).optional(),
   }),

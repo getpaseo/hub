@@ -31,6 +31,7 @@ import {
 } from "./billing/index.js";
 import { composeEntitlements, type ComposedEntitlements } from "./auth/entitlements.js";
 import { readInstanceAuthPolicy } from "./auth/instance-policy.js";
+import { readSocialSignIn, type SocialSignIn } from "./auth/social-sign-in.js";
 import { createRuntimeConfiguration } from "./runtime-configuration/index.js";
 import { CompositionResources } from "./composition-resources.js";
 import {
@@ -119,6 +120,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       billing,
       invitationMailer,
       accountMailer,
+      readSocialSignIn(process.env),
     );
     resources.own(() => auth.close());
     await auth.initialize?.();
@@ -192,6 +194,7 @@ function createProductionAuthServer(
   billing: BillingRuntime | null,
   invitationMailer: ReturnType<typeof createInvitationMailer> | undefined,
   accountMailer: ReturnType<typeof createAccountMailer> | undefined,
+  socialSignIn: SocialSignIn,
 ) {
   return createAuthServer({
     database,
@@ -203,6 +206,7 @@ function createProductionAuthServer(
     ...(trustedClientIpHeader === undefined ? {} : { trustedClientIpHeader }),
     ...(invitationMailer === undefined ? {} : { invitationMailer }),
     ...(accountMailer === undefined ? {} : { accountMailer }),
+    socialSignIn,
     // Hosted: new organizations are stamped with the Free plan and stay on it until someone buys
     // a plan. Self-hosted keeps the unlimited default and never touches Stripe.
     ...(billing === null

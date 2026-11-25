@@ -6,6 +6,7 @@ import { createAuthServer, type AuthServer, type AuthServerOptions } from "../..
 import { composeBilling, type BillingConfig, type BillingRuntime } from "../../billing/index.js";
 import { composeEntitlements } from "../../auth/entitlements.js";
 import { readInstanceAuthPolicy } from "../../auth/instance-policy.js";
+import { readSocialSignIn } from "../../auth/social-sign-in.js";
 import { embeddedDatabaseRuntime, type DatabaseRuntime } from "../../db/runtime/index.js";
 import { createDatabase } from "../../db/pg.js";
 import type { Database } from "../../db/types.js";
@@ -181,6 +182,7 @@ async function main(): Promise<void> {
           baseURL: publicBaseUrl,
           secret: authSecret,
           policy: readInstanceAuthPolicy(process.env),
+          socialSignIn: readSocialSignIn(process.env),
           accountMailer: accountEmails,
           ...billingAuthOptions(billing),
         }),

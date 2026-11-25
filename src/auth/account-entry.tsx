@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { AuthCard, AuthLayout } from "../components/app/auth-layout.js";
-import { AuthForm } from "../components/app/auth-form.js";
+import { AuthActions, AuthDivider, AuthForm } from "../components/app/auth-form.js";
 import { failureMessage } from "../components/app/failure-alert.js";
 import { FormActions } from "../components/app/form-actions.js";
 import { FormDialog } from "../components/app/form-dialog.js";
@@ -26,6 +26,13 @@ import type { AccountState } from "./organization-contract.js";
 import type { Result } from "../contract/respond.js";
 import { ACCOUNT_MUTATION_KEY, useAccountMutationError } from "./account-mutation.js";
 import { ForgotPasswordEntry, VerificationPendingEntry } from "./account-recovery.js";
+import { ProviderGlyph } from "../connections/provider-glyph.js";
+import type { SocialProvider } from "./social-sign-in.js";
+import {
+  beginSocialSignIn,
+  onBackFromProvider,
+  socialSignInFailure,
+} from "./social-sign-in-browser.js";
 
 type EmptyResult = Result<Record<string, never>>;
 type AuthenticationResult = Result<{ state: "complete" | "verificationRequired" }>;
@@ -46,6 +53,7 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
   const [mode, setMode] = useState<"signIn" | "signUp">(invitationContext ? "signUp" : "signIn");
   const [forgotPassword, setForgotPassword] = useState(false);
   const [verificationEmail, setVerificationEmail] = useState<string>();
+  const [returnedFailure] = useState(socialSignInFailure);
   useEffect(() => {
     if (invitationContext && invitationId !== undefined) {
       setMode(invitationSignInRequested ? "signIn" : "signUp");
@@ -81,7 +89,20 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
       await queryClient.invalidateQueries({ queryKey: ["account"] });
     },
   });
-  const busy = signInMutation.isPending || signUpMutation.isPending;
+  const socialSignIn = useMutation({ mutationFn: beginSocialSignIn });
+  const { reset: resetSocialSignIn } = socialSignIn;
+  useEffect(() => onBackFromProvider(resetSocialSignIn), [resetSocialSignIn]);
+  // A started provider sign-in stays busy while the page is on its way to the provider, until
+  // Back brings the page back.
+  const busy =
+    signInMutation.isPending ||
+    signUpMutation.isPending ||
+    socialSignIn.isPending ||
+    socialSignIn.isSuccess;
+  const continueWith = useCallback(
+    (provider: SocialProvider) => socialSignIn.mutate(provider),
+    [socialSignIn],
+  );
   const toggle = useCallback(() => {
     setMode((current) => (current === "signIn" ? "signUp" : "signIn"));
   }, []);
@@ -94,6 +115,9 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
   const submit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
+      // The card reports the latest attempt, so a provider that failed to start stops speaking
+      // for it.
+      resetSocialSignIn();
       const data = new FormData(event.currentTarget);
       const email = formValue(data, "email");
       const password = formValue(data, "password");
@@ -116,18 +140,12 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
         });
       }
     },
-    [account.invitation, mode, signInMutation, signUpMutation],
+    [account.invitation, mode, resetSocialSignIn, signInMutation, signUpMutation],
   );
   const mutation = mode === "signIn" ? signInMutation : signUpMutation;
-  const message =
-    mutation.isError || mutation.data?.status === "error"
-      ? failureMessage(
-          mutation.data,
-          mode === "signIn"
-            ? "Hub did not receive the sign-in result. Check your connection and submit again"
-            : "Hub did not receive the account-creation result. Check your connection and invitation before submitting again",
-        )
-      : undefined;
+  const message = socialSignIn.isError
+    ? "Hub couldn't start that sign-in. Check your connection and try again"
+    : (formFailure(mode, mutation) ?? (mutation.isIdle ? returnedFailure : undefined));
   const { title, description } = accountEntryPresentation(account, mode, invitationSignup);
 
   if (forgotPassword) return <ForgotPasswordEntry onBack={showSignIn} />;
@@ -148,6 +166,11 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
           Signed out
         </p>
         <ErrorSummary message={message} />
+        <SocialSignInOptions
+          providers={account.socialProviders}
+          busy={busy}
+          onContinue={continueWith}
+        />
         <LoginForm
           key={mode}
           mode={mode}
@@ -171,6 +194,19 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
   );
 }
 
+function formFailure(
+  mode: "signIn" | "signUp",
+  mutation: { isError: boolean; data: AuthenticationResult | undefined },
+): string | undefined {
+  if (!mutation.isError && mutation.data?.status !== "error") return undefined;
+  return failureMessage(
+    mutation.data,
+    mode === "signIn"
+      ? "Hub did not receive the sign-in result. Check your connection and submit again"
+      : "Hub did not receive the account-creation result. Check your connection and invitation before submitting again",
+  );
+}
+
 function accountEntryPresentation(
   account: AccountState & { status: "signedOut" },
   mode: "signIn" | "signUp",
@@ -186,6 +222,60 @@ function accountEntryPresentation(
     return { title: "Sign in to Paseo Hub", description: "Your agent operations in one place" };
   }
   return { title: "Create an account", description: "Get your agent operations in one place" };
+}
+
+const PROVIDER_LABELS: Record<SocialProvider, string> = { google: "Google", github: "GitHub" };
+
+/** The provider buttons above the email form, and the rule that separates the two ways in. */
+function SocialSignInOptions({
+  providers,
+  busy,
+  onContinue,
+}: {
+  providers: SocialProvider[];
+  busy: boolean;
+  onContinue: (provider: SocialProvider) => void;
+}) {
+  if (providers.length === 0) return null;
+  return (
+    <div className="grid gap-6">
+      <AuthActions>
+        {providers.map((provider) => (
+          <SocialSignInButton
+            key={provider}
+            provider={provider}
+            busy={busy}
+            onContinue={onContinue}
+          />
+        ))}
+      </AuthActions>
+      <AuthDivider label="or" />
+    </div>
+  );
+}
+
+function SocialSignInButton({
+  provider,
+  busy,
+  onContinue,
+}: {
+  provider: SocialProvider;
+  busy: boolean;
+  onContinue: (provider: SocialProvider) => void;
+}) {
+  const continueWithProvider = useCallback(() => onContinue(provider), [onContinue, provider]);
+  return (
+    <Button
+      type="button"
+      size="lg"
+      variant="outline"
+      disabled={busy}
+      onClick={continueWithProvider}
+    >
+      <ProviderGlyph provider={provider} />
+      Continue with {PROVIDER_LABELS[provider]}
+    </Button>
+  );
 }
 
 function readInvitationSignInRequest(): boolean {
