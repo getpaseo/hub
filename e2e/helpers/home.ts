@@ -3,11 +3,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 export type HomeRange = "24h" | "7d" | "30d";
 export type HomeFigure = "Runs" | "Failed" | "Daemons";
 
-export type ChecklistStepTitle =
-  | "Connect an integration"
-  | "Connect a daemon"
-  | "Create a trigger"
-  | "Run it";
+export type ChecklistStepTitle = "Connect a daemon" | "Create a trigger" | "Run it";
 
 export type ChecklistStepState = "done" | "to do" | "needs attention";
 
@@ -59,6 +55,27 @@ export class OrganizationHome {
     await expect(this.step(title)).toContainText(text);
   }
 
+  /**
+   * The integration is offered on the checklist's closing line, never as a step of it: a webhook,
+   * schedule, or manual run needs none, so nothing on the list waits for one.
+   */
+  private getStarted(): Locator {
+    return this.page.getByRole("region", { name: /^Get started/u });
+  }
+
+  async expectIntegrationOffer(text: string) {
+    await expect(this.getStarted()).toContainText(text);
+    await expect(this.page.getByRole("list", { name: "Get started" })).not.toContainText(text);
+  }
+
+  async expectNoIntegrationOffer() {
+    await expect(this.getStarted()).not.toContainText("GitHub, Slack, Discord, or Linear");
+  }
+
+  async followIntegrationOffer(name: string) {
+    await this.getStarted().getByRole("link", { name, exact: true }).click();
+  }
+
   /** A new organization reads the checklist alone: nothing below it until a run exists. */
   async expectNoOverview() {
     await expect(this.page.getByRole("radiogroup", { name: "Range" })).toHaveCount(0);
@@ -67,8 +84,8 @@ export class OrganizationHome {
 
   /**
    * On a phone a done step's title stays whole and inside its row; its result is what gives way.
-   * The title and the result used to share the row's shrink, so a 375px screen read
-   * "Connect an integr…" beside a cut-off result.
+   * The title and the result used to share the row's shrink, so a 375px screen read a cut-off
+   * title beside a cut-off result.
    */
   async expectWholeTitlesAtPhoneWidth(titles: readonly ChecklistStepTitle[]) {
     const viewport = this.page.viewportSize();

@@ -52,6 +52,8 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
     }
   }, [invitationContext, invitationId, invitationSignInRequested]);
   const invitationSignup = invitationContext && mode === "signUp";
+  // An invitation admits its own account whatever the registration mode says.
+  const canSwitchMode = invitationContext || account.registration === "open";
   const queryClient = useQueryClient();
   const signInMutation = useMutation({
     mutationFn: useServerFn(signIn) as (
@@ -151,6 +153,7 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
           mode={mode}
           busy={busy}
           onSubmit={submit}
+          {...(canSwitchMode ? { onSwitchMode: toggle } : {})}
           {...(account.invitation?.email === undefined
             ? {}
             : { emailValue: account.invitation.email })}
@@ -161,7 +164,6 @@ export function AccountEntry({ account }: { account: AccountState & { status: "s
           invitationContext={invitationContext}
           mode={mode}
           busy={busy}
-          onToggle={toggle}
           onForgotPassword={showForgotPassword}
         />
       </AuthCard>
@@ -196,70 +198,48 @@ function readInvitationSignInRequest(): boolean {
   );
 }
 
+/**
+ * The quiet line under the card: why the reader cannot make an account, if they cannot, and the
+ * way back into one whose password they lost. Switching between sign in and sign up is not here;
+ * it is the form's second button.
+ */
 function SignedOutFooter({
   registration,
   invitationContext,
   mode,
   busy,
-  onToggle,
   onForgotPassword,
 }: {
   registration: Extract<AccountState, { status: "signedOut" }>["registration"];
   invitationContext: boolean;
   mode: "signIn" | "signUp";
   busy: boolean;
-  onToggle: () => void;
   onForgotPassword: () => void;
 }) {
-  if (invitationContext) {
-    return (
-      <div className="grid gap-2 text-center text-sm text-muted-foreground">
-        <p>
-          This invitation is bound to the invited email address.{" "}
-          {mode === "signIn" ? "Need an account?" : "Already have an account?"}{" "}
-          <Button type="button" variant="link" disabled={busy} onClick={onToggle}>
-            {mode === "signIn" ? "Create an account" : "Sign in"}
-          </Button>
-        </p>
-        {mode === "signIn" && (
-          <Button type="button" variant="link" disabled={busy} onClick={onForgotPassword}>
-            Forgot password?
-          </Button>
-        )}
-      </div>
-    );
-  }
-  if (registration === "open") {
-    return (
-      <div className="grid gap-2 text-center text-sm text-muted-foreground">
-        <p>
-          {mode === "signIn" ? "No account yet?" : "Already have an account?"}{" "}
-          <Button type="button" variant="link" disabled={busy} onClick={onToggle}>
-            {mode === "signIn" ? "Create an account" : "Sign in"}
-          </Button>
-        </p>
-        {mode === "signIn" && (
-          <Button type="button" variant="link" disabled={busy} onClick={onForgotPassword}>
-            Forgot password?
-          </Button>
-        )}
-      </div>
-    );
-  }
-  const message =
-    registration === "invite_only"
-      ? "Accounts are created by invitation. Ask an organization owner to invite you"
-      : "Paseo Hub isn't accepting new accounts";
+  const message = footerMessage(registration, invitationContext);
+  const forgotPassword = mode === "signIn";
+  if (message === undefined && !forgotPassword) return null;
   return (
     <div className="grid gap-2 text-center text-sm text-muted-foreground">
-      <p>{message}</p>
-      {mode === "signIn" && (
+      {message === undefined ? null : <p>{message}</p>}
+      {forgotPassword ? (
         <Button type="button" variant="link" disabled={busy} onClick={onForgotPassword}>
           Forgot password?
         </Button>
-      )}
+      ) : null}
     </div>
   );
+}
+
+function footerMessage(
+  registration: Extract<AccountState, { status: "signedOut" }>["registration"],
+  invitationContext: boolean,
+): string | undefined {
+  if (invitationContext) return "This invitation is bound to the invited email address";
+  if (registration === "open") return undefined;
+  return registration === "invite_only"
+    ? "Accounts are created by invitation. Ask an organization owner to invite you"
+    : "Paseo Hub isn't accepting new accounts";
 }
 
 export function InvitationEntry({

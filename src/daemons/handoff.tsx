@@ -9,7 +9,7 @@ import { FailureAlert } from "../components/app/failure-alert.js";
 import { LoadingLine } from "../components/app/loading.js";
 import { Button } from "../components/ui/button.js";
 import { daemonList, type BrowserDaemonList } from "./functions.js";
-import { daemonsQueryKey } from "./status.js";
+import { connectedDaemon, daemonsQueryKey } from "./status.js";
 
 const POLL_INTERVAL_MS = 2_000;
 
@@ -57,9 +57,7 @@ export function daemonLink(snapshot: Snapshot<BrowserDaemonList>): DaemonLink {
       state: "failed",
       message: snapshot.error ?? "Hub didn't answer. Check your connection, then check again",
     };
-  const connected = snapshot.data.daemons.find(
-    (daemon) => daemon.status === "active" && daemon.presence === "connected",
-  );
+  const connected = connectedDaemon(snapshot.data.daemons);
   return connected === undefined ? { state: "waiting" } : { state: "linked", slug: connected.slug };
 }
 
