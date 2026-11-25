@@ -50,13 +50,14 @@ describe("sessionVisibility", () => {
     );
   });
 
-  it("says an auto-archived agent still opens", () => {
-    expect(sessionVisibility({ background: false, autoArchive: true })).toContain("archive");
-  });
-
-  it("names both when the agent ran in the background and is archived", () => {
-    const note = sessionVisibility({ background: true, autoArchive: true });
-    expect(note).toContain("background");
-    expect(note).toContain("archive");
-  });
+  it.each([false, true])(
+    "describes the run's auto-archive setting without promising the agent will be archived (background %s)",
+    (background) => {
+      const note = sessionVisibility({ background, autoArchive: true });
+      expect(note).toContain("Auto-archive is on for this run");
+      expect(note).toContain("Hub skips archiving if another run is using the agent");
+      expect(note).toContain("Open in Paseo still opens it");
+      if (background) expect(note).toContain("runs in the background");
+    },
+  );
 });

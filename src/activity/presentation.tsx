@@ -140,19 +140,18 @@ export function sessionLink(session: { id: string; deepLink: string | null }): s
   return session.deepLink ?? executionLinkPath(session.id);
 }
 
-/** Why Paseo's sidebar does not list the run's agent, and how to find it, when it does not. */
+/** How this run's visibility settings affect where to find its agent in Paseo. */
 export function sessionVisibility(session: {
   background: boolean;
   autoArchive: boolean;
 }): string | undefined {
-  if (session.background && session.autoArchive) {
-    return "It runs in the background, and Paseo archives it after its last run finishes. Open in Paseo still opens it";
+  if (session.autoArchive) {
+    const note =
+      "Auto-archive is on for this run. Hub skips archiving if another run is using the agent. Open in Paseo still opens it";
+    return session.background ? `It runs in the background. ${note}` : note;
   }
   if (session.background) {
     return "It runs in the background. Turn on Show background in Paseo to list it";
-  }
-  if (session.autoArchive) {
-    return "Paseo archives it after its last run finishes. Open in Paseo still opens it";
   }
   return undefined;
 }
