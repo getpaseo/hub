@@ -961,7 +961,7 @@ function AgentFields({
           <CheckboxField
             id="trigger-auto-archive"
             label="Auto-archive after completion"
-            description="Paseo archives the agent when the run finishes"
+            description="Paseo archives the agent after its last run finishes"
             checked={form.autoArchive}
             onChange={(autoArchive) => onChange({ ...form, autoArchive })}
           />

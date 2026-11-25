@@ -146,13 +146,13 @@ export function sessionVisibility(session: {
   autoArchive: boolean;
 }): string | undefined {
   if (session.background && session.autoArchive) {
-    return "It runs in the background, and Paseo archives it when the run finishes. Open in Paseo still opens it";
+    return "It runs in the background, and Paseo archives it after its last run finishes. Open in Paseo still opens it";
   }
   if (session.background) {
     return "It runs in the background. Turn on Show background in Paseo to list it";
   }
   if (session.autoArchive) {
-    return "Paseo archives it when the run finishes. Open in Paseo still opens it";
+    return "Paseo archives it after its last run finishes. Open in Paseo still opens it";
   }
   return undefined;
 }
