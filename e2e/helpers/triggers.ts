@@ -411,15 +411,22 @@ export class OrganizationTriggers {
    * with on screen. The response that carries that secret is never cached.
    */
   async createWebhookTrigger(name: string) {
+    return this.saveWebhookTrigger(name, "Create trigger");
+  }
+
+  /** A saved trigger that starts listening for webhooks gets its endpoint and secret the same way. */
+  async changeToWebhook(name: string) {
+    await this.selectOption("Event", "webhook.received");
+    return this.saveWebhookTrigger(name, "Save changes");
+  }
+
+  private async saveWebhookTrigger(name: string, action: "Create trigger" | "Save changes") {
     const saved = this.page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
         (response.request().postData() ?? "").includes("webhook.received"),
     );
-    await this.page
-      .locator("#trigger-editor-form")
-      .getByRole("button", { name: "Create trigger" })
-      .click();
+    await this.page.locator("#trigger-editor-form").getByRole("button", { name: action }).click();
     expect((await saved).headers()["cache-control"]).toBe("no-store");
     await expect(this.page).toHaveURL(/\/triggers\/[0-9a-f-]{36}$/u);
     await expect(this.page.getByRole("heading", { name, level: 1 })).toBeVisible();

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 
@@ -22,30 +22,31 @@ export function WebhookSettings({
   origin,
   endpoint,
   canManage,
-  initialSecret,
+  secret: shown,
+  onSecretChange,
 }: {
   organizationSlug: string;
   origin: string;
   endpoint: WebhookEndpoint;
   canManage: boolean;
-  /** The secret the endpoint was created with, for the one visit that created it. */
-  initialSecret?: string;
+  /** The plaintext secret on screen for this visit, owned by the caller. */
+  secret?: string;
+  /** Reports the secret a create or rotation produced, or `undefined` once none can be shown. */
+  onSecretChange: (secret: string | undefined) => void;
 }) {
   const rotate = useServerFn(rotateWebhookSecret);
   const queryClient = useQueryClient();
-  // The one secret on screen for this visit: the one the endpoint was created with, until a
-  // rotation replaces it. A failed rotation clears it, because the browser cannot tell a request
-  // that never reached Hub from one whose answer was lost after it replaced the secret.
-  const [shown, setShown] = useState(initialSecret);
   const secret = useMutation({
     mutationFn: (action: WebhookSecretAction) =>
       rotate({ data: { organizationSlug, triggerId: endpoint.triggerId, action } }),
     gcTime: 0,
     onSuccess: async (result) => {
-      setShown(result.status === "ok" ? result.data.secret : undefined);
+      onSecretChange(result.status === "ok" ? result.data.secret : undefined);
       await queryClient.invalidateQueries({ queryKey: ["triggers", organizationSlug] });
     },
-    onError: () => setShown(undefined),
+    // A failed rotation clears the secret on screen: the browser cannot tell a request that never
+    // reached Hub from one whose answer was lost after it replaced the secret.
+    onError: () => onSecretChange(undefined),
   });
   const { mutate } = secret;
   const createSecret = useCallback(() => mutate("create"), [mutate]);

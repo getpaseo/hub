@@ -78,6 +78,22 @@ test("creates a webhook with a secret that the copied request already carries", 
     await home.expectStepText("Run it", "Send a POST to the webhook URL");
   });
 
+  await test.step("show the secret when a saved trigger starts listening for webhooks", async () => {
+    await triggers.open();
+    await triggers.startNew();
+    await triggers.configureManual({
+      name: "manual-alert",
+      daemon,
+      cwd: "/workspace/acme",
+      agent: "opencode/gateway/vendor/model-v1",
+      prompt: "Summarize the alert.",
+    });
+    await triggers.save("manual-alert");
+    await triggers.openTrigger("manual-alert");
+    const changed = await triggers.changeToWebhook("manual-alert");
+    expect(await triggers.copyCurlExample(changed.endpoint)).toContain(`Bearer ${changed.secret}`);
+  });
+
   await test.step("accept the copied request as it is pasted into a shell", async () => {
     await triggers.open();
     await triggers.openTrigger("webhook-alert");

@@ -238,23 +238,25 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
   const saveCommand = useServerFn(saveTrigger) as (input: {
     data: { organizationSlug: string; triggerId?: string; yaml: string };
   }) => Promise<Result<SavedTrigger>>;
-  const createdSecret = useCreatedWebhookSecret(triggerId);
+  const shownSecret = useShownWebhookSecret(triggerId);
   const save = useMutation({
     mutationFn: saveCommand,
     // The result can hold a webhook secret in plaintext. Drop it as soon as this screen does.
     gcTime: 0,
     onSuccess: async (result) => {
       if (result.status !== "ok") return;
-      await queryClient.invalidateQueries({ queryKey: ["triggers", organizationSlug] });
       const { triggerId: savedId, initialWebhookSecret } = result.data;
-      if (initialWebhookSecret === undefined) {
-        await navigate({ to: `/o/${organizationSlug}/triggers` as never });
-        return;
-      }
+      // Hold the secret before the refresh, so the endpoint card renders with it the moment the
+      // refreshed snapshot shows the endpoint.
+      if (initialWebhookSecret !== undefined) shownSecret.show(savedId, initialWebhookSecret);
+      await queryClient.invalidateQueries({ queryKey: ["triggers", organizationSlug] });
       // A save that created a webhook endpoint opens that endpoint: its URL and its secret, shown
       // this once, are what the reader needs next. Every other save returns to the list.
-      createdSecret.reveal(savedId, initialWebhookSecret);
-      await navigate({ to: `/o/${organizationSlug}/triggers/${savedId}` as never });
+      await navigate({
+        to: (initialWebhookSecret === undefined
+          ? `/o/${organizationSlug}/triggers`
+          : `/o/${organizationSlug}/triggers/${savedId}`) as never,
+      });
     },
   });
   if (snapshot.status === "pending") return <TriggerEditorSkeleton />;
@@ -273,7 +275,6 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
     );
   }
   const webhook = data.webhooks.find((endpoint) => endpoint.triggerId === trigger?.id);
-  const initialSecret = createdSecret.secret;
   const returnToList = () => {
     void navigate({ to: `/o/${organizationSlug}/triggers` as never });
   };
@@ -304,7 +305,8 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
                 origin={data.webhookOrigin}
                 endpoint={webhook}
                 canManage={data.canManage}
-                {...(initialSecret === undefined ? {} : { initialSecret })}
+                {...(shownSecret.secret === undefined ? {} : { secret: shownSecret.secret })}
+                onSecretChange={(secret) => shownSecret.show(webhook.triggerId, secret)}
               />
             ),
           })}
@@ -313,22 +315,24 @@ export function TriggerEditorPanel({ triggerId }: { triggerId: string }) {
 }
 
 /**
- * The secret a create returned, for the one visit that create opens. `/triggers/new` and
+ * The one webhook secret on screen, for the visit that produced it: the one a save created the
+ * endpoint with, until a rotation replaces or a failed rotation clears it. `/triggers/new` and
  * `/triggers/<id>` are one route, so this panel outlives the redirect and can hand the secret to
  * the trigger it belongs to. Leaving that trigger, by a link or through history, forgets it: the
  * secret is never in the URL, history state, storage, or the snapshot cache, so neither Back and
- * Forward nor a reload can show it again.
+ * Forward inside Hub nor a reload can show it again.
  */
-function useCreatedWebhookSecret(triggerId: string) {
-  const [created, setCreated] = useState<{ triggerId: string; secret: string }>();
+function useShownWebhookSecret(triggerId: string) {
+  const [shown, setShown] = useState<{ triggerId: string; secret: string }>();
   const [visiting, setVisiting] = useState(triggerId);
   if (visiting !== triggerId) {
     setVisiting(triggerId);
-    if (created !== undefined && created.triggerId !== triggerId) setCreated(undefined);
+    if (shown !== undefined && shown.triggerId !== triggerId) setShown(undefined);
   }
   return {
-    secret: created?.triggerId === triggerId ? created.secret : undefined,
-    reveal: (id: string, secret: string) => setCreated({ triggerId: id, secret }),
+    secret: shown?.triggerId === triggerId ? shown.secret : undefined,
+    show: (id: string, secret: string | undefined) =>
+      setShown(secret === undefined ? undefined : { triggerId: id, secret }),
   };
 }
 
