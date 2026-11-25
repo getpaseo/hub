@@ -730,7 +730,50 @@ test("reconciles provider options safely across cwd edits, superseded saves, and
     });
   });
 
-  await test.step("saving while a model-switch lookup is pending reconciles lost controls before saving", async () => {
+  await test.step("switching to YAML while a model-switch lookup is pending reconciles lost controls before opening YAML", async () => {
+    await triggers.openTrigger("option-reconcile");
+    await triggers.expectProviderOptionSelect("Speed", "fast");
+    await triggers.expectProviderOptionToggle("Turbo", true);
+    const held = armSecondModelHold();
+    await triggers.selectAgent("plugin-added-agent/vendor/second");
+    await held.requested;
+    const switching = triggers.switchToYaml();
+    await expect(page.getByRole("radio", { name: "Form" })).toBeChecked();
+    held.release();
+    await switching;
+    await triggers.expectYamlMatches({
+      run: {
+        agent: {
+          provider: "plugin-added-agent",
+          model: "vendor/second",
+          options: {
+            custom_setting: { limit: 7 },
+            plan_mode: true,
+          },
+        },
+      },
+    });
+    await triggers.expectYamlOmits("turbo_mode");
+    await triggers.expectYamlOmits("service_tier");
+    await triggers.save("option-reconcile");
+    await hub.launchSavedTrigger("option-reconcile", apiKey);
+    await hub.expectProviderLaunch(daemon, {
+      provider: "plugin-added-agent",
+      model: "vendor/second",
+      modeId: "inspect",
+      providerOptions: {
+        custom_setting: { limit: 7 },
+        plan_mode: true,
+      },
+    });
+  });
+
+  await test.step("saving in the form while a model-switch lookup is pending reconciles lost controls before saving", async () => {
+    await triggers.openTrigger("option-reconcile");
+    await triggers.selectAgent("plugin-added-agent/vendor/first");
+    await triggers.selectProviderOption("Speed", "fast");
+    await triggers.setProviderOptionToggle("Turbo", true);
+    await triggers.save("option-reconcile");
     await triggers.openTrigger("option-reconcile");
     await triggers.expectProviderOptionSelect("Speed", "fast");
     await triggers.expectProviderOptionToggle("Turbo", true);

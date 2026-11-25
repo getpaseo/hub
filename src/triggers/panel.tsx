@@ -569,7 +569,7 @@ function useTriggerEditorState(
   // the marks stay and follow what they type.
   const [refused, setRefused] = useState(false);
   const [reconcilingSave, setReconcilingSave] = useState(false);
-  const draftRevisionRef = useRef(0);
+  const commitIdRef = useRef(0);
   const unmountedRef = useRef(false);
   useEffect(
     () => () => {
@@ -578,7 +578,7 @@ function useTriggerEditorState(
     [],
   );
   const editForm = (next: TriggerFormValue) => {
-    draftRevisionRef.current += 1;
+    commitIdRef.current += 1;
     setReconcilingSave(false);
     setForm(next);
   };
@@ -598,41 +598,55 @@ function useTriggerEditorState(
   const { entry } = selectedProviderModel(providerCatalog.entries, form.agent);
   const errors = triggerFormErrors(form, entry?.modes);
   const refuse = () => setRefused(true);
+  const commitAfterReconcile = (apply: (draft: TriggerFormValue) => void) => {
+    if (!providerControls.hasPendingReconcile()) {
+      apply(form);
+      return;
+    }
+    const commitId = ++commitIdRef.current;
+    const submittedForm = form;
+    const isStillCurrent = () => !unmountedRef.current && commitIdRef.current === commitId;
+    setReconcilingSave(true);
+    void (async () => {
+      try {
+        const outcome = await providerControls.reconcileBeforeSave(submittedForm, isStillCurrent);
+        if (outcome.status === "superseded" || !isStillCurrent()) return;
+        const nextForm =
+          outcome.providerOptions === submittedForm.providerOptions
+            ? submittedForm
+            : { ...submittedForm, providerOptions: outcome.providerOptions };
+        if (nextForm !== submittedForm) setForm(nextForm);
+        apply(nextForm);
+      } finally {
+        if (isStillCurrent()) setReconcilingSave(false);
+      }
+    })();
+  };
   const switchMode = (next: EditorMode) => {
     if (next === mode) return;
-    if (other.status === "ok") setYaml(other.yaml);
-    else if (other.status === "editable") setForm(other.value);
-    else {
+    if (next === "yaml") {
+      commitAfterReconcile((draft) => {
+        const merged = mergeTriggerForm(yaml, draft);
+        if (merged.status !== "ok") {
+          refuse();
+          return;
+        }
+        setYaml(merged.yaml);
+        setMode("yaml");
+        window.scrollTo({ top: 0 });
+      });
+      return;
+    }
+    if (other.status !== "editable") {
       refuse();
       return;
     }
-    draftRevisionRef.current += 1;
+    commitIdRef.current += 1;
     setReconcilingSave(false);
     providerControls.cancelPendingReconcile();
-    setMode(next);
+    setForm(other.value);
+    setMode("form");
     window.scrollTo({ top: 0 });
-  };
-  const submitReconciled = async () => {
-    const submittedRevision = draftRevisionRef.current;
-    const submittedForm = form;
-    const isStillCurrent = () =>
-      !unmountedRef.current && draftRevisionRef.current === submittedRevision;
-    setReconcilingSave(true);
-    try {
-      const outcome = await providerControls.reconcileBeforeSave(submittedForm, isStillCurrent);
-      if (outcome.status === "superseded" || !isStillCurrent()) return;
-      const nextForm =
-        outcome.providerOptions === submittedForm.providerOptions
-          ? submittedForm
-          : { ...submittedForm, providerOptions: outcome.providerOptions };
-      if (nextForm !== submittedForm) setForm(nextForm);
-      const merged = mergeTriggerForm(yaml, nextForm);
-      const nextErrors = triggerFormErrors(nextForm, entry?.modes);
-      if (merged.status === "ok" && Object.keys(nextErrors).length === 0) onSave(merged.yaml);
-      else refuse();
-    } finally {
-      if (isStillCurrent()) setReconcilingSave(false);
-    }
   };
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -641,12 +655,12 @@ function useTriggerEditorState(
       return;
     }
     if (reconcilingSave) return;
-    if (!providerControls.hasPendingReconcile()) {
-      if (other.status === "ok" && Object.keys(errors).length === 0) onSave(other.yaml);
+    commitAfterReconcile((draft) => {
+      const merged = mergeTriggerForm(yaml, draft);
+      const nextErrors = triggerFormErrors(draft, entry?.modes);
+      if (merged.status === "ok" && Object.keys(nextErrors).length === 0) onSave(merged.yaml);
       else refuse();
-      return;
-    }
-    void submitReconciled();
+    });
   };
   return {
     mode,
@@ -1569,7 +1583,6 @@ function useDaemonProviderControls({
     try {
       const data = await queryClient.fetchQuery({
         queryKey,
-        staleTime: Infinity,
         queryFn: async () => {
           const result = await loadControls();
           if (result.status === "error") throw new Error(result.error.message);
