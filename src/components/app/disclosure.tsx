@@ -2,6 +2,7 @@ import { ChevronDown } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { cn } from "../../lib/utils.js";
+import { CardFooter, type SurfaceFooter } from "./card.js";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible.js";
 
 /**
@@ -21,6 +22,7 @@ export function Disclosure({
   title,
   description,
   status,
+  footer,
   children,
 }: {
   id: string;
@@ -35,6 +37,8 @@ export function Disclosure({
    * text for a count, which reads as muted context.
    */
   status?: ReactNode;
+  /** The same closing line a `Card` has, inside the body, so it folds away with it. */
+  footer?: SurfaceFooter;
   children: ReactNode;
 }) {
   const headerId = `${id}-header`;
@@ -112,7 +116,14 @@ export function Disclosure({
         aria-labelledby={headerId}
         className="min-w-0 overflow-hidden border-t px-4 py-4 data-[state=closed]:hidden"
       >
-        {children}
+        {footer === undefined ? (
+          children
+        ) : (
+          <div className="grid min-w-0 gap-4">
+            {children}
+            <CardFooter {...footer} />
+          </div>
+        )}
       </CollapsibleContent>
     </Collapsible>
   );

@@ -124,9 +124,38 @@ export class SnapshotRecovery {
     await this.expectDaemons();
   }
 
-  async expectDaemons() {
-    await expect(this.page.getByText("No daemons connected", { exact: true })).toBeVisible();
+  async expectDaemons(slug = "snapshot-studio") {
+    await expect(this.page.getByRole("table", { name: "Daemons", exact: true })).toContainText(
+      slug,
+    );
     await expect(this.page.getByRole("alert")).toHaveCount(0);
+  }
+
+  async renameDaemon(slug: string) {
+    await this.app.query("update daemons set slug = $1", [slug]);
+  }
+
+  async refreshDaemons() {
+    await this.page.getByRole("button", { name: "Refresh", exact: true }).click();
+  }
+
+  /** The page keeps its heading and says what failed under it, with the way back in place. */
+  async expectDaemonsUnavailable() {
+    await expect(this.page.getByRole("heading", { name: "Daemons", level: 1 })).toBeVisible();
+    // One way back in: the alert's Try again, not a second Refresh beside the heading.
+    await expect(this.page.getByRole("button", { name: "Refresh" })).toHaveCount(0);
+    await expect(
+      this.page.getByRole("alert").filter({ hasText: "Daemons unavailable" }),
+    ).toContainText(/quote reference [0-9a-f-]{36}/u);
+    await expect(this.page.getByRole("table", { name: "Daemons", exact: true })).toHaveCount(0);
+  }
+
+  async retryDaemons() {
+    await this.page
+      .getByRole("alert")
+      .filter({ hasText: "Daemons unavailable" })
+      .getByRole("button", { name: "Try again" })
+      .click();
   }
 
   async interruptDaemons() {

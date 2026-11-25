@@ -87,21 +87,19 @@ export const daemonList = createServerFn({ method: "GET" })
     try {
       const response = await (
         await getApplication()
-      ).operations.handleOrganizationDaemons(
-        operationRequest("GET", "/organization/daemons", undefined, data.organizationSlug),
-      );
+      ).operations.handleOrganizationDaemons(getRequest(), data.organizationSlug);
       if (!response.ok) {
         return daemonResponseFailure(
           "daemon.list",
           response,
-          "Hub couldn't load this organization's daemons. Reload the page.",
+          "Hub couldn't load this organization's daemons.",
           data.organizationSlug,
         );
       }
       return respondOk(daemonListSchema.parse(await response.json()));
     } catch (error) {
       return respondWithFailure(error, daemonContext("daemon.list", data.organizationSlug), {
-        fallback: "Hub couldn't load this organization's daemons. Reload the page.",
+        fallback: "Hub couldn't load this organization's daemons.",
       });
     }
   });
@@ -112,17 +110,7 @@ export const renameDaemon = createServerFn({ method: "POST" })
     try {
       const response = await (
         await getApplication()
-      ).operations.handleOrganizationDaemonRename(
-        operationRequest(
-          "POST",
-          "/organization/daemons/rename",
-          {
-            slug: data.slug,
-          },
-          data.organizationSlug,
-        ),
-        data.daemonId,
-      );
+      ).operations.handleOrganizationDaemonRename(getRequest(), data);
       if (response.status === 401)
         return daemonStateFailure("daemon.rename", response, "sessionExpired", data);
       if (response.status === 403) {
@@ -173,10 +161,7 @@ export const revokeDaemon = createServerFn({ method: "POST" })
     try {
       const response = await (
         await getApplication()
-      ).operations.handleOrganizationDaemonRevocation(
-        operationRequest("POST", "/organization/daemons/revoke", {}, data.organizationSlug),
-        data.daemonId,
-      );
+      ).operations.handleOrganizationDaemonRevocation(getRequest(), data);
       if (response.status === 401)
         return daemonStateFailure("daemon.revoke", response, "sessionExpired", data);
       if (response.status === 403) {
@@ -202,25 +187,6 @@ export const revokeDaemon = createServerFn({ method: "POST" })
       );
     }
   });
-
-function operationRequest(
-  method: "GET" | "POST",
-  path: string,
-  body?: unknown,
-  organizationSlug?: string,
-): Request {
-  const incoming = getRequest();
-  const headers = new Headers(incoming.headers);
-  headers.delete("content-length");
-  if (body !== undefined) headers.set("content-type", "application/json");
-  const url = new URL(path, incoming.url);
-  if (organizationSlug !== undefined) url.searchParams.set("organizationSlug", organizationSlug);
-  return new Request(url, {
-    method,
-    headers,
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-}
 
 function daemonContext(operation: string, organizationSlug: string, daemonId?: string) {
   return {

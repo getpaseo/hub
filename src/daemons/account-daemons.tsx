@@ -1,7 +1,7 @@
 import { useSnapshotQuery } from "../queries/index.js";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { BookOpen } from "lucide-react";
+import { BookOpen, RefreshCw } from "lucide-react";
 import { useCallback, useMemo, useState, type FormEvent } from "react";
 import { ConfirmMenuItem } from "../components/app/confirm-action.js";
 import { CopyField } from "../components/app/copy-field.js";
@@ -46,6 +46,11 @@ const DAEMON_COLUMNS: readonly DataColumn[] = [
 ];
 const DAEMONS_DESCRIPTION = "Stable daemon identities registered to this organization";
 const DAEMON_DOCS_URL = "https://paseo.sh/docs/hub/daemons";
+/**
+ * An empty list is waiting on a terminal, not on the reader: `paseo hub login` finishes in the
+ * browser and the daemon enrolls a moment later, so the list looks again until one arrives.
+ */
+const EMPTY_POLL_MS = 3_000;
 const DAEMONS_EMPTY = {
   title: "No daemons connected",
   description:
@@ -92,6 +97,7 @@ export function DaemonsPanel({
   const snapshot = useSnapshotQuery({
     queryKey,
     queryFn: () => loadDaemons({ data: { organizationSlug } }),
+    refetchInterval: (list) => (list?.daemons.length === 0 ? EMPTY_POLL_MS : false),
   });
   const rename = useMutation({
     mutationKey: DAEMON_MUTATION_KEY,
@@ -146,11 +152,16 @@ export function DaemonsPanel({
   if (snapshot.status === "pending") return <DaemonLoading />;
   if (snapshot.status === "error") {
     return (
-      <FailureAlert
-        title="Daemons unavailable"
-        error={snapshot.error}
-        fallback="Hub did not receive the daemon list. Check your connection and reload the page"
-      />
+      <>
+        <DaemonsHeader />
+        <FailureAlert
+          standalone
+          title="Daemons unavailable"
+          error={snapshot.error}
+          fallback="Hub did not receive the daemon list. Check your connection and retry"
+          onRetry={snapshot.refetch}
+        />
+      </>
     );
   }
   const daemons = snapshot.data;
@@ -158,7 +169,7 @@ export function DaemonsPanel({
   const busy = rename.isPending || revoke.isPending;
   return (
     <>
-      <PageHeader id="daemons-heading" title="Daemons" description={DAEMONS_DESCRIPTION} />
+      <DaemonsHeader onRefresh={snapshot.refetch} />
       {revokeFailed ? (
         <FailureAlert
           standalone
@@ -344,10 +355,29 @@ function DaemonStatus({ daemon }: { daemon: BrowserDaemon }) {
   return <StatusPill tone="neutral">Offline</StatusPill>;
 }
 
+/**
+ * The page's one heading in every state, so a failed read or a load never moves it. Refresh is
+ * for the reader who knows a daemon just changed; an empty list already looks again on its own.
+ * It comes with the list: before one there is nothing to refresh, and a failed read already has
+ * its own Try again in the alert.
+ */
+function DaemonsHeader({ onRefresh }: { onRefresh?: () => void }) {
+  return (
+    <PageHeader id="daemons-heading" title="Daemons" description={DAEMONS_DESCRIPTION}>
+      {onRefresh === undefined ? null : (
+        <Button type="button" variant="outline" size="sm" onClick={onRefresh}>
+          <RefreshCw aria-hidden="true" />
+          Refresh
+        </Button>
+      )}
+    </PageHeader>
+  );
+}
+
 function DaemonLoading() {
   return (
     <>
-      <PageHeader id="daemons-heading" title="Daemons" description={DAEMONS_DESCRIPTION} />
+      <DaemonsHeader />
       <DataTableSkeleton label="Daemons" columns={DAEMON_COLUMNS} />
     </>
   );

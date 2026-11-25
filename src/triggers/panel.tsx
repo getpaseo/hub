@@ -130,7 +130,7 @@ export function TriggersPanel() {
           isEmpty={data.triggers.length === 0}
           empty={{
             title: "No triggers",
-            description: "Connect a provider and daemon, then create your first trigger",
+            description: "Connect a daemon, then create your first trigger",
           }}
         >
           {data.triggers.map((trigger) => (

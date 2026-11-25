@@ -1954,7 +1954,7 @@ export class PaseoHub {
   async approveCliLogin(alias: string): Promise<void> {
     const request = await this.startRegistrationRequest("CLI login");
     const user = this.requireUser(alias);
-    await user.openCliLoginApproval(request.verificationUrl, "Acme");
+    await user.openCliLoginApproval(request.verificationUrl, "Acme", request.userCode);
     await user.approveCliLogin();
     await this.queryDatabase(
       this.primary,
@@ -1981,7 +1981,11 @@ export class PaseoHub {
 
   async denyCliLogin(alias: string): Promise<void> {
     const request = await this.startRegistrationRequest("CLI login");
-    await this.requireUser(alias).openCliLoginApproval(request.verificationUrl, "Acme");
+    await this.requireUser(alias).openCliLoginApproval(
+      request.verificationUrl,
+      "Acme",
+      request.userCode,
+    );
     await this.requireUser(alias).denyCliLogin();
     const poll = await this.requests.post(`${this.primary.origin}/api/v1/cli-authorizations/poll`, {
       data: { deviceCode: request.deviceCode },
@@ -3308,8 +3312,21 @@ class HubUser {
   }
 
   private async submitSignUp(account: Account): Promise<void> {
-    await this.page.getByRole("button", { name: "Create an account" }).click();
+    await this.switchToSignUp();
     await this.fillSignUpForm(account);
+  }
+
+  /**
+   * Creating an account is the sign-in form's second button, full width under Sign in, and
+   * signing in is the same button under Create account: the two sides of one decision.
+   */
+  private async switchToSignUp(): Promise<void> {
+    const signIn = this.page.getByRole("form", { name: "Sign in" });
+    await expect(signIn.getByRole("button")).toHaveText(["Sign in", "Create an account"]);
+    await signIn.getByRole("button", { name: "Create an account" }).click();
+    await expect(
+      this.page.getByRole("form", { name: "Create account" }).getByRole("button"),
+    ).toHaveText(["Create account", "Sign in"]);
   }
 
   private async submitInvitationSignUp(account: Account): Promise<void> {
@@ -3772,23 +3789,32 @@ class HubUser {
     await this.page.unroute(serverFunctions);
   }
 
-  async openCliLoginApproval(verificationUrl: string, organizationName: string): Promise<void> {
+  /**
+   * A prefilled link skips typing the code, so the summary shows it to match against the
+   * terminal before anything is approved.
+   */
+  async openCliLoginApproval(
+    verificationUrl: string,
+    organizationName: string,
+    userCode: string,
+  ): Promise<void> {
     await this.page.goto(verificationUrl);
     await expect(this.page.getByRole("heading", { name: "Approve CLI login" })).toBeVisible();
-    await expect(
-      this.page
-        .getByRole("region", { name: "Approve CLI login" })
-        .getByText(organizationName, { exact: true }),
-    ).toBeVisible();
+    const summary = this.page.getByRole("region", { name: "Approve CLI login" });
+    await expect(summary.getByText(organizationName, { exact: true })).toBeVisible();
+    await expect(summary).toContainText(`Verification code${userCode}`);
     await expect(this.page.getByText(/list projects.*enroll daemons.*manual runs/su)).toBeVisible();
   }
 
+  /** The terminal goes on to connect a daemon, so the way on is the list it will appear in. */
   async approveCliLogin(): Promise<void> {
     await this.page
       .getByRole("form", { name: "Approve CLI login" })
       .getByRole("button", { name: "Approve CLI login" })
       .click();
     await expect(this.page.getByRole("heading", { name: "CLI login approved" })).toBeVisible();
+    await this.page.getByRole("link", { name: "View daemons", exact: true }).click();
+    await expect(this.page.getByRole("heading", { name: "Daemons", level: 1 })).toBeVisible();
   }
 
   async denyCliLogin(): Promise<void> {
