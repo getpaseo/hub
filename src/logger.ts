@@ -158,7 +158,7 @@ function redactValue(
   }
   if (value instanceof Error) {
     const owned = errorRedactionOptions(value);
-    return serializeError(value, owned.scrubValues === undefined ? { scrubValues } : owned);
+    return serializeError(value, { ...owned, scrubValues: owned.scrubValues ?? scrubValues });
   }
   if (value instanceof Date) return value;
   if (typeof value === "object" && value !== null) {
