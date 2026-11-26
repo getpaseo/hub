@@ -6,7 +6,7 @@ import type { ConnectionResolver } from "./config/connections.js";
 import type { Database } from "./db/types.js";
 import { resolveRouteTenant } from "./projects/access.js";
 import { capabilitiesFor } from "./auth/organization-policy.js";
-import type { DaemonDispatchLifecycleOptions } from "./daemons/lifecycle.js";
+import type { DaemonConnections } from "./daemons/index.js";
 import type { EntitlementsService } from "./entitlements/service.js";
 import { OperatorConsole } from "./operator/console.js";
 import { UsageDashboard } from "./usage/dashboard.js";
@@ -45,7 +45,7 @@ export interface ApplicationCompositionOptions {
   publicBaseUrl?: string;
   completionTokenSecret?: string;
   testTriggerRoutes?: boolean;
-  daemonConnectionForId?: DaemonDispatchLifecycleOptions["connectionForDaemon"];
+  daemonConnections?: DaemonConnections;
   close(): Promise<void>;
 }
 
@@ -116,9 +116,9 @@ async function createOwnedApplicationRuntime(
       : { completionTokenSecret: options.completionTokenSecret }),
     outputRegistry,
     integrationTools,
-    ...(options.daemonConnectionForId === undefined
+    ...(options.daemonConnections === undefined
       ? {}
-      : { daemonConnectionForId: options.daemonConnectionForId }),
+      : { daemonConnections: options.daemonConnections }),
   });
   ownership.own(() => application.hub.stop());
   await application.hub.start(registrations.flatMap((registration) => registration.sources));

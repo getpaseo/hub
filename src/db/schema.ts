@@ -577,9 +577,17 @@ export const workflowWakeups = pgTable(
     triggerRunId: uuid("trigger_run_id").primaryKey(),
     availableAt: timestamp("available_at", { withTimezone: true }).notNull(),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    /**
+     * Set while the run waits for an offline daemon. A worker holding that daemon's connection
+     * claims the wakeup before `available_at`, which is only the retry for everyone else.
+     */
+    waitingForDaemonId: uuid("waiting_for_daemon_id"),
   },
   (table) => [
     index("workflow_wakeups_available_lease_idx").on(table.availableAt, table.leaseExpiresAt),
+    index("workflow_wakeups_waiting_daemon_idx")
+      .on(table.waitingForDaemonId)
+      .where(sql`${table.waitingForDaemonId} is not null`),
     foreignKey({
       columns: [table.triggerRunId],
       foreignColumns: [triggerRuns.id],
@@ -778,6 +786,7 @@ export const agentExecutions = pgTable(
     index("agent_executions_machine_id_idx").on(table.machineId),
     index("agent_executions_project_started_at_idx").on(table.projectId, table.startedAt.desc()),
     index("agent_executions_status_idx").on(table.status),
+    index("agent_executions_workflow_step_run_idx").on(table.workflowStepRunId),
     check(
       "agent_executions_hub_action_check",
       sql`${table.hubAction} is null or ${table.hubAction} in ('interrupt', 'archive')`,

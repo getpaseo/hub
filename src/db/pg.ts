@@ -99,6 +99,7 @@ import type {
   TriggerRunRecord,
   WorkflowStepExecutionInput,
   WorkflowStepRunRecord,
+  WorkflowWakeupDaemonDeferral,
   WorkflowWakeupRecord,
   WorkflowAgentCompletionInput,
   WorkflowDeadlineKind,
@@ -644,32 +645,45 @@ class PgDatabase implements Database {
     return rows.rows[0] === undefined ? undefined : toAgentExecutionRecord(rows.rows[0]);
   }
 
-  async releaseWorkflowWakeup(triggerRunId: string, now: Date, claimedLease: Date) {
+  async deferWorkflowWakeupForDaemon(
+    triggerRunId: string,
+    claimedLease: Date,
+    deferral: WorkflowWakeupDaemonDeferral,
+  ) {
     await query(
       this.pool,
-      "update workflow_wakeups set lease_expires_at = $2 where trigger_run_id = $1 and lease_expires_at = $3",
-      [triggerRunId, now, claimedLease],
+      `update workflow_wakeups
+       set lease_expires_at = $3, available_at = $4, waiting_for_daemon_id = $5
+       where trigger_run_id = $1 and lease_expires_at = $2`,
+      [triggerRunId, claimedLease, deferral.releasedAt, deferral.retryAt, deferral.daemonId],
     );
   }
 
-  async claimWorkflowWakeup(now: Date, leaseMs: number, excludedRunIds: readonly string[] = []) {
+  async claimWorkflowWakeup(
+    now: Date,
+    leaseMs: number,
+    dispatchableDaemonIds: readonly string[] = [],
+  ) {
     try {
       return await this.pool.transaction(async (client) => {
         const selected = await client.query<WorkflowWakeupRow>(
           `select * from workflow_wakeups
-         where available_at <= $1 and not (trigger_run_id = any($2::uuid[]))
+         where (available_at <= $1 or waiting_for_daemon_id = any($2::uuid[]))
            and (lease_expires_at is null or lease_expires_at <= $1)
          order by available_at, trigger_run_id
          for update skip locked limit 1`,
-          [now, excludedRunIds],
+          [now, dispatchableDaemonIds],
         );
         const wakeup = selected.rows[0];
         if (wakeup === undefined) {
           return undefined;
         }
         const updated = await client.query<WorkflowWakeupRow>(
-          `update workflow_wakeups set lease_expires_at = $2 where trigger_run_id = $1 returning *`,
-          [wakeup.trigger_run_id, new Date(now.getTime() + leaseMs)],
+          `update workflow_wakeups
+         set lease_expires_at = $2, available_at = least(available_at, $3),
+             waiting_for_daemon_id = null
+         where trigger_run_id = $1 returning *`,
+          [wakeup.trigger_run_id, new Date(now.getTime() + leaseMs), now],
         );
         return toWorkflowWakeupRecord(updated.rows[0]!, wakeup.lease_expires_at !== null);
       });
@@ -685,7 +699,7 @@ class PgDatabase implements Database {
        values ($1, $2, null)
        on conflict (trigger_run_id) do update
        set available_at = least(workflow_wakeups.available_at, excluded.available_at),
-           lease_expires_at = null`,
+           lease_expires_at = null, waiting_for_daemon_id = null`,
       [triggerRunId, availableAt],
     );
   }
@@ -1028,7 +1042,8 @@ class PgDatabase implements Database {
           `insert into workflow_wakeups (trigger_run_id, available_at, lease_expires_at)
          values ($1, $2, null)
          on conflict (trigger_run_id) do update
-         set available_at = least(workflow_wakeups.available_at, excluded.available_at), lease_expires_at = null`,
+         set available_at = least(workflow_wakeups.available_at, excluded.available_at),
+             lease_expires_at = null, waiting_for_daemon_id = null`,
           [triggerRunId, completedAt],
         );
         return {
@@ -1211,82 +1226,103 @@ class PgDatabase implements Database {
   }
 
   async recoverWorkflowDeadlines(now: Date): Promise<readonly WorkflowDeadlineRecovery[]> {
+    // The worker calls this on every tick. Finding overdue runs takes no locks, so a healthy
+    // running workflow is never locked here; only an overdue run is locked, in its own transaction.
+    const overdueRuns = await query<{ id: string }>(
+      this.pool,
+      `select runs.id from trigger_runs runs
+       where runs.outcome = 'accepted' and runs.status = 'running'
+         and (
+           runs.deadline_at <= $1
+           or exists (
+             select 1 from workflow_step_runs steps
+             left join agent_executions executions on executions.id = steps.agent_execution_id
+             where steps.trigger_run_id = runs.id and steps.status = 'running'
+               and (executions.id is null or executions.status not in ('succeeded', 'failed'))
+               and (
+                 coalesce(executions.deadline_at, steps.deadline_at) <= $1
+                 or coalesce(executions.idle_deadline_at, steps.idle_deadline_at) <= $1
+               )
+           )
+         )
+       order by runs.deadline_at, runs.id`,
+      [now],
+    );
+    const recoveries: WorkflowDeadlineRecovery[] = [];
+    for (const { id } of overdueRuns.rows) {
+      recoveries.push(...(await this.recoverWorkflowRunDeadline(id, now)));
+    }
+    return recoveries;
+  }
+
+  private async recoverWorkflowRunDeadline(
+    triggerRunId: string,
+    now: Date,
+  ): Promise<WorkflowDeadlineRecovery[]> {
     try {
       return await this.pool.transaction(async (client) => {
-        const recoveries: WorkflowDeadlineRecovery[] = [];
-        const overdueRuns = await client.query<TriggerRunRow>(
+        const runs = await client.query<TriggerRunRow>(
           `select * from trigger_runs
-         where outcome = 'accepted' and status = 'running' and deadline_at <= $1
-         order by deadline_at, id
-         for update skip locked`,
-          [now],
+           where id = $1 and outcome = 'accepted' and status = 'running'
+           for update skip locked`,
+          [triggerRunId],
         );
-        for (const run of overdueRuns.rows) {
-          recoveries.push(await timeoutWorkflowRunOnClient(client, run, now));
+        const run = runs.rows[0];
+        if (run === undefined) return [];
+        if (run.deadline_at !== null && run.deadline_at <= now) {
+          return [await timeoutWorkflowRunOnClient(client, run, now)];
         }
-
-        const activeRuns = await client.query<TriggerRunRow>(
-          `select * from trigger_runs
-         where outcome = 'accepted' and status = 'running' and deadline_at > $1
-         order by deadline_at, id
-         for update skip locked`,
-          [now],
-        );
-        for (const run of activeRuns.rows) {
-          const steps = await client.query<WorkflowStepRunRow>(
-            `select * from workflow_step_runs
+        const recoveries: WorkflowDeadlineRecovery[] = [];
+        const steps = await client.query<WorkflowStepRunRow>(
+          `select * from workflow_step_runs
            where trigger_run_id = $1 and status = 'running'
            order by ordinal
            for update`,
-            [run.id],
-          );
-          for (const step of steps.rows) {
-            const executionRows =
-              step.agent_execution_id === null
-                ? { rows: [] as AgentExecutionRow[] }
-                : await client.query<AgentExecutionRow>(
-                    `select * from agent_executions where id = $1 for update`,
-                    [step.agent_execution_id],
-                  );
-            const execution = executionRows.rows[0];
-            if (
-              execution !== undefined &&
-              (execution.status === "succeeded" || execution.status === "failed")
-            ) {
-              continue;
-            }
-            const deadlineKind = workflowDeadlineKind(execution, step, run, now);
-            if (deadlineKind === undefined || deadlineKind === "whole_run") continue;
-            if (execution === undefined) {
-              const reason =
-                deadlineKind === "step_idle" ? "step_idle_timeout" : "step_hard_timeout";
-              await client.query(
-                `update workflow_step_runs
+          [run.id],
+        );
+        for (const step of steps.rows) {
+          const executionRows =
+            step.agent_execution_id === null
+              ? { rows: [] as AgentExecutionRow[] }
+              : await client.query<AgentExecutionRow>(
+                  `select * from agent_executions where id = $1 for update`,
+                  [step.agent_execution_id],
+                );
+          const execution = executionRows.rows[0];
+          if (
+            execution !== undefined &&
+            (execution.status === "succeeded" || execution.status === "failed")
+          ) {
+            continue;
+          }
+          const deadlineKind = workflowDeadlineKind(execution, step, run, now);
+          if (deadlineKind === undefined || deadlineKind === "whole_run") continue;
+          if (execution === undefined) {
+            const reason = deadlineKind === "step_idle" ? "step_idle_timeout" : "step_hard_timeout";
+            await client.query(
+              `update workflow_step_runs
                set status = 'timed_out', failure_reason = $2, deadline_kind = $3, completed_at = $4
                where id = $1 and status = 'running'`,
-                [step.id, reason, deadlineKind, now],
-              );
-              await client.query(
-                `update trigger_runs
+              [step.id, reason, deadlineKind, now],
+            );
+            await client.query(
+              `update trigger_runs
                set status = 'failed', deadline_kind = $2, failure_reason = $3, completed_at = $4
                where id = $1 and status = 'running'`,
-                [run.id, deadlineKind, reason, now],
-              );
-              await client.query(`delete from workflow_wakeups where trigger_run_id = $1`, [
-                run.id,
-              ]);
-              recoveries.push({ triggerRunId: run.id, executionIds: [] });
-            } else {
-              const updated = await timeoutWorkflowStepOnClient(
-                client,
-                execution,
-                step,
-                run,
-                deadlineKind,
-                now,
-              );
-              recoveries.push({ triggerRunId: run.id, executionIds: [updated.id] });
-            }
+              [run.id, deadlineKind, reason, now],
+            );
+            await client.query(`delete from workflow_wakeups where trigger_run_id = $1`, [run.id]);
+            recoveries.push({ triggerRunId: run.id, executionIds: [] });
+          } else {
+            const updated = await timeoutWorkflowStepOnClient(
+              client,
+              execution,
+              step,
+              run,
+              deadlineKind,
+              now,
+            );
+            recoveries.push({ triggerRunId: run.id, executionIds: [updated.id] });
           }
         }
         return recoveries;
@@ -4513,6 +4549,7 @@ interface WorkflowWakeupRow extends QueryRow {
   trigger_run_id: string;
   available_at: Date;
   lease_expires_at: Date | null;
+  waiting_for_daemon_id: string | null;
 }
 
 function toTriggerRunRecord(row: TriggerRunRow): TriggerRunRecord {
@@ -4592,6 +4629,7 @@ function toWorkflowWakeupRecord(
     availableAt: row.available_at,
     leaseExpiresAt: row.lease_expires_at,
     leasedBeforeClaim,
+    waitingForDaemonId: row.waiting_for_daemon_id,
   };
 }
 
@@ -5414,7 +5452,7 @@ async function wakeWorkflowRun(
      values ($1, $2, null)
      on conflict (trigger_run_id) do update
      set available_at = least(workflow_wakeups.available_at, excluded.available_at),
-         lease_expires_at = null`,
+         lease_expires_at = null, waiting_for_daemon_id = null`,
     [triggerRunId, availableAt],
   );
 }

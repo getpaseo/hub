@@ -1,5 +1,5 @@
 import { createHubRuntime, createHubApplication } from "../../app.js";
-import { ScheduleTestDaemon } from "./test-daemon.js";
+import { ScheduleTestDaemon, scheduleTestDaemonConnections } from "./test-daemon.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -137,7 +137,7 @@ describe.each(["embedded", "postgres"] as const)("schedule on %s", (kind) => {
       publicBaseUrl: "http://schedule.test",
       completionTokenSecret: "schedule-test-secret",
       executionDeadlineClock: { now: () => time.getTime(), schedule: () => () => {} },
-      daemonConnectionForId: (id) => (id === fixture.daemonId ? connection : undefined),
+      daemonConnections: scheduleTestDaemonConnections(fixture.daemonId, () => connection),
     });
     try {
       // The schedule is declared first, so the manual event is the one compiled under the name.
@@ -182,7 +182,7 @@ it("two independent Hub workers leave queued work for the process with the daemo
       entitlements: createUnlimitedEntitlementsService(),
       providers: [createScheduleProvider()],
       now: () => time,
-      canDispatchToDaemon: (id) => id === fixture.daemonId && ownsConnection(),
+      dispatchableDaemonIds: () => (ownsConnection() ? [fixture.daemonId] : []),
       dispatchLaunchMachineIntent: async (intent) => {
         dispatches.push({ worker: name, prompt: intent.prompt });
         const execution = await database.findAgentExecutionByWorkflowStepRunId(
@@ -224,6 +224,92 @@ it("two independent Hub workers leave queued work for the process with the daemo
   }
 });
 
+it("parks a run for an offline daemon until the daemon connects instead of re-claiming it every tick", async () => {
+  const fixture = await setup("postgres");
+  const dispatches: string[] = [];
+  let connected = false;
+  let time = new Date();
+  const at = (offsetMs: number) => new Date(time.getTime() + offsetMs);
+  const engine = new DurableWorkflowEngine({
+    database: fixture.database,
+    entitlements: createUnlimitedEntitlementsService(),
+    providers: [createScheduleProvider()],
+    now: () => time,
+    dispatchableDaemonIds: () => (connected ? [fixture.daemonId] : []),
+    dispatchLaunchMachineIntent: async (intent) => {
+      dispatches.push(intent.prompt);
+      const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+        intent.workflowStepRunId!,
+      );
+      await fixture.database.transitionAgentExecution(execution!.id, "running");
+      return { execution: await fixture.database.findAgentExecutionById(execution!.id) };
+    },
+  });
+  try {
+    await fixture.store.save({ yaml: scheduleYaml, userId: null });
+    const due = await fixture.due();
+    time = due;
+    await fixture.database.schedules.tick(time);
+    await engine.processAvailable();
+    expect(dispatches).toEqual([]);
+
+    // Later worker ticks find nothing to claim until the retry is due.
+    expect(await fixture.database.claimWorkflowWakeup(at(250), 1_000)).toBeUndefined();
+    expect(await fixture.database.claimWorkflowWakeup(at(29_999), 1_000)).toBeUndefined();
+    time = at(30_000);
+    await engine.processAvailable();
+    expect(dispatches).toEqual([]);
+    expect(await fixture.database.claimWorkflowWakeup(at(250), 1_000)).toBeUndefined();
+
+    // The daemon connecting drains the parked run on the next tick, before the retry is due.
+    connected = true;
+    time = at(250);
+    await engine.processAvailable();
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0]).toContain(due.toISOString());
+    expect(await fixture.count("workflow_wakeups")).toBe(0);
+  } finally {
+    await engine.stop();
+    await fixture.close();
+  }
+});
+
+it("times out a run parked for an offline daemon at its deadline", async () => {
+  const fixture = await setup("postgres");
+  let time = new Date();
+  const engine = new DurableWorkflowEngine({
+    database: fixture.database,
+    entitlements: createUnlimitedEntitlementsService(),
+    providers: [createScheduleProvider()],
+    now: () => time,
+    dispatchableDaemonIds: () => [],
+    dispatchLaunchMachineIntent: async () => {
+      throw new Error("an offline daemon cannot receive a dispatch");
+    },
+  });
+  try {
+    await fixture.store.save({ yaml: scheduleYaml, userId: null });
+    time = await fixture.due();
+    await fixture.database.schedules.tick(time);
+    await engine.processAvailable();
+    const [run] = await fixture.database.findTriggerRunsByProviderEventReceiptId(
+      (await fixture.receipts())[0]!.id,
+    );
+    if (run?.outcome !== "accepted") throw new Error("expected an accepted scheduled run");
+
+    time = run.deadlineAt;
+    await engine.processAvailable();
+    expect(await fixture.database.findTriggerRunById(run.id)).toMatchObject({
+      status: "timed_out",
+      deadlineKind: "whole_run",
+    });
+    expect(await fixture.count("workflow_wakeups")).toBe(0);
+  } finally {
+    await engine.stop();
+    await fixture.close();
+  }
+});
+
 it("Hub runtime dispatches through the peer daemon port and completes ordinary scheduled history", async () => {
   const fixture = await setup("postgres");
   const peer = await postgresDatabaseRuntime(fixture.connectionString!);
@@ -242,7 +328,9 @@ it("Hub runtime dispatches through the peer daemon port and completes ordinary s
   const second = createHubRuntime({
     ...options,
     database: peerDatabase,
-    daemonConnectionForId: (id) => (connected && id === fixture.daemonId ? connection : undefined),
+    daemonConnections: scheduleTestDaemonConnections(fixture.daemonId, () =>
+      connected ? connection : undefined,
+    ),
   });
   try {
     await fixture.store.save({ yaml: scheduleYaml, userId: null });
@@ -286,7 +374,7 @@ it("Hub runtime dispatches through the peer daemon port and completes ordinary s
   }
 });
 
-it("an expired worker cannot release a newer worker’s wakeup lease", async () => {
+it("an expired worker cannot defer a newer worker’s wakeup lease", async () => {
   const fixture = await setup("postgres");
   try {
     await fixture.store.save({ yaml: scheduleYaml, userId: null });
@@ -296,16 +384,16 @@ it("an expired worker cannot release a newer worker’s wakeup lease", async () 
     const later = new Date(due.getTime() + 1001);
     const second = await fixture.database.claimWorkflowWakeup(later, 1000);
     expect(first?.triggerRunId).toBe(second?.triggerRunId);
-    await fixture.database.releaseWorkflowWakeup(
+    await fixture.database.deferWorkflowWakeupForDaemon(
       first!.triggerRunId,
-      later,
       first!.leaseExpiresAt!,
+      { daemonId: fixture.daemonId, releasedAt: later, retryAt: later },
     );
     expect(await fixture.database.claimWorkflowWakeup(later, 1000)).toBeUndefined();
-    await fixture.database.releaseWorkflowWakeup(
+    await fixture.database.deferWorkflowWakeupForDaemon(
       second!.triggerRunId,
-      later,
       second!.leaseExpiresAt!,
+      { daemonId: fixture.daemonId, releasedAt: later, retryAt: later },
     );
     expect(await fixture.database.claimWorkflowWakeup(later, 1000)).toMatchObject({
       triggerRunId: first!.triggerRunId,
@@ -322,7 +410,10 @@ it("validates, installs, exports and edits scheduled YAML through the existing p
     database: fixture.database,
     entitlements: createUnlimitedEntitlementsService(),
     // Installing asks the daemon about the agent, so the fixture daemon answers for it.
-    daemonConnectionForId: (id) => (id === fixture.daemonId ? new ScheduleTestDaemon() : undefined),
+    daemonConnections: scheduleTestDaemonConnections(
+      fixture.daemonId,
+      () => new ScheduleTestDaemon(),
+    ),
     publicApi: {
       status: "enabled",
       authenticator: {
@@ -373,7 +464,10 @@ it("runs one trigger from its schedule and from a manual dispatch by the trigger
   const application = createHubApplication({
     database: fixture.database,
     entitlements: createUnlimitedEntitlementsService(),
-    daemonConnectionForId: (id) => (id === fixture.daemonId ? new ScheduleTestDaemon() : undefined),
+    daemonConnections: scheduleTestDaemonConnections(
+      fixture.daemonId,
+      () => new ScheduleTestDaemon(),
+    ),
     publicApi: {
       status: "enabled",
       authenticator: {
