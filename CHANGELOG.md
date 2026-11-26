@@ -18,6 +18,7 @@
 - Discord `${{ paseo.context }}` keeps the embeds of referenced messages and thread messages: each embed's title, description, URL, author, fields, and footer. An embed-only bot notification no longer reaches the agent as an empty message.
 - Files attached to the Slack message that mentions the bot reach the agent in `slack.trigger_message.attachments`. Before, only files from earlier messages in the thread did.
 - Hub exits promptly on `SIGTERM` or `SIGINT` while daemons are connected. It finishes in-flight requests, closes daemon connections, and shuts the database down cleanly, instead of hanging until the supervisor kills it and leaving the embedded database to recover on the next start.
+- An embedded-mode Hub starts again after a crash, an OOM kill, or `docker kill`, and after its data directory is restored from a backup. Before, a container crash-looped on its own leftover `.paseo-hub.lock` because Hub runs as PID 1. The lock is now an operating-system file lock that is released when the process exits. A second Hub on the same data directory is still refused, also from another container on a shared volume, and the startup log says why.
 
 ## 0.11.0 - 2026-10-25
 
