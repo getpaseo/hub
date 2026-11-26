@@ -412,6 +412,102 @@ describe("agent execution PostgreSQL repository", () => {
     }
   });
 
+  it("recovers an overdue workflow step without locking healthy running workflows", async () => {
+    const fixture = await executionFixture(postgres);
+    let now = new Date("2026-08-05T12:00:00.000Z");
+    const configuration = deadlineWorkflowConfiguration({ idleTimeout: "5s" });
+    const revision = await fixture.database.insertProjectConfigurationRevision({
+      projectId: fixture.execution.projectId,
+      sourceKind: "manual",
+      sourceEvidence: { kind: "deadline-lock-test" },
+      normalizedConfiguration: configuration,
+      contentHash: compiledConfigurationHash(configuration),
+    });
+    const { handler, engine } = postgresDeadlineEngine(
+      fixture.database,
+      configuration,
+      revision.id,
+      () => now,
+      [],
+    );
+    const startRun = async (deliveryId: string) => {
+      const trigger = await insertWorkflowTrigger(fixture.database, revision.id, deliveryId);
+      await handler(toDurableEvent(trigger.event));
+      await engine.processAvailable();
+      const run = (
+        await fixture.database.findTriggerRunsByProviderEventReceiptId(
+          trigger.event.providerEventReceiptId,
+        )
+      )[0]!;
+      const step = (await fixture.database.findWorkflowStepRunByTriggerRun(run.id))!;
+      const execution = (await fixture.database.findAgentExecutionByWorkflowStepRunId(step.id))!;
+      return { run, step, execution };
+    };
+    const peer = await createPostgresQueryRuntime(fixture.databaseUrl);
+    try {
+      const overdue = await startRun("deadline-lock-overdue");
+      now = new Date("2026-08-05T12:00:04.000Z");
+      const healthy = await startRun("deadline-lock-healthy");
+      now = new Date("2026-08-05T12:00:06.000Z");
+
+      // A daemon idle report holds the healthy execution's row, as setAgentExecutionIdleDeadline does.
+      const releaseHealthyExecution = await holdRowLock(
+        peer,
+        "agent_executions",
+        healthy.execution.id,
+      );
+      const recovery = fixture.database.recoverWorkflowDeadlines(now);
+      const recovered = await Promise.race([
+        recovery,
+        new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 1_500)),
+      ]);
+      await releaseHealthyExecution();
+      await recovery.catch(() => undefined);
+
+      assert.deepEqual(recovered, [
+        { triggerRunId: overdue.run.id, executionIds: [overdue.execution.id] },
+      ]);
+      assert.deepEqual(
+        {
+          run: (await fixture.database.findTriggerRunById(overdue.run.id))?.status,
+          step: (await fixture.database.findWorkflowStepRunById(overdue.step.id))?.deadlineKind,
+          execution: (await fixture.database.findAgentExecutionById(overdue.execution.id))?.status,
+        },
+        { run: "failed", step: "step_idle", execution: "failed" },
+      );
+      assert.deepEqual(
+        {
+          run: (await fixture.database.findTriggerRunById(healthy.run.id))?.status,
+          step: (await fixture.database.findWorkflowStepRunById(healthy.step.id))?.status,
+          execution: (await fixture.database.findAgentExecutionById(healthy.execution.id))?.status,
+        },
+        { run: "running", step: "running", execution: healthy.execution.status },
+      );
+    } finally {
+      await peer.close();
+      await fixture.database.close();
+    }
+  });
+
+  it("finds a workflow step's agent execution through an index", async () => {
+    const fixture = await executionFixture(postgres);
+    const peer = await createPostgresQueryRuntime(fixture.databaseUrl);
+    try {
+      const explained = await peer.transaction(async (client) => {
+        await client.query("set local enable_seqscan = off");
+        return client.query<{ "QUERY PLAN": string }>(
+          `explain select 1 from agent_executions where workflow_step_run_id = $1`,
+          [randomUUID()],
+        );
+      });
+      const plan = explained.rows.map((row) => row["QUERY PLAN"]).join("\n");
+      assert.match(plan, /agent_executions_workflow_step_run_idx/);
+    } finally {
+      await peer.close();
+      await fixture.database.close();
+    }
+  });
+
   it("rejects a workflow completion observed exactly at the step hard deadline", async () => {
     const fixture = await executionFixture(postgres);
     let now = new Date("2026-08-05T12:00:00.000Z");
@@ -1549,6 +1645,28 @@ async function persistedWorkflowExecution(
   const execution = await database.findAgentExecutionByWorkflowStepRunId(intent.workflowStepRunId);
   if (execution === undefined) throw new Error("workflow execution was not persisted");
   return execution;
+}
+
+/** Hold a row lock from another connection until the returned release is called. */
+async function holdRowLock(
+  runtime: Awaited<ReturnType<typeof createPostgresQueryRuntime>>,
+  table: "agent_executions",
+  id: string,
+): Promise<() => Promise<void>> {
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  let locked!: () => void;
+  const isLocked = new Promise<void>((resolve) => (locked = resolve));
+  const transaction = runtime.transaction(async (client) => {
+    await client.query(`select id from ${table} where id = $1 for update`, [id]);
+    locked();
+    await released;
+  });
+  await Promise.race([isLocked, transaction]);
+  return async () => {
+    release();
+    await transaction;
+  };
 }
 
 function toDurableEvent(event: DurableProviderEvent): DurableProviderEvent {

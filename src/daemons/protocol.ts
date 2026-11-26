@@ -94,6 +94,13 @@ export interface DaemonConnection {
   ): Promise<AgentValidationVerdict>;
 }
 
+/** The live daemon connections this Hub process holds. */
+export interface DaemonConnections {
+  connection(daemonId: string): DaemonConnection | undefined;
+  /** The daemons `connection` answers for: connected, ready, and allowed to execute. */
+  dispatchableDaemonIds(): readonly string[];
+}
+
 /** A durable daemon request may have succeeded before its acknowledgement was lost. */
 export class DaemonResponseLostError extends Error {
   constructor() {

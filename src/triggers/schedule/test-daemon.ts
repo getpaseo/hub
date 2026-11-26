@@ -1,5 +1,9 @@
 import type { AgentConnection, AgentSnapshot } from "../../daemons/agents/index.js";
-import type { DaemonConnection, DaemonCreateAgentOptions } from "../../daemons/protocol.js";
+import type {
+  DaemonConnection,
+  DaemonConnections,
+  DaemonCreateAgentOptions,
+} from "../../daemons/protocol.js";
 
 /** A daemon port fake: Hub exercises its actual session and execution lifecycle. */
 export class ScheduleTestDaemon implements DaemonConnection {
@@ -33,4 +37,15 @@ export class ScheduleTestDaemon implements DaemonConnection {
   async validateAgentConfiguration(): Promise<{ valid: true }> {
     return { valid: true };
   }
+}
+
+/** The fixture daemon's connection, while `connection` returns one. */
+export function scheduleTestDaemonConnections(
+  daemonId: string,
+  connection: () => DaemonConnection | undefined,
+): DaemonConnections {
+  return {
+    connection: (id) => (id === daemonId ? connection() : undefined),
+    dispatchableDaemonIds: () => (connection() === undefined ? [] : [daemonId]),
+  };
 }

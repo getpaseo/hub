@@ -21,6 +21,7 @@ import type { OutputExecutorRegistry } from "../execution-capabilities/outputs.j
 export type {
   DaemonAgentStreamEvent,
   DaemonConnection,
+  DaemonConnections,
   DaemonCreateAgentOptions,
 } from "./protocol.js";
 export { DaemonDispatchFailure, DaemonSpawnAckTimeoutError };

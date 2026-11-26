@@ -315,7 +315,7 @@ describe("database migration application", () => {
     assert.deepEqual(after, before);
     assert.deepEqual(await historicalShape(fixture.url), {
       authTables: 7,
-      drizzleMigrations: 53,
+      drizzleMigrations: 54,
       legacyArtifacts: null,
       legacyOperatorPrincipals: null,
       bootstrapOrganizationId: fixture.organizationId,

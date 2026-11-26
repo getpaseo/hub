@@ -788,6 +788,14 @@ export interface WorkflowWakeupRecord {
   availableAt: Date;
   leaseExpiresAt: Date | null;
   leasedBeforeClaim: boolean;
+  /** The offline daemon this run waits for; `availableAt` is then only the retry. */
+  waitingForDaemonId: string | null;
+}
+
+export interface WorkflowWakeupDaemonDeferral {
+  daemonId: string;
+  releasedAt: Date;
+  retryAt: Date;
 }
 
 export interface CreateAcceptedTriggerRunInput {
@@ -1255,11 +1263,17 @@ export interface Database {
   findAgentExecutionByWorkflowStepRunId(
     stepRunId: string,
   ): Promise<AgentExecutionRecord | undefined>;
-  releaseWorkflowWakeup(triggerRunId: string, now: Date, claimedLease: Date): Promise<void>;
+  /** Release a claimed wakeup whose daemon is offline, until it connects or the retry is due. */
+  deferWorkflowWakeupForDaemon(
+    triggerRunId: string,
+    claimedLease: Date,
+    deferral: WorkflowWakeupDaemonDeferral,
+  ): Promise<void>;
+  /** Claim an available wakeup, or one waiting for a daemon in `dispatchableDaemonIds`. */
   claimWorkflowWakeup(
     now: Date,
     leaseMs: number,
-    excludedRunIds?: readonly string[],
+    dispatchableDaemonIds?: readonly string[],
   ): Promise<WorkflowWakeupRecord | undefined>;
   wakeWorkflowRun(triggerRunId: string, availableAt: Date): Promise<void>;
   deleteWorkflowWakeup(triggerRunId: string): Promise<void>;

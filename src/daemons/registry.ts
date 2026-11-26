@@ -21,7 +21,7 @@ import {
   HubDaemonHelloSchema,
   HubDaemonServerInfoEnvelopeSchema,
 } from "../hub/protocol.js";
-import type { DaemonConnection, DaemonProject } from "./protocol.js";
+import type { DaemonConnection, DaemonConnections, DaemonProject } from "./protocol.js";
 import type { HubProviderSnapshot } from "../hub/protocol.js";
 
 interface PendingAgentValidationRequest {
@@ -106,7 +106,7 @@ const DAEMON_SESSION_PROTOCOL_VERSION = "1";
 type DaemonConnectedHandler = (daemon: DaemonRecord) => void | Promise<void>;
 type DaemonRevokedHandler = (daemon: DaemonRecord) => void | Promise<void>;
 
-export class ActiveDaemonRegistry {
+export class ActiveDaemonRegistry implements DaemonConnections {
   private readonly active = new Map<string, ActiveSocket>();
   private readonly pendingByDaemon = new Map<string, Map<string, PendingRequest>>();
   private readonly connectedHandlers = new Set<DaemonConnectedHandler>();
@@ -207,7 +207,7 @@ export class ActiveDaemonRegistry {
 
   connection(daemonId: string): DaemonConnection | undefined {
     const active = this.active.get(daemonId);
-    if (!active?.ready || !active.daemon.permissions.includes("hub.execute")) return undefined;
+    if (active === undefined || !isDispatchable(active)) return undefined;
     return {
       agents: this.active.get(daemonId)!.agents,
       getProviderSnapshot: (options) => this.getProviderSnapshot(daemonId, options),
@@ -216,6 +216,12 @@ export class ActiveDaemonRegistry {
       validateAgentConfiguration: (agent, options) =>
         this.validateAgentConfiguration(daemonId, agent, options),
     };
+  }
+
+  dispatchableDaemonIds(): readonly string[] {
+    return Array.from(this.active.values())
+      .filter(isDispatchable)
+      .map((active) => active.daemon.id);
   }
 
   private validateAgentConfiguration(
@@ -598,6 +604,10 @@ async function closeForShutdown(socket: WebSocket): Promise<void> {
   socket.close(1001, "server shutdown");
   await closed;
   clearTimeout(unanswered);
+}
+
+function isDispatchable(active: ActiveSocket): boolean {
+  return active.ready && active.daemon.permissions.includes("hub.execute");
 }
 
 function samePermissions(actual: readonly string[], expected: readonly string[]): boolean {
