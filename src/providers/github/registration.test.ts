@@ -17,6 +17,7 @@ import { FakeGitHub, fakeGitHubConnectionClient } from "../../test-utils/fake-gi
 import { createGitHubRegistration } from "./index.js";
 import type { GitHubConfigurationProvider } from "../../configuration/github-sync.js";
 import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
+import { createMemoryInboundQueue } from "../../inbound/index.js";
 
 describe("GitHub registration", () => {
   it("synchronizes the default branch at the exact push SHA and preserves the valid revision", async () => {
@@ -87,7 +88,9 @@ describe("GitHub registration", () => {
       "valid-sha": `environments:\n  - name: runner\n    kind: daemon\n    daemon: ${TEST_DAEMON_SLUG}\n    cwd: /repo\ntriggers:\n  - name: noop\n    on: manual.run\n    max_runtime: 1h\n    steps:\n      - id: work\n        environment: runner\n        max_runtime: 10m\n        idle_timeout: 1m\n        agent: { provider: test }\n        prompt: [{ text: noop }]`,
       "invalid-sha": "environments: []\ntriggers: invalid",
     });
+    const inbound = createMemoryInboundQueue();
     const registration = createGitHubRegistration({
+      inbound,
       database,
       auth: null,
       applicationBaseUrl: "https://hub.test",
@@ -105,11 +108,14 @@ describe("GitHub registration", () => {
       configurationStoreForProject: () => store,
       connectionsForProject: () => async () => "unused",
     });
+    inbound.start(registration.inbound ?? {});
 
     await configuration.push(registration, "valid-sha", "push-valid");
+    await inbound.idle();
     const active = await database.findActiveProjectConfiguration(project.id);
     assert.notEqual(active?.id, initial.id);
     await configuration.push(registration, "invalid-sha", "push-invalid");
+    await inbound.idle();
     assert.equal((await database.findActiveProjectConfiguration(project.id))?.id, active?.id);
     assert.deepEqual(configuration.reads, [
       { installationId: 42, repositoryId: 9001, commitSha: "valid-sha", path: ".paseo/hub.yml" },
@@ -146,6 +152,7 @@ describe("GitHub registration", () => {
       return Promise.resolve();
     };
     const registration = createGitHubRegistration({
+      inbound: createMemoryInboundQueue(),
       database,
       auth: new RegistrationAuth(),
       applicationBaseUrl: "https://hub.test",
@@ -201,6 +208,7 @@ describe("GitHub registration", () => {
 
   it("reports readiness without constructing partial provider behavior", () => {
     const registration = createGitHubRegistration({
+      inbound: createMemoryInboundQueue(),
       database: createMemoryDatabase(),
       auth: new RegistrationAuth(),
       applicationBaseUrl: "https://hub.test",
@@ -242,6 +250,7 @@ describe("GitHub registration", () => {
     });
     const installations: number[] = [];
     const registration = createGitHubRegistration({
+      inbound: createMemoryInboundQueue(),
       database,
       auth: null,
       applicationBaseUrl: "https://hub.test",
@@ -309,6 +318,7 @@ describe("GitHub registration", () => {
     let identityLookups = 0;
     let identityFailure: Error | undefined;
     const registration = createGitHubRegistration({
+      inbound: createMemoryInboundQueue(),
       database,
       auth: null,
       applicationBaseUrl: "https://hub.test",
@@ -423,6 +433,7 @@ describe("GitHub registration", () => {
 
   it("returns a setup callback that carries no session to the integrations landing", async () => {
     const registration = createGitHubRegistration({
+      inbound: createMemoryInboundQueue(),
       database: createMemoryDatabase(),
       auth: new SignedOutAuth(),
       applicationBaseUrl: "https://hub.test",
@@ -451,6 +462,7 @@ describe("GitHub registration", () => {
 
   it("keeps provider runtime active without browser authentication", async () => {
     const registration = createGitHubRegistration({
+      inbound: createMemoryInboundQueue(),
       database: createMemoryDatabase(),
       auth: null,
       applicationBaseUrl: "https://hub.test",
@@ -475,6 +487,7 @@ describe("GitHub registration", () => {
 
   it("keeps signature verification available while the database is unavailable", async () => {
     const registration = createGitHubRegistration({
+      inbound: createMemoryInboundQueue(),
       database: null,
       auth: null,
       applicationBaseUrl: "https://hub.test",

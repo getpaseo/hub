@@ -60,6 +60,7 @@ import {
 import type { GitHubAuthorityRegistration } from "../../providers/registration.js";
 import { configurationBundleFixture } from "../../test-utils/configuration-bundle.js";
 import type { HubBundleFile } from "../../config/bundle.js";
+import { createMemoryInboundQueue } from "../../inbound/index.js";
 
 const HUB_ORGANIZATION_ID = "org_1";
 const HUB_PROJECT_ID = "00000000-0000-4000-8000-000000000001";
@@ -1805,6 +1806,7 @@ export class HubHarness {
       billingCheckout: () => Promise.reject(new Error("billing is not configured")),
       billingPortal: () => Promise.reject(new Error("billing is not configured")),
       providerRequest: () => Promise.resolve(new Response("Not Found", { status: 404 })),
+      health: () => ({ ok: true, inbound: createMemoryInboundQueue().stats() }),
       stop: () => hub.stop(),
     }));
     const server = createFetchServer(createStartHandler(defaultStreamHandler));

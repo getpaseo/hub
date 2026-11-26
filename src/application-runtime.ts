@@ -32,6 +32,13 @@ import { DaemonCatalog } from "./daemons/catalog.js";
 import { ActivityDashboard } from "./activity/index.js";
 import { HomeDashboard } from "./home/dashboard.js";
 import type { ProviderConnectionRegistration } from "./providers/registration.js";
+import type { InboundProcessors, InboundQueue } from "./inbound/index.js";
+
+/**
+ * How long shutdown keeps processing queued inbound events. Fly's `kill_timeout` must cover this
+ * plus the 5-second HTTP drain in `src/http/hub-server.ts`.
+ */
+const INBOUND_DRAIN_DEADLINE_MS = 20_000;
 
 export interface ApplicationCompositionOptions {
   database: Database | null;
@@ -41,6 +48,8 @@ export interface ApplicationCompositionOptions {
   /** HOSTED only. Present when `readBillingConfig()` finds `STRIPE_SECRET_KEY`; null self-hosted. */
   billing: BillingRuntime | null;
   registrations?: readonly ProviderRegistration[];
+  /** Holds verified provider deliveries until their registration's processor accepts them. */
+  inbound: InboundQueue;
   providerApplications?: ProviderApplications;
   publicBaseUrl?: string;
   completionTokenSecret?: string;
@@ -60,6 +69,19 @@ export async function createApplicationRuntime(
     await resources.close();
     throw error;
   }
+}
+
+function inboundProcessors(registrations: readonly ProviderRegistration[]): InboundProcessors {
+  const processors: Record<string, InboundProcessors[string]> = {};
+  for (const registration of registrations) {
+    for (const [kind, processor] of Object.entries(registration.inbound ?? {})) {
+      if (Object.hasOwn(processors, kind)) {
+        throw new Error(`inbound processors must have unique event kinds: ${kind}`);
+      }
+      processors[kind] = processor;
+    }
+  }
+  return processors;
 }
 
 async function createOwnedApplicationRuntime(
@@ -122,6 +144,11 @@ async function createOwnedApplicationRuntime(
   });
   ownership.own(() => application.hub.stop());
   await application.hub.start(registrations.flatMap((registration) => registration.sources));
+  options.inbound.start(inboundProcessors(registrations));
+  // Closed before the hub: queued events still need the sources' handlers and the database.
+  ownership.own(async () => {
+    await options.inbound.stop({ deadlineMs: INBOUND_DRAIN_DEADLINE_MS });
+  });
 
   const resources = options.database === null ? null : new OrganizationResources(options.database);
   const requests = new Map<string, (incoming: Request) => Promise<Response>>();
@@ -340,6 +367,7 @@ async function createOwnedApplicationRuntime(
     },
     providerRequest: (name, request) =>
       requests.get(name)?.(request) ?? Promise.resolve(new Response("Not Found", { status: 404 })),
+    health: () => ({ ok: true, inbound: options.inbound.stats() }),
     stop: () => ownership.close(),
   };
 }

@@ -9,6 +9,8 @@ import { z } from "zod";
 import { reportFailure, runWithFailureTracking } from "../../../failures/index.js";
 import { createLogger } from "../../../logger.js";
 import type { TransactionHandle } from "../index.js";
+import { DatabaseUnavailableError } from "../../errors.js";
+import { PostgresOutage } from "../../test-utils/outage.js";
 import { createPool, createPostgresRuntime } from "./postgres.js";
 
 const diagnosticSchema = z.object({
@@ -66,6 +68,35 @@ describe("PostgreSQL failure diagnostics", () => {
   }, 120_000);
   afterAll(async () => {
     await postgres?.stop();
+  });
+
+  it("reports a database that refuses connections as unavailable to every caller", async () => {
+    const url = new URL(postgres.getConnectionUri());
+    url.pathname = "/refusing_connections";
+    const { runtime } = await createPostgresRuntime(url.toString());
+    const outage = await PostgresOutage.connect(url.toString());
+    try {
+      await runtime.query("select 1");
+      await outage.begin();
+      // The first query finds its idle connection terminated; the next cannot open a new one.
+      await assert.rejects(runtime.query("select 1"), DatabaseUnavailableError);
+      await assert.rejects(runtime.query("select 1"), DatabaseUnavailableError);
+      await assert.rejects(
+        runtime.transaction((transaction) => transaction.query("select 1")),
+        DatabaseUnavailableError,
+      );
+      await outage.end();
+      assert.deepEqual((await runtime.query("select 1 as one")).rows, [{ one: 1 }]);
+      await assert.rejects(runtime.query("select 1 / 0"), (error: unknown) => {
+        assert.equal(error instanceof DatabaseUnavailableError, false);
+        assert.equal(z.object({ code: z.string() }).parse(error).code, "22012");
+        return true;
+      });
+    } finally {
+      await outage.end();
+      await outage.close();
+      await runtime.close();
+    }
   });
 
   it("reports a real pool acquisition timeout without query parameters", async () => {

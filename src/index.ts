@@ -50,6 +50,7 @@ import { createInvitationMailer } from "./invitations/index.js";
 import { composeEmailDelivery } from "./email/index.js";
 import { createAccountMailer } from "./auth/account-emails.js";
 import { migrateLegacyProjectTriggers } from "./triggers/migration.js";
+import { createMemoryInboundQueue } from "./inbound/index.js";
 
 export function startProductionRuntime(): Promise<ApplicationRuntime> {
   return startApplication(createProductionRuntime);
@@ -128,10 +129,12 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     const providerStore = createProviderApplicationStore(runtime, locks, database);
     const providerVerifier = createProviderApplicationVerifier();
     const providerInventory = createProviderApplicationInventory(runtime);
+    const inbound = createMemoryInboundQueue();
     const providerRuntime = new DynamicProviderRuntime({
       database,
       auth,
       applicationBaseUrl: identity.appUrl,
+      inbound,
     });
     const providerApplications = createProviderApplications({
       auth,
@@ -161,6 +164,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       entitlements: entitlements.service,
       billing,
       registrations: providerRuntime.registrations(),
+      inbound,
       providerApplications,
       publicBaseUrl: identity.appUrl,
       completionTokenSecret: identity.authSecret,

@@ -1,10 +1,11 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { z } from "zod";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
 import { WebhookPayloadSchema } from "../../auth/github-events.js";
 import type { WebhookPayload } from "../../auth/github-events.js";
-import { isDatabaseUnavailableError } from "../../db/errors.js";
 import type { ProviderEventAcceptance } from "../../db/types.js";
 import { reportFailure } from "../../failures/index.js";
+import type { InboundEvent, InboundSink } from "../../inbound/index.js";
 import { logger } from "../../logger.js";
 import { readBoundedRequestBody } from "../../http/request-body.js";
 import type { TriggerHandler, TriggerSource } from "../index.js";
@@ -14,7 +15,12 @@ import { logProviderEventIntake } from "../audit.js";
 const MAX_WEBHOOK_BYTES = 1_048_576;
 const MAX_HEADER_LENGTH = 128;
 
+/** The inbound event kind a verified GitHub delivery is queued under. */
+export const GITHUB_WEBHOOK_EVENT = "github.webhook";
+
 export interface WebhookSourceOptions {
+  /** Holds a verified delivery until `process` accepts it. */
+  inbound: InboundSink;
   accept(input: {
     installationId: number;
     repositoryId?: number;
@@ -44,15 +50,20 @@ export interface WebhookSourceOptions {
 }
 
 export interface WebhookEndpoint extends TriggerSource {
+  /** Verifies a delivery and queues it. Answers before Postgres is touched. */
   handle(request: Request): Promise<Response>;
+  /** The `github.webhook` processor: records the receipt and dispatches matching triggers. */
+  process(event: InboundEvent): Promise<void>;
 }
 
-interface VerifiedWebhook {
-  body: WebhookPayload;
-  deliveryId: string;
-  eventType: string;
-  signatureHash: string;
-}
+const VerifiedWebhookSchema = z.object({
+  body: WebhookPayloadSchema,
+  deliveryId: z.string(),
+  eventType: z.string(),
+  signatureHash: z.string(),
+});
+
+type VerifiedWebhook = z.infer<typeof VerifiedWebhookSchema>;
 
 /**
  * @param secret the App's webhook secret, or `undefined` when event triggers are not set up.
@@ -66,15 +77,19 @@ export function createWebhookSource(
   const handlers = new Set<TriggerHandler>();
 
   async function handle(request: Request): Promise<Response> {
-    if (secret === undefined) {
-      reportGitHubRejection("webhook_secret_unconfigured", 503);
-      return new Response("Service Unavailable", { status: 503 });
-    }
-    const verified = await verifyWebhookRequest(request, secret);
+    const verified = await verifyDelivery(request, secret);
     if (verified instanceof Response) return verified;
-
     try {
-      return await handleVerifiedWebhook(verified, options, handlers);
+      const queued = await options.inbound.enqueue({
+        kind: GITHUB_WEBHOOK_EVENT,
+        id: `github:${verified.deliveryId}`,
+        receivedAt: new Date().toISOString(),
+        payload: verified,
+      });
+      if (queued.status === "queued" || queued.status === "duplicate") {
+        return new Response("OK", { status: 200 });
+      }
+      return Response.json({ error: "inbound_unavailable" }, { status: 503 });
     } catch (error) {
       reportFailure(
         error,
@@ -82,22 +97,30 @@ export function createWebhookSource(
           operation: "github.webhook.handle",
           component: "triggers",
           provider: "github",
-          status: isDatabaseUnavailableError(error) ? 503 : 500,
+          status: 500,
         },
-        {
-          status: isDatabaseUnavailableError(error) ? 503 : 500,
-          scrubValues: secret === undefined ? [] : [secret],
-        },
+        { status: 500, scrubValues: secret === undefined ? [] : [secret] },
       );
-      if (isDatabaseUnavailableError(error)) {
-        return Response.json({ error: "database_unavailable" }, { status: 503 });
-      }
       return Response.json({ error: "webhook_processing_failed" }, { status: 500 });
     }
   }
 
+  async function process(event: InboundEvent): Promise<void> {
+    const queued = VerifiedWebhookSchema.safeParse(event.payload);
+    if (!queued.success) {
+      reportFailure(new Error("queued GitHub webhook is malformed"), {
+        operation: "github.webhook.process",
+        component: "triggers",
+        provider: "github",
+      });
+      return;
+    }
+    await processVerifiedWebhook(queued.data, new Date(event.receivedAt), options, handlers);
+  }
+
   return {
     handle,
+    process,
     async start(nextHandler: TriggerHandler): Promise<void> {
       handlers.add(nextHandler);
     },
@@ -107,23 +130,55 @@ export function createWebhookSource(
   };
 }
 
-async function handleVerifiedWebhook(
-  verified: VerifiedWebhook,
-  options: WebhookSourceOptions,
-  handlers: Set<TriggerHandler>,
-): Promise<Response> {
-  const { body, deliveryId, eventType, signatureHash } = verified;
-  const installationId = body.installation?.id;
-  if (typeof installationId !== "number") {
+/**
+ * The GitHub endpoint of an instance without a database. Signatures are still checked, so an
+ * unsigned request learns nothing, and a signed one is told the database is unavailable.
+ */
+export function createDatabaseUnavailableWebhook(
+  secret: string | undefined,
+): Pick<WebhookEndpoint, "handle"> {
+  return {
+    async handle(request) {
+      const verified = await verifyDelivery(request, secret);
+      if (verified instanceof Response) return verified;
+      return Response.json({ error: "database_unavailable" }, { status: 503 });
+    },
+  };
+}
+
+async function verifyDelivery(
+  request: Request,
+  secret: string | undefined,
+): Promise<VerifiedWebhook | Response> {
+  if (secret === undefined) {
+    reportGitHubRejection("webhook_secret_unconfigured", 503);
+    return new Response("Service Unavailable", { status: 503 });
+  }
+  const verified = await verifyWebhookRequest(request, secret);
+  if (verified instanceof Response) return verified;
+  if (typeof verified.body.installation?.id !== "number") {
     reportGitHubRejection("installation_id_missing", 400);
     return new Response("Bad Request", { status: 400 });
   }
+  return verified;
+}
+
+async function processVerifiedWebhook(
+  verified: VerifiedWebhook,
+  receivedAt: Date,
+  options: WebhookSourceOptions,
+  handlers: Set<TriggerHandler>,
+): Promise<void> {
+  const { body, deliveryId, eventType, signatureHash } = verified;
+  const installationId = body.installation?.id;
+  if (typeof installationId !== "number") return;
 
   if (eventType === "installation" || eventType === "installation_repositories") {
-    return handleLifecycle(options, verified, installationId, eventType);
+    await handleLifecycle(options, verified, installationId, eventType, receivedAt);
+    return;
   }
 
-  const event = normalizeWebhookEvent({ body, deliveryId, eventType });
+  const event = normalizeWebhookEvent({ body, deliveryId, eventType, receivedAt });
   if (event === undefined) {
     logger.info({ deliveryId, eventType }, "skipping webhook event without repo or installation");
     const acceptance = await options.accept({
@@ -132,7 +187,7 @@ async function handleVerifiedWebhook(
       signatureHash,
       source: `github.${eventType}`,
       payload: body,
-      receivedAt: new Date(),
+      receivedAt,
       dropReason: "no_trigger_for_source",
     });
     logProviderEventIntake({
@@ -141,7 +196,7 @@ async function handleVerifiedWebhook(
       deliveryId,
       acceptance,
     });
-    return new Response("OK", { status: 200 });
+    return;
   }
 
   const acceptance = await options.accept({
@@ -152,7 +207,7 @@ async function handleVerifiedWebhook(
     source: `github.${eventType}`,
     repo: event.repo,
     payload: event,
-    receivedAt: new Date(event.createdAt),
+    receivedAt,
     ...(handlers.size === 0 ? { dropReason: "configuration_unavailable" } : {}),
   });
   logProviderEventIntake({
@@ -172,9 +227,9 @@ async function handleVerifiedWebhook(
     });
   }
 
-  if (acceptance.status !== "accepted") return new Response("OK", { status: 200 });
+  if (acceptance.status !== "accepted") return;
 
-  return dispatchWebhook(handlers, acceptance.events);
+  await dispatchWebhook(handlers, acceptance.events);
 }
 
 async function verifyWebhookRequest(
@@ -270,7 +325,8 @@ async function handleLifecycle(
   webhook: VerifiedWebhook,
   installationId: number,
   eventType: "installation" | "installation_repositories",
-): Promise<Response> {
+  receivedAt: Date,
+): Promise<void> {
   await options.applyLifecycle({
     installationId,
     event: eventType,
@@ -278,7 +334,7 @@ async function handleLifecycle(
     signatureHash: webhook.signatureHash,
     source: `github.${webhook.eventType}`,
     payload: webhook.body,
-    receivedAt: new Date(),
+    receivedAt,
   });
   logger.info(
     {
@@ -289,18 +345,15 @@ async function handleLifecycle(
     },
     "provider lifecycle event accepted",
   );
-  return new Response("OK", { status: 200 });
 }
 
 async function dispatchWebhook(
   handlers: Set<TriggerHandler>,
   triggers: readonly Parameters<TriggerHandler>[0][],
-): Promise<Response> {
+): Promise<void> {
   await Promise.all(
     triggers.flatMap((trigger) => Array.from(handlers, (handler) => handler(trigger))),
   );
-
-  return new Response("OK", { status: 200 });
 }
 
 export function verifySignature(
@@ -325,6 +378,7 @@ export function normalizeWebhookEvent(options: {
   body: WebhookPayload;
   deliveryId: string;
   eventType: string;
+  receivedAt: Date;
 }): NormalizedGitHubEvent | undefined {
   const repo = options.body.repository?.full_name;
   const repositoryId = options.body.repository?.id;
@@ -349,6 +403,6 @@ export function normalizeWebhookEvent(options: {
     repositoryId,
     installationId,
     payload: options.body,
-    createdAt: new Date().toISOString(),
+    createdAt: options.receivedAt.toISOString(),
   };
 }

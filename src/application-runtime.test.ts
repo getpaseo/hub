@@ -8,6 +8,7 @@ import { EntitlementsService } from "./entitlements/service.js";
 import type { ProviderRegistration, TriggerProviderResources } from "./providers/registration.js";
 import { createApplicationRuntime } from "./application-runtime.js";
 import { replyOutputTool } from "./execution-capabilities/outputs.js";
+import { createMemoryInboundQueue } from "./inbound/index.js";
 
 describe("application runtime provider composition", () => {
   it("collects a fake registration without a concrete-provider case", async () => {
@@ -53,6 +54,7 @@ describe("application runtime provider composition", () => {
     let closed = false;
     const database = await runtimeDatabase("owner");
     const runtime = await createApplicationRuntime({
+      inbound: createMemoryInboundQueue(),
       database,
       auth: new RuntimeAuth(),
       entitlements: entitlementsForTest(database),
@@ -112,6 +114,7 @@ describe("application runtime provider composition", () => {
     await assert.rejects(
       () =>
         createApplicationRuntime({
+          inbound: createMemoryInboundQueue(),
           database,
           auth: new RuntimeAuth(),
           entitlements: entitlementsForTest(database),
@@ -135,6 +138,7 @@ describe("application runtime provider composition", () => {
   it("reports member connection status as read-only", async () => {
     const database = await runtimeDatabase("member");
     const runtime = await createApplicationRuntime({
+      inbound: createMemoryInboundQueue(),
       database,
       auth: new RuntimeAuth("member"),
       entitlements: entitlementsForTest(database),
@@ -211,6 +215,7 @@ describe("application runtime provider composition", () => {
       ],
     };
     const runtime = await createApplicationRuntime({
+      inbound: createMemoryInboundQueue(),
       database,
       auth: new RuntimeAuth(),
       entitlements: entitlementsForTest(database),

@@ -26,6 +26,7 @@ import type { ProviderConnectionRegistration } from "../providers/registration.j
 import { FakeGitHub, fakeGitHubConnectionClient } from "../test-utils/fake-github.js";
 import { API_KEY_SCOPES } from "./api-key-contract.js";
 import type { InvitationEmail, InvitationMailer } from "../invitations/index.js";
+import { createMemoryInboundQueue } from "../inbound/index.js";
 
 type ActiveState = ActiveAccountState;
 
@@ -611,6 +612,7 @@ class PaseoAccounts {
        values ('github', '42', 0)`,
     );
     return createGitHubRegistration({
+      inbound: createMemoryInboundQueue(),
       database: this.database,
       auth: this.auth,
       applicationBaseUrl: "http://localhost:3000",

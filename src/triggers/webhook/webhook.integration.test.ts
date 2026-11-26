@@ -3,6 +3,7 @@ import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { z } from "zod";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { createHubApplication } from "../../app.js";
+import { PostgresOutage } from "../../db/test-utils/outage.js";
 import { createPostgresTestRuntime } from "../../db/test-utils/runtime.js";
 import { UNLIMITED_TEMPLATE } from "../../entitlements/catalog.js";
 import { EntitlementsService } from "../../entitlements/service.js";
@@ -144,6 +145,42 @@ it("authorizes, deduplicates, meters and queues durable webhook work across rede
   expect((await post(rotated.secret)).status).toBe(409);
 });
 
+it("answers 503 with Retry-After while Postgres is unavailable", async () => {
+  const { app, store, connectionString } = fixture;
+  const { trigger, initialWebhookSecret } = await store.save({
+    yaml: webhookYaml.replace("alert-handler", "outage-handler"),
+    userId: null,
+  });
+  const endpoint = (await fixture.database.webhooks.list("webhook-org")).find(
+    (candidate) => candidate.triggerId === trigger.id,
+  );
+  const post = () =>
+    app.operations.handleWebhookDelivery(
+      new Request(`http://localhost/webhooks/${endpoint!.endpointId}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${initialWebhookSecret!}`,
+        },
+        body: '{"alert":"disk full"}',
+      }),
+      endpoint!.endpointId,
+    );
+
+  const outage = await PostgresOutage.connect(connectionString);
+  try {
+    await outage.begin();
+    const unavailable = await post();
+    expect(unavailable.status).toBe(503);
+    expect(unavailable.headers.get("retry-after")).toBe("30");
+    expect(await unavailable.json()).toEqual({ error: "database_unavailable" });
+  } finally {
+    await outage.end();
+    await outage.close();
+  }
+  expect((await post()).status).toBe(202);
+}, 60_000);
+
 async function setup() {
   const postgres = await new PostgreSqlContainer("postgres:17-alpine").start();
   let runtime: Awaited<ReturnType<typeof createPostgresTestRuntime>>["runtime"] | undefined;
@@ -186,6 +223,7 @@ async function setup() {
     return {
       app,
       store,
+      connectionString: postgres.getConnectionUri(),
       runtime,
       database,
       entitlements,

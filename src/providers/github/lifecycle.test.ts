@@ -9,6 +9,7 @@ import { embeddedDatabaseRuntime } from "../../db/runtime/index.js";
 import { createDatabase } from "../../db/pg.js";
 import { createGitHubRegistration } from "./index.js";
 import { DynamicProviderRuntime } from "../../provider-applications/internal/runtime-owner.js";
+import { createMemoryInboundQueue } from "../../inbound/index.js";
 
 const GITHUB_OWNER = { providerApplicationId: "42", configurationVersion: 0 };
 
@@ -232,6 +233,7 @@ it("does not let an unpublished app candidate consume the active app's pending s
     });
     let candidateReads = 0;
     const owner = new DynamicProviderRuntime({
+      inbound: createMemoryInboundQueue(),
       database,
       auth: {
         handle: async () => new Response(),
@@ -251,6 +253,7 @@ it("does not let an unpublished app candidate consume the active app's pending s
       registrationFactory: ({ configuration, configurationVersion }) => {
         if (configuration.provider !== "github") throw new Error("unexpected provider");
         return createGitHubRegistration({
+          inbound: createMemoryInboundQueue(),
           database,
           auth: null,
           applicationBaseUrl: "https://hub.test",
@@ -364,8 +367,10 @@ async function createFixture() {
     `insert into runtime_provider_activation (provider, provider_application_id, configuration_version) values ('github', '42', 0)`,
   );
   const github = new GitHubTransport();
+  const inbound = createMemoryInboundQueue();
   const register = () =>
     createGitHubRegistration({
+      inbound,
       database,
       auth: null,
       applicationBaseUrl: "https://hub.test",
@@ -381,8 +386,10 @@ async function createFixture() {
       appAuth: github.auth,
     });
   const registration = register();
+  inbound.start(registration.inbound ?? {});
   const drain = () => registration.sources[0]!.stop();
-  const send = (
+  /** Delivers a signed webhook and waits until its queued receipt is processed. */
+  const send = async (
     event: string,
     action: string,
     delivery: string,
@@ -393,7 +400,7 @@ async function createFixture() {
       installation: { id: 42, repository_selection: "all" },
       ...selection,
     });
-    return registration.requests[0]!.handle(
+    const response = await registration.requests[0]!.handle(
       new Request("https://hub.test/webhook", {
         method: "POST",
         body,
@@ -404,6 +411,8 @@ async function createFixture() {
         },
       }),
     );
+    await inbound.idle();
+    return response;
   };
   return { directory, runtime, database, github, register, registration, drain, send };
 }

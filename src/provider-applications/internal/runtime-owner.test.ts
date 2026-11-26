@@ -14,11 +14,13 @@ import type {
 import { DynamicProviderRuntime } from "./runtime-owner.js";
 import { OutputExecutorRegistry, replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { createGitHubReplyExecutor, githubReplyAvailable } from "../../triggers/github/reply.js";
+import { createMemoryInboundQueue } from "../../inbound/index.js";
 
 describe("dynamic provider runtime", () => {
   it("exposes and delivers GitHub replies through the hosted provider registration", async () => {
     const comments: unknown[] = [];
     const runtime = new DynamicProviderRuntime({
+      inbound: createMemoryInboundQueue(),
       database: createMemoryDatabase(),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
@@ -93,6 +95,7 @@ describe("dynamic provider runtime", () => {
     "github.push",
   ] as const)("publishes raw source %s through the activated GitHub runtime", async (eventName) => {
     const runtime = new DynamicProviderRuntime({
+      inbound: createMemoryInboundQueue(),
       database: createMemoryDatabase(),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
@@ -130,6 +133,7 @@ describe("dynamic provider runtime", () => {
     const stopped: string[] = [];
     const completed: string[] = [];
     const runtime = new DynamicProviderRuntime({
+      inbound: createMemoryInboundQueue(),
       database: createMemoryDatabase(),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
@@ -195,6 +199,7 @@ describe("dynamic provider runtime", () => {
     const stopped: string[] = [];
     const database = createMemoryDatabase();
     const runtime = new DynamicProviderRuntime({
+      inbound: createMemoryInboundQueue(),
       database,
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
@@ -265,6 +270,7 @@ describe("dynamic provider runtime", () => {
   it("lets a Discord-triggered execution use the active GitHub integration and authority", async () => {
     const used: string[] = [];
     const runtime = new DynamicProviderRuntime({
+      inbound: createMemoryInboundQueue(),
       database: createMemoryDatabase(),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
@@ -333,6 +339,7 @@ describe("dynamic provider runtime", () => {
 
   it("reports an unavailable capability with a stable diagnostic code", async () => {
     const runtime = new DynamicProviderRuntime({
+      inbound: createMemoryInboundQueue(),
       database: createMemoryDatabase(),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
@@ -358,6 +365,7 @@ describe("dynamic provider runtime", () => {
     const used: string[] = [];
     const stopped: string[] = [];
     const runtime = new DynamicProviderRuntime({
+      inbound: createMemoryInboundQueue(),
       database: createMemoryDatabase(),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
@@ -430,6 +438,7 @@ describe("dynamic provider runtime", () => {
 
   it("leaves the active registration untouched when a candidate cannot start", async () => {
     const runtime = new DynamicProviderRuntime({
+      inbound: createMemoryInboundQueue(),
       database: createMemoryDatabase(),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
@@ -475,6 +484,7 @@ describe("dynamic provider runtime", () => {
   for (const provider of ["github", "slack", "discord"] as const) {
     it(`activates ${provider} for new connection actions without a restart`, async () => {
       const runtime = new DynamicProviderRuntime({
+        inbound: createMemoryInboundQueue(),
         database: createMemoryDatabase(),
         auth: testAuth(),
         applicationBaseUrl: "https://hub.test",
@@ -504,6 +514,7 @@ describe("dynamic provider runtime", () => {
 
     it(`keeps the working ${provider} registration when replacement startup fails`, async () => {
       const runtime = new DynamicProviderRuntime({
+        inbound: createMemoryInboundQueue(),
         database: createMemoryDatabase(),
         auth: testAuth(),
         applicationBaseUrl: "https://hub.test",
@@ -557,6 +568,7 @@ describe("dynamic provider runtime", () => {
         activateConfiguration: false,
       });
     const runtime = new DynamicProviderRuntime({
+      inbound: createMemoryInboundQueue(),
       database,
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",
@@ -588,6 +600,7 @@ describe("dynamic provider runtime", () => {
     const sourceHandlers = new Map<string, TriggerHandler>();
     const accepted: string[] = [];
     const runtime = new DynamicProviderRuntime({
+      inbound: createMemoryInboundQueue(),
       database: createMemoryDatabase(),
       auth: testAuth(),
       applicationBaseUrl: "https://hub.test",

@@ -18,6 +18,7 @@ import type { ProviderRegistration } from "../providers/registration.js";
 import { MemoryDiscordBotClient } from "../triggers/discord/memory-bot.js";
 import { FakeGitHub, fakeGitHubConnectionClient } from "../test-utils/fake-github.js";
 import { z } from "zod";
+import { createMemoryInboundQueue, type InboundQueue } from "../inbound/index.js";
 
 const TEST_WEBHOOK_SECRET = "provider-registration-test-secret";
 const HUB = "https://hub.example.test";
@@ -26,6 +27,8 @@ const INSTALLATION_IDS: Readonly<Record<string, number>> = { "acme-inc": 42, "or
 interface ProviderFixture {
   database: Database;
   registrations: readonly ProviderRegistration[];
+  /** Started with the registrations' processors, the way the application runtime starts it. */
+  inbound: InboundQueue;
   organizationSlug: string;
   github?: TestGitHub;
   discordBot?: MemoryDiscordBotClient;
@@ -1191,6 +1194,7 @@ async function deliverGitHubLifecycle(
     }),
   );
   assert.equal(response.status, 200);
+  await connections.inbound.idle();
   await connections.registrations
     .find((candidate) => candidate.connection.name === "github")!
     .sources[0]!.stop();
@@ -1281,10 +1285,12 @@ interface CreateConnectionsOptions {
 
 function createConnections(options: CreateConnectionsOptions): ProviderFixture {
   const registrations: ProviderRegistration[] = [];
+  const inbound = createMemoryInboundQueue();
   let discordBot: MemoryDiscordBotClient | undefined;
   if (options.github !== undefined) {
     registrations.push(
       createGitHubRegistration({
+        inbound,
         database: options.database,
         auth: options.auth,
         applicationBaseUrl: "https://hub.example.test",
@@ -1320,9 +1326,15 @@ function createConnections(options: CreateConnectionsOptions): ProviderFixture {
       }),
     );
   }
+  inbound.start(
+    Object.fromEntries(
+      registrations.flatMap((registration) => Object.entries(registration.inbound ?? {})),
+    ),
+  );
   return {
     database: options.database,
     registrations,
+    inbound,
     organizationSlug: options.organizationSlug ?? "acme",
     ...(options.github === undefined ? {} : { github: options.github }),
     ...(discordBot === undefined ? {} : { discordBot }),

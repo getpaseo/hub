@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Pool } from "pg";
 import type { PoolClient, QueryResultRow } from "pg";
-import { DatabaseUnavailableError } from "../../errors.js";
+import { DatabaseUnavailableError, toDatabaseError } from "../../errors.js";
 import { reportFailure } from "../../../failures/index.js";
 import { errorForLog } from "../../../logger.js";
 
@@ -78,6 +78,15 @@ export class PostgresPool extends Pool {
     this.end = observe(this.end, () => () => this.queryPhase.disable());
   }
 
+  /** Checks out a client. Failing to get one means Postgres is unavailable. */
+  async checkout(): Promise<PoolClient> {
+    try {
+      return await this.connect();
+    } catch (error) {
+      throw unavailable(error);
+    }
+  }
+
   /** Whether a query failed during the client's current checkout. */
   hasFailed(client: PoolClient): boolean {
     return this.checkoutFailures.has(client);
@@ -145,10 +154,20 @@ export class PostgresPool extends Pool {
           }, CLIENT_DEADLINE_MS);
         }),
       ]);
+    } catch (error) {
+      // Callers branch on `DatabaseUnavailableError`, so both an outage while waiting for a
+      // connection and a connection lost mid-query surface as one.
+      throw phase.value === "acquire" ? unavailable(error) : toDatabaseError(error);
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
     }
   }
+}
+
+function unavailable(error: unknown): DatabaseUnavailableError {
+  return error instanceof DatabaseUnavailableError
+    ? error
+    : new DatabaseUnavailableError("database unavailable", { cause: error });
 }
 
 /** Preserve pg's callback and promise overloads, including pool.query's internal callbacks. */

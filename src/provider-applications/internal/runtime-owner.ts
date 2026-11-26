@@ -25,6 +25,8 @@ import type {
 import { parseProviderApplicationConfiguration } from "./store.js";
 import type { SlackDeliveryStatus } from "../../triggers/slack/source/index.js";
 import { GITHUB_TRIGGER_SOURCE_NAMES } from "../../triggers/github/classification.js";
+import { GITHUB_WEBHOOK_EVENT } from "../../triggers/github/webhook.js";
+import type { InboundSink } from "../../inbound/index.js";
 
 interface Slot {
   active: ActiveRegistration | undefined;
@@ -66,9 +68,12 @@ interface DynamicProviderRuntimeOptions {
   database: Database;
   auth: AuthServer;
   applicationBaseUrl: string;
+  /** Where the GitHub webhook queues verified deliveries. */
+  inbound: InboundSink;
   fetch?: typeof fetch;
   registrationFactory?: (input: {
     provider: Provider;
+    inbound: InboundSink;
     configuration: ProviderApplicationConfiguration;
     callbackOrigin: string;
     configurationVersion: number;
@@ -232,7 +237,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       ...(this.options.fetch === undefined ? {} : { fetch: this.options.fetch }),
     };
     if (provider === "github" && configuration.provider === "github") {
-      return createGitHubRegistration({ ...shared, configuration });
+      return createGitHubRegistration({ ...shared, configuration, inbound: this.options.inbound });
     }
     if (provider === "slack" && configuration.provider === "slack") {
       return createSlackRegistration({
@@ -283,6 +288,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
   ): Parameters<NonNullable<DynamicProviderRuntimeOptions["registrationFactory"]>>[0] {
     return {
       provider,
+      inbound: this.options.inbound,
       configuration,
       callbackOrigin,
       configurationVersion,
@@ -400,6 +406,20 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         },
       ],
       sources: [source],
+      ...(provider === "github"
+        ? {
+            inbound: {
+              [GITHUB_WEBHOOK_EVENT]: (event) => {
+                const active = slot.active;
+                const processor = active?.registration.inbound?.[GITHUB_WEBHOOK_EVENT];
+                if (active === undefined || processor === undefined) {
+                  throw unavailable("github_inbound_unavailable");
+                }
+                return this.withLease(active, () => processor(event));
+              },
+            },
+          }
+        : {}),
       ...(provider === "slack" || provider === "discord"
         ? {
             integrationTools: {

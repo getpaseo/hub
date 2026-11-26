@@ -1,3 +1,5 @@
+import { isDatabaseUnavailableError } from "../../db/errors.js";
+import { reportFailure } from "../../failures/index.js";
 import type { EntitlementsService } from "../../entitlements/service.js";
 import { readBoundedRequestBody } from "../../http/request-body.js";
 import type { TriggerProvider } from "../index.js";
@@ -47,6 +49,25 @@ const endpointPattern = /^wh_[A-Za-z0-9_-]{32}$/u;
 const bearerPattern = /^Bearer (whsec_[A-Za-z0-9_-]{43})$/iu;
 
 export async function handleWebhookDelivery(
+  request: Request,
+  endpointId: string,
+  store: WebhookStore,
+  entitlements: EntitlementsService,
+): Promise<Response> {
+  try {
+    return await deliver(request, endpointId, store, entitlements);
+  } catch (error) {
+    if (!isDatabaseUnavailableError(error)) throw error;
+    reportFailure(error, { operation: "webhook.delivery", component: "triggers", status: 503 });
+    // Nothing was recorded, so the sender can retry the same delivery.
+    return Response.json(
+      { error: "database_unavailable" },
+      { status: 503, headers: { "Retry-After": "30" } },
+    );
+  }
+}
+
+async function deliver(
   request: Request,
   endpointId: string,
   store: WebhookStore,

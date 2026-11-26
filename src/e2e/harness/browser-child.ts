@@ -52,6 +52,7 @@ import {
 import { TRUSTED_REQUEST_ORIGIN_HEADER } from "../../http/request-origin.js";
 import { compileHubConfig, compiledConfigurationHash } from "../../config/compiler.js";
 import { ProjectConfigurationStore } from "../../configuration/store.js";
+import { createMemoryInboundQueue, type InboundSink } from "../../inbound/index.js";
 import type { HubBundleFile } from "../../config/bundle.js";
 import { BrowserAccountEmails, type BrowserAccountEmailKind } from "./browser-account-emails.js";
 import {
@@ -215,6 +216,7 @@ async function main(): Promise<void> {
   });
   const githubConfigured = hasBrowserGitHub(scenario);
   const slackConfigured = scenario === "slack-only";
+  const inbound = createMemoryInboundQueue();
   const registrations =
     auth === null
       ? []
@@ -224,6 +226,7 @@ async function main(): Promise<void> {
             auth,
             applicationBaseUrl: publicBaseUrl,
             publicBaseUrl,
+            inbound,
             configuration: githubConfigured
               ? {
                   appId: "42",
@@ -296,6 +299,7 @@ async function main(): Promise<void> {
     slackSocket,
     githubConfiguration,
     github,
+    inbound,
   });
   const runtime = await createApplicationRuntime({
     database,
@@ -303,6 +307,7 @@ async function main(): Promise<void> {
     entitlements: entitlements.service,
     billing,
     ...providers,
+    inbound,
     publicBaseUrl,
     completionTokenSecret: requiredEnvironment("PASEO_HUB_AUTH_SECRET"),
     async close() {
@@ -1201,6 +1206,7 @@ async function composeProviderApplications(input: {
   slackSocket: BrowserSlackSocketFixture;
   githubConfiguration: BrowserGitHubConfiguration;
   github: FakeGitHub;
+  inbound: InboundSink;
 }): Promise<{
   capability: ProviderApplications;
   registrations: readonly ProviderRegistration[];
@@ -1214,6 +1220,7 @@ async function composeProviderApplications(input: {
     database: input.database,
     auth: input.auth,
     applicationBaseUrl: input.publicBaseUrl,
+    inbound: input.inbound,
     registrationFactory: browserRegistrationFactory({
       database: input.database,
       auth: input.auth,

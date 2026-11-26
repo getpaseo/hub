@@ -25,6 +25,7 @@ import {
   type BrowserProviderScenario,
 } from "./browser-providers.js";
 import { type FakeGitHub, fakeGitHubConnectionClient } from "../../test-utils/fake-github.js";
+import type { InboundSink } from "../../inbound/index.js";
 
 /**
  * The credentials the fixture providers accept. A browser journey types exactly these to make
@@ -242,6 +243,7 @@ export function browserRegistrationFactory(fixtures: BrowserProviderApplicationF
   );
   return (input: {
     provider: Provider;
+    inbound: InboundSink;
     configuration: ProviderApplicationConfiguration;
     callbackOrigin: string;
     configurationVersion: number;
@@ -266,6 +268,7 @@ export function browserRegistrationFactory(fixtures: BrowserProviderApplicationF
       return createGitHubRegistration({
         ...shared,
         configuration,
+        inbound: input.inbound,
         appAuth: fixtures.github.appAuth,
         connectionClient: fakeGitHubConnectionClient(fixtures.github, input.callbackOrigin),
         configurationProvider: fixtures.githubConfiguration,

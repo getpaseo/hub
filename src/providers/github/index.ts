@@ -1,7 +1,6 @@
 import { createGitHubLifecycle } from "./lifecycle.js";
 import type { AuthServer } from "../../auth/server.js";
 import { createGitHubAuth, repositoryNamesForAccount, type GitHubAuth } from "../../auth/github.js";
-import { DatabaseUnavailableError } from "../../db/errors.js";
 import type { Database } from "../../db/types.js";
 import { logger } from "../../logger.js";
 import type { ProviderRegistration } from "../registration.js";
@@ -11,7 +10,12 @@ import {
   type GitHubReactionClient,
 } from "../../triggers/github/provider.js";
 import { organizationBillingUrl } from "../../triggers/failure-notice.js";
-import { createWebhookSource } from "../../triggers/github/webhook.js";
+import {
+  createDatabaseUnavailableWebhook,
+  createWebhookSource,
+  GITHUB_WEBHOOK_EVENT,
+} from "../../triggers/github/webhook.js";
+import type { InboundSink } from "../../inbound/index.js";
 import { createGitHubConnectionClient, type GitHubConnectionClient } from "./client.js";
 import { createGitHubConnection, githubConnectionStatus } from "./connection.js";
 import { PushPayloadSchema } from "../../auth/github-events.js";
@@ -39,6 +43,8 @@ export interface CreateGitHubRegistrationOptions {
   applicationBaseUrl: string;
   publicBaseUrl?: string;
   configuration?: GitHubRegistrationConfiguration | null;
+  /** Where verified webhook deliveries wait for Postgres. */
+  inbound: InboundSink;
   appAuth?: GitHubAuth;
   connectionClient?: GitHubConnectionClient;
   reactionClient?: GitHubReactionClient;
@@ -94,6 +100,7 @@ export function createGitHubRegistration(
           { client, repositories: githubConfiguration },
         );
   const webhook = createWebhookSource(configuration.webhookSecret, {
+    inbound: options.inbound,
     accept: (input) =>
       database.acceptGitHubEvent({
         ...input,
@@ -253,6 +260,7 @@ export function createGitHubRegistration(
       },
     ],
     requests: [{ name: "webhook", handle: (request) => webhook.handle(request) }],
+    inbound: { [GITHUB_WEBHOOK_EVENT]: (event) => webhook.process(event) },
   };
 }
 
@@ -292,15 +300,11 @@ function emptyGitHubRegistration(
 function databaseUnavailableGitHubRegistration(
   configuration: GitHubRegistrationConfiguration,
 ): ProviderRegistration {
-  const unavailable = () => Promise.reject(new DatabaseUnavailableError());
-  const webhook = createWebhookSource(configuration.webhookSecret, {
-    accept: unavailable,
-    applyLifecycle: unavailable,
-  });
+  const webhook = createDatabaseUnavailableWebhook(configuration.webhookSecret);
   return {
     connection: githubConnectionStatus(true),
     triggerProviders: [],
-    sources: [webhook],
+    sources: [],
     outputs: [],
     requests: [{ name: "webhook", handle: (request) => webhook.handle(request) }],
   };
