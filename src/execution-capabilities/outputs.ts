@@ -1,5 +1,6 @@
 import { integrationToolDefinitions } from "../integration-tools/index.js";
 import type { IntegrationToolGrants } from "../integration-tools/grants.js";
+import type { IntegrationRegistry } from "../integrations/registry.js";
 import type { JsonValue } from "../config/compiler.js";
 import { compileFinishExecutionArguments } from "../workflows/json-schema.js";
 
@@ -35,7 +36,9 @@ export interface OutputExecutionInput {
   outputContext: unknown;
 }
 
-export type OutputExecutor = (input: OutputExecutionInput) => Promise<void>;
+export type OutputExecutor = (
+  input: OutputExecutionInput,
+) => Promise<void | { readonly externalObjectId?: string }>;
 
 export interface OutputCapability {
   readonly type: string;
@@ -157,6 +160,7 @@ export function executionToolDefinitions(
   outputSchema: JsonValue | undefined,
   materializedOutputs: readonly MaterializedOutputCapability[],
   grants?: IntegrationToolGrants,
+  registry?: IntegrationRegistry,
 ): readonly OutputToolDefinition[] {
   return [
     {
@@ -172,7 +176,7 @@ export function executionToolDefinitions(
           : `${capability.tool.description} (up to ${String(declaration.max)} times).`,
       inputSchema: capability.tool.inputSchema,
     })),
-    ...integrationToolDefinitions(grants),
+    ...integrationToolDefinitions(grants, registry),
   ];
 }
 

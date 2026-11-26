@@ -2,7 +2,15 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { ExternalLink } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { Card, CardSkeleton } from "../components/app/card.js";
 import { FormField } from "../components/app/form-field.js";
 import { CopyBlock, CopyField } from "../components/app/copy-field.js";
@@ -38,8 +46,10 @@ import {
   beginProviderConnection,
   configureSlackSocketApplication,
   retrySlackSocketDelivery,
+  runProviderSetupAction,
   verifyAndSaveProviderApplication,
 } from "./functions.js";
+import type { BrowserIntegrationDefinition } from "../integrations/browser-contracts.js";
 import type {
   ProviderApplicationSaveResult,
   ProviderApplicationSurface,
@@ -63,6 +73,7 @@ interface SaveMutationInput {
 // eslint-disable-next-line complexity -- this component owns one provider card's complete workflow.
 export function ProviderSection({
   guide,
+  integration,
   view,
   callbackOrigin,
   surface,
@@ -72,6 +83,7 @@ export function ProviderSection({
   returned,
 }: {
   guide: ProviderGuide;
+  integration?: BrowserIntegrationDefinition;
   view: ProviderApplicationView;
   callbackOrigin: string;
   surface: ProviderApplicationSurface;
@@ -84,8 +96,29 @@ export function ProviderSection({
   const queryClient = useQueryClient();
   const savedSlackTransport = view.identifiers["transport"] === "webhook" ? "webhook" : "socket";
   const [slackTransport, setSlackTransport] = useState<"socket" | "webhook">(savedSlackTransport);
-  const activeGuide =
-    guide.provider === "slack" && slackTransport === "webhook" ? SLACK_WEBHOOK_GUIDE : guide;
+  const initialVariantId =
+    integration?.setup.selectVariant?.(view.identifiers) ??
+    integration?.setup.defaultVariantId ??
+    "";
+  const [variantId, setVariantId] = useState<string>(initialVariantId);
+  const activeVariant =
+    integration?.setup.variants.find((item) => item.id === variantId) ??
+    integration?.setup.variants[0];
+  let activeGuide: ProviderGuide = guide;
+  if (activeVariant !== undefined) {
+    activeGuide = activeVariant.guide;
+  } else if (guide.provider === "slack" && slackTransport === "webhook") {
+    activeGuide = SLACK_WEBHOOK_GUIDE;
+  }
+  const variantOptions = useMemo(
+    () =>
+      integration?.setup.variants.map((variant) => ({
+        value: variant.id,
+        label: variant.label,
+      })) ?? [],
+    [integration],
+  );
+  const runAction = useServerFn(runProviderSetupAction);
   const [replacing, setReplacing] = useState(false);
   const [errors, setErrors] = useState<Readonly<Record<string, string>>>({});
   const [outcome, setOutcome] = useState<Outcome | undefined>(returned);
@@ -196,19 +229,31 @@ export function ProviderSection({
       if (Object.keys(missing).length > 0) return;
       const expectedVersion =
         view.configurationVersion === null || view.configurationVersion === 0
-          ? {}
-          : { expectedVersion: view.configurationVersion };
+          ? undefined
+          : view.configurationVersion;
+      if (activeVariant !== undefined) {
+        const built = activeVariant.buildConfiguration(values, expectedVersion);
+        save.mutate({
+          data: {
+            ...built,
+            provider: activeGuide.provider,
+            surface,
+            ...(expectedVersion === undefined ? {} : { expectedVersion }),
+          },
+        });
+        return;
+      }
       save.mutate({
         data: {
           provider: activeGuide.provider,
           ...(activeGuide.transport === undefined ? {} : { transport: activeGuide.transport }),
           surface,
-          ...expectedVersion,
+          ...(expectedVersion === undefined ? {} : { expectedVersion }),
           ...values,
         },
       });
     },
-    [activeGuide, fields, save, surface, view.configurationVersion],
+    [activeGuide, activeVariant, fields, save, surface, view.configurationVersion],
   );
 
   const startConnection = useCallback(() => {
@@ -259,6 +304,16 @@ export function ProviderSection({
         (phase === "guiding" || phase === "replacing" || phase === "blocked") ? (
           <SlackTransportChoice value={slackTransport} onChange={setSlackTransport} />
         ) : null}
+        {integration !== undefined &&
+        integration.setup.variants.length > 1 &&
+        (phase === "guiding" || phase === "replacing" || phase === "blocked") ? (
+          <SegmentedControl
+            label={`${integration.label} setup mode`}
+            value={activeVariant?.id ?? integration.setup.defaultVariantId}
+            options={variantOptions}
+            onChange={setVariantId}
+          />
+        ) : null}
         <SectionBody
           guide={activeGuide}
           view={view}
@@ -276,6 +331,23 @@ export function ProviderSection({
             setReplacing(true);
           }}
         />
+        {integration?.setup.SetupExtension !== undefined ? (
+          <integration.setup.SetupExtension
+            callbackOrigin={callbackOrigin}
+            identifiers={view.identifiers}
+            status={view.status}
+            onAction={async (action, payload) => {
+              const response = await runAction({
+                data: { provider: integration.id, action, payload },
+              });
+              if (response.status === "error") throw new Error(response.error.message);
+              return response.data;
+            }}
+            onSaved={() => {
+              void queryClient.invalidateQueries({ queryKey: ["provider-applications"] });
+            }}
+          />
+        ) : null}
       </div>
     </Disclosure>
   );

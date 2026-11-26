@@ -1,4 +1,5 @@
 import { TerminalIcon, ClockIcon, WebhookIcon } from "lucide-react";
+import { defaultBrowserIntegrationRegistry } from "../integrations/browser-registry.js";
 
 /**
  * Brand marks for the connection and sign-in providers. Lucide dropped brand icons, and a generic
@@ -6,19 +7,7 @@ import { TerminalIcon, ClockIcon, WebhookIcon } from "lucide-react";
  * "GitHub" — a provider card is exactly where the mark carries the meaning. "manual"
  * is not a brand, so it gets a plain lucide glyph instead of a drawn mark.
  */
-export function ProviderGlyph({
-  provider,
-}: {
-  provider:
-    | "github"
-    | "google"
-    | "discord"
-    | "slack"
-    | "linear"
-    | "manual"
-    | "schedule"
-    | "webhook";
-}) {
+export function ProviderGlyph({ provider }: { provider: string }) {
   if (provider === "webhook") return <WebhookIcon className="size-4.5" aria-hidden="true" />;
   if (provider === "schedule") return <ClockIcon className="size-4.5" aria-hidden="true" />;
   if (provider === "github") return <GitHubMark />;
@@ -26,6 +15,8 @@ export function ProviderGlyph({
   if (provider === "discord") return <DiscordMark />;
   if (provider === "slack") return <SlackMark />;
   if (provider === "linear") return <LinearMark />;
+  const Glyph = defaultBrowserIntegrationRegistry.get(provider)?.glyph;
+  if (Glyph !== undefined) return <Glyph className="size-4.5" />;
   return <TerminalIcon className="size-4.5" aria-hidden="true" />;
 }
 

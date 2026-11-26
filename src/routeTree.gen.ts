@@ -46,6 +46,7 @@ import { Route as ApiIntegrationsLinearCallbackRouteImport } from './routes/api/
 import { Route as ApiIntegrationsGithubSetupRouteImport } from './routes/api/integrations/github/setup'
 import { Route as ApiIntegrationsGithubCallbackRouteImport } from './routes/api/integrations/github/callback'
 import { Route as ApiIntegrationsDiscordCallbackRouteImport } from './routes/api/integrations/discord/callback'
+import { Route as ApiIntegrationsProviderActionRouteImport } from './routes/api/integrations/$provider/$action'
 import { Route as AgentExecutionsExecutionIdAttachmentsAttachmentIdRouteImport } from './routes/agent-executions/$executionId/attachments/$attachmentId'
 import { Route as ShellOOrganizationSlugTriggersRouteImport } from './routes/_shell/o/$organizationSlug/triggers'
 import { Route as ShellOOrganizationSlugSettingsRouteImport } from './routes/_shell/o/$organizationSlug/settings'
@@ -256,6 +257,12 @@ const ApiIntegrationsDiscordCallbackRoute =
     path: '/api/integrations/discord/callback',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiIntegrationsProviderActionRoute =
+  ApiIntegrationsProviderActionRouteImport.update({
+    id: '/api/integrations/$provider/$action',
+    path: '/api/integrations/$provider/$action',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute =
   AgentExecutionsExecutionIdAttachmentsAttachmentIdRouteImport.update({
     id: '/agent-executions/$executionId/attachments/$attachmentId',
@@ -377,6 +384,7 @@ export interface FileRoutesByFullPath {
   '/o/$organizationSlug/settings': typeof ShellOOrganizationSlugSettingsRouteWithChildren
   '/o/$organizationSlug/triggers': typeof ShellOOrganizationSlugTriggersRouteWithChildren
   '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
+  '/api/integrations/$provider/$action': typeof ApiIntegrationsProviderActionRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
   '/api/integrations/github/setup': typeof ApiIntegrationsGithubSetupRoute
@@ -427,6 +435,7 @@ export interface FileRoutesByTo {
   '/o/$organizationSlug/home': typeof ShellOOrganizationSlugHomeRoute
   '/o/$organizationSlug/integrations': typeof ShellOOrganizationSlugIntegrationsRoute
   '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
+  '/api/integrations/$provider/$action': typeof ApiIntegrationsProviderActionRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
   '/api/integrations/github/setup': typeof ApiIntegrationsGithubSetupRoute
@@ -481,6 +490,7 @@ export interface FileRoutesById {
   '/_shell/o/$organizationSlug/settings': typeof ShellOOrganizationSlugSettingsRouteWithChildren
   '/_shell/o/$organizationSlug/triggers': typeof ShellOOrganizationSlugTriggersRouteWithChildren
   '/agent-executions/$executionId/attachments/$attachmentId': typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
+  '/api/integrations/$provider/$action': typeof ApiIntegrationsProviderActionRoute
   '/api/integrations/discord/callback': typeof ApiIntegrationsDiscordCallbackRoute
   '/api/integrations/github/callback': typeof ApiIntegrationsGithubCallbackRoute
   '/api/integrations/github/setup': typeof ApiIntegrationsGithubSetupRoute
@@ -535,6 +545,7 @@ export interface FileRouteTypes {
     | '/o/$organizationSlug/settings'
     | '/o/$organizationSlug/triggers'
     | '/agent-executions/$executionId/attachments/$attachmentId'
+    | '/api/integrations/$provider/$action'
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
     | '/api/integrations/github/setup'
@@ -585,6 +596,7 @@ export interface FileRouteTypes {
     | '/o/$organizationSlug/home'
     | '/o/$organizationSlug/integrations'
     | '/agent-executions/$executionId/attachments/$attachmentId'
+    | '/api/integrations/$provider/$action'
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
     | '/api/integrations/github/setup'
@@ -638,6 +650,7 @@ export interface FileRouteTypes {
     | '/_shell/o/$organizationSlug/settings'
     | '/_shell/o/$organizationSlug/triggers'
     | '/agent-executions/$executionId/attachments/$attachmentId'
+    | '/api/integrations/$provider/$action'
     | '/api/integrations/discord/callback'
     | '/api/integrations/github/callback'
     | '/api/integrations/github/setup'
@@ -680,6 +693,7 @@ export interface RootRouteChildren {
   ApiV1CliAuthorizationsRoute: typeof ApiV1CliAuthorizationsRouteWithChildren
   OpenExecutionsExecutionIdRoute: typeof OpenExecutionsExecutionIdRoute
   AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute: typeof AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute
+  ApiIntegrationsProviderActionRoute: typeof ApiIntegrationsProviderActionRoute
   ApiIntegrationsDiscordCallbackRoute: typeof ApiIntegrationsDiscordCallbackRoute
   ApiIntegrationsGithubCallbackRoute: typeof ApiIntegrationsGithubCallbackRoute
   ApiIntegrationsGithubSetupRoute: typeof ApiIntegrationsGithubSetupRoute
@@ -950,6 +964,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiIntegrationsDiscordCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/integrations/$provider/$action': {
+      id: '/api/integrations/$provider/$action'
+      path: '/api/integrations/$provider/$action'
+      fullPath: '/api/integrations/$provider/$action'
+      preLoaderRoute: typeof ApiIntegrationsProviderActionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/agent-executions/$executionId/attachments/$attachmentId': {
       id: '/agent-executions/$executionId/attachments/$attachmentId'
       path: '/agent-executions/$executionId/attachments/$attachmentId'
@@ -1171,6 +1192,7 @@ const rootRouteChildren: RootRouteChildren = {
   OpenExecutionsExecutionIdRoute: OpenExecutionsExecutionIdRoute,
   AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute:
     AgentExecutionsExecutionIdAttachmentsAttachmentIdRoute,
+  ApiIntegrationsProviderActionRoute: ApiIntegrationsProviderActionRoute,
   ApiIntegrationsDiscordCallbackRoute: ApiIntegrationsDiscordCallbackRoute,
   ApiIntegrationsGithubCallbackRoute: ApiIntegrationsGithubCallbackRoute,
   ApiIntegrationsGithubSetupRoute: ApiIntegrationsGithubSetupRoute,

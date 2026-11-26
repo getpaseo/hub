@@ -15,14 +15,16 @@ export class IntegrationHttpError extends IntegrationToolError {
   }
 }
 
-export interface IntegrationToolCall {
+export interface IntegrationToolCall<TGrant = IntegrationToolGrant> {
   name: string;
   organizationId: string;
-  grant: IntegrationToolGrant;
+  grant: TGrant;
   args: Record<string, unknown>;
 }
 
-export type IntegrationToolHandler = (call: IntegrationToolCall) => Promise<unknown>;
+export type IntegrationToolHandler<TGrant = IntegrationToolGrant> = (
+  call: IntegrationToolCall<TGrant>,
+) => Promise<unknown>;
 
 export async function ownedConnection<P extends IntegrationProvider>(
   database: Database,

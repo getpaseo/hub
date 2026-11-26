@@ -13,12 +13,35 @@ import { Button } from "../components/ui/button.js";
 import type { Result } from "../contract/respond.js";
 import { connectionReturnCopy } from "../connections/result-contract.js";
 import { useConnectionReturn } from "../connections/result.js";
-import { PROVIDER_GUIDES } from "./guides.js";
+import type { BrowserIntegrationDefinition } from "../integrations/browser-contracts.js";
+import { defaultBrowserIntegrationRegistry } from "../integrations/browser-registry.js";
+import { PROVIDER_GUIDES, type ProviderGuide } from "./guides.js";
 import { providerApplicationsOverview } from "./functions.js";
 import { ProviderSection, ProviderSectionLoading } from "./provider-section.js";
-import type { Provider, ProviderApplicationOverview, ProviderApplicationSurface } from "./index.js";
+import type {
+  ApplicationProvider,
+  ProviderApplicationOverview,
+  ProviderApplicationSurface,
+} from "./index.js";
 
 const OVERVIEW_KEY = ["provider-applications"] as const;
+
+interface SectionDescriptor {
+  readonly guide: ProviderGuide;
+  readonly integration?: BrowserIntegrationDefinition;
+}
+
+function sectionDescriptors(): readonly SectionDescriptor[] {
+  return [
+    ...PROVIDER_GUIDES.map((guide) => ({ guide })),
+    ...defaultBrowserIntegrationRegistry.all().flatMap((integration) => {
+      const variant =
+        integration.setup.variants.find((item) => item.id === integration.setup.defaultVariantId) ??
+        integration.setup.variants[0];
+      return variant === undefined ? [] : [{ guide: variant.guide, integration }];
+    }),
+  ];
+}
 
 /**
  * One cached overview for the whole surface. The journey frame reads it to decide whether the
@@ -35,7 +58,9 @@ function useProviderApplicationsOverview() {
 }
 
 function connectedProviderCount(overview: ProviderApplicationOverview): number {
-  return Object.values(overview.providers).filter((view) => view.connections.length > 0).length;
+  return Object.values(overview.providers).filter(
+    (view) => view !== undefined && view.connections.length > 0,
+  ).length;
 }
 
 /**
@@ -51,7 +76,7 @@ function ProviderApplications({
   organizationId: string;
 }) {
   const [returned] = useConnectionReturn();
-  const [open, setOpen] = useState<Partial<Record<Provider, boolean>>>(() =>
+  const [open, setOpen] = useState<Partial<Record<ApplicationProvider, boolean>>>(() =>
     returned === undefined ? {} : { [returned.provider]: true },
   );
   const query = useProviderApplicationsOverview();
@@ -71,30 +96,38 @@ function ProviderApplications({
     );
   }
   const overview = query.data;
+  const sections = sectionDescriptors();
   return (
     <div className="grid min-w-0 gap-3">
-      {PROVIDER_GUIDES.map((guide) => (
-        <div
-          key={guide.provider}
-          className="min-w-0"
-          {...(returned?.provider === guide.provider ? { ref: section } : {})}
-        >
-          <ProviderSection
-            guide={guide}
-            view={overview.providers[guide.provider]}
-            callbackOrigin={overview.callbackOrigin}
-            surface={surface}
-            organizationId={organizationId}
-            // Closed until the operator picks one, or until a provider's own return has
-            // something to show them. Three open manuals is not a choice, it is a wall.
-            open={open[guide.provider] ?? false}
-            onOpenChange={(next) => setOpen((current) => ({ ...current, [guide.provider]: next }))}
-            {...(returned?.provider === guide.provider
-              ? { returned: connectionReturnCopy(returned) }
-              : { returned: undefined })}
-          />
-        </div>
-      ))}
+      {sections.map(({ guide, integration }) => {
+        const view = overview.providers[guide.provider];
+        if (view === undefined) return null;
+        return (
+          <div
+            key={guide.provider}
+            className="min-w-0"
+            {...(returned?.provider === guide.provider ? { ref: section } : {})}
+          >
+            <ProviderSection
+              guide={guide}
+              {...(integration === undefined ? {} : { integration })}
+              view={view}
+              callbackOrigin={overview.callbackOrigin}
+              surface={surface}
+              organizationId={organizationId}
+              // Closed until the operator picks one, or until a provider's own return has
+              // something to show them. Three open manuals is not a choice, it is a wall.
+              open={open[guide.provider] ?? false}
+              onOpenChange={(next) =>
+                setOpen((current) => ({ ...current, [guide.provider]: next }))
+              }
+              {...(returned?.provider === guide.provider
+                ? { returned: connectionReturnCopy(returned) }
+                : { returned: undefined })}
+            />
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -102,7 +135,7 @@ function ProviderApplications({
 function OverviewLoading() {
   return (
     <div aria-label="Loading your apps" aria-busy="true" className="grid gap-3">
-      {PROVIDER_GUIDES.map((guide) => (
+      {sectionDescriptors().map(({ guide }) => (
         <ProviderSectionLoading key={guide.provider} guide={guide} open={false} />
       ))}
     </div>

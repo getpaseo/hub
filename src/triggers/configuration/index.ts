@@ -7,10 +7,18 @@ import {
   type CompiledEnvironment,
   type CompiledTrigger,
 } from "../../config/compiler.js";
+import {
+  defaultIntegrationRegistry,
+  type IntegrationRegistry,
+} from "../../integrations/registry.js";
 import { templateInsertsPrompt } from "../../workflows/expression.js";
-import { TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
+import { buildTriggerDocumentSchema, type TriggerDocument } from "./schema.js";
 
-export { TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
+export {
+  buildTriggerDocumentSchema,
+  TriggerDocumentSchema,
+  type TriggerDocument,
+} from "./schema.js";
 export {
   migrateLegacyBundle,
   type MigratedLegacyTrigger,
@@ -36,8 +44,11 @@ export interface CompiledTriggerDocument {
   authoredHash: string;
 }
 
-export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
-  const authored = parseTriggerDocument(yaml);
+export function compileTriggerDocument(
+  yaml: string,
+  registry: IntegrationRegistry = defaultIntegrationRegistry,
+): CompiledTriggerDocument {
+  const authored = parseTriggerDocument(yaml, registry);
   const namedAgents = "choices" in authored.run.agent ? authored.run.agent.choices : undefined;
   const agent = "choices" in authored.run.agent ? authored.run.agent.select : authored.run.agent;
   const environment = {
@@ -60,33 +71,14 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
     0,
     events.findIndex(([event]) => event === "manual.run"),
   );
+  const authoredStep = buildCompiledStep(authored, agent, allowOutputs);
   for (const [index, [event, definition]] of events.entries()) {
     const compiledTrigger: AuthoredTrigger = {
       name: internalEventName(authored.name, index, named),
       on: event,
       max_runtime: authored.max_runtime ?? authored.run.max_runtime,
       filters: authoredFilters(event, definition),
-      steps: [
-        {
-          id: "run",
-          environment: "target",
-          max_runtime: authored.run.max_runtime,
-          idle_timeout: authored.run.idle_timeout,
-          ...(authored.run.startup_timeout === undefined
-            ? {}
-            : { startup_timeout: authored.run.startup_timeout }),
-          agent,
-          ...(authored.run.title === undefined ? {} : { title: authored.run.title }),
-          prompt: [{ text: authored.run.prompt }],
-          ...(authored.run.env === undefined ? {} : { env: authored.run.env }),
-          ...(authored.run.github === undefined ? {} : { github: authored.run.github }),
-          tools: authored.run.tools,
-          ...(authored.run.output === undefined ? {} : { output: authored.run.output }),
-          ...(allowOutputs.length === 0 ? {} : { allow_outputs: allowOutputs }),
-          auto_archive: authored.run.auto_archive,
-          background: authored.run.background,
-        },
-      ],
+      steps: [authoredStep],
     };
     if (authored.inputs !== undefined) compiledTrigger.inputs = authored.inputs;
     triggers.push(compiledTrigger);
@@ -98,7 +90,10 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
         environments: [environment],
         triggers,
       },
-      namedAgents === undefined ? {} : { namedAgents },
+      {
+        ...(namedAgents === undefined ? {} : { namedAgents }),
+        registry,
+      },
     );
   } catch (error) {
     throw new TriggerDocumentError([
@@ -122,13 +117,44 @@ export function compileTriggerDocument(yaml: string): CompiledTriggerDocument {
           })),
         },
         authored.run.prompt,
+        registry,
       ),
     ),
     authoredHash: createHash("sha256").update(yaml).digest("hex"),
   };
 }
 
-function withEventDefaults(trigger: CompiledTrigger, instructions: string): CompiledTrigger {
+function buildCompiledStep(
+  authored: TriggerDocument,
+  agent: AuthoredStep["agent"],
+  allowOutputs: NonNullable<AuthoredStep["allow_outputs"]>,
+): AuthoredStep {
+  return {
+    id: "run",
+    environment: "target",
+    max_runtime: authored.run.max_runtime,
+    idle_timeout: authored.run.idle_timeout,
+    ...(authored.run.startup_timeout === undefined
+      ? {}
+      : { startup_timeout: authored.run.startup_timeout }),
+    agent,
+    ...(authored.run.title === undefined ? {} : { title: authored.run.title }),
+    prompt: [{ text: authored.run.prompt }],
+    ...(authored.run.env === undefined ? {} : { env: authored.run.env }),
+    ...(authored.run.github === undefined ? {} : { github: authored.run.github }),
+    ...(authored.run.tools === undefined ? {} : { tools: authored.run.tools }),
+    ...(authored.run.output === undefined ? {} : { output: authored.run.output }),
+    ...(allowOutputs.length === 0 ? {} : { allow_outputs: allowOutputs }),
+    auto_archive: authored.run.auto_archive,
+    background: authored.run.background,
+  };
+}
+
+function withEventDefaults(
+  trigger: CompiledTrigger,
+  instructions: string,
+  registry: IntegrationRegistry,
+): CompiledTrigger {
   if (trigger.on === "webhook.received") {
     if (templateInsertsPrompt(instructions)) return trigger;
     return {
@@ -139,7 +165,7 @@ function withEventDefaults(trigger: CompiledTrigger, instructions: string): Comp
       })),
     };
   }
-  const replyType = automaticReplyType(trigger.on);
+  const replyType = automaticReplyType(trigger.on, registry);
   if (replyType === undefined) return trigger;
   return {
     ...trigger,
@@ -152,7 +178,9 @@ function withEventDefaults(trigger: CompiledTrigger, instructions: string): Comp
   };
 }
 
-function automaticReplyType(event: string): string | undefined {
+function automaticReplyType(event: string, registry: IntegrationRegistry): string | undefined {
+  const registered = registry.forEvent(event);
+  if (registered !== undefined) return registered.event.replyType;
   const provider = event.split(".", 1)[0];
   return provider === "slack" ||
     provider === "discord" ||
@@ -175,7 +203,10 @@ function authoredFilters(
   };
 }
 
-export function parseTriggerDocument(yaml: string): TriggerDocument {
+export function parseTriggerDocument(
+  yaml: string,
+  registry: IntegrationRegistry = defaultIntegrationRegistry,
+): TriggerDocument {
   let input: unknown;
   try {
     input = load(yaml);
@@ -184,7 +215,7 @@ export function parseTriggerDocument(yaml: string): TriggerDocument {
       { path: [], message: error instanceof Error ? error.message : "invalid YAML" },
     ]);
   }
-  const parsed = TriggerDocumentSchema.safeParse(input);
+  const parsed = buildTriggerDocumentSchema(registry).safeParse(input);
   if (!parsed.success) {
     throw new TriggerDocumentError(
       parsed.error.issues.map((issue) => ({

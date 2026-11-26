@@ -36,7 +36,7 @@ export function AudienceFields({
   onChange: (value: TriggerFormValue) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const { audiences } = eventDefinition(value.event);
+  const { audiences, audienceHint } = eventDefinition(value.event);
   const options = useMemo<SegmentedOption[]>(
     () =>
       audiences.map((audience) => ({
@@ -59,7 +59,7 @@ export function AudienceFields({
       <div className="grid gap-4">
         <SegmentedControl
           label="Audience"
-          description="Who can run this trigger"
+          description={audienceHint ?? "Who can run this trigger"}
           value={value.audience}
           options={options}
           onChange={(next) => {

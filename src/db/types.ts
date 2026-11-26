@@ -14,7 +14,7 @@ export type WorkflowDeadlineKind = "step_hard" | "step_idle" | "whole_run";
 export interface ProviderEventReceiptRecord {
   id: string;
   organizationId: string;
-  provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule" | "webhook";
+  provider: string;
   connectionId: string | null;
   resourceId: string | null;
   deliveryId: string;
@@ -262,6 +262,7 @@ export interface OrganizationConnectionUsage {
   discord: DiscordConnectionRecord[];
   slack: SlackConnectionRecord[];
   linear: LinearConnectionRecord[];
+  integrations?: IntegrationConnectionRecord[];
 }
 
 export interface GitHubRepositoryRecord {
@@ -358,13 +359,112 @@ export interface PendingProjectTriggerMigration {
 
 export type ConnectionProvider = "github" | "discord" | "slack" | "linear";
 
-export type ConnectionAttemptPhase =
-  | "github_setup"
-  | "github_user_authorization"
-  | "github_selection"
-  | "discord_authorization"
-  | "slack_authorization"
-  | "linear_authorization";
+export type IntegrationConnectionStatus = "active" | "suspended" | "requires_reauthorization";
+
+export interface IntegrationConnectionRecord {
+  id: string;
+  provider: string;
+  organizationId: string;
+  providerApplicationId: string | null;
+  slug: string;
+  externalId: string;
+  displayName: string;
+  status: IntegrationConnectionStatus;
+  scopes: string[];
+  credentials: Readonly<Record<string, unknown>>;
+  metadata: Readonly<Record<string, unknown>>;
+  workspaceId: string | null;
+  connectedByUserId: string | null;
+  connectedAt: Date;
+  updatedAt: Date;
+}
+
+export type PublicIntegrationConnectionView = Omit<IntegrationConnectionRecord, "credentials">;
+
+export interface BindIntegrationProviderConfigurationInput {
+  configuration: unknown;
+  identity: { id: string; [key: string]: unknown };
+  expectedVersion: number | undefined;
+  updatedByUserId: string;
+  configurationVersion?: number;
+}
+
+export interface BindIntegrationConnectionBaseInput {
+  provider: string;
+  providerApplicationId: string;
+  externalId: string;
+  displayName: string;
+  status?: IntegrationConnectionStatus;
+  scopes?: readonly string[];
+  credentials: Readonly<Record<string, unknown>>;
+  metadata?: Readonly<Record<string, unknown>>;
+  workspaceId?: string | null;
+  providerConfiguration?: BindIntegrationProviderConfigurationInput;
+}
+
+export type BindIntegrationConnectionInput =
+  | (BindIntegrationConnectionBaseInput & {
+      attempt?: undefined;
+      organizationId: string;
+      connectedByUserId: string | null;
+    })
+  | (BindIntegrationConnectionBaseInput & {
+      attempt: ReadConnectionAttemptInput;
+    });
+
+export interface IntegrationConnectionRefreshUpdate {
+  credentials?: Readonly<Record<string, unknown>>;
+  metadata?: Readonly<Record<string, unknown>>;
+  scopes?: readonly string[];
+  status?: IntegrationConnectionStatus;
+  displayName?: string;
+  workspaceId?: string | null;
+}
+
+export type IntegrationConnectionRefreshOperation<T> = (
+  connection: IntegrationConnectionRecord | undefined,
+  update: (patch: IntegrationConnectionRefreshUpdate) => Promise<void>,
+) => Promise<T>;
+
+export interface AcceptIntegrationEventInput extends ProviderEventEvidence {
+  provider: string;
+  connectionId?: string;
+  externalId?: string;
+  resourceId?: string;
+}
+
+export interface IntegrationStore {
+  bind(input: BindIntegrationConnectionInput): Promise<IntegrationConnectionRecord>;
+  disconnect(
+    provider: string,
+    connectionId: string,
+    access: ConnectionStartAuthority,
+  ): Promise<IntegrationConnectionRecord>;
+  listForOrganization(
+    organizationId: string,
+    provider?: string,
+  ): Promise<IntegrationConnectionRecord[]>;
+  listByProvider(provider: string): Promise<IntegrationConnectionRecord[]>;
+  findById(connectionId: string): Promise<IntegrationConnectionRecord | undefined>;
+  findBySlug(
+    organizationId: string,
+    provider: string,
+    slug: string,
+  ): Promise<IntegrationConnectionRecord | undefined>;
+  findByExternalIds(
+    provider: string,
+    externalIds: readonly string[],
+  ): Promise<IntegrationConnectionRecord[]>;
+  findByWorkspaceId(provider: string, workspaceId: string): Promise<IntegrationConnectionRecord[]>;
+  updateStatus(connectionId: string, status: IntegrationConnectionStatus): Promise<void>;
+  withRefreshLock<T>(
+    connectionId: string,
+    operation: IntegrationConnectionRefreshOperation<T>,
+  ): Promise<T>;
+  acceptEvent(input: AcceptIntegrationEventInput): Promise<ProviderEventAcceptance>;
+}
+
+export type ConnectionAttemptPhase = string;
 
 export interface ConnectionAccountAccess {
   sessionId: string;
@@ -379,7 +479,7 @@ export interface ConnectionStartAuthority extends ConnectionAccountAccess {
 
 export interface ConnectionAttemptRecord {
   id: string;
-  provider: ConnectionProvider;
+  provider: string;
   phase: ConnectionAttemptPhase;
   organizationId: string;
   returnRoute: string;
@@ -455,7 +555,7 @@ export interface LinearConnectionRecord {
 }
 
 export interface StartConnectionAttemptInput {
-  provider: ConnectionProvider;
+  provider: string;
   stateVerifier: string;
   access: ConnectionStartAuthority;
   /** Set when the attempt opens with a PKCE authorization, as GitHub's does. */
@@ -1107,14 +1207,14 @@ export interface InsertProjectConfigurationRevisionInput {
 }
 
 export interface ProjectTriggerRoute {
-  provider: ConnectionProvider;
+  provider: string;
   connectionId: string;
   resourceId: string | null;
   triggerName: string;
 }
 
 export interface OrganizationTriggerRoute {
-  provider: ConnectionProvider;
+  provider: string;
   connectionId: string;
   resourceId: string | null;
   configuredEventName: string;
@@ -1228,6 +1328,7 @@ export interface Database {
   readonly executionAuthority: import("../execution-authority/index.js").ExecutionAuthorityStore;
   readonly webhooks: import("../triggers/webhook/index.js").WebhookStore;
   readonly schedules: import("../triggers/schedule/index.js").ScheduleStore;
+  readonly integrations: IntegrationStore;
   findAgentSessionByKey(
     projectId: string,
     key: string,

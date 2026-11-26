@@ -16,6 +16,7 @@ import {
 import { toDatabaseError } from "./errors.js";
 import { withApiKeySerialization } from "./api-key-serialization.js";
 import { ConnectionRepository } from "./connections.js";
+import { IntegrationConnectionRepository } from "./integrations.js";
 import { ProviderEventAcceptanceRepository } from "./trigger-acceptance.js";
 import {
   toAgentExecutionRecord,
@@ -143,6 +144,7 @@ class PgDatabase implements Database {
   readonly webhooks;
   readonly schedules;
   readonly executionAuthority;
+  readonly integrations;
   private readonly connections;
   private readonly triggerAcceptance;
 
@@ -159,6 +161,11 @@ class PgDatabase implements Database {
       this.pool,
       locks,
       this.connections,
+    );
+    this.integrations = new IntegrationConnectionRepository(
+      this.pool,
+      locks,
+      this.triggerAcceptance,
     );
   }
 
@@ -3989,7 +3996,7 @@ class PgDatabase implements Database {
        order by connection.account_login, connection.id`,
       [organizationId],
     );
-    const [discord, slack, linear] = await Promise.all([
+    const [discord, slack, linear, integrations] = await Promise.all([
       query<{
         id: string;
         organization_id: string;
@@ -4043,6 +4050,7 @@ class PgDatabase implements Database {
          order by linear_organization_name, id`,
         [organizationId],
       ),
+      this.integrations.listForOrganization(organizationId),
     ]);
     return {
       github: github.rows.map((row) => ({
@@ -4088,6 +4096,7 @@ class PgDatabase implements Database {
         scopes: stringArray(row.scopes),
         providerApplicationId: row.provider_application_id,
       })),
+      integrations,
     };
   }
 

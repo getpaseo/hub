@@ -83,6 +83,12 @@ export class TriggerDashboard {
           provider: "linear" as const,
           label: linearOrganizationName,
         })),
+        ...(connections.integrations ?? []).map(({ id, slug, provider, displayName }) => ({
+          id,
+          slug,
+          provider,
+          label: displayName,
+        })),
       ],
     };
   }

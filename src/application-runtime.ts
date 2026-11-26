@@ -85,11 +85,10 @@ async function createOwnedApplicationRuntime(
     connectionsForProject,
     integrations,
   );
-  const integrationTools: IntegrationToolHandlers = {};
+  const integrationTools = collectIntegrationTools(registrations);
   const outputRegistry = new OutputExecutorRegistry();
   for (const registration of registrations) {
     for (const output of registration.outputs) outputRegistry.register(output);
-    Object.assign(integrationTools, registration.integrationTools);
   }
 
   const application = createHubApplication({
@@ -344,6 +343,28 @@ async function createOwnedApplicationRuntime(
   };
 }
 
+function collectIntegrationTools(
+  registrations: readonly ProviderRegistration[],
+): IntegrationToolHandlers {
+  const integrationTools: IntegrationToolHandlers = {};
+  const registered: Record<string, NonNullable<IntegrationToolHandlers["registered"]>[string]> = {};
+  for (const registration of registrations) {
+    if (registration.integrationTools?.slack !== undefined) {
+      integrationTools.slack = registration.integrationTools.slack;
+    }
+    if (registration.integrationTools?.discord !== undefined) {
+      integrationTools.discord = registration.integrationTools.discord;
+    }
+    if (registration.integrationTools?.registered !== undefined) {
+      Object.assign(registered, registration.integrationTools.registered);
+    }
+  }
+  if (Object.keys(registered).length > 0) {
+    integrationTools.registered = registered;
+  }
+  return integrationTools;
+}
+
 function triggerDashboardFor(
   options: ApplicationCompositionOptions,
   hub: import("./app.js").HubRuntime,
@@ -412,6 +433,10 @@ function createConnectionsForProject(
       ...usage.github.map((connection) => ({ provider: "github" as const, connection })),
       ...usage.discord.map((connection) => ({ provider: "discord" as const, connection })),
       ...usage.slack.map((connection) => ({ provider: "slack" as const, connection })),
+      ...(usage.integrations ?? []).map((connection) => ({
+        provider: connection.provider,
+        connection,
+      })),
     ].filter(
       ({ connection }) =>
         connection.organizationId === project.organizationId && connection.slug === connectionSlug,

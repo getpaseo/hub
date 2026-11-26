@@ -1,5 +1,18 @@
 import type { AccountAccessValue } from "../auth/organization-access.js";
-import type { BindLinearConnectionInput, BindSlackConnectionInput } from "../db/types.js";
+import type { JsonValue } from "../config/compiler.js";
+import type {
+  BindLinearConnectionInput,
+  BindSlackConnectionInput,
+  Database,
+  ReadConnectionAttemptInput,
+} from "../db/types.js";
+import type {
+  BindIntegrationConnectionPayload,
+  IntegrationAppIdentity,
+  IntegrationDefinition,
+  IntegrationOAuthCompletionInput,
+} from "../integrations/contracts.js";
+import { defaultIntegrationRegistry, type IntegrationRegistry } from "../integrations/registry.js";
 import type { LinearInstallation } from "../providers/linear/client.js";
 import type { SlackSocketInstallationVerifier } from "../providers/slack/installation.js";
 import type { SlackDeliveryStatus } from "../triggers/slack/source/index.js";
@@ -11,6 +24,7 @@ import { classifyFailure, reportFailure } from "../failures/index.js";
 
 export const PROVIDERS = ["github", "slack", "discord", "linear"] as const;
 export type Provider = (typeof PROVIDERS)[number];
+export type ApplicationProvider = string;
 
 export interface GitHubProviderApplicationConfiguration {
   provider: "github";
@@ -64,16 +78,56 @@ export type ProviderApplicationConfiguration =
   | DiscordProviderApplicationConfiguration
   | LinearProviderApplicationConfiguration;
 
+export interface RegisteredProviderApplicationConfiguration {
+  readonly provider: string;
+  readonly expectedVersion?: number;
+  readonly [key: string]: unknown;
+}
+
+export type AnyProviderApplicationConfiguration =
+  | ProviderApplicationConfiguration
+  | RegisteredProviderApplicationConfiguration;
+
+export interface ProviderApplicationEnvironment {
+  readonly github?: GitHubProviderApplicationConfiguration;
+  readonly slack?: SlackProviderApplicationConfiguration;
+  readonly discord?: DiscordProviderApplicationConfiguration;
+  readonly linear?: LinearProviderApplicationConfiguration;
+  readonly registered?: Readonly<Record<string, RegisteredProviderApplicationConfiguration>>;
+}
+
+export function isLegacyProvider(provider: string): provider is Provider {
+  return (
+    provider === "github" || provider === "slack" || provider === "discord" || provider === "linear"
+  );
+}
+
+export function isLegacyProviderApplicationConfiguration(
+  configuration: AnyProviderApplicationConfiguration,
+): configuration is ProviderApplicationConfiguration {
+  return isLegacyProvider(configuration.provider);
+}
+
+function environmentConfigurationFor(
+  environment: ProviderApplicationEnvironment,
+  provider: ApplicationProvider,
+): AnyProviderApplicationConfiguration | undefined {
+  if (isLegacyProvider(provider)) return environment[provider];
+  return environment.registered?.[provider];
+}
+
 export type ProviderApplicationIdentity =
   | { provider: "github"; id: string; name: string; ownerLogin: string }
   | { provider: "slack"; id: string; name: string }
   | { provider: "discord"; id: string; name: string }
   | { provider: "linear"; id: string; name: string };
 
+export type AnyProviderApplicationIdentity = ProviderApplicationIdentity | IntegrationAppIdentity;
+
 export interface StoredProviderApplication {
-  provider: Provider;
-  configuration: ProviderApplicationConfiguration;
-  identity: ProviderApplicationIdentity;
+  provider: ApplicationProvider;
+  configuration: AnyProviderApplicationConfiguration;
+  identity: AnyProviderApplicationIdentity;
   version: number;
   verifiedAt: Date;
   updatedAt: Date;
@@ -81,18 +135,18 @@ export interface StoredProviderApplication {
 }
 
 export interface ProviderApplicationStore {
-  read(provider: Provider): Promise<StoredProviderApplication | undefined>;
+  read(provider: ApplicationProvider): Promise<StoredProviderApplication | undefined>;
   readAll(): Promise<readonly StoredProviderApplication[]>;
   save(input: {
-    provider: Provider;
-    configuration: ProviderApplicationConfiguration;
-    identity: ProviderApplicationIdentity;
+    provider: ApplicationProvider;
+    configuration: AnyProviderApplicationConfiguration;
+    identity: AnyProviderApplicationIdentity;
     expectedVersion: number | undefined;
     updatedByUserId: string;
   }): Promise<StoredProviderApplication>;
   activate(input: {
-    provider: Provider;
-    identity: ProviderApplicationIdentity;
+    provider: ApplicationProvider;
+    identity: AnyProviderApplicationIdentity;
     configurationVersion: number;
   }): Promise<void>;
   completeSlackInstallation(input: {
@@ -118,6 +172,24 @@ export interface ProviderApplicationStore {
     installation: LinearInstallation;
     binding: BindLinearConnectionInput;
   }): Promise<void>;
+  completeIntegrationInstallation?(input: {
+    provider: string;
+    configuration: AnyProviderApplicationConfiguration;
+    identity: IntegrationAppIdentity;
+    expectedVersion: number | undefined;
+    updatedByUserId: string;
+    attempt: ReadConnectionAttemptInput;
+    connection: BindIntegrationConnectionPayload;
+  }): Promise<void>;
+  completeDirectIntegrationApplication?(input: {
+    provider: string;
+    configuration: AnyProviderApplicationConfiguration;
+    identity: IntegrationAppIdentity;
+    expectedVersion: number | undefined;
+    updatedByUserId: string;
+    organizationId: string;
+    connection: BindIntegrationConnectionPayload;
+  }): Promise<StoredProviderApplication>;
 }
 
 export interface ProviderRuntimeCandidate {
@@ -130,17 +202,17 @@ export interface ProviderRuntimeCandidate {
 
 export interface ProviderRuntimeOwner {
   prepare(
-    provider: Provider,
-    configuration: ProviderApplicationConfiguration,
+    provider: ApplicationProvider,
+    configuration: AnyProviderApplicationConfiguration,
     callbackOrigin: string,
-    identity: ProviderApplicationIdentity,
+    identity: AnyProviderApplicationIdentity,
     configurationVersion: number,
     activation?: {
       expectedConfigurationVersion: number | undefined;
       activateConfiguration: boolean;
     },
   ): Promise<ProviderRuntimeCandidate>;
-  identity?(provider: Provider): ProviderApplicationIdentity | undefined;
+  identity?(provider: ApplicationProvider): AnyProviderApplicationIdentity | undefined;
   onSlackInstallation?(
     handler: (input: {
       configuration: unknown;
@@ -161,13 +233,28 @@ export interface ProviderRuntimeOwner {
       binding: BindLinearConnectionInput;
     }) => Promise<void>,
   ): void;
+  onIntegrationOAuthInstallation?(
+    handler: (input: IntegrationOAuthCompletionInput) => Promise<void>,
+  ): void;
 }
 
 export interface ProviderApplicationVerifier {
   verify(
     provider: Provider,
     configuration: ProviderApplicationConfiguration,
+    context?: { callbackOrigin?: string },
   ): Promise<ProviderApplicationIdentity>;
+  verifyDirect?(
+    provider: ApplicationProvider,
+    configuration: AnyProviderApplicationConfiguration,
+    context?: { callbackOrigin?: string },
+  ): Promise<
+    | {
+        readonly identity: IntegrationAppIdentity;
+        readonly initialConnection?: BindIntegrationConnectionPayload;
+      }
+    | undefined
+  >;
 }
 
 export interface ConnectedProviderIdentity {
@@ -178,15 +265,15 @@ export interface ConnectedProviderIdentity {
 }
 
 export interface ProviderApplicationInventory {
-  connectedIdentities(provider: Provider): Promise<readonly ConnectedProviderIdentity[]>;
+  connectedIdentities(provider: ApplicationProvider): Promise<readonly ConnectedProviderIdentity[]>;
   /** Durably assigns pre-feature, unowned connections before their environment runtime publishes. */
   claimLegacyConnections(
-    provider: Provider,
-    identity: ProviderApplicationIdentity,
+    provider: ApplicationProvider,
+    identity: AnyProviderApplicationIdentity,
   ): Promise<boolean>;
   lastEventAt(
-    provider: Provider,
-    identity: ProviderApplicationIdentity,
+    provider: ApplicationProvider,
+    identity: AnyProviderApplicationIdentity,
     configurationVersion: number,
   ): Promise<Date | null>;
 }
@@ -199,11 +286,11 @@ export type ProviderApplicationStatus =
   | "managedByEnvironment";
 
 export interface ProviderApplicationView {
-  provider: Provider;
+  provider: ApplicationProvider;
   status: ProviderApplicationStatus;
   managedByEnvironment: boolean;
   identifiers: Readonly<Record<string, string>>;
-  identity: ProviderApplicationIdentity | null;
+  identity: AnyProviderApplicationIdentity | null;
   connections: readonly ConnectedProviderIdentity[];
   /**
    * Whether inbound deliveries can be admitted at all. GitHub's webhook secret is optional, and
@@ -219,19 +306,20 @@ export interface ProviderApplicationView {
 
 export interface ProviderApplicationOverview {
   callbackOrigin: string;
-  providers: Record<Provider, ProviderApplicationView>;
+  providers: Record<Provider, ProviderApplicationView> &
+    Partial<Record<string, ProviderApplicationView>>;
 }
 
 export interface ProviderApplicationResult {
   status: "verified";
-  provider: Provider;
-  identity: ProviderApplicationIdentity;
+  provider: ApplicationProvider;
+  identity: AnyProviderApplicationIdentity;
   configurationVersion: number;
 }
 
 export interface ProviderApplicationContinuation {
   status: "continuing";
-  provider: "slack" | "linear";
+  provider: ApplicationProvider;
   url: string;
 }
 
@@ -331,13 +419,13 @@ export interface ProviderApplications {
   overview(request: Request): Promise<ProviderApplicationOverview>;
   verifyAndSave(
     request: Request,
-    provider: Provider,
-    input: ProviderApplicationConfiguration,
+    provider: ApplicationProvider,
+    input: AnyProviderApplicationConfiguration,
     surface?: ProviderApplicationSurface,
   ): Promise<ProviderApplicationSaveResult>;
   beginConnection(
     request: Request,
-    provider: Provider,
+    provider: ApplicationProvider,
     organizationId: string,
     surface?: ProviderApplicationSurface,
   ): Promise<{ url: string }>;
@@ -346,6 +434,12 @@ export interface ProviderApplications {
     input: { appToken: string; botToken: string; expectedVersion?: number },
   ): Promise<ProviderApplicationResult>;
   retrySlackSocket(request: Request): Promise<void>;
+  runSetupAction?(
+    request: Request,
+    provider: ApplicationProvider,
+    action: string,
+    payload?: unknown,
+  ): Promise<JsonValue>;
 }
 
 interface ProviderApplicationsOptions {
@@ -354,11 +448,15 @@ interface ProviderApplicationsOptions {
     rejectCookieMutation(request: Request): Response | undefined;
   };
   store: ProviderApplicationStore;
-  environment: Partial<Record<Provider, ProviderApplicationConfiguration>>;
+  environment: ProviderApplicationEnvironment;
   runtime: ProviderRuntimeOwner;
   verifier: ProviderApplicationVerifier;
   inventory: ProviderApplicationInventory;
   callbackOrigin(request: Request): string | Promise<string>;
+  registry?: IntegrationRegistry;
+  database?: Database;
+  fetch?: typeof fetch;
+  now?: () => Date;
   beginCandidateConnection?: (
     request: Request,
     organizationId: string,
@@ -372,12 +470,18 @@ interface ProviderApplicationsOptions {
 export function createProviderApplications(
   options: ProviderApplicationsOptions,
 ): ProviderApplications {
-  const queues = new Map<Provider, Promise<void>>();
+  const registry = options.registry ?? defaultIntegrationRegistry;
+  const queues = new Map<ApplicationProvider, Promise<void>>();
   options.runtime.onSlackInstallation?.((input) =>
     serialize(queues, "slack", () => completeSlackInstallation(options, input)),
   );
   options.runtime.onLinearInstallation?.((input) =>
     serialize(queues, "linear", () => completeLinearInstallation(options, input)),
+  );
+  options.runtime.onIntegrationOAuthInstallation?.((input) =>
+    serialize(queues, input.provider, () =>
+      completeIntegrationInstallation(options, registry, input),
+    ),
   );
 
   return {
@@ -387,10 +491,11 @@ export function createProviderApplications(
       const stored = new Map(
         (await options.store.readAll()).map((value) => [value.provider, value]),
       );
+      const providerIds: readonly ApplicationProvider[] = [...PROVIDERS, ...registry.ids()];
       const entries = await Promise.all(
         // eslint-disable-next-line complexity -- this is the single projection of provider state.
-        PROVIDERS.map(async (provider) => {
-          const environment = options.environment[provider];
+        providerIds.map(async (provider) => {
+          const environment = environmentConfigurationFor(options.environment, provider);
           const persisted = stored.get(provider);
           const resolved = environment ?? persisted?.configuration;
           const connections = await options.inventory.connectedIdentities(provider);
@@ -402,10 +507,10 @@ export function createProviderApplications(
             provider,
             status,
             managedByEnvironment: environment !== undefined,
-            identifiers: resolved === undefined ? {} : publicIdentifiers(resolved),
+            identifiers: resolved === undefined ? {} : publicIdentifiers(resolved, registry),
             identity,
             connections,
-            eventsConfigured: acceptsEvents(resolved),
+            eventsConfigured: acceptsEvents(resolved, registry),
             lastEventAt:
               provider === "discord" || identity === null || configurationVersion === null
                 ? null
@@ -419,7 +524,11 @@ export function createProviderApplications(
           return [provider, view] as const;
         }),
       );
-      const [github, slack, discord, linear] = entries.map(([, view]) => view);
+      const byProvider = Object.fromEntries(entries);
+      const github = byProvider["github"];
+      const slack = byProvider["slack"];
+      const discord = byProvider["discord"];
+      const linear = byProvider["linear"];
       if (
         github === undefined ||
         slack === undefined ||
@@ -428,20 +537,38 @@ export function createProviderApplications(
       ) {
         throw new Error("provider overview is incomplete");
       }
-      return { callbackOrigin, providers: { github, slack, discord, linear } };
+      return {
+        callbackOrigin,
+        providers: { ...byProvider, github, slack, discord, linear },
+      };
     },
 
     async verifyAndSave(request, provider, input, surface) {
       rejectMutation(options, request);
       const account = await requireOperator(options, request);
       const callbackOrigin = await safeCallbackOrigin(options, request);
-      if (options.environment[provider] !== undefined) {
+      if (environmentConfigurationFor(options.environment, provider) !== undefined) {
         throw new ProviderApplicationError("managedByEnvironment");
       }
       if (input.provider !== provider) throw new ProviderApplicationError("invalidInput");
       return serialize<ProviderApplicationSaveResult>(queues, provider, () => {
         const returnRoute = providerApplicationReturnRoute(surface);
-        if (provider === "slack" && input.provider === "slack") {
+        const integration = registry.get(provider);
+        if (integration !== undefined) {
+          return saveRegisteredIntegration(
+            options,
+            integration,
+            request,
+            account,
+            callbackOrigin,
+            input,
+            returnRoute,
+          );
+        }
+        if (!isLegacyProvider(provider) || !isLegacyProviderApplicationConfiguration(input)) {
+          throw new ProviderApplicationError("invalidInput");
+        }
+        if (input.provider === "slack") {
           return beginSlackConfiguration(
             options,
             request,
@@ -451,7 +578,7 @@ export function createProviderApplications(
             returnRoute,
           );
         }
-        if (provider === "linear" && input.provider === "linear") {
+        if (input.provider === "linear") {
           return beginLinearConfiguration(
             options,
             request,
@@ -469,15 +596,18 @@ export function createProviderApplications(
       rejectMutation(options, request);
       await requireOperator(options, request);
       const callbackOrigin = await safeCallbackOrigin(options, request);
-      if (provider === "linear") requireHttpsOrigin(callbackOrigin);
+      const integration = registry.get(provider);
+      if (provider === "linear" || integration?.connection.requiresHttps === true) {
+        requireHttpsOrigin(callbackOrigin);
+      }
       return serialize(queues, provider, async () => {
         const stored = await options.store.read(provider);
-        const configuration = options.environment[provider] ?? stored?.configuration;
+        const envConfig = environmentConfigurationFor(options.environment, provider);
+        const configuration = envConfig ?? stored?.configuration;
         if (configuration === undefined || options.beginCandidateConnection === undefined) {
           throw new ProviderApplicationError("invalidInput");
         }
-        const configurationVersion =
-          options.environment[provider] === undefined ? stored!.version : 0;
+        const configurationVersion = envConfig === undefined ? stored!.version : 0;
         const identity = options.runtime.identity?.(provider) ?? stored?.identity;
         if (identity === undefined) throw new ProviderApplicationError("invalidInput");
         let candidate: ProviderRuntimeCandidate | undefined;
@@ -505,6 +635,30 @@ export function createProviderApplications(
           if (error instanceof ProviderApplicationError) throw error;
           throw new ProviderApplicationError("internal", undefined, { cause: error });
         }
+      });
+    },
+    async runSetupAction(request, provider, action, payload) {
+      rejectMutation(options, request);
+      const account = await requireOperator(options, request);
+      const callbackOrigin = await safeCallbackOrigin(options, request);
+      const integration = registry.get(provider);
+      const handler = integration?.connection.setupActions?.[action];
+      if (integration === undefined || handler === undefined || options.database === undefined) {
+        throw new ProviderApplicationError("invalidInput");
+      }
+      const stored = await options.store.read(provider);
+      const configuration =
+        environmentConfigurationFor(options.environment, provider) ?? stored?.configuration;
+      return handler({
+        request,
+        organizationId: account.session.activeOrganizationId,
+        accountId: account.account.id,
+        callbackOrigin,
+        configuration,
+        database: options.database,
+        fetch: options.fetch ?? fetch,
+        now: options.now ?? (() => new Date()),
+        payload,
       });
     },
     async configureSlackSocket(request, input) {
@@ -625,8 +779,8 @@ async function safeCallbackOrigin(
 }
 
 function serialize<T>(
-  queues: Map<Provider, Promise<void>>,
-  provider: Provider,
+  queues: Map<ApplicationProvider, Promise<void>>,
+  provider: ApplicationProvider,
   operation: () => Promise<T>,
 ): Promise<T> {
   const previous = queues.get(provider) ?? Promise.resolve();
@@ -644,7 +798,7 @@ function serialize<T>(
 
 function providerStatus(
   environmentManaged: boolean,
-  identity: ProviderApplicationIdentity | null,
+  identity: AnyProviderApplicationIdentity | null,
   connections: readonly ConnectedProviderIdentity[],
 ): ProviderApplicationStatus {
   if (environmentManaged) return "managedByEnvironment";
@@ -658,54 +812,67 @@ function providerStatus(
  * webhook secret has repository access and no event triggers. Slack and Linear signing secrets
  * are part of their credentials, and Discord never delivers anything here.
  */
-function acceptsEvents(configuration: ProviderApplicationConfiguration | undefined): boolean {
+function acceptsEvents(
+  configuration: AnyProviderApplicationConfiguration | undefined,
+  registry: IntegrationRegistry = defaultIntegrationRegistry,
+): boolean {
   if (configuration === undefined) return false;
-  if (configuration.provider === "github") return (configuration.webhookSecret ?? "") !== "";
-  return configuration.provider === "slack" || configuration.provider === "linear";
+  if (isLegacyProviderApplicationConfiguration(configuration)) {
+    if (configuration.provider === "github") {
+      return configuration.webhookSecret !== undefined && configuration.webhookSecret !== "";
+    }
+    return configuration.provider === "slack" || configuration.provider === "linear";
+  }
+  const integration = registry.get(configuration.provider);
+  return integration === undefined ? false : integration.connection.acceptsEvents(configuration);
 }
 
 function publicIdentifiers(
-  configuration: ProviderApplicationConfiguration,
+  configuration: AnyProviderApplicationConfiguration,
+  registry: IntegrationRegistry = defaultIntegrationRegistry,
 ): Readonly<Record<string, string>> {
-  switch (configuration.provider) {
-    case "github":
-      return {
-        appId: configuration.appId,
-        appSlug: configuration.appSlug,
-        clientId: configuration.clientId,
-      };
-    case "slack":
-      return configuration.transport === "webhook"
-        ? {
-            appId: configuration.appId,
-            transport: configuration.transport,
-            clientId: configuration.clientId,
-          }
-        : { appId: configuration.appId, transport: configuration.transport };
-    case "discord":
-      return { applicationId: configuration.applicationId };
-    case "linear":
-      return { clientId: configuration.clientId };
+  if (isLegacyProviderApplicationConfiguration(configuration)) {
+    switch (configuration.provider) {
+      case "github":
+        return {
+          appId: configuration.appId,
+          appSlug: configuration.appSlug,
+          clientId: configuration.clientId,
+        };
+      case "slack":
+        return configuration.transport === "webhook"
+          ? {
+              appId: configuration.appId,
+              transport: configuration.transport,
+              clientId: configuration.clientId,
+            }
+          : { appId: configuration.appId, transport: configuration.transport };
+      case "discord":
+        return { applicationId: configuration.applicationId };
+      case "linear":
+        return { clientId: configuration.clientId };
+    }
   }
+  const integration = registry.get(configuration.provider);
+  if (integration !== undefined) return integration.connection.publicIdentifiers(configuration);
   throw new Error("unknown provider configuration");
 }
 
-function withoutExpectedVersion(
-  input: ProviderApplicationConfiguration,
-): ProviderApplicationConfiguration {
+function withoutExpectedVersion<T extends AnyProviderApplicationConfiguration>(input: T): T {
   const { expectedVersion: _expectedVersion, ...configuration } = input;
-  return configuration as ProviderApplicationConfiguration;
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
+  return configuration as T;
 }
 
 function sameExternalIdentity(
-  left: ProviderApplicationIdentity,
-  right: ProviderApplicationIdentity,
+  left: AnyProviderApplicationIdentity,
+  right: AnyProviderApplicationIdentity,
 ): boolean {
   return left.provider === right.provider && left.id === right.id;
 }
 
 function identityConflictsWithConnections(
-  identity: ProviderApplicationIdentity,
+  identity: AnyProviderApplicationIdentity,
   previous: StoredProviderApplication | undefined,
   connections: readonly ConnectedProviderIdentity[],
 ): boolean {
@@ -764,23 +931,26 @@ export { createProviderApplicationInventory } from "./internal/inventory.js";
 
 export async function activateProviderApplicationsAtStartup(options: {
   store: ProviderApplicationStore;
-  environment: Partial<Record<Provider, ProviderApplicationConfiguration>>;
+  environment: ProviderApplicationEnvironment;
   runtime: ProviderRuntimeOwner;
   verifier: ProviderApplicationVerifier;
   inventory: ProviderApplicationInventory;
   callbackOrigin: string;
+  registry?: IntegrationRegistry;
   logger?: Pick<typeof logger, "info" | "error">;
-}): Promise<readonly { provider: Provider; error: unknown }[]> {
-  const failures: { provider: Provider; error: unknown }[] = [];
+}): Promise<readonly { provider: ApplicationProvider; error: unknown }[]> {
+  const registry = options.registry ?? defaultIntegrationRegistry;
+  const failures: { provider: ApplicationProvider; error: unknown }[] = [];
   const storedProviders = new Map(
     (await options.store.readAll()).map((configuration) => [configuration.provider, configuration]),
   );
-  for (const provider of PROVIDERS) {
-    const environmentConfiguration = options.environment[provider];
+  const providerIds: readonly ApplicationProvider[] = [...PROVIDERS, ...registry.ids()];
+  for (const provider of providerIds) {
+    const environmentConfiguration = environmentConfigurationFor(options.environment, provider);
     const stored = storedProviders.get(provider);
     const configuration = environmentConfiguration ?? stored?.configuration;
     if (configuration === undefined) continue;
-    const scrubValues = sensitiveConfigurationValues(configuration);
+    const scrubValues = sensitiveConfigurationValues(configuration, registry);
     const phase = <T>(
       name: "identity" | "inventory" | "prepare" | "start" | "activate" | "cleanup",
       run: () => Promise<T>,
@@ -789,7 +959,14 @@ export async function activateProviderApplicationsAtStartup(options: {
     let candidate: ProviderRuntimeCandidate | undefined;
     try {
       const identity = await phase("identity", () =>
-        startupIdentity(provider, environmentConfiguration, stored, options.verifier),
+        startupIdentity(
+          provider,
+          environmentConfiguration,
+          stored,
+          options.verifier,
+          registry,
+          options.callbackOrigin,
+        ),
       );
       const claimLegacyConnections = await phase("inventory", async () => {
         const connections = await options.inventory.connectedIdentities(provider);
@@ -837,7 +1014,7 @@ export async function activateProviderApplicationsAtStartup(options: {
 
 async function logStartupPhase<T>(
   log: Pick<typeof logger, "info" | "error">,
-  provider: Provider,
+  provider: ApplicationProvider,
   phase: string,
   scrubValues: readonly string[],
   run: () => Promise<T>,
@@ -869,22 +1046,52 @@ async function logStartupPhase<T>(
 }
 
 async function startupIdentity(
-  provider: Provider,
-  environmentConfiguration: ProviderApplicationConfiguration | undefined,
+  provider: ApplicationProvider,
+  environmentConfiguration: AnyProviderApplicationConfiguration | undefined,
   stored: StoredProviderApplication | undefined,
   verifier: ProviderApplicationVerifier,
-): Promise<ProviderApplicationIdentity> {
+  registry: IntegrationRegistry = defaultIntegrationRegistry,
+  callbackOrigin?: string,
+): Promise<AnyProviderApplicationIdentity> {
   if (environmentConfiguration === undefined) {
     if (stored === undefined) throw new Error("stored provider application unavailable");
     return stored.identity;
   }
-  if (provider === "slack" && environmentConfiguration.provider === "slack") {
-    return { provider: "slack", id: environmentConfiguration.appId, name: "Slack app" };
+  const verifyContext = callbackOrigin === undefined ? undefined : { callbackOrigin };
+  if (
+    isLegacyProvider(provider) &&
+    isLegacyProviderApplicationConfiguration(environmentConfiguration)
+  ) {
+    if (environmentConfiguration.provider === "slack") {
+      return {
+        provider: "slack",
+        id: environmentConfiguration.appId,
+        name: "Slack app",
+      };
+    }
+    if (environmentConfiguration.provider === "linear") {
+      return {
+        provider: "linear",
+        id: environmentConfiguration.clientId,
+        name: "Linear app",
+      };
+    }
+    return verifier.verify(provider, environmentConfiguration, verifyContext);
   }
-  if (provider === "linear" && environmentConfiguration.provider === "linear") {
-    return { provider: "linear", id: environmentConfiguration.clientId, name: "Linear app" };
+  const integration = registry.get(provider);
+  if (integration !== undefined) {
+    if (integration.connection.verifyDirect !== undefined) {
+      const verified = await verifier.verifyDirect?.(
+        provider,
+        environmentConfiguration,
+        verifyContext,
+      );
+      if (verified !== undefined) return verified.identity;
+    }
+    const oauthIdentity = integration.connection.oauthAppIdentity?.(environmentConfiguration);
+    if (oauthIdentity !== undefined) return oauthIdentity;
   }
-  return verifier.verify(provider, environmentConfiguration);
+  throw new ProviderVerificationError("credentialsRejected");
 }
 
 function parseHttpOrigin(value: string): string {
@@ -1007,6 +1214,263 @@ async function beginLinearConfiguration(
   }
 }
 
+async function verifyDirectIntegration(
+  options: ProviderApplicationsOptions,
+  integration: IntegrationDefinition,
+  configuration: AnyProviderApplicationConfiguration,
+  callbackOrigin: string,
+): Promise<
+  | {
+      readonly identity: IntegrationAppIdentity;
+      readonly initialConnection?: BindIntegrationConnectionPayload;
+    }
+  | undefined
+> {
+  if (integration.connection.verifyDirect === undefined) return undefined;
+  try {
+    return options.verifier.verifyDirect !== undefined
+      ? await options.verifier.verifyDirect(integration.id, configuration, { callbackOrigin })
+      : await integration.connection.verifyDirect(configuration, {
+          fetch: options.fetch ?? fetch,
+          callbackOrigin,
+          now: options.now ?? (() => new Date()),
+        });
+  } catch (error) {
+    if (error instanceof ProviderVerificationError) {
+      throw new ProviderApplicationError(error.reason, error.subject, { cause: error });
+    }
+    throw new ProviderApplicationError("internal", undefined, { cause: error });
+  }
+}
+
+async function saveRegisteredIntegration(
+  options: ProviderApplicationsOptions,
+  integration: IntegrationDefinition,
+  request: Request,
+  account: AccountAccessValue,
+  callbackOrigin: string,
+  input: AnyProviderApplicationConfiguration,
+  returnRoute: string,
+): Promise<ProviderApplicationSaveResult> {
+  const stripped = withoutExpectedVersion(input);
+  const parsedConfig = integration.connection.configSchema.safeParse(stripped);
+  if (
+    !parsedConfig.success ||
+    typeof parsedConfig.data !== "object" ||
+    parsedConfig.data === null
+  ) {
+    throw new ProviderApplicationError("invalidInput");
+  }
+  const configuration: RegisteredProviderApplicationConfiguration = {
+    ...Object.fromEntries(Object.entries(parsedConfig.data)),
+    provider: integration.id,
+  };
+  if (integration.connection.requiresHttps === true) {
+    requireHttpsOrigin(callbackOrigin);
+  }
+  const directResult = await verifyDirectIntegration(
+    options,
+    integration,
+    configuration,
+    callbackOrigin,
+  );
+  if (directResult === undefined) {
+    return beginIntegrationConfiguration(
+      options,
+      integration,
+      request,
+      account,
+      callbackOrigin,
+      configuration,
+      input.expectedVersion,
+      returnRoute,
+    );
+  }
+  const { identity, initialConnection } = directResult;
+  if (identity.provider !== integration.id) {
+    throw new ProviderApplicationError("credentialsRejected");
+  }
+  const previous = await options.store.read(integration.id);
+  const connections = await options.inventory.connectedIdentities(integration.id);
+  if (identityConflictsWithConnections(identity, previous, connections)) {
+    throw new ProviderApplicationError("identityConflict", previous?.identity.name);
+  }
+  let candidate: ProviderRuntimeCandidate | undefined;
+  try {
+    candidate = await options.runtime.prepare(
+      integration.id,
+      configuration,
+      callbackOrigin,
+      identity,
+      (input.expectedVersion ?? 0) + 1,
+    );
+    await candidate.start();
+    const saved =
+      initialConnection !== undefined
+        ? await saveDirectIntegrationWithConnection(
+            options,
+            account,
+            integration.id,
+            configuration,
+            identity,
+            input.expectedVersion,
+            initialConnection,
+          )
+        : await options.store.save({
+            provider: integration.id,
+            configuration,
+            identity,
+            expectedVersion: input.expectedVersion,
+            updatedByUserId: account.account.id,
+          });
+    candidate.publish();
+    candidate = undefined;
+    return {
+      status: "verified",
+      provider: integration.id,
+      identity,
+      configurationVersion: saved.version,
+    };
+  } catch (error) {
+    await closeCandidate(candidate, integration.id, "verify_and_save");
+    throw mapSaveError(error, previous?.identity.name);
+  }
+}
+
+function mapSaveError(error: unknown, previousName: string | undefined): ProviderApplicationError {
+  if (error instanceof ProviderApplicationError) return error;
+  if (isIdentityConflict(error))
+    return new ProviderApplicationError("identityConflict", previousName);
+  if (isConfigurationConflict(error)) return new ProviderApplicationError("configurationConflict");
+  return new ProviderApplicationError("internal", undefined, { cause: error });
+}
+
+async function saveDirectIntegrationWithConnection(
+  options: ProviderApplicationsOptions,
+  account: AccountAccessValue,
+  provider: string,
+  configuration: AnyProviderApplicationConfiguration,
+  identity: IntegrationAppIdentity,
+  expectedVersion: number | undefined,
+  connection: BindIntegrationConnectionPayload,
+): Promise<StoredProviderApplication> {
+  const organizationId = account.session.activeOrganizationId;
+  if (organizationId === null || options.store.completeDirectIntegrationApplication === undefined) {
+    throw new ProviderApplicationError("invalidInput");
+  }
+  return options.store.completeDirectIntegrationApplication({
+    provider,
+    configuration,
+    identity,
+    expectedVersion,
+    updatedByUserId: account.account.id,
+    organizationId,
+    connection,
+  });
+}
+
+async function beginIntegrationConfiguration(
+  options: ProviderApplicationsOptions,
+  integration: IntegrationDefinition,
+  request: Request,
+  account: AccountAccessValue,
+  callbackOrigin: string,
+  configuration: AnyProviderApplicationConfiguration,
+  expectedVersion: number | undefined,
+  returnRoute: string,
+): Promise<ProviderApplicationContinuation> {
+  const previous = await options.store.read(integration.id);
+  if (previous?.version !== expectedVersion) {
+    throw new ProviderApplicationError("configurationConflict");
+  }
+  const organizationId = account.session.activeOrganizationId;
+  if (organizationId === null || options.beginCandidateConnection === undefined) {
+    throw new ProviderApplicationError("invalidInput");
+  }
+  const identity = integration.connection.oauthAppIdentity?.(configuration) ?? {
+    provider: integration.id,
+    id: integration.id,
+    name: integration.label,
+  };
+  const candidate = await options.runtime.prepare(
+    integration.id,
+    configuration,
+    callbackOrigin,
+    identity,
+    (expectedVersion ?? 0) + 1,
+    {
+      expectedConfigurationVersion: expectedVersion,
+      activateConfiguration: true,
+    },
+  );
+  if (candidate.beginConnection === undefined) {
+    await closeCandidate(candidate, integration.id, "begin_configuration");
+    throw new ProviderApplicationError("internal");
+  }
+  try {
+    const { url } = await options.beginCandidateConnection(
+      request,
+      organizationId,
+      returnRoute,
+      (candidateRequest) => {
+        const result = candidate.beginConnection?.(candidateRequest);
+        return result ?? Promise.reject(new Error("provider unavailable"));
+      },
+    );
+    await candidate.close();
+    return { status: "continuing", provider: integration.id, url };
+  } catch (error) {
+    await closeCandidate(candidate, integration.id, "begin_configuration");
+    if (error instanceof ProviderApplicationError) throw error;
+    throw new ProviderApplicationError("internal", undefined, { cause: error });
+  }
+}
+
+async function completeIntegrationInstallation(
+  options: ProviderApplicationsOptions,
+  registry: IntegrationRegistry,
+  input: IntegrationOAuthCompletionInput,
+): Promise<void> {
+  const integration = registry.get(input.provider);
+  if (integration === undefined || options.store.completeIntegrationInstallation === undefined) {
+    throw new ProviderApplicationError("internal");
+  }
+  const configuration = parseProviderApplicationConfiguration(input.configuration, registry);
+  if (configuration.provider !== input.provider) {
+    throw new ProviderApplicationError("credentialsRejected");
+  }
+  const previous = await options.store.read(input.provider);
+  const connections = await options.inventory.connectedIdentities(input.provider);
+  if (identityConflictsWithConnections(input.identity, previous, connections)) {
+    throw new ProviderApplicationError("identityConflict", previous?.identity.name);
+  }
+  let candidate: ProviderRuntimeCandidate | undefined;
+  try {
+    candidate = await options.runtime.prepare(
+      input.provider,
+      configuration,
+      input.callbackOrigin,
+      input.identity,
+      (input.expectedConfigurationVersion ?? 0) + 1,
+    );
+    await candidate.start();
+    await options.store.completeIntegrationInstallation({
+      provider: input.provider,
+      configuration,
+      identity: input.identity,
+      expectedVersion: input.expectedConfigurationVersion,
+      updatedByUserId: input.userId,
+      attempt: input.attempt,
+      connection: input.connection,
+    });
+    candidate.publish();
+    candidate = undefined;
+  } catch (error) {
+    await closeCandidate(candidate, input.provider, "complete_installation");
+    throw error;
+  }
+}
+
 async function verifyAndActivateProvider(
   options: ProviderApplicationsOptions,
   account: AccountAccessValue,
@@ -1014,9 +1478,9 @@ async function verifyAndActivateProvider(
   input: ProviderApplicationConfiguration,
   callbackOrigin: string,
 ): Promise<ProviderApplicationResult> {
-  let identity: ProviderApplicationIdentity;
+  let identity: AnyProviderApplicationIdentity;
   try {
-    identity = await options.verifier.verify(provider, input);
+    identity = await options.verifier.verify(provider, input, { callbackOrigin });
   } catch (error) {
     if (error instanceof ProviderVerificationError) {
       // The subject travels as safe context so the copy can name the field the provider
@@ -1109,7 +1573,11 @@ async function completeSlackInstallation(
   },
 ): Promise<void> {
   const configuration = parseProviderApplicationConfiguration(input.configuration);
-  if (configuration.provider !== "slack" || configuration.appId !== input.installation.appId) {
+  if (
+    !isLegacyProviderApplicationConfiguration(configuration) ||
+    configuration.provider !== "slack" ||
+    configuration.appId !== input.installation.appId
+  ) {
     throw new ProviderApplicationError("credentialsRejected");
   }
   const previous = await options.store.read("slack");
@@ -1160,6 +1628,7 @@ async function completeLinearInstallation(
 ): Promise<void> {
   const configuration = parseProviderApplicationConfiguration(input.configuration);
   if (
+    !isLegacyProviderApplicationConfiguration(configuration) ||
     configuration.provider !== "linear" ||
     configuration.clientId !== input.binding.providerApplicationId
   ) {
@@ -1203,7 +1672,7 @@ async function completeLinearInstallation(
 
 async function closeCandidate(
   candidate: ProviderRuntimeCandidate | undefined,
-  provider: Provider,
+  provider: ApplicationProvider,
   parentOperation: string,
 ): Promise<void> {
   if (candidate === undefined) return;

@@ -1,5 +1,9 @@
 import { executionLinkPath } from "../agent-executions/link.js";
 import type { StatusTone } from "../components/app/status-pill.js";
+import {
+  defaultBrowserIntegrationRegistry,
+  type BrowserIntegrationRegistry,
+} from "../integrations/browser-registry.js";
 import type { ProviderEventDropReasonCode } from "../triggers/drop-reason.js";
 import type { ActivityProvider, ActivityRange, RunStatus } from "./query-contract.js";
 import { PAYLOAD_PREVIEW_CHARACTERS } from "./store.js";
@@ -41,7 +45,7 @@ export function formatBytes(bytes: number): string {
 }
 
 /** What an event's resource is called by the provider it came from. */
-const RESOURCE_LABELS: Readonly<Record<ActivityProvider, string>> = {
+const RESOURCE_LABELS: Readonly<Record<string, string>> = {
   github: "Repository",
   slack: "Workspace",
   discord: "Server",
@@ -52,7 +56,14 @@ const RESOURCE_LABELS: Readonly<Record<ActivityProvider, string>> = {
 };
 
 export function resourceLabel(provider: ActivityProvider): string {
-  return RESOURCE_LABELS[provider];
+  return resourceLabelFor(provider, defaultBrowserIntegrationRegistry);
+}
+
+export function resourceLabelFor(
+  provider: ActivityProvider,
+  registry: BrowserIntegrationRegistry,
+): string {
+  return RESOURCE_LABELS[provider] ?? registry.get(provider)?.resourceNoun ?? "Resource";
 }
 
 /** Said beside stored JSON the drawer shows only the start of. */

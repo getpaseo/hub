@@ -1,21 +1,23 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
+import type { JsonValue } from "../config/compiler.js";
 import { respondOk, type Result } from "../contract/respond.js";
 import { respondWithFailure } from "../failures/index.js";
+import { INTEGRATION_ID_PATTERN } from "../integrations/browser-registry.js";
 import { getApplication } from "../server/runtime.js";
 import {
-  type ProviderApplicationConfiguration,
+  type AnyProviderApplicationConfiguration,
   type ProviderApplicationOverview,
   type ProviderApplicationSaveResult,
 } from "./index.js";
 import { sensitiveConfigurationValues } from "./internal/configuration-secrets.js";
 import { providerApplicationSaveFailure, providerHost, providerName } from "./save-failure.js";
 
-const providerSchema = z.enum(["github", "slack", "discord", "linear"]);
+const providerSchema = z.string().regex(INTEGRATION_ID_PATTERN);
 const surfaceSchema = z.enum(["appSetup", "apps"]).optional();
 const expectedVersionSchema = z.number().int().positive().optional();
-const configurationSchema = z.discriminatedUnion("provider", [
+const legacyConfigurationSchema = z.discriminatedUnion("provider", [
   z.object({
     provider: z.literal("github"),
     appId: z.string().trim().min(1),
@@ -55,6 +57,25 @@ const configurationSchema = z.discriminatedUnion("provider", [
     surface: surfaceSchema,
   }),
 ]);
+const registeredConfigurationSchema = z
+  .object({
+    provider: providerSchema.refine(
+      (provider) =>
+        provider !== "github" &&
+        provider !== "slack" &&
+        provider !== "discord" &&
+        provider !== "linear",
+    ),
+    expectedVersion: expectedVersionSchema,
+    surface: surfaceSchema,
+  })
+  .catchall(z.unknown());
+const configurationSchema = z.union([legacyConfigurationSchema, registeredConfigurationSchema]);
+const setupActionSchema = z.object({
+  provider: providerSchema,
+  action: z.string().min(1),
+  payload: z.unknown().optional(),
+});
 const connectionSchema = z.object({
   provider: providerSchema,
   organizationId: z.string().min(1),
@@ -183,12 +204,38 @@ export const retrySlackSocketDelivery = createServerFn({ method: "POST" }).handl
   },
 );
 
+export const runProviderSetupAction = createServerFn({ method: "POST" })
+  .validator(setupActionSchema)
+  .handler(async ({ data }): Promise<Result<JsonValue>> => {
+    try {
+      const capability = (await getApplication()).providerApplications;
+      if (capability?.runSetupAction === undefined) throw new Error("unavailable");
+      return respondOk(
+        await capability.runSetupAction(getRequest(), data.provider, data.action, data.payload),
+      );
+    } catch (error) {
+      const name = providerName(data.provider);
+      return respondWithFailure(
+        error,
+        {
+          operation: "provider_application.setup_action",
+          component: "provider_applications",
+          provider: data.provider,
+        },
+        {
+          fallback: `Hub couldn't finish that ${name} setup step. Try again.`,
+          forbidden: `Only an instance operator can change the ${name} app.`,
+        },
+      );
+    }
+  });
+
 function normalizedConfiguration(
   data: z.infer<typeof configurationSchema>,
-): ProviderApplicationConfiguration {
+): AnyProviderApplicationConfiguration {
   const version =
     data.expectedVersion === undefined ? {} : { expectedVersion: data.expectedVersion };
-  if (data.provider === "github") {
+  if (data.provider === "github" && "appId" in data) {
     return {
       provider: data.provider,
       appId: data.appId,
@@ -200,7 +247,7 @@ function normalizedConfiguration(
       ...version,
     };
   }
-  if (data.provider === "slack") {
+  if (data.provider === "slack" && "transport" in data) {
     return {
       provider: data.provider,
       transport: data.transport,
@@ -211,7 +258,7 @@ function normalizedConfiguration(
       ...version,
     };
   }
-  if (data.provider === "linear") {
+  if (data.provider === "linear" && "webhookSecret" in data) {
     return {
       provider: data.provider,
       clientId: data.clientId,
@@ -220,11 +267,15 @@ function normalizedConfiguration(
       ...version,
     };
   }
-  return {
-    provider: data.provider,
-    applicationId: data.applicationId,
-    clientSecret: data.clientSecret,
-    botToken: data.botToken,
-    ...version,
-  };
+  if (data.provider === "discord" && "botToken" in data) {
+    return {
+      provider: data.provider,
+      applicationId: data.applicationId,
+      clientSecret: data.clientSecret,
+      botToken: data.botToken,
+      ...version,
+    };
+  }
+  const { surface: _surface, expectedVersion: _expectedVersion, ...rest } = data;
+  return { ...rest, ...version };
 }

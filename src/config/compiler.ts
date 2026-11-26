@@ -8,11 +8,12 @@ import {
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
-  CompiledIntegrationToolGrantsSchema,
-  IntegrationToolGrantsSchema,
+  buildCompiledIntegrationToolGrantsSchema,
+  buildIntegrationToolGrantsSchema,
   normalizeIntegrationToolGrants,
   type IntegrationToolGrants,
 } from "../integration-tools/grants.js";
+import { defaultIntegrationRegistry, type IntegrationRegistry } from "../integrations/registry.js";
 import {
   expressionPaths,
   parseExpression,
@@ -94,41 +95,46 @@ const AllowOutputSchema = z
     }
   });
 
-const AuthoredTriggerFilterSchema = z
-  .object({
-    pattern: z.string().optional(),
-    contains: z.string().optional(),
-    /** GitHub text which makes an event ineligible, such as a command another trigger owns. */
-    exclude_contains: z.string().optional(),
-    label: z.string().min(1).optional(),
-    labels: z.array(z.string().min(1)).min(1).optional(),
-    repo: z.string().min(1).optional(),
-    guild: z.string().min(1).optional(),
-    workspace: z.string().min(1).optional(),
-    /** A Linear project UUID. It is deliberately a string so imported Linear IDs work verbatim. */
-    project: z.string().min(1).optional(),
-    /** Linear workflow-state IDs which are eligible for this trigger. */
-    states: z.array(z.string().min(1)).min(1).optional(),
-    /** Linear label IDs which make an issue ineligible. */
-    exclude_labels: z.array(z.string().min(1)).min(1).optional(),
-    /** Linear user IDs which may be assigned to the issue. */
-    assignees: z.array(z.string().min(1)).min(1).optional(),
-    channels: z.array(z.string().min(1)).optional(),
-    from_users: z.array(z.string().min(1)).optional(),
-    /** GitHub repository associations whose holders may invoke the trigger. */
-    author_associations: z.array(GitHubAuthorAssociationSchema).min(1).optional(),
-    inputs: z.record(z.string(), InputValueSchema).optional(),
-    connection: z
-      .string()
-      .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u)
-      .optional(),
-  })
-  .strict();
+const AuthoredTriggerFilterObjectSchema = z.object({
+  pattern: z.string().optional(),
+  contains: z.string().optional(),
+  /** GitHub text which makes an event ineligible, such as a command another trigger owns. */
+  exclude_contains: z.string().optional(),
+  label: z.string().min(1).optional(),
+  labels: z.array(z.string().min(1)).min(1).optional(),
+  repo: z.string().min(1).optional(),
+  guild: z.string().min(1).optional(),
+  workspace: z.string().min(1).optional(),
+  /** A Linear project UUID. It is deliberately a string so imported Linear IDs work verbatim. */
+  project: z.string().min(1).optional(),
+  /** Linear workflow-state IDs which are eligible for this trigger. */
+  states: z.array(z.string().min(1)).min(1).optional(),
+  /** Linear label IDs which make an issue ineligible. */
+  exclude_labels: z.array(z.string().min(1)).min(1).optional(),
+  /** Linear user IDs which may be assigned to the issue. */
+  assignees: z.array(z.string().min(1)).min(1).optional(),
+  channels: z.array(z.string().min(1)).optional(),
+  from_users: z.array(z.string().min(1)).optional(),
+  /** GitHub repository associations whose holders may invoke the trigger. */
+  author_associations: z.array(GitHubAuthorAssociationSchema).min(1).optional(),
+  inputs: z.record(z.string(), InputValueSchema).optional(),
+  connection: z
+    .string()
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u)
+    .optional(),
+});
 
-const CompiledTriggerFilterSchema = AuthoredTriggerFilterSchema.extend({
+const AuthoredTriggerFilterSchema = AuthoredTriggerFilterObjectSchema.strict();
+const AnyAuthoredTriggerFilterSchema = AuthoredTriggerFilterObjectSchema.catchall(z.unknown());
+
+const CompiledTriggerFilterExtension = {
   connectionId: z.string().uuid().optional(),
   resourceId: z.string().min(1).optional(),
-}).superRefine((filter, context) => {
+};
+
+const CompiledTriggerFilterSchema = AuthoredTriggerFilterSchema.extend(
+  CompiledTriggerFilterExtension,
+).superRefine((filter, context) => {
   if (filter.resourceId !== undefined && filter.connectionId === undefined) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -137,6 +143,74 @@ const CompiledTriggerFilterSchema = AuthoredTriggerFilterSchema.extend({
     });
   }
 });
+
+function buildAuthoredStepSchema(registry: IntegrationRegistry) {
+  return z
+    .object({
+      id: z.string().min(1),
+      environment: z.string().min(1),
+      max_runtime: z.string().min(1),
+      idle_timeout: z.string().min(1),
+      startup_timeout: z.string().min(1).optional(),
+      agent: AuthoredAgentSelectionSchema,
+      title: z.string().min(1).optional(),
+      prompt: z.array(PromptBlockSchema).min(1),
+      env: z.record(z.string().min(1), z.string()).optional(),
+      github: AuthoredGitHubAuthoritySchema.optional(),
+      tools: buildIntegrationToolGrantsSchema(registry).optional(),
+      if: z.string().min(1).optional(),
+      output: z.object({ schema: JsonSchemaSchema }).strict().optional(),
+      allow_outputs: z.array(AllowOutputSchema).optional(),
+      auto_archive: z.boolean().optional(),
+      background: z.boolean().optional(),
+    })
+    .strict();
+}
+
+function buildAuthoredTriggerSchema(registry: IntegrationRegistry) {
+  return z
+    .object({
+      name: z.string().min(1),
+      on: z.string().min(1),
+      max_runtime: z.string().min(1),
+      steps: z.array(buildAuthoredStepSchema(registry)).min(1),
+      inputs: z.record(z.string(), AuthoredInputSchema).optional(),
+      values: z.record(z.string(), z.string().min(1)).optional(),
+      filters: AnyAuthoredTriggerFilterSchema.optional(),
+    })
+    .strict()
+    .superRefine((trigger, context) => {
+      if (trigger.filters === undefined) return;
+      const registered = registry.forEvent(trigger.on);
+      const filterSchema =
+        registered?.integration.triggers !== undefined
+          ? AuthoredTriggerFilterSchema.extend(
+              registered.integration.triggers.filterSchema.shape,
+            ).strict()
+          : AuthoredTriggerFilterSchema;
+      const parsed = filterSchema.safeParse(trigger.filters);
+      if (!parsed.success) {
+        for (const issue of parsed.error.issues) {
+          context.addIssue({
+            code: "custom",
+            path: ["filters", ...issue.path],
+            message: issue.message,
+          });
+        }
+        return;
+      }
+      registered?.integration.triggers?.validateEventFilters?.(trigger.on, parsed.data, context);
+    });
+}
+
+function buildAuthoredSchema(registry: IntegrationRegistry) {
+  return z
+    .object({
+      environments: z.array(EnvironmentSchema).min(1),
+      triggers: z.array(buildAuthoredTriggerSchema(registry)),
+    })
+    .strict();
+}
 
 export const WorktreeTargetSchema = z.discriminatedUnion("mode", [
   z.object({
@@ -178,45 +252,11 @@ const EnvironmentSchema = z.discriminatedUnion("kind", [
 
 const AuthoredAgentSelectionSchema = z.union([AgentSchema, z.string().min(1)]);
 
-const StepSchema = z
-  .object({
-    id: z.string().min(1),
-    environment: z.string().min(1),
-    max_runtime: z.string().min(1),
-    idle_timeout: z.string().min(1),
-    startup_timeout: z.string().min(1).optional(),
-    agent: AuthoredAgentSelectionSchema,
-    title: z.string().min(1).optional(),
-    prompt: z.array(PromptBlockSchema).min(1),
-    env: z.record(z.string().min(1), z.string()).optional(),
-    github: AuthoredGitHubAuthoritySchema.optional(),
-    tools: IntegrationToolGrantsSchema.optional(),
-    if: z.string().min(1).optional(),
-    output: z.object({ schema: JsonSchemaSchema }).strict().optional(),
-    allow_outputs: z.array(AllowOutputSchema).optional(),
-    auto_archive: z.boolean().optional(),
-    background: z.boolean().optional(),
-  })
-  .strict();
+const StepSchema = buildAuthoredStepSchema(defaultIntegrationRegistry);
 
-const AuthoredTriggerSchema = z
-  .object({
-    name: z.string().min(1),
-    on: z.string().min(1),
-    max_runtime: z.string().min(1),
-    steps: z.array(StepSchema).min(1),
-    inputs: z.record(z.string(), AuthoredInputSchema).optional(),
-    values: z.record(z.string(), z.string().min(1)).optional(),
-    filters: AuthoredTriggerFilterSchema.optional(),
-  })
-  .strict();
+const AuthoredTriggerSchema = buildAuthoredTriggerSchema(defaultIntegrationRegistry);
 
-const AuthoredSchema = z
-  .object({
-    environments: z.array(EnvironmentSchema).min(1),
-    triggers: z.array(AuthoredTriggerSchema),
-  })
-  .strict();
+const AuthoredSchema = buildAuthoredSchema(defaultIntegrationRegistry);
 
 export const HubConfigSchema = AuthoredSchema;
 
@@ -226,7 +266,10 @@ export type JsonValue = JsonPrimitive | JsonValue[] | { readonly [key: string]: 
 export type AuthoredEnvironment = z.infer<typeof EnvironmentSchema>;
 export type AuthoredStep = z.infer<typeof StepSchema>;
 export type AuthoredTrigger = z.infer<typeof AuthoredTriggerSchema>;
-export type AuthoredTriggerFilter = z.infer<typeof AuthoredTriggerFilterSchema>;
+type AuthoredTriggerFilterBase = z.infer<typeof AuthoredTriggerFilterSchema>;
+export type AuthoredTriggerFilter = AuthoredTriggerFilterBase & {
+  [key: string]: unknown;
+};
 export type AuthoredHubConfig = z.infer<typeof AuthoredSchema>;
 
 export type AuthoredInput = z.infer<typeof AuthoredInputSchema>;
@@ -282,7 +325,7 @@ export type CompiledSteps = readonly CompiledStep[];
 
 export type CompiledTriggerFilter = Readonly<
   Omit<
-    AuthoredTriggerFilter,
+    AuthoredTriggerFilterBase,
     | "channels"
     | "from_users"
     | "author_associations"
@@ -301,6 +344,7 @@ export type CompiledTriggerFilter = Readonly<
     inputs?: Readonly<Record<string, JsonPrimitive>> | undefined;
     connectionId?: string | undefined;
     resourceId?: string | undefined;
+    readonly [key: string]: unknown;
   }
 >;
 
@@ -328,6 +372,7 @@ export interface CompileHubConfigOptions {
   resolvedPromptPartials?: ResolvedPromptPartials;
   namedAgents?: Readonly<Record<string, CompiledAgent>>;
   sourceFiles?: Readonly<Record<string, string>>;
+  registry?: IntegrationRegistry;
 }
 
 /** A compiler failure located in the conceptual authored configuration tree. */
@@ -416,62 +461,102 @@ const CompiledJsonSchemaSchema = z.custom<JsonValue>(
   (value) => isJsonValue(value) && isRecord(value),
 );
 
-const CompiledStepSchema: z.ZodType<CompiledStep> = z
-  .object({
-    continuation: ContinuationSchema.optional(),
-    id: z.string().regex(IDENTIFIER),
-    environment: z.string().min(1),
-    maxRuntimeMs: z.number().int().positive().max(MAX_DURATION_MS),
-    idleTimeoutMs: z.number().int().positive().max(MAX_DURATION_MS),
-    startupTimeoutMs: z.number().int().positive().max(MAX_DURATION_MS).optional(),
-    agent: CompiledAgentSelectionSchema,
-    title: z.string().min(1).optional(),
-    prompt: z.array(CompiledPromptBlockSchema).min(1),
-    env: z.record(z.string(), z.string()).optional(),
-    github: CompiledGitHubAuthoritySchema.optional(),
-    tools: CompiledIntegrationToolGrantsSchema.optional(),
-    condition: z.custom<Expression>(isExpression).optional(),
-    output: z.object({ schema: CompiledJsonSchemaSchema }).strict().optional(),
-    allowOutputs: z.array(
-      z
-        .object({
-          type: z.string().regex(EVENT_NAME),
-          max: z.number().int().positive().optional(),
-          required: z.boolean().default(false),
-        })
-        .strict(),
-    ),
-    autoArchive: z.boolean(),
-    background: z.boolean().default(false),
-  })
-  .strict();
+function buildCompiledStepSchema(registry: IntegrationRegistry): z.ZodType<CompiledStep> {
+  return z
+    .object({
+      continuation: ContinuationSchema.optional(),
+      id: z.string().regex(IDENTIFIER),
+      environment: z.string().min(1),
+      maxRuntimeMs: z.number().int().positive().max(MAX_DURATION_MS),
+      idleTimeoutMs: z.number().int().positive().max(MAX_DURATION_MS),
+      startupTimeoutMs: z.number().int().positive().max(MAX_DURATION_MS).optional(),
+      agent: CompiledAgentSelectionSchema,
+      title: z.string().min(1).optional(),
+      prompt: z.array(CompiledPromptBlockSchema).min(1),
+      env: z.record(z.string(), z.string()).optional(),
+      github: CompiledGitHubAuthoritySchema.optional(),
+      tools: buildCompiledIntegrationToolGrantsSchema(registry).optional(),
+      condition: z.custom<Expression>(isExpression).optional(),
+      output: z.object({ schema: CompiledJsonSchemaSchema }).strict().optional(),
+      allowOutputs: z.array(
+        z
+          .object({
+            type: z.string().regex(EVENT_NAME),
+            max: z.number().int().positive().optional(),
+            required: z.boolean().default(false),
+          })
+          .strict(),
+      ),
+      autoArchive: z.boolean(),
+      background: z.boolean().default(false),
+    })
+    .strict();
+}
 
-const CompiledTriggerSchema: z.ZodType<CompiledTrigger> = z
-  .object({
-    name: z.string().regex(IDENTIFIER),
-    sourceFile: z.string().min(1).optional(),
-    on: z.string().regex(EVENT_NAME),
-    maxRuntimeMs: z.number().int().positive().max(MAX_DURATION_MS),
-    steps: z.array(CompiledStepSchema),
-    inputs: z.record(z.string(), CompiledInputSchema),
-    values: z.record(z.string(), z.custom<Expression>(isExpression)),
-    filters: CompiledTriggerFilterSchema.optional(),
-  })
-  .strict();
+function buildCompiledTriggerSchema(registry: IntegrationRegistry): z.ZodType<CompiledTrigger> {
+  return z
+    .object({
+      name: z.string().regex(IDENTIFIER),
+      sourceFile: z.string().min(1).optional(),
+      on: z.string().regex(EVENT_NAME),
+      maxRuntimeMs: z.number().int().positive().max(MAX_DURATION_MS),
+      steps: z.array(buildCompiledStepSchema(registry)),
+      inputs: z.record(z.string(), CompiledInputSchema),
+      values: z.record(z.string(), z.custom<Expression>(isExpression)),
+      filters: z.record(z.string(), z.unknown()).optional() as z.ZodType<
+        CompiledTriggerFilter | undefined
+      >,
+    })
+    .strict()
+    .superRefine((trigger, context) => {
+      if (trigger.filters === undefined) return;
+      const registered = registry.forEvent(trigger.on);
+      const filterSchema =
+        registered?.integration.triggers !== undefined
+          ? AuthoredTriggerFilterSchema.extend({
+              ...registered.integration.triggers.filterSchema.shape,
+              ...CompiledTriggerFilterExtension,
+            })
+              .strict()
+              .superRefine((filter, filterContext) => {
+                if (filter.resourceId !== undefined && filter.connectionId === undefined) {
+                  filterContext.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    path: ["resourceId"],
+                    message: "resourceId requires connectionId",
+                  });
+                }
+              })
+          : CompiledTriggerFilterSchema;
+      const parsed = filterSchema.safeParse(trigger.filters);
+      if (!parsed.success) {
+        for (const issue of parsed.error.issues) {
+          context.addIssue({
+            code: "custom",
+            path: ["filters", ...issue.path],
+            message: issue.message,
+          });
+        }
+      }
+    });
+}
 
-const CompiledHubConfigSchema: z.ZodType<CompiledHubConfig> = z
-  .object({
-    environments: z.array(CompiledEnvironmentSchema).min(1),
-    triggers: z.array(CompiledTriggerSchema),
-  })
-  .strict();
+function buildCompiledHubConfigSchema(registry: IntegrationRegistry): z.ZodType<CompiledHubConfig> {
+  return z
+    .object({
+      environments: z.array(CompiledEnvironmentSchema).min(1),
+      triggers: z.array(buildCompiledTriggerSchema(registry)),
+    })
+    .strict();
+}
 
 export function compileHubConfig(
   raw: unknown,
   options: CompileHubConfigOptions = {},
 ): CompiledHubConfig {
+  const registry = options.registry ?? defaultIntegrationRegistry;
   rejectRemovedFields(raw);
-  const authored = AuthoredSchema.parse(raw);
+  const authored = buildAuthoredSchema(registry).parse(raw);
   validateAuthoredIds(authored);
   const environmentNames = new Set(authored.environments.map((environment) => environment.name));
   const environments = new Map(
@@ -486,6 +571,7 @@ export function compileHubConfig(
       options.resolvedPromptPartials,
       options.namedAgents ?? {},
       options.sourceFiles?.[trigger.name],
+      registry,
     ),
   );
   const compiled = { environments: authored.environments, triggers } satisfies CompiledHubConfig;
@@ -493,14 +579,17 @@ export function compileHubConfig(
   return deepFreeze(compiled);
 }
 
-export function parseCompiledHubConfig(value: unknown): CompiledHubConfig {
+export function parseCompiledHubConfig(
+  value: unknown,
+  registry: IntegrationRegistry = defaultIntegrationRegistry,
+): CompiledHubConfig {
   let cloned: unknown;
   try {
     cloned = structuredClone(value);
   } catch {
     throw new Error("active configuration contains an invalid compiled workflow contract");
   }
-  const parsed = CompiledHubConfigSchema.safeParse(cloned);
+  const parsed = buildCompiledHubConfigSchema(registry).safeParse(cloned);
   if (!parsed.success) {
     throw new Error("active configuration contains an invalid compiled workflow contract");
   }
@@ -546,6 +635,7 @@ function compileTrigger(
   resolvedPromptPartials: ResolvedPromptPartials | undefined,
   namedAgents: Readonly<Record<string, CompiledAgent>>,
   sourceFile: string | undefined,
+  registry: IntegrationRegistry,
 ): CompiledTrigger {
   const triggerPath = ["triggers", trigger.name] as const;
   compileAt([...triggerPath, "on"], () => {
@@ -557,7 +647,15 @@ function compileTrigger(
     validateEnvironmentInputChoices(trigger, inputs, environmentNames, environments),
   );
   const steps = trigger.steps.map((step) =>
-    compileStep(trigger, step, environmentNames, environments, resolvedPromptPartials, namedAgents),
+    compileStep(
+      trigger,
+      step,
+      environmentNames,
+      environments,
+      resolvedPromptPartials,
+      namedAgents,
+      registry,
+    ),
   );
   const values = compileValues(trigger);
   const compiled = {
@@ -583,6 +681,7 @@ function compileStep(
   environments: ReadonlyMap<string, AuthoredEnvironment>,
   resolvedPromptPartials: ResolvedPromptPartials | undefined,
   namedAgents: Readonly<Record<string, CompiledAgent>>,
+  registry: IntegrationRegistry,
 ): CompiledStep {
   const stepPath = ["triggers", trigger.name, "steps", step.id] as const;
   compileAt([...stepPath, "environment"], () => {
@@ -642,7 +741,9 @@ function compileStep(
     prompt: compilePromptBlocks(trigger.name, step.id, step.prompt, resolvedPromptPartials),
     ...(env === undefined ? {} : { env }),
     ...(github === undefined ? {} : { github }),
-    ...(step.tools === undefined ? {} : { tools: normalizeIntegrationToolGrants(step.tools) }),
+    ...(step.tools === undefined
+      ? {}
+      : { tools: normalizeIntegrationToolGrants(step.tools, registry) }),
     ...(condition === undefined ? {} : { condition }),
     ...(outputDeclaration === undefined ? {} : { output: outputDeclaration }),
     allowOutputs: (step.allow_outputs ?? []).map((allowOutput) => ({

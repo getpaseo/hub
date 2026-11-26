@@ -1,5 +1,9 @@
 import jwt from "jsonwebtoken";
 import { z } from "zod";
+import {
+  defaultIntegrationRegistry,
+  type IntegrationRegistry,
+} from "../../integrations/registry.js";
 import type {
   ProviderApplicationConfiguration,
   ProviderApplicationIdentity,
@@ -27,15 +31,17 @@ export function createProviderApplicationVerifier(
     fetch?: typeof fetch;
     now?: () => number;
     timeoutMs?: number;
+    registry?: IntegrationRegistry;
   } = {},
 ): ProviderApplicationVerifier {
   const request = options.fetch ?? fetch;
   const now = options.now ?? Date.now;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const registry = options.registry ?? defaultIntegrationRegistry;
   return {
-    verify(provider, configuration) {
+    async verify(provider, configuration) {
       if (provider !== configuration.provider) {
-        return Promise.reject(new ProviderVerificationError("credentialsRejected"));
+        throw new ProviderVerificationError("credentialsRejected");
       }
       if (configuration.provider === "github") {
         return verifyGitHub(configuration, request, now, timeoutMs);
@@ -43,9 +49,18 @@ export function createProviderApplicationVerifier(
       if (configuration.provider === "discord") {
         return verifyDiscord(configuration, request, timeoutMs);
       }
-      // Slack client credentials have no honest verification endpoint. They are verified only
-      // by the OAuth installation callback, where the returned bot token is tested.
-      return Promise.reject(new ProviderVerificationError("credentialsRejected"));
+      // Slack and Linear client credentials have no honest verification endpoint. They are
+      // verified only by the OAuth installation callback, where the returned token is tested.
+      throw new ProviderVerificationError("credentialsRejected");
+    },
+    async verifyDirect(provider, configuration, context) {
+      const integration = registry.get(provider);
+      if (integration?.connection.verifyDirect === undefined) return undefined;
+      return integration.connection.verifyDirect(configuration, {
+        fetch: request,
+        callbackOrigin: context?.callbackOrigin ?? "",
+        now: () => new Date(now()),
+      });
     },
   };
 }

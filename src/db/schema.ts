@@ -33,6 +33,11 @@ export const PROJECT_STATUSES = ["active", "archived"] as const;
 export const CONFIGURATION_SOURCE_KINDS = ["github", "manual"] as const;
 export const TRIGGER_FORMATS = ["single_run", "legacy_multistep"] as const;
 export const CONNECTION_PROVIDERS = ["github", "slack", "discord", "linear"] as const;
+export const INTEGRATION_CONNECTION_STATUSES = [
+  "active",
+  "suspended",
+  "requires_reauthorization",
+] as const;
 
 export type MachineSource =
   | { kind: "manual"; userId?: string }
@@ -56,9 +61,7 @@ export const providerEventReceipts = pgTable(
     organizationId: text("organization_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    provider: text()
-      .$type<(typeof CONNECTION_PROVIDERS)[number] | "manual" | "schedule" | "webhook">()
-      .notNull(),
+    provider: text().notNull(),
     connectionId: uuid("connection_id"),
     resourceId: text("resource_id"),
     deliveryId: text("delivery_id").notNull(),
@@ -102,10 +105,7 @@ export const providerEventReceipts = pgTable(
     index("provider_event_receipts_org_provider_unmatched_received_idx")
       .on(table.organizationId, table.provider, table.receivedAt.desc(), table.id.desc())
       .where(sql`${table.droppedReason} in (${UNMATCHED_DROP_REASONS})`),
-    check(
-      "provider_event_receipts_provider_check",
-      sql`${table.provider} in ('github', 'slack', 'discord', 'linear', 'manual', 'schedule', 'webhook')`,
-    ),
+    check("provider_event_receipts_provider_check", sql`${table.provider} ~ '^[a-z][a-z0-9_-]*$'`),
   ],
 );
 
@@ -236,7 +236,7 @@ export const projectTriggerRoutes = pgTable(
     organizationId: text("organization_id").notNull(),
     projectId: uuid("project_id").notNull(),
     configurationRevisionId: uuid("configuration_revision_id").notNull(),
-    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().notNull(),
+    provider: text().notNull(),
     connectionId: uuid("connection_id").notNull(),
     resourceId: text("resource_id"),
     triggerName: text("trigger_name").notNull(),
@@ -270,10 +270,7 @@ export const projectTriggerRoutes = pgTable(
       ],
       name: "project_trigger_routes_revision_project_organization_fk",
     }).onDelete("cascade"),
-    check(
-      "project_trigger_routes_provider_check",
-      sql`${table.provider} in ('github', 'slack', 'discord', 'linear')`,
-    ),
+    check("project_trigger_routes_provider_check", sql`${table.provider} ~ '^[a-z][a-z0-9_-]*$'`),
   ],
 );
 
@@ -362,7 +359,7 @@ export const organizationTriggerRoutes = pgTable(
     organizationId: text("organization_id").notNull(),
     triggerId: uuid("trigger_id").notNull(),
     triggerRevisionId: uuid("trigger_revision_id").notNull(),
-    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().notNull(),
+    provider: text().notNull(),
     connectionId: uuid("connection_id").notNull(),
     resourceId: text("resource_id"),
     configuredEventName: text("configured_event_name").notNull(),
@@ -904,17 +901,8 @@ export const organizationConnectionAttempts = pgTable(
   "organization_connection_attempts",
   {
     id: uuid().defaultRandom().primaryKey(),
-    provider: text().$type<"github" | "discord" | "slack" | "linear">().notNull(),
-    phase: text()
-      .$type<
-        | "github_setup"
-        | "github_user_authorization"
-        | "github_selection"
-        | "discord_authorization"
-        | "slack_authorization"
-        | "linear_authorization"
-      >()
-      .notNull(),
+    provider: text().notNull(),
+    phase: text().notNull(),
     stateVerifier: text("state_verifier").notNull().unique(),
     organizationId: text("organization_id")
       .notNull()
@@ -943,20 +931,18 @@ export const organizationConnectionAttempts = pgTable(
     index("organization_connection_attempts_expiry_idx").on(table.expiresAt),
     check(
       "organization_connection_attempts_provider_check",
-      sql`${table.provider} in ('github', 'discord', 'slack', 'linear')`,
+      sql`${table.provider} ~ '^[a-z][a-z0-9_-]*$'`,
     ),
     check(
       "organization_connection_attempts_phase_check",
-      sql`${table.phase} in ('github_setup', 'github_user_authorization', 'github_selection', 'discord_authorization', 'slack_authorization', 'linear_authorization')`,
+      sql`${table.phase} ~ '^[a-z][a-z0-9_]*$'`,
     ),
     check(
       "organization_connection_attempts_shape_check",
       sql`(${table.phase} = 'github_setup' and ${table.provider} = 'github' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null and ${table.installationChoices} is null)
         or (${table.phase} = 'github_user_authorization' and ${table.provider} = 'github' and (${table.pkceVerifier} is not null or ${table.consumedAt} is not null) and ${table.installationChoices} is null)
         or (${table.phase} = 'github_selection' and ${table.provider} = 'github' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null and ${table.installationChoices} is not null)
-        or (${table.phase} = 'discord_authorization' and ${table.provider} = 'discord' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null and ${table.installationChoices} is null)
-        or (${table.phase} = 'slack_authorization' and ${table.provider} = 'slack' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null and ${table.installationChoices} is null)
-        or (${table.phase} = 'linear_authorization' and ${table.provider} = 'linear' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null and ${table.installationChoices} is null)`,
+        or (${table.provider} <> 'github' and ${table.candidateExternalId} is null and ${table.installationChoices} is null)`,
     ),
   ],
 );
@@ -1144,6 +1130,71 @@ export const linearConnections = pgTable(
   ],
 );
 
+/**
+ * Generic persistence for integrations registered via `src/integrations/`.
+ *
+ * Legacy GitHub, Slack, Discord, and Linear connections remain in their own tables until migrated.
+ */
+export const integrationConnections = pgTable(
+  "integration_connections",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    provider: text().notNull(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    providerApplicationId: text("provider_application_id"),
+    slug: text().notNull(),
+    externalId: text("external_id").notNull(),
+    displayName: text("display_name").notNull(),
+    status: text()
+      .$type<(typeof INTEGRATION_CONNECTION_STATUSES)[number]>()
+      .default("active")
+      .notNull(),
+    scopes: jsonb()
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    credentials: jsonb().$type<Record<string, unknown>>().notNull(),
+    metadata: jsonb()
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    workspaceId: text("workspace_id"),
+    connectedByUserId: text("connected_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    connectedAt: timestamp("connected_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("integration_connections_provider_external_unique").on(
+      table.provider,
+      table.externalId,
+    ),
+    uniqueIndex("integration_connections_organization_slug_unique").on(
+      table.organizationId,
+      table.slug,
+    ),
+    uniqueIndex("integration_connections_id_organization_unique").on(
+      table.id,
+      table.organizationId,
+    ),
+    index("integration_connections_organization_provider_idx").on(
+      table.organizationId,
+      table.provider,
+    ),
+    index("integration_connections_provider_workspace_idx")
+      .on(table.provider, table.workspaceId)
+      .where(sql`${table.workspaceId} is not null`),
+    check("integration_connections_provider_check", sql`${table.provider} ~ '^[a-z][a-z0-9_-]*$'`),
+    check(
+      "integration_connections_status_check",
+      sql`${table.status} in ('active', 'suspended', 'requires_reauthorization')`,
+    ),
+  ],
+);
+
 export const projectConfigurationSources = pgTable(
   "project_configuration_sources",
   {
@@ -1324,7 +1375,7 @@ export const runtimeConfiguration = pgTable(
 export const runtimeProviderConfiguration = pgTable(
   "runtime_provider_configuration",
   {
-    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().primaryKey(),
+    provider: text().primaryKey(),
     configuration: jsonb().notNull(),
     verifiedExternalIdentity: jsonb("verified_external_identity").notNull(),
     version: integer().default(1).notNull(),
@@ -1337,7 +1388,7 @@ export const runtimeProviderConfiguration = pgTable(
   (table) => [
     check(
       "runtime_provider_configuration_provider_check",
-      sql`${table.provider} in ('github', 'slack', 'discord', 'linear')`,
+      sql`${table.provider} ~ '^[a-z][a-z0-9_-]*$'`,
     ),
     check("runtime_provider_configuration_version_check", sql`${table.version} > 0`),
   ],
@@ -1346,7 +1397,7 @@ export const runtimeProviderConfiguration = pgTable(
 export const runtimeProviderActivations = pgTable(
   "runtime_provider_activation",
   {
-    provider: text().$type<(typeof CONNECTION_PROVIDERS)[number]>().primaryKey(),
+    provider: text().primaryKey(),
     providerApplicationId: text("provider_application_id").notNull(),
     configurationVersion: integer("configuration_version").notNull(),
     activatedAt: timestamp("activated_at", { withTimezone: true }).defaultNow().notNull(),
@@ -1354,7 +1405,7 @@ export const runtimeProviderActivations = pgTable(
   (table) => [
     check(
       "runtime_provider_activation_provider_check",
-      sql`${table.provider} in ('github', 'slack', 'discord', 'linear')`,
+      sql`${table.provider} ~ '^[a-z][a-z0-9_-]*$'`,
     ),
     check("runtime_provider_activation_version_check", sql`${table.configurationVersion} >= 0`),
   ],

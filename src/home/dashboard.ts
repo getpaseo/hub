@@ -1,7 +1,9 @@
 import type { ActivitySummary } from "../activity/index.js";
 import { rangeStart, type ActivityProvider, type RunStatus } from "../activity/query-contract.js";
 import type { AuthServer } from "../auth/server.js";
+import { toPublicConnectionView } from "../db/integrations.js";
 import type { Database, OrganizationConnectionUsage } from "../db/types.js";
+import { defaultIntegrationRegistry, type IntegrationRegistry } from "../integrations/registry.js";
 import { resolveRouteTenant } from "../projects/access.js";
 import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
 import { hasRequiredSlackScopes } from "../providers/slack/client.js";
@@ -17,7 +19,7 @@ export interface HomeSnapshot {
   /** Whether any provider app (GitHub, Slack, Discord, Linear) is set up on this Hub at all. */
   appsConfigured: boolean;
   connections: readonly {
-    provider: "github" | "slack" | "discord" | "linear";
+    provider: string;
     slug: string;
     label: string;
     /**
@@ -77,6 +79,7 @@ export class HomeDashboard {
      */
     private readonly providerAppsConfigured: (bindings: OrganizationConnectionUsage) => boolean,
     private readonly now: () => Date = () => new Date(),
+    private readonly registry: IntegrationRegistry = defaultIntegrationRegistry,
   ) {}
 
   async snapshot(
@@ -111,7 +114,7 @@ export class HomeDashboard {
     return {
       organization: tenant.organization,
       appsConfigured: this.providerAppsConfigured(connections),
-      connections: connectionViews(connections, now),
+      connections: connectionViews(connections, now, this.registry),
       daemons: daemons
         .filter(({ status }) => status === "active")
         .map(({ id, slug, presence, permissions }) => ({
@@ -136,6 +139,7 @@ export class HomeDashboard {
 function connectionViews(
   connections: OrganizationConnectionUsage,
   now: Date,
+  registry: IntegrationRegistry,
 ): HomeSnapshot["connections"] {
   return [
     ...connections.github.map(({ slug, accountLogin, status }) => ({
@@ -166,7 +170,34 @@ function connectionViews(
         ? ("requiresReauthorization" as const)
         : ("connected" as const),
     })),
+    ...(connections.integrations ?? []).map((record) => {
+      const integration = registry.get(record.provider);
+      if (integration !== undefined) {
+        const projected = integration.connection.projectConnection(record, now);
+        return {
+          provider: projected.provider,
+          slug: projected.slug,
+          label: projected.displayName,
+          status: projected.status,
+        };
+      }
+      const publicView = toPublicConnectionView(record);
+      return {
+        provider: publicView.provider,
+        slug: publicView.slug,
+        label: publicView.displayName,
+        status: integrationConnectionStatus(publicView.status),
+      };
+    }),
   ];
+}
+
+function integrationConnectionStatus(
+  status: string,
+): "connected" | "suspended" | "requiresReauthorization" {
+  if (status === "suspended") return "suspended";
+  if (status === "requires_reauthorization") return "requiresReauthorization";
+  return "connected";
 }
 
 function busiestTriggers(
