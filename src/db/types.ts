@@ -743,6 +743,12 @@ export interface AcceptedTriggerRunRecord extends TriggerRunEvidence {
   terminalNotificationPendingAt: Date | null;
   terminalNotificationDeliveredAt: Date | null;
   terminalNotificationLeaseExpiresAt: Date | null;
+  /** Delivery attempts started, counted when an attempt claims the notification. */
+  terminalNotificationAttempts: number;
+  /** A failed attempt's backoff: the notification is not claimed again before this time. */
+  terminalNotificationNextAttemptAt: Date | null;
+  /** Set when delivery stopped for good, after a permanent failure or the last attempt. */
+  terminalNotificationAbandonedAt: Date | null;
   completedAt: Date | null;
 }
 
@@ -1312,15 +1318,20 @@ export interface Database {
   ): Promise<
     { stepRun: WorkflowStepRunRecord; run: TriggerRunRecord; transitioned: boolean } | undefined
   >;
+  /** Leases the oldest due notification and counts the attempt it starts. */
   claimPendingWorkflowRunTerminalNotification(
     now: Date,
     leaseMs: number,
-  ): Promise<TriggerRunRecord | undefined>;
+  ): Promise<AcceptedTriggerRunRecord | undefined>;
   markWorkflowRunTerminalNotificationDelivered(
     triggerRunId: string,
     deliveredAt: Date,
     reactionState: JsonValue | null,
   ): Promise<void>;
+  /** Releases a failed attempt's lease and holds the notification until `nextAttemptAt`. */
+  retryWorkflowRunTerminalNotification(triggerRunId: string, nextAttemptAt: Date): Promise<void>;
+  /** Stops delivering the notification. It is never claimed again. */
+  abandonWorkflowRunTerminalNotification(triggerRunId: string, abandonedAt: Date): Promise<void>;
   setWorkflowRunReactionState(
     triggerRunId: string,
     reactionState: JsonValue | null,

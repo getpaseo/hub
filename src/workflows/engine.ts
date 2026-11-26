@@ -16,6 +16,7 @@ import { parseCompiledHubConfig, type JsonPrimitive, type JsonValue } from "../c
 import { triggerDocumentName, type CompiledProjectConfiguration } from "../configuration/store.js";
 import { logger as defaultLogger } from "../logger.js";
 import { reportFailure } from "../failures/index.js";
+import { nextTerminalNotificationAttempt } from "./terminal-notification-retry.js";
 import { durableExecutionId } from "../daemons/lifecycle.js";
 import { EntitlementDenied } from "../entitlements/catalog.js";
 import { encodeEntitlementDenialFailureReason } from "../entitlements/denial.js";
@@ -827,12 +828,41 @@ export class DurableWorkflowEngine {
             this.now(),
             deliveredReactionState,
           );
-        }).catch((error: unknown) => {
-          this.report(error, "workflow.notification.terminal.deliver", { triggerRunId: run.id });
-        }),
+        }).catch((error: unknown) => this.settleFailedTerminalNotification(run, error)),
       );
     }
     await Promise.all(inFlight);
+  }
+
+  /** Logs the failed attempt once, then either schedules the next attempt or abandons. */
+  private async settleFailedTerminalNotification(
+    run: AcceptedTriggerRunRecord,
+    error: unknown,
+  ): Promise<void> {
+    const database = this.options.database;
+    if (database === null) return;
+    const attempts = run.terminalNotificationAttempts;
+    const next = nextTerminalNotificationAttempt(error, attempts, this.now());
+    this.report(
+      error,
+      next.abandon
+        ? "workflow.notification.terminal.abandon"
+        : "workflow.notification.terminal.deliver",
+      {
+        triggerRunId: run.id,
+        attempts,
+        ...(next.abandon ? {} : { retryAt: next.retryAt.toISOString() }),
+      },
+    );
+    try {
+      if (next.abandon) {
+        await database.abandonWorkflowRunTerminalNotification(run.id, this.now());
+      } else {
+        await database.retryWorkflowRunTerminalNotification(run.id, next.retryAt);
+      }
+    } catch (settleError: unknown) {
+      this.report(settleError, "workflow.notification.terminal.settle", { triggerRunId: run.id });
+    }
   }
 
   private async finishPersistedExecution(

@@ -1165,9 +1165,14 @@ class PgDatabase implements Database {
            and status <> 'running'
            and terminal_notification_pending_at is not null
            and terminal_notification_delivered_at is null
+           and terminal_notification_abandoned_at is null
            and (
              terminal_notification_lease_expires_at is null
              or terminal_notification_lease_expires_at <= $1
+           )
+           and (
+             terminal_notification_next_attempt_at is null
+             or terminal_notification_next_attempt_at <= $1
            )
          order by terminal_notification_pending_at, id
          for update skip locked limit 1`,
@@ -1179,12 +1184,15 @@ class PgDatabase implements Database {
         }
         const updated = await client.query<TriggerRunRow>(
           `update trigger_runs
-         set terminal_notification_lease_expires_at = $2
+         set terminal_notification_lease_expires_at = $2,
+             terminal_notification_attempts = terminal_notification_attempts + 1
          where id = $1
          returning *`,
           [run.id, new Date(now.getTime() + leaseMs)],
         );
-        return toTriggerRunRecord(updated.rows[0]!);
+        const claimed = toTriggerRunRecord(updated.rows[0]!);
+        if (claimed.outcome !== "accepted") throw new Error("trigger branch outcome conflict");
+        return claimed;
       });
     } catch (error) {
       throw toDatabaseError(error);
@@ -1206,6 +1214,35 @@ class PgDatabase implements Database {
          and terminal_notification_pending_at is not null
          and terminal_notification_delivered_at is null`,
       [triggerRunId, deliveredAt, reactionState],
+    );
+  }
+
+  async retryWorkflowRunTerminalNotification(triggerRunId: string, nextAttemptAt: Date) {
+    await query(
+      this.pool,
+      `update trigger_runs
+       set terminal_notification_lease_expires_at = null,
+           terminal_notification_next_attempt_at = $2
+       where id = $1
+         and terminal_notification_pending_at is not null
+         and terminal_notification_delivered_at is null
+         and terminal_notification_abandoned_at is null`,
+      [triggerRunId, nextAttemptAt],
+    );
+  }
+
+  async abandonWorkflowRunTerminalNotification(triggerRunId: string, abandonedAt: Date) {
+    await query(
+      this.pool,
+      `update trigger_runs
+       set terminal_notification_lease_expires_at = null,
+           terminal_notification_next_attempt_at = null,
+           terminal_notification_abandoned_at = $2
+       where id = $1
+         and terminal_notification_pending_at is not null
+         and terminal_notification_delivered_at is null
+         and terminal_notification_abandoned_at is null`,
+      [triggerRunId, abandonedAt],
     );
   }
 
@@ -4495,6 +4532,9 @@ interface TriggerRunRow extends QueryRow {
   terminal_notification_pending_at: Date | null;
   terminal_notification_delivered_at: Date | null;
   terminal_notification_lease_expires_at: Date | null;
+  terminal_notification_attempts: number;
+  terminal_notification_next_attempt_at: Date | null;
+  terminal_notification_abandoned_at: Date | null;
   rejection: unknown;
   created_at: Date;
   completed_at: Date | null;
@@ -4596,6 +4636,9 @@ function toTriggerRunRecord(row: TriggerRunRow): TriggerRunRecord {
     terminalNotificationPendingAt: row.terminal_notification_pending_at,
     terminalNotificationDeliveredAt: row.terminal_notification_delivered_at,
     terminalNotificationLeaseExpiresAt: row.terminal_notification_lease_expires_at,
+    terminalNotificationAttempts: row.terminal_notification_attempts,
+    terminalNotificationNextAttemptAt: row.terminal_notification_next_attempt_at,
+    terminalNotificationAbandonedAt: row.terminal_notification_abandoned_at,
     completedAt: row.completed_at,
   };
   return accepted;

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
+import { classifyFailure, retryAdvice } from "../../failures/index.js";
 import { createSlackBotClient, SlackApiError } from "./client.js";
 
 describe("Slack Web API client", () => {
@@ -177,6 +178,95 @@ describe("Slack Web API client", () => {
     });
     await assert.rejects(() => mismatched.addReaction(reaction), /Slack API no_reaction/u);
     await assert.rejects(() => mismatched.removeReaction(reaction), /Slack API already_reacted/u);
+  });
+
+  it("reports an HTTP 429 as ratelimited with the wait Slack asked for", async () => {
+    const client = createSlackBotClient({
+      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      fetch: async () =>
+        Response.json(
+          { ok: false, error: "ratelimited" },
+          { status: 429, headers: { "retry-after": "30" } },
+        ),
+    });
+
+    const error = await client
+      .addReaction({
+        organizationId: "org-1",
+        teamId: "T1",
+        channelId: "C1",
+        messageTs: "1.1",
+        name: "white_check_mark",
+      })
+      .then(
+        () => undefined,
+        (rejection: unknown) => rejection,
+      );
+
+    assert.ok(error instanceof SlackApiError);
+    assert.equal(error.code, "ratelimited");
+    assert.equal(classifyFailure(error), "rateLimited");
+    assert.deepEqual(retryAdvice(error), { retryable: true, retryAfterMs: 30_000 });
+  });
+
+  it.each([
+    ["not_in_channel", false],
+    ["missing_scope", false],
+    ["invalid_auth", false],
+    ["account_inactive", false],
+    ["token_revoked", false],
+    ["is_archived", false],
+    ["internal_error", true],
+    ["fatal_error", true],
+  ] as const)("tells a caller whether Slack's %s can succeed on retry", async (code, retryable) => {
+    const client = createSlackBotClient({
+      tokenForWorkspace: () => Promise.resolve("xoxb-secret"),
+      fetch: async () => Response.json({ ok: false, error: code }),
+    });
+
+    const error = await client
+      .sendMessage({
+        organizationId: "org-1",
+        teamId: "T1",
+        channelId: "C1",
+        threadTs: "1.1",
+        content: "done",
+      })
+      .then(
+        () => undefined,
+        (rejection: unknown) => rejection,
+      );
+
+    assert.ok(error instanceof SlackApiError);
+    assert.equal(retryAdvice(error).retryable, retryable);
+  });
+
+  it("does not retry a call for a workspace that is no longer connected", async () => {
+    let requested = false;
+    const client = createSlackBotClient({
+      tokenForWorkspace: () => Promise.resolve(undefined),
+      fetch: async () => {
+        requested = true;
+        return Response.json({ ok: true });
+      },
+    });
+
+    const error = await client
+      .addReaction({
+        organizationId: "org-1",
+        teamId: "T1",
+        channelId: "C1",
+        messageTs: "1.1",
+        name: "white_check_mark",
+      })
+      .then(
+        () => undefined,
+        (rejection: unknown) => rejection,
+      );
+
+    assert.equal(requested, false);
+    assert.match(String(error), /Slack workspace is not connected/u);
+    assert.deepEqual(retryAdvice(error), { retryable: false });
   });
 
   it("keeps the root with the latest 49 preceding Slack replies, oldest first", async () => {

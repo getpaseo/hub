@@ -21,6 +21,39 @@ export type FailureKind =
   | "conflict"
   | "internal";
 
+/**
+ * A failure whose client already knows what it means: the upstream answered with a provider
+ * code, or Hub could not even ask. Provider clients throw this so callers classify it through
+ * {@link classifyFailure} and {@link retryAdvice} without learning any provider's codes.
+ */
+export class UpstreamFailure extends Error {
+  readonly kind: FailureKind;
+  /** The earliest the upstream accepts a retry, from its `Retry-After` or reset header. */
+  readonly retryAfterMs: number | undefined;
+
+  constructor(
+    message: string,
+    kind: FailureKind,
+    options: { retryAfterMs?: number; cause?: unknown } = {},
+  ) {
+    super(message, options.cause === undefined ? {} : { cause: options.cause });
+    this.name = "UpstreamFailure";
+    this.kind = kind;
+    this.retryAfterMs = options.retryAfterMs;
+  }
+}
+
+/** Whether repeating the same request later can succeed, and how long the upstream asked to wait. */
+export type RetryAdvice = { retryable: false } | { retryable: true; retryAfterMs: number };
+
+export function retryAdvice(error: unknown): RetryAdvice {
+  if (isPermanent(classifyFailure(error))) return { retryable: false };
+  return {
+    retryable: true,
+    retryAfterMs: error instanceof UpstreamFailure ? (error.retryAfterMs ?? 0) : 0,
+  };
+}
+
 export interface FailureContext {
   operation: string;
   component: string;
@@ -122,7 +155,7 @@ export function reportFailure(
         }),
   };
   const log = options.logger ?? activeRequest?.logger ?? defaultLogger;
-  if (isExpected(kind)) log.warn(record, `${context.operation} failed`);
+  if (isPermanent(kind)) log.warn(record, `${context.operation} failed`);
   else log.error(record, `${context.operation} failed`);
   const report = { kind, requestId };
   if (typeof error === "object" && error !== null) reportedErrors.set(error, report);
@@ -143,6 +176,7 @@ export function respondWithFailure(
 }
 
 export function classifyFailure(error: unknown, status?: number): FailureKind {
+  if (error instanceof UpstreamFailure) return error.kind;
   const statusKind = classifyStatus(status ?? errorStatus(error));
   if (statusKind !== undefined) return statusKind;
   const code = errorProperty(error, "code") ?? errorProperty(error, "reason");
@@ -211,7 +245,11 @@ function classifyErrorName(name: string): FailureKind | undefined {
   return undefined;
 }
 
-function isExpected(kind: FailureKind): boolean {
+/**
+ * The request itself was refused: retrying it unchanged repeats the refusal. These are logged
+ * as warnings because they describe the caller's configuration, not a Hub fault.
+ */
+function isPermanent(kind: FailureKind): boolean {
   return [
     "validation",
     "authentication",
