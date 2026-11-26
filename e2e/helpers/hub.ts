@@ -267,7 +267,11 @@ export class PaseoHub {
     await this.verifyExactContract(application, {
       name: "legacy deployment remains healthy without browser auth",
       request: { path: "/health", method: "GET" },
-      expected: { status: 200, body: '{"ok":true}', headers: { "content-type": JSON_TYPE } },
+      expected: {
+        status: 200,
+        body: IDLE_HEALTH_BODY,
+        headers: { "content-type": JSON_TYPE },
+      },
     });
     await this.verifyExactContract(application, {
       name: "browser auth closes independently",
@@ -2606,6 +2610,7 @@ export class PaseoHub {
       data: Buffer.from(payload),
     });
     expect(response.status()).toBe(200);
+    await expectInboundDrained(this.requests, this.primary.origin);
   }
 
   private deliverDiscord(messageId: string, guildId: string, authorId: string): Promise<void> {
@@ -5913,6 +5918,19 @@ export interface AppSetupSession {
   close(): Promise<void>;
 }
 
+/** A GitHub delivery is answered once queued; this waits until `/health` shows it processed. */
+async function expectInboundDrained(request: APIRequestContext, origin: string): Promise<void> {
+  const health = z.object({
+    inbound: z.object({ queued: z.number(), inFlight: z.number(), retrying: z.number() }),
+  });
+  await expect
+    .poll(async () => {
+      const { inbound } = health.parse(await (await request.get(`${origin}/health`)).json());
+      return inbound.queued + inbound.inFlight + inbound.retrying;
+    })
+    .toBe(0);
+}
+
 async function seedSignedDelivery(
   page: Page,
   origin: string,
@@ -5933,6 +5951,7 @@ async function seedSignedDelivery(
       },
     });
     expect(response.ok()).toBe(true);
+    await expectInboundDrained(page.request, origin);
     return;
   }
 
@@ -6535,6 +6554,18 @@ function executionMeterCount(used: number, limit: number = FIXTURE_FREE_EXECUTIO
 const FIXTURE_FREE_EXECUTIONS = 50;
 const HOSTILE_ORIGIN = "https://hostile.invalid";
 const JSON_TYPE = "application/json";
+/** `/health` on an application whose inbound queue has seen nothing. */
+const IDLE_HEALTH_BODY = JSON.stringify({
+  ok: true,
+  inbound: {
+    queued: 0,
+    inFlight: 0,
+    retrying: 0,
+    bytes: 0,
+    oldestAgeMs: null,
+    totals: { processed: 0, retried: 0, abandoned: 0, rejectedFull: 0 },
+  },
+});
 const PROBLEM_TYPE = "application/problem+json";
 const ORGANIZATION_POST_PATHS = [
   "/api/auth/paseo/create-organization",
@@ -6545,7 +6576,7 @@ const HTML_TYPE = "text/html; charset=utf-8";
 
 function manualFailureContracts(machineKey: string): readonly HttpContract[] {
   return [
-    exact("health", "/health", "GET", 200, '{"ok":true}', JSON_TYPE),
+    exact("health", "/health", "GET", 200, IDLE_HEALTH_BODY, JSON_TYPE),
     exact(
       "enrollment token requires machine authentication",
       "/api/v1/daemons/enrollment-tokens",

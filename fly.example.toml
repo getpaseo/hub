@@ -1,6 +1,8 @@
 # Self-hosting example. Copy this file to fly.toml and replace the placeholders.
 app = 'your-paseo-hub'
 primary_region = 'iad'
+# Shutdown drains HTTP for 5 seconds, then processes queued provider events for up to 20 more.
+kill_timeout = 30
 
 [build]
 dockerfile = "Dockerfile"

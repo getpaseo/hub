@@ -1,4 +1,5 @@
 import type { IntegrationToolHandlers } from "../integration-tools/index.js";
+import type { InboundProcessors } from "../inbound/index.js";
 import type { ProjectConfigurationStore } from "../configuration/store.js";
 import type { ConnectionResolutionContext, ConnectionResolver } from "../config/connections.js";
 import type { OrganizationConnectionUsage } from "../db/types.js";
@@ -78,6 +79,8 @@ export interface ProviderRegistration {
   outputs: readonly ProviderOutputRegistration[];
   integrationTools?: IntegrationToolHandlers;
   requests: readonly ProviderRequestRegistration[];
+  /** Processors for the inbound events this registration's sources queue, by event kind. */
+  inbound?: InboundProcessors;
   attachment?: ProviderAttachmentRegistration;
   slackDelivery?: { status(): SlackDeliveryStatus; retry(): Promise<void> };
 }

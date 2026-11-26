@@ -5,8 +5,15 @@ import { DatabaseUnavailableError } from "../../db/errors.js";
 import type { ProviderEventAcceptance } from "../../db/types.js";
 import type { ExternalTrigger } from "../index.js";
 import {
+  createMemoryInboundQueue,
+  type InboundQueue,
+  type MemoryInboundQueueOptions,
+} from "../../inbound/index.js";
+import {
   createWebhookSource,
+  GITHUB_WEBHOOK_EVENT,
   type WebhookEndpoint,
+  type WebhookSourceOptions,
   hashWebhookSignature,
   normalizeWebhookEvent,
   verifySignature,
@@ -44,15 +51,15 @@ describe("hashWebhookSignature", () => {
 });
 
 describe("normalizeWebhookEvent", () => {
-  it("produces a normalized webhook event", () => {
-    const before = Date.now();
+  it("produces a normalized webhook event stamped with when it was received", () => {
     const body = createWebhookPayload();
+    const receivedAt = new Date("2026-11-26T10:00:00.000Z");
     const event = normalizeWebhookEvent({
       body,
       deliveryId: "delivery-123",
       eventType: "issue_comment",
+      receivedAt,
     });
-    const after = Date.now();
 
     assert.notEqual(event, undefined);
     assert.equal(event!.id, "delivery-123");
@@ -61,11 +68,7 @@ describe("normalizeWebhookEvent", () => {
     assert.equal(event!.repositoryId, 9001);
     assert.equal(event!.installationId, 42);
     assert.equal(event!.payload, body);
-
-    const createdAtMs = Date.parse(event!.createdAt);
-    assert.equal(Number.isNaN(createdAtMs), false);
-    assert.equal(createdAtMs >= before, true);
-    assert.equal(createdAtMs <= after, true);
+    assert.equal(event!.createdAt, "2026-11-26T10:00:00.000Z");
   });
 
   it("returns undefined for events without repository", () => {
@@ -73,6 +76,7 @@ describe("normalizeWebhookEvent", () => {
       body: { action: "completed" },
       deliveryId: "ping-123",
       eventType: "ping",
+      receivedAt: new Date(),
     });
 
     assert.equal(event, undefined);
@@ -81,14 +85,14 @@ describe("normalizeWebhookEvent", () => {
 
 describe("GitHub webhook", () => {
   it("requires an installation id after authenticating the signed body", async () => {
-    const github = GitHubWebhook.fanout(undefined);
+    const github = new GitHubWebhook();
     assert.equal(await github.deliver("missing-installation", { action: "ping" }), 400);
+    assert.equal(github.inbound.stats().totals.processed, 0);
   });
 
   it("durably drops an authentic unsupported delivery before dispatch", async () => {
     const dropped: string[] = [];
-    const endpoint = createWebhookSource(SECRET, {
-      ...webhookOptions(),
+    const github = new GitHubWebhook({
       accept: async (input) => {
         dropped.push(input.dropReason ?? "");
         return {
@@ -98,7 +102,6 @@ describe("GitHub webhook", () => {
         };
       },
     });
-    const github = new GitHubWebhook(endpoint);
     assert.equal(
       await github.deliver("unsupported", { action: "ping", installation: { id: 42 } }),
       200,
@@ -106,10 +109,28 @@ describe("GitHub webhook", () => {
     assert.deepEqual(dropped, ["no_trigger_for_source"]);
   });
 
+  it("drops a delivery whose repository the payload schema cannot read", async () => {
+    const dropped: string[] = [];
+    const github = new GitHubWebhook({
+      accept: async (input) => {
+        dropped.push(input.dropReason ?? "");
+        return { status: "dropped", receiptId: input.deliveryId, reason: input.dropReason! };
+      },
+    });
+    assert.equal(
+      await github.deliver("null-repository", {
+        action: "created",
+        installation: { id: 42 },
+        repository: null,
+      }),
+      200,
+    );
+    assert.deepEqual(dropped, ["no_trigger_for_source"]);
+  });
+
   it("records a durable outcome when a bound delivery has no handler", async () => {
     const dropped: string[] = [];
-    const endpoint = createWebhookSource(SECRET, {
-      ...webhookOptions(),
+    const github = new GitHubWebhook({
       accept: async (input) => {
         dropped.push(input.dropReason ?? "");
         return {
@@ -120,7 +141,7 @@ describe("GitHub webhook", () => {
       },
     });
 
-    assert.equal(await new GitHubWebhook(endpoint).deliver("no-handler"), 200);
+    assert.equal(await github.deliver("no-handler"), 200);
     assert.deepEqual(dropped, ["configuration_unavailable"]);
   });
 
@@ -131,8 +152,7 @@ describe("GitHub webhook", () => {
       deliveryId: string;
     }> = [];
     const acceptedDeliveries: Array<{ source: string; deliveryId: string }> = [];
-    const endpoint = createWebhookSource(SECRET, {
-      ...webhookOptions(),
+    const github = new GitHubWebhook({
       accept: async (input) => {
         acceptedDeliveries.push({ source: input.source, deliveryId: input.deliveryId });
         return {
@@ -151,7 +171,7 @@ describe("GitHub webhook", () => {
     });
 
     assert.equal(
-      await new GitHubWebhook(endpoint).deliver(
+      await github.deliver(
         "config-only-push",
         {
           ...createWebhookPayload(),
@@ -172,23 +192,56 @@ describe("GitHub webhook", () => {
   });
 
   it("rejects declared and streamed oversized bodies before full buffering", async () => {
-    const github = new OversizedGitHubWebhook(createWebhookSource(SECRET, webhookOptions()));
+    const github = new OversizedGitHubWebhook(new GitHubWebhook().endpoint);
 
     assert.equal(await github.deliverDeclared(), 413);
     assert.deepEqual(await github.deliverStalled(), { status: 413, canceled: true });
   });
 
-  it("returns a retryable failure when tenant resolution storage is unavailable", async () => {
-    const endpoint = createWebhookSource(SECRET, {
-      ...webhookOptions(),
-      accept: () => Promise.reject(new DatabaseUnavailableError()),
+  it("answers 200 while storage is unavailable and accepts the delivery once it is back", async () => {
+    const receivedAt: Date[] = [];
+    const github = new GitHubWebhook({
+      accept: (input) => {
+        receivedAt.push(input.receivedAt);
+        return receivedAt.length === 1
+          ? Promise.reject(new DatabaseUnavailableError())
+          : Promise.resolve(accepted(input));
+      },
     });
-    const github = new GitHubWebhook(endpoint);
-    assert.equal(await github.deliver("database-unavailable"), 503);
+    await github.record();
+
+    assert.equal(await github.deliver("database-unavailable"), 200);
+
+    assert.deepEqual(github.receivedIds(), ["database-unavailable"]);
+    assert.equal(receivedAt.length, 2);
+    // The receipt keeps the time the delivery was verified, not the time of the retry.
+    assert.equal(receivedAt[1]!.getTime(), receivedAt[0]!.getTime());
+  });
+
+  it("answers 503 when the inbound queue is full", async () => {
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const github = new GitHubWebhook(
+      {
+        accept: async (input) => {
+          await held;
+          return accepted(input);
+        },
+      },
+      { maxItems: 1 },
+    );
+
+    assert.equal(await github.handle("first"), 200);
+    assert.equal(await github.handle("second"), 503);
+    release?.();
+    await github.inbound.idle();
   });
 
   it("does not dispatch duplicate delivery ids", async () => {
-    const github = await GitHubWebhook.recording("42");
+    const github = GitHubWebhook.deduplicating();
+    await github.record();
 
     await github.deliver("delivery-123");
     await github.deliver("delivery-123");
@@ -197,7 +250,7 @@ describe("GitHub webhook", () => {
   });
 
   it("fans out one delivery to independent consumers", async () => {
-    const github = GitHubWebhook.fanout("42");
+    const github = new GitHubWebhook();
     await github.addConsumer("first");
     await github.addConsumer("second");
 
@@ -209,21 +262,48 @@ describe("GitHub webhook", () => {
   });
 });
 
+/** A webhook source wired to a real inbound queue, the way the GitHub registration wires it. */
 class GitHubWebhook {
+  readonly inbound: InboundQueue;
+  readonly endpoint: WebhookEndpoint;
   private readonly deliveries: ExternalTrigger[] = [];
 
-  constructor(private readonly endpoint: WebhookEndpoint) {}
-
-  static fanout(allowedInstallations: string | undefined): GitHubWebhook {
-    return new GitHubWebhook(createWebhook(allowedInstallations));
+  constructor(
+    options: Partial<Omit<WebhookSourceOptions, "inbound">> = {},
+    queue: MemoryInboundQueueOptions = {},
+  ) {
+    this.inbound = createMemoryInboundQueue({ retry: { initialMs: 10, maxMs: 10 }, ...queue });
+    this.endpoint = createWebhookSource(SECRET, {
+      accept: (input) => Promise.resolve(accepted(input)),
+      applyLifecycle: () => Promise.resolve(),
+      ...options,
+      inbound: this.inbound,
+    });
+    this.inbound.start({ [GITHUB_WEBHOOK_EVENT]: (event) => this.endpoint.process(event) });
   }
 
-  static async recording(allowedInstallations: string | undefined): Promise<GitHubWebhook> {
-    const github = new GitHubWebhook(createWebhook(allowedInstallations));
-    await github.endpoint.start(async (event) => {
-      github.deliveries.push(event);
+  /** Answers like the receipt store: a delivery id it has seen is a duplicate. */
+  static deduplicating(): GitHubWebhook {
+    const deliveries = new Set<string>();
+    return new GitHubWebhook({
+      accept(input) {
+        if (deliveries.has(input.deliveryId)) {
+          return Promise.resolve({
+            status: "duplicate",
+            triggerIds: [`trigger-${input.deliveryId}`],
+            receiptId: input.deliveryId,
+          });
+        }
+        deliveries.add(input.deliveryId);
+        return Promise.resolve(accepted(input));
+      },
     });
-    return github;
+  }
+
+  async record(): Promise<void> {
+    await this.endpoint.start(async (event) => {
+      this.deliveries.push(event);
+    });
   }
 
   async addConsumer(name: string): Promise<void> {
@@ -232,7 +312,18 @@ class GitHubWebhook {
     });
   }
 
+  /** Sends a signed delivery and waits until the queue has processed it. */
   async deliver(
+    deliveryId: string,
+    payload: unknown = createWebhookPayload(),
+    eventType = "issue_comment",
+  ): Promise<number> {
+    const status = await this.handle(deliveryId, payload, eventType);
+    await this.inbound.idle();
+    return status;
+  }
+
+  async handle(
     deliveryId: string,
     payload: unknown = createWebhookPayload(),
     eventType = "issue_comment",
@@ -300,31 +391,6 @@ class OversizedGitHubWebhook {
     const response = await this.endpoint.handle(request);
     return { status: response.status, canceled: this.canceled };
   }
-}
-
-function createWebhook(_allowedInstallations: string | undefined): WebhookEndpoint {
-  const deliveries = new Set<string>();
-  return createWebhookSource(
-    SECRET,
-    webhookOptions((input) => {
-      if (deliveries.has(input.deliveryId)) {
-        return Promise.resolve({
-          status: "duplicate",
-          triggerIds: [`trigger-${input.deliveryId}`],
-          receiptId: input.deliveryId,
-        });
-      }
-      deliveries.add(input.deliveryId);
-      return Promise.resolve(accepted(input));
-    }),
-  );
-}
-
-function webhookOptions(
-  accept: Parameters<typeof createWebhookSource>[1]["accept"] = (input) =>
-    Promise.resolve(accepted(input)),
-): Parameters<typeof createWebhookSource>[1] {
-  return { accept, applyLifecycle: () => Promise.resolve() };
 }
 
 function accepted(input: {

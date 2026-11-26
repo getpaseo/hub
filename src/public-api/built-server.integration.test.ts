@@ -26,6 +26,7 @@ import {
   ValidatedConfigurationSchema,
 } from "./contracts.js";
 import { loadBuiltStartServer, type BuiltStartServer } from "../server/build.js";
+import { createMemoryInboundQueue } from "../inbound/index.js";
 
 const builtServerTests = describe.runIf(process.env["RUN_BUILT_PUBLIC_API_TESTS"] === "1");
 
@@ -182,6 +183,7 @@ builtServerTests("built TanStack public API PostgreSQL contract", () => {
     if (cliPoll.status !== "authorized") throw new Error("CLI login did not issue a credential");
     secrets = { "organization-a": cliPoll.credential, "organization-b": keyB.secret };
     const runtime = await createApplicationRuntime({
+      inbound: createMemoryInboundQueue(),
       database,
       auth,
       entitlements: entitlements.service,

@@ -1,9 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { readHealth } from "../server/runtime.js";
 
 export const Route = createFileRoute("/health")({
   server: {
     handlers: {
-      GET: () => Response.json({ ok: true }),
+      GET: async () => Response.json(await readHealth()),
     },
   },
 });

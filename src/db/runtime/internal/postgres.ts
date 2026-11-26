@@ -6,7 +6,7 @@ import type { PoolClient } from "pg";
 import { createPool, type PostgresPool } from "./pool.js";
 export { createPool } from "./pool.js";
 import * as schema from "../../schema.js";
-import { toDatabaseError } from "../../errors.js";
+import { DatabaseUnavailableError, toDatabaseError } from "../../errors.js";
 import { TransactionRollback } from "../index.js";
 import type {
   DatabaseRuntime,
@@ -86,7 +86,7 @@ class PostgresRuntime implements DatabaseRuntime {
   }
 
   private async checkout<T>(operation: (client: PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
+    const client = await this.pool.checkout();
     try {
       return await operation(client);
     } finally {
@@ -157,8 +157,10 @@ async function ensureDatabaseExists(connectionString: string): Promise<void> {
   }
 }
 
+/** A connection refused because the database does not exist, which the pool reports as an outage. */
 function isMissingDatabaseError(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "3D000";
+  const cause = error instanceof DatabaseUnavailableError ? error.cause : error;
+  return cause instanceof Error && "code" in cause && cause.code === "3D000";
 }
 
 async function query<Row extends QueryRow>(

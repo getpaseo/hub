@@ -19,6 +19,7 @@ import type { ProviderApplications } from "../provider-applications/index.js";
 import type { DaemonCatalog } from "../daemons/catalog.js";
 import type { ActivityDashboard } from "../activity/index.js";
 import type { HomeDashboard } from "../home/dashboard.js";
+import type { InboundQueueStats } from "../inbound/index.js";
 
 /**
  * The public plan catalog shape is billing's own: `src/billing/public-catalog.ts` decides which
@@ -124,6 +125,8 @@ export interface ApplicationRuntime {
   providerRequest(name: string, request: Request): Promise<Response>;
   connectionStatus(request: Request): Promise<Response>;
   connectionAction(request: Request, provider: string, action: string): Promise<Response>;
+  /** What `/health` reports. Stays ok while inbound events wait for Postgres. */
+  health(): { ok: true; inbound: InboundQueueStats };
   stop(): Promise<void>;
 }
 
@@ -154,6 +157,12 @@ export function getApplication(): Promise<ApplicationRuntime> {
     throw new Error("application is not started");
   }
   return globalThis.paseoHubApplicationRuntime;
+}
+
+/** Liveness: ok whenever the process serves requests, with the inbound queue once it exists. */
+export async function readHealth(): Promise<{ ok: true; inbound?: InboundQueueStats }> {
+  const application = globalThis.paseoHubApplicationRuntime;
+  return application === undefined ? { ok: true } : (await application).health();
 }
 
 export async function handleAuth(request: Request): Promise<Response> {

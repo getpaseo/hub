@@ -9,6 +9,7 @@ import { createAuthServer } from "../../auth/server.js";
 import { composeEntitlements } from "../../auth/entitlements.js";
 import { createDatabase } from "../pg.js";
 import { embeddedDatabaseRuntime } from "./index.js";
+import { createMemoryInboundQueue } from "../../inbound/index.js";
 
 it("joins runtime queries to the active embedded transaction", async () => {
   const root = await mkdtemp(join(tmpdir(), "hub-pglite-transaction-"));
@@ -49,6 +50,7 @@ it("runs the bootstrap, credential lock, and lease claim flows on embedded stora
     },
   });
   const application = await createApplicationRuntime({
+    inbound: createMemoryInboundQueue(),
     database,
     auth,
     entitlements: entitlements.service,
