@@ -2,6 +2,7 @@ import type { z } from "zod";
 import type { AuthServer } from "../auth/server.js";
 import type { JsonValue } from "../config/compiler.js";
 import type {
+  ConnectionStartAuthority,
   Database,
   IntegrationConnectionRecord,
   IntegrationConnectionStatus,
@@ -16,14 +17,14 @@ import type {
   TriggerProviderFactory,
 } from "../providers/registration.js";
 import type { TriggerHandler, TriggerSource } from "../triggers/index.js";
-import type { IntegrationTriggerEventSpec } from "./browser-contracts.js";
+import type { IntegrationToolGrantBase, IntegrationTriggerEventSpec } from "./browser-contracts.js";
 
 export type {
   IntegrationConnectionRecord,
   IntegrationConnectionStatus,
   PublicIntegrationConnectionView,
 } from "../db/types.js";
-export type { IntegrationTriggerEventSpec } from "./browser-contracts.js";
+export type { IntegrationToolGrantBase, IntegrationTriggerEventSpec } from "./browser-contracts.js";
 
 /**
  * Strips credentials at the boundary before projecting a connection record to
@@ -150,7 +151,10 @@ export interface IntegrationRuntimeContext {
 
 export interface IntegrationConnectionRuntime {
   readonly actions: Readonly<Record<string, (request: Request) => Promise<Response>>>;
-  beginConnection?(request: Request): Promise<{ readonly url: string }>;
+  beginConnection?(
+    request: Request,
+    access?: ConnectionStartAuthority,
+  ): Promise<{ readonly url: string }>;
   close?(): Promise<void>;
 }
 
@@ -247,11 +251,6 @@ export interface IntegrationToolSpec {
   readonly action: string;
   readonly schema: z.ZodObject;
   readonly definition: OutputToolDefinition;
-}
-
-export interface IntegrationToolGrantBase {
-  readonly connection: string;
-  readonly actions: readonly string[];
 }
 
 export interface IntegrationToolsCapability<

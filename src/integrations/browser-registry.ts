@@ -1,7 +1,10 @@
 import type {
   BrowserIntegrationDefinition,
+  BrowserIntegrationTriggersDefinition,
+  IntegrationToolGrantBase,
   IntegrationTriggerEventSpec,
 } from "./browser-contracts.js";
+import type { z } from "zod";
 import { BROWSER_INTEGRATIONS } from "./browser.js";
 
 export const INTEGRATION_ID_PATTERN = /^[a-z][a-z0-9_-]*$/u;
@@ -12,6 +15,26 @@ export const RESERVED_LEGACY_INTEGRATION_IDS: ReadonlySet<string> = new Set([
   "discord",
   "linear",
 ]);
+
+/** Pure validation-only view satisfied by both browser and server integration registries. */
+export interface IntegrationSchemaDefinition {
+  readonly id: string;
+  readonly triggers?: BrowserIntegrationTriggersDefinition;
+  readonly tools?: {
+    readonly grantSchema: z.ZodType<IntegrationToolGrantBase>;
+    normalizeGrant(grant: IntegrationToolGrantBase): IntegrationToolGrantBase;
+  };
+}
+
+export interface IntegrationSchemaRegistry {
+  forEvent(eventId: string):
+    | {
+        readonly integration: IntegrationSchemaDefinition;
+        readonly event: IntegrationTriggerEventSpec;
+      }
+    | undefined;
+  withTools(): readonly IntegrationSchemaDefinition[];
+}
 
 export interface BrowserIntegrationRegistry {
   get(id: string): BrowserIntegrationDefinition | undefined;

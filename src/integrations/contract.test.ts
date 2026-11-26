@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative, resolve as resolvePath } from "node:path";
 import { describe, it } from "vitest";
+import { parseDocument } from "yaml";
 import { z } from "zod";
 import { AgentSessions } from "../agent-sessions/index.js";
 import { createApplicationRuntime } from "../application-runtime.js";
 import { composeEntitlements } from "../auth/entitlements.js";
 import type { AccountAccessValue } from "../auth/organization-access.js";
 import { createAuthServer, type AuthServer } from "../auth/server.js";
+import { HubConfigSchema } from "../config/compiler.js";
 import {
   ProjectConfigurationStore,
   resolveTriggerConfigurationForOrganization,
@@ -21,6 +24,10 @@ import { createDatabase } from "../db/pg.js";
 import { embeddedDatabaseRuntime } from "../db/runtime/index.js";
 import { OutputExecutorRegistry, replyOutputTool } from "../execution-capabilities/outputs.js";
 import { HomeDashboard } from "../home/dashboard.js";
+import {
+  buildCompiledIntegrationToolGrantsSchema,
+  buildIntegrationToolGrantsSchema,
+} from "../integration-tools/grants.js";
 import { callIntegrationTool, integrationToolDefinitions } from "../integration-tools/index.js";
 import { ProjectDashboard } from "../projects/dashboard.js";
 import {
@@ -31,7 +38,11 @@ import {
   DynamicProviderRuntime,
   readProviderApplicationEnvironment,
 } from "../provider-applications/index.js";
-import { compileTriggerDocument } from "../triggers/configuration/index.js";
+import {
+  buildTriggerDocumentSchema,
+  compileTriggerDocument,
+  TriggerDocumentSchema,
+} from "../triggers/configuration/index.js";
 import {
   createTriggerYaml,
   patchTriggerYaml,
@@ -44,7 +55,10 @@ import {
   isEditorEvent,
 } from "../triggers/configuration/events.js";
 import type { TriggerHandler } from "../triggers/index.js";
-import type { BrowserIntegrationDefinition } from "./browser-contracts.js";
+import {
+  defineBrowserIntegration,
+  type BrowserIntegrationDefinition,
+} from "./browser-contracts.js";
 import {
   createBrowserIntegrationRegistry,
   defaultBrowserIntegrationRegistry,
@@ -246,24 +260,27 @@ function createAcmeServerIntegration(hooks: AcmeTestHooks) {
       },
       createRuntime(config, context) {
         return {
-          async beginConnection(request) {
+          async beginConnection(request, access) {
             const url = new URL(request.url);
-            const organizationId = url.searchParams.get("organizationId") ?? "org-1";
             const state = `state-${randomUUID()}`;
             const stateVerifier = createHash("sha256").update(state).digest("hex");
-            const account = await context.auth.resolveAccount(request);
-            const membershipId = url.searchParams.get("membershipId") ?? "member-1";
+            const startAccess =
+              access ??
+              (await (async () => {
+                const account = await context.auth.resolveAccount(request);
+                return {
+                  organizationId: url.searchParams.get("organizationId") ?? "org-1",
+                  membershipId: url.searchParams.get("membershipId") ?? "member-1",
+                  userId: account.account.id,
+                  sessionId: account.session.id,
+                  returnRoute: "/apps",
+                };
+              })());
             await context.database.startConnectionAttempt({
               provider: "acme",
               stateVerifier,
               pkceVerifier: "pkce-verifier-acme",
-              access: {
-                organizationId,
-                membershipId,
-                userId: account.account.id,
-                sessionId: account.session.id,
-                returnRoute: "/apps",
-              },
+              access: startAccess,
               lifetimeMinutes: 10,
               configurationVersion: context.configurationVersion,
               providerApplicationId: context.identity.id,
@@ -278,6 +295,7 @@ function createAcmeServerIntegration(hooks: AcmeTestHooks) {
             };
           },
           actions: {
+            refresh: async () => Response.json({ refreshed: true, provider: "acme" }),
             callback: async (request) => {
               const url = new URL(request.url);
               const state = url.searchParams.get("state");
@@ -400,6 +418,10 @@ function createAcmeServerIntegration(hooks: AcmeTestHooks) {
                 });
                 return Response.json(enqueued, { status: 200 });
               },
+            },
+            {
+              name: "acme.interactions",
+              handle: async () => Response.json({ handled: "interactions" }, { status: 200 }),
             },
           ],
           ingest: {
@@ -536,7 +558,7 @@ function createAcmeServerIntegration(hooks: AcmeTestHooks) {
 }
 
 function createAcmeBrowserIntegration(): BrowserIntegrationDefinition {
-  return {
+  return defineBrowserIntegration({
     id: "acme",
     label: "Acme",
     resourceNoun: "Board",
@@ -588,8 +610,26 @@ function createAcmeBrowserIntegration(): BrowserIntegrationDefinition {
     },
     triggers: {
       events: [ACME_CARD_EVENT],
+      filterSchema: ACME_FILTER_SCHEMA,
+      validateEventFilters(_event, filters, ctx) {
+        if (filters.board === "forbidden-board") {
+          ctx.addIssue({
+            code: "custom",
+            path: ["board"],
+            message: "Board forbidden-board is reserved.",
+          });
+        }
+      },
     },
     tools: {
+      grantSchema: ACME_GRANT_SCHEMA,
+      normalizeGrant(grant) {
+        return {
+          connection: grant.connection,
+          actions: [...new Set(grant.actions)].toSorted(),
+          boards: [...new Set(grant.boards)].toSorted(),
+        };
+      },
       actions: [
         { id: "read", label: "Read cards" },
         { id: "comment", label: "Post comments" },
@@ -629,39 +669,93 @@ function createAcmeBrowserIntegration(): BrowserIntegrationDefinition {
         return messages;
       },
     },
-  };
+  });
+}
+
+async function collectTransitiveLocalImports(entryFiles: readonly string[]): Promise<{
+  readonly files: ReadonlySet<string>;
+  readonly specifiers: readonly { readonly from: string; readonly specifier: string }[];
+}> {
+  const root = process.cwd();
+  const visited = new Set<string>();
+  const specifiers: { from: string; specifier: string }[] = [];
+  const queue = entryFiles.map((file) => resolvePath(root, file));
+  const importPattern = /(?:import|export)\s+(?!type\b)(?:[\s\S]*?\s+from\s+)?["']([^"']+)["']/gu;
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    const rel = relative(root, current);
+    if (visited.has(rel)) continue;
+    visited.add(rel);
+    const source = await readFile(current, "utf8");
+    for (const match of source.matchAll(importPattern)) {
+      const specifier = match[1];
+      if (specifier === undefined) continue;
+      specifiers.push({ from: rel, specifier });
+      if (!specifier.startsWith(".")) continue;
+      const base = resolvePath(dirname(current), specifier.replace(/\.js$/u, ""));
+      const candidates = [
+        `${base}.ts`,
+        `${base}.tsx`,
+        join(base, "index.ts"),
+        join(base, "index.tsx"),
+      ];
+      const next = candidates.find((candidate) => existsSync(candidate));
+      if (next !== undefined && !visited.has(relative(root, next))) {
+        const nextRel = relative(root, next);
+        // TanStack Start compiles createServerFn modules into RPC stubs in the client bundle.
+        if (nextRel.endsWith("/functions.ts")) continue;
+        queue.push(next);
+      }
+    }
+  }
+  return { files: visited, specifiers };
 }
 
 describe("integrations contract & strangler seam", () => {
-  it("enforces strict browser/server isolation and ships empty production registries in PR 1", async () => {
+  it("enforces strict transitive browser/server isolation and ships empty production registries in PR 1", async () => {
     assert.deepEqual(defaultIntegrationRegistry.all(), []);
     assert.deepEqual(defaultBrowserIntegrationRegistry.all(), []);
 
-    const browserFiles = [
+    const browserEntries = [
       "src/integrations/browser-contracts.ts",
       "src/integrations/browser-registry.ts",
       "src/integrations/browser.ts",
+      "src/integration-tools/grants.ts",
+      "src/triggers/configuration/schema.ts",
+      "src/triggers/configuration/editor.ts",
+      "src/triggers/integration-access.tsx",
+      "src/triggers/panel.tsx",
     ];
-    const forbiddenImports = [
-      "node:",
-      "drizzle-orm",
-      '"pg"',
-      "'pg'",
-      "/db/",
-      "/server/",
-      "./contracts",
-      "./registry",
-      "./server",
-    ];
-    for (const file of browserFiles) {
-      const content = await readFile(join(process.cwd(), file), "utf8");
-      for (const token of forbiddenImports) {
-        assert.equal(
-          content.includes(token),
-          false,
-          `${file} must not reference server/Node module token ${token}`,
-        );
-      }
+    const graph = await collectTransitiveLocalImports(browserEntries);
+
+    for (const file of graph.files) {
+      assert.equal(
+        file,
+        file === "src/integrations/server.ts" || file === "src/integrations/registry.ts"
+          ? "FORBIDDEN"
+          : file,
+        `Browser entry graph must not reach server integration module ${file}`,
+      );
+      assert.equal(
+        file.startsWith("src/db/"),
+        false,
+        `Browser entry graph must not reach database module ${file}`,
+      );
+      assert.equal(
+        file.startsWith("src/server/"),
+        false,
+        `Browser entry graph must not reach server module ${file}`,
+      );
+    }
+    for (const edge of graph.specifiers) {
+      assert.equal(
+        edge.specifier.startsWith("node:") ||
+          edge.specifier === "pg" ||
+          edge.specifier === "drizzle-orm",
+        false,
+        `Browser entry ${edge.from} must not import server/Node module "${edge.specifier}"`,
+      );
     }
   });
 
@@ -914,8 +1008,58 @@ describe("integrations contract & strangler seam", () => {
         },
         prompt: "Triage the card.",
       },
-      { browser: browserRegistry, server: serverRegistry },
+      browserRegistry,
     );
+
+    // Schema builders cache built Zod schemas per registry instance.
+    assert.equal(
+      buildTriggerDocumentSchema(serverRegistry),
+      buildTriggerDocumentSchema(serverRegistry),
+    );
+    assert.equal(
+      buildIntegrationToolGrantsSchema(serverRegistry),
+      buildIntegrationToolGrantsSchema(serverRegistry),
+    );
+    assert.equal(
+      buildCompiledIntegrationToolGrantsSchema(serverRegistry),
+      buildCompiledIntegrationToolGrantsSchema(serverRegistry),
+    );
+
+    // Unknown filter keys are reported in the same pass alongside other document errors.
+    const multiErrorYaml = `name: t
+on:
+  github.issue_comment:
+    filters:
+      repo: o/r
+      bogus: x
+run:
+  target: { daemon: d, cwd: /r }
+  agent: { provider: codex }
+`;
+    const multiErrorResult = TriggerDocumentSchema.safeParse(parseDocument(multiErrorYaml).toJS());
+    assert.equal(multiErrorResult.success, false);
+    if (!multiErrorResult.success) {
+      const paths = new Set(multiErrorResult.error.issues.map((issue) => issue.path.join(".")));
+      assert.equal(paths.has("on.github.issue_comment.filters"), true);
+      assert.equal(paths.has("run.prompt"), true);
+    }
+    const multiErrorHubConfig = HubConfigSchema.safeParse({
+      environments: [{ name: "d", kind: "daemon", daemon: "d", cwd: "/r" }],
+      triggers: [
+        {
+          name: "t",
+          on: "github.issue_comment",
+          steps: [],
+          filters: { repo: "o/r", bogus: "x" },
+        },
+      ],
+    });
+    assert.equal(multiErrorHubConfig.success, false);
+    if (!multiErrorHubConfig.success) {
+      const paths = new Set(multiErrorHubConfig.error.issues.map((issue) => issue.path.join(".")));
+      assert.equal(paths.has("triggers.0.filters"), true);
+      assert.equal(paths.has("triggers.0.max_runtime"), true);
+    }
 
     const compiled = compileTriggerDocument(yaml, serverRegistry);
     assert.equal(compiled.events.length, 1);
@@ -950,23 +1094,17 @@ describe("integrations contract & strangler seam", () => {
       /forbidden-board is reserved/u,
     );
 
-    // Editor round-trip preserves qualifier and integrationTools draft.
-    const projected = projectTriggerForm(yaml, {
-      browser: browserRegistry,
-      server: serverRegistry,
-    });
+    // Editor round-trip uses only the browser registry and preserves qualifier + tool drafts.
+    const projected = projectTriggerForm(yaml, browserRegistry);
     assert.equal(projected.status, "editable");
     if (projected.status !== "editable") throw new Error("expected editable");
     assert.equal(projected.value.qualifiers["board"], "board-42");
     assert.equal(projected.value.integrationTools?.["acme"]?.connection, "acme-primary-acme");
-    assert.deepEqual(
-      triggerFormErrors(projected.value, [], { browser: browserRegistry, server: serverRegistry }),
-      {},
-    );
+    assert.deepEqual(triggerFormErrors(projected.value, [], browserRegistry), {});
     const patched = patchTriggerYaml(
       yaml,
       { ...projected.value, qualifiers: { board: "board-99" } },
-      { browser: browserRegistry, server: serverRegistry },
+      browserRegistry,
     );
     const reparsed = compileTriggerDocument(patched, serverRegistry);
     assert.equal(reparsed.events[0]?.filters?.["board"], "board-99");
@@ -1013,7 +1151,7 @@ describe("integrations contract & strangler seam", () => {
         },
         prompt: "Triage the card.",
       },
-      { browser: browserRegistry, server: serverRegistry },
+      browserRegistry,
     );
     const compiled = compileTriggerDocument(yaml, serverRegistry);
     const compiledEvent = compiled.events[0]!;
@@ -1417,7 +1555,32 @@ describe("integrations contract & strangler seam", () => {
           [owner.organization_id, owner.user_id, resolvedAccount.session.id],
         ),
       );
-      // 3) Non-GitHub provider with pkce_verifier is allowed.
+      // 3) Slack/Discord/Linear phase and pkce_verifier=null checks are preserved.
+      await assert.rejects(
+        runtime.query(
+          `insert into organization_connection_attempts
+             (organization_id, provider, phase, state_verifier, return_route, user_id, session_id, configuration_version, callback_origin, configuration_snapshot, expires_at)
+           values ($1, 'slack', 'linear_authorization', 'sv-slack-phase', '/apps', $2, $3, 1, 'https://hub.test', '{}', now() + interval '5 minutes')`,
+          [owner.organization_id, owner.user_id, resolvedAccount.session.id],
+        ),
+      );
+      await assert.rejects(
+        runtime.query(
+          `insert into organization_connection_attempts
+             (organization_id, provider, phase, state_verifier, pkce_verifier, return_route, user_id, session_id, configuration_version, callback_origin, configuration_snapshot, expires_at)
+           values ($1, 'slack', 'slack_authorization', 'sv-slack-pkce', 'illegal-pkce', '/apps', $2, $3, 1, 'https://hub.test', '{}', now() + interval '5 minutes')`,
+          [owner.organization_id, owner.user_id, resolvedAccount.session.id],
+        ),
+      );
+      // 4) New integration phase must match `${provider}_authorization`, while PKCE is allowed.
+      await assert.rejects(
+        runtime.query(
+          `insert into organization_connection_attempts
+             (organization_id, provider, phase, state_verifier, pkce_verifier, return_route, user_id, session_id, configuration_version, callback_origin, configuration_snapshot, expires_at)
+           values ($1, 'acme', 'other_authorization', 'sv-acme-bad-phase', 'pkce-ok', '/apps', $2, $3, 1, 'https://hub.test', '{}', now() + interval '5 minutes')`,
+          [owner.organization_id, owner.user_id, resolvedAccount.session.id],
+        ),
+      );
       await runtime.query(
         `insert into organization_connection_attempts
            (organization_id, provider, phase, state_verifier, pkce_verifier, return_route, user_id, session_id, configuration_version, callback_origin, configuration_snapshot, expires_at)
@@ -1483,26 +1646,41 @@ describe("integrations contract & strangler seam", () => {
         echo: "hello",
       });
 
-      const ownerAuthority = {
-        organizationId: owner.organization_id,
-        membershipId: owner.membership_id,
-        userId: owner.user_id,
-        sessionId: resolvedAccount.session.id,
-        returnRoute: "/apps",
-      };
-
-      // Disconnect direct connection so we can test OAuth setup cleanly without identity conflict.
-      const disconnectedDirect = await database.integrations.disconnect(
+      // Disconnect direct connection via Hub's generic connection disconnect action (no custom disconnect handler).
+      const unauthStart = await application.connectionAction(
+        new Request(
+          `https://hub.test/connections/start?organizationSlug=${encodeURIComponent(owner.organization_slug)}`,
+          { method: "POST", headers: { origin: "https://hub.test" } },
+        ),
         "acme",
-        directConnections[0]!.id,
-        ownerAuthority,
+        "start",
       );
-      assert.equal(disconnectedDirect.id, directConnections[0]!.id);
+      assert.equal(unauthStart.status, 403);
+
+      const customActionResponse = await application.connectionAction(
+        authedRequest("https://hub.test/connections/refresh", "POST"),
+        "acme",
+        "refresh",
+      );
+      assert.equal(customActionResponse.status, 200);
+      assert.deepEqual(await customActionResponse.json(), { refreshed: true, provider: "acme" });
+
+      const disconnectResponse = await application.connectionAction(
+        authedRequest(
+          `https://hub.test/connections/disconnect?organizationSlug=${encodeURIComponent(owner.organization_slug)}&connectionId=${encodeURIComponent(directConnections[0]!.id)}`,
+          "POST",
+        ),
+        "acme",
+        "disconnect",
+      );
+      assert.equal(disconnectResponse.status, 200);
+      assert.deepEqual(await disconnectResponse.json(), { disconnected: true });
+      assert.equal(await database.integrations.findById(directConnections[0]!.id), undefined);
 
       // 2) OAuth app setup: savingContinues -> beginConnection -> GET callback -> atomic save + bind.
       const oauthSave = await providerApplications.verifyAndSave(
         authedRequest(
-          `https://hub.test/apps?organizationId=${owner.organization_id}&membershipId=${owner.membership_id}`,
+          `https://hub.test/apps?organizationSlug=${encodeURIComponent(owner.organization_slug)}&returnRoute=%2Fapps`,
           "POST",
         ),
         "acme",
@@ -1592,6 +1770,20 @@ describe("integrations contract & strangler seam", () => {
       assert.deepEqual(hooks.actorsSeen, [actor]);
       assert.equal(dispatchedEvents.length, 1);
 
+      // Custom request endpoints (e.g. POST /api/integrations/acme/interactions) route cleanly,
+      // while undeclared request names return 404 (never falling back to requests[0]).
+      const interactionsResponse = await application.providerRequest(
+        "acme.interactions",
+        new Request("https://hub.test/api/integrations/acme/interactions", { method: "POST" }),
+      );
+      assert.equal(interactionsResponse.status, 200);
+      assert.deepEqual(await interactionsResponse.json(), { handled: "interactions" });
+      const unknownRequestResponse = await application.providerRequest(
+        "acme.unknown",
+        new Request("https://hub.test/api/integrations/acme/unknown", { method: "POST" }),
+      );
+      assert.equal(unknownRequestResponse.status, 404);
+
       // Verify decoupling: when custom inboundSink buffers without forwarding, transport still succeeds cleanly.
       forwardInbound = false;
       capturedInbound = [];
@@ -1670,11 +1862,13 @@ describe("integrations contract & strangler seam", () => {
       assert.equal(JSON.stringify(home).includes("oauth-access-42"), false);
 
       // 6) Disconnect deletes associated project_trigger_routes + organization_trigger_routes + connection atomically!
-      const removed = await database.integrations.disconnect(
-        "acme",
-        oauthConnections[0]!.id,
-        ownerAuthority,
-      );
+      const removed = await database.integrations.disconnect("acme", oauthConnections[0]!.id, {
+        organizationId: owner.organization_id,
+        membershipId: owner.membership_id,
+        userId: owner.user_id,
+        sessionId: resolvedAccount.session.id,
+        returnRoute: "/apps",
+      });
       assert.equal(removed.id, oauthConnections[0]!.id);
       const remainingRoutes = await runtime.query<{ count: number }>(
         `select count(*)::int as count from organization_trigger_routes where connection_id = $1`,

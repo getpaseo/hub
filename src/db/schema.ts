@@ -942,7 +942,7 @@ export const organizationConnectionAttempts = pgTable(
       sql`(${table.phase} = 'github_setup' and ${table.provider} = 'github' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null and ${table.installationChoices} is null)
         or (${table.phase} = 'github_user_authorization' and ${table.provider} = 'github' and (${table.pkceVerifier} is not null or ${table.consumedAt} is not null) and ${table.installationChoices} is null)
         or (${table.phase} = 'github_selection' and ${table.provider} = 'github' and ${table.candidateExternalId} is null and ${table.pkceVerifier} is null and ${table.installationChoices} is not null)
-        or (${table.provider} <> 'github' and ${table.candidateExternalId} is null and ${table.installationChoices} is null)`,
+        or (${table.provider} <> 'github' and ${table.phase} = ${table.provider} || '_authorization' and ((${table.provider} in ('slack', 'discord', 'linear') and ${table.pkceVerifier} is null) or ${table.provider} not in ('slack', 'discord', 'linear')) and ${table.candidateExternalId} is null and ${table.installationChoices} is null)`,
     ),
   ],
 );

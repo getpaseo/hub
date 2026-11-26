@@ -2,9 +2,9 @@ import { RecurrenceSchema } from "../schedule/recurrence.js";
 import { z } from "zod";
 import { buildIntegrationToolGrantsSchema } from "../../integration-tools/grants.js";
 import {
-  defaultIntegrationRegistry,
-  type IntegrationRegistry,
-} from "../../integrations/registry.js";
+  defaultBrowserIntegrationRegistry,
+  type IntegrationSchemaRegistry,
+} from "../../integrations/browser-registry.js";
 import { ContinuationSchema } from "../continuation.js";
 import { eventDefinition, isEditorEvent } from "./events.js";
 import { AuthoredGitHubAuthoritySchema } from "../../config/github-authority.js";
@@ -107,7 +107,7 @@ export const TriggerOutputSchema = z
   })
   .strict();
 
-function buildTriggerRunSchema(registry: IntegrationRegistry) {
+function buildTriggerRunSchema(registry: IntegrationSchemaRegistry) {
   return z
     .object({
       target: TriggerTargetSchema,
@@ -133,16 +133,45 @@ function buildTriggerRunSchema(registry: IntegrationRegistry) {
     .strict();
 }
 
-export const TriggerRunSchema = buildTriggerRunSchema(defaultIntegrationRegistry);
+export const TriggerRunSchema = buildTriggerRunSchema(defaultBrowserIntegrationRegistry);
 
-export function buildTriggerDocumentSchema(
-  registry: IntegrationRegistry = defaultIntegrationRegistry,
-) {
+function createTriggerDocumentSchema(registry: IntegrationSchemaRegistry) {
+  const filterSchemasByEvent = new Map<string, z.ZodType<Record<string, unknown>>>();
+  const filterSchemaFor = (event: string): z.ZodType<Record<string, unknown>> => {
+    const existing = filterSchemasByEvent.get(event);
+    if (existing !== undefined) return existing;
+    const triggers = registry.forEvent(event)?.integration.triggers;
+    const base =
+      triggers !== undefined
+        ? TriggerFilterSchema.extend(triggers.filterSchema.shape).strict()
+        : TriggerFilterSchema;
+    const built =
+      triggers?.validateEventFilters === undefined
+        ? base
+        : base.superRefine((filters, ctx) => {
+            triggers.validateEventFilters!(event, filters, ctx);
+          });
+    filterSchemasByEvent.set(event, built);
+    return built;
+  };
+
   return z
     .object({
       name: z.string().regex(IDENTIFIER),
       enabled: z.boolean().default(true),
-      on: z.record(z.string().regex(EVENT_NAME), TriggerEventSchema),
+      on: z.record(z.string().regex(EVENT_NAME), TriggerEventSchema).superRefine((on, context) => {
+        if (Object.keys(on).length === 0) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [],
+            message: "at least one event is required",
+          });
+        }
+        for (const [event, definition] of Object.entries(on)) {
+          validateEventFilters(event, definition.filters, filterSchemaFor, context);
+          validateEventQualifiers(event, definition.filters, registry, context);
+        }
+      }),
       inputs: z.record(z.string().regex(IDENTIFIER), TriggerInputSchema).optional(),
       /** A distinct whole-trigger deadline; new one-run triggers normally omit it. */
       max_runtime: z.string().min(1).optional(),
@@ -151,14 +180,7 @@ export function buildTriggerDocumentSchema(
     .strict()
     .superRefine((trigger, context) => {
       for (const [event, definition] of Object.entries(trigger.on)) {
-        validateTriggerEventEntry(event, definition, trigger.inputs, registry, context);
-      }
-      if (Object.keys(trigger.on).length === 0) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["on"],
-          message: "at least one event is required",
-        });
+        validateTriggerEventEntry(event, definition, trigger.inputs, context);
       }
       if ("choices" in trigger.run.agent && Object.keys(trigger.run.agent.choices).length === 0) {
         context.addIssue({
@@ -170,11 +192,27 @@ export function buildTriggerDocumentSchema(
     });
 }
 
+type TriggerDocumentSchemaType = ReturnType<typeof createTriggerDocumentSchema>;
+
+const triggerDocumentSchemaCache = new WeakMap<
+  IntegrationSchemaRegistry,
+  TriggerDocumentSchemaType
+>();
+
+export function buildTriggerDocumentSchema(
+  registry: IntegrationSchemaRegistry = defaultBrowserIntegrationRegistry,
+): TriggerDocumentSchemaType {
+  const cached = triggerDocumentSchemaCache.get(registry);
+  if (cached !== undefined) return cached;
+  const built = createTriggerDocumentSchema(registry);
+  triggerDocumentSchemaCache.set(registry, built);
+  return built;
+}
+
 function validateTriggerEventEntry(
   event: string,
   definition: z.infer<typeof TriggerEventSchema>,
   inputs: TriggerDocument["inputs"],
-  registry: IntegrationRegistry,
   context: z.RefinementCtx,
 ): void {
   if (event === "schedule.tick") {
@@ -187,8 +225,6 @@ function validateTriggerEventEntry(
     });
   }
   if (event === "webhook.received") validateWebhook(definition, inputs, context);
-  validateEventFilters(event, definition.filters, registry, context);
-  validateEventQualifiers(event, definition.filters, registry, context);
 }
 
 function validateSchedule(
@@ -221,33 +257,26 @@ function validateSchedule(
 function validateEventFilters(
   event: string,
   filters: TriggerFilter | undefined,
-  registry: IntegrationRegistry,
+  filterSchemaFor: (event: string) => z.ZodType<Record<string, unknown>>,
   context: z.RefinementCtx,
 ): void {
   if (filters === undefined) return;
-  const registered = registry.forEvent(event);
-  const filterSchema =
-    registered?.integration.triggers !== undefined
-      ? TriggerFilterSchema.extend(registered.integration.triggers.filterSchema.shape).strict()
-      : TriggerFilterSchema;
-  const parsedFilters = filterSchema.safeParse(filters);
+  const parsedFilters = filterSchemaFor(event).safeParse(filters);
   if (!parsedFilters.success) {
     for (const issue of parsedFilters.error.issues) {
       context.addIssue({
         code: "custom",
-        path: ["on", event, "filters", ...issue.path],
+        path: [event, "filters", ...issue.path],
         message: issue.message,
       });
     }
-    return;
   }
-  registered?.integration.triggers?.validateEventFilters?.(event, parsedFilters.data, context);
 }
 
 function validateEventQualifiers(
   event: string,
   filters: TriggerFilter | undefined,
-  registry: IntegrationRegistry,
+  registry: IntegrationSchemaRegistry,
   context: z.RefinementCtx,
 ): void {
   const registered = registry.forEvent(event);
@@ -260,14 +289,14 @@ function validateEventQualifiers(
     if (qualifier.required && (typeof value !== "string" || value.trim().length === 0)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ["on", event, "filters", qualifier.key],
+        path: [event, "filters", qualifier.key],
         message: `${qualifier.label} is required.`,
       });
     }
   }
 }
 
-export const TriggerDocumentSchema = buildTriggerDocumentSchema(defaultIntegrationRegistry);
+export const TriggerDocumentSchema = buildTriggerDocumentSchema(defaultBrowserIntegrationRegistry);
 
 export type TriggerDocument = z.infer<typeof TriggerDocumentSchema>;
 

@@ -1,5 +1,11 @@
 import type { AuthServer } from "../../auth/server.js";
 import { createHash } from "node:crypto";
+import {
+  connectionAccess,
+  connectionActionFailure,
+  manageConnectionAccess,
+  requiredConnectionId,
+} from "../../connections/shared.js";
 import type { Database } from "../../db/types.js";
 import { replyOutputTool } from "../../execution-capabilities/outputs.js";
 import { logger } from "../../logger.js";
@@ -407,16 +413,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
       processors = triggersRuntime.ingest;
     }
     const toolHandler = integration.tools?.createHandler(configuration, context);
-
-    const actions: Record<string, (request: Request) => Promise<Response>> = {
-      ...connectionRuntime.actions,
-    };
-    if (actions["start"] === undefined && connectionRuntime.beginConnection !== undefined) {
-      actions["start"] = async (request) => {
-        const started = await connectionRuntime.beginConnection!(request);
-        return Response.json({ url: started.url });
-      };
-    }
+    const actions = this.buildIntegrationConnectionActions(integration.id, connectionRuntime);
 
     const registration: ProviderRegistration = {
       configurationSnapshot: { version: configurationVersion, callbackOrigin },
@@ -449,6 +446,57 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
             },
           }),
     };
+  }
+
+  private buildIntegrationConnectionActions(
+    provider: string,
+    connectionRuntime: ReturnType<IntegrationDefinition["connection"]["createRuntime"]>,
+  ): Record<string, (request: Request) => Promise<Response>> {
+    const actions: Record<string, (request: Request) => Promise<Response>> = {
+      ...connectionRuntime.actions,
+    };
+    if (actions["start"] === undefined && connectionRuntime.beginConnection !== undefined) {
+      actions["start"] = async (request) => {
+        const rejected = this.options.auth.rejectCookieMutation(request);
+        if (rejected !== undefined) return rejected;
+        try {
+          const access = await manageConnectionAccess(
+            this.options.auth,
+            this.options.database,
+            request,
+          );
+          const started = await connectionRuntime.beginConnection!(
+            request,
+            connectionAccess(access),
+          );
+          return Response.json({ url: started.url });
+        } catch (error) {
+          return connectionActionFailure(error, provider, "start");
+        }
+      };
+    }
+    if (actions["disconnect"] === undefined) {
+      actions["disconnect"] = async (request) => {
+        const rejected = this.options.auth.rejectCookieMutation(request);
+        if (rejected !== undefined) return rejected;
+        try {
+          const access = await manageConnectionAccess(
+            this.options.auth,
+            this.options.database,
+            request,
+          );
+          await this.options.database.integrations.disconnect(
+            provider,
+            requiredConnectionId(request),
+            connectionAccess(access),
+          );
+          return Response.json({ disconnected: true });
+        } catch (error) {
+          return connectionActionFailure(error, provider, "disconnect");
+        }
+      };
+    }
+    return actions;
   }
 
   private customRegistrationInput(
@@ -676,21 +724,21 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
         }
       },
     };
+    const dispatchAction = async (action: string, request: Request): Promise<Response> => {
+      const active = await this.registrationForAction(provider, slot, action, request);
+      if (active === undefined) {
+        return Response.json({ error: "provider_not_configured" }, { status: 409 });
+      }
+      const handler = active.registration.connection.actions[action];
+      if (handler === undefined) {
+        return Response.json({ error: "provider_not_configured" }, { status: 409 });
+      }
+      return this.withLease(active, () => handler(request));
+    };
     const connectionActions = Object.fromEntries(
       ["start", "disconnect", "callback"].map((action) => [
         action,
-        async (request: Request) => {
-          const active = await this.registrationForAction(provider, slot, action, request);
-          if (active === undefined) {
-            return Response.json({ error: "provider_not_configured" }, { status: 409 });
-          }
-          return this.withLease(
-            active,
-            () =>
-              active.registration.connection.actions[action]?.(request) ??
-              Promise.resolve(Response.json({ error: "provider_not_configured" }, { status: 409 })),
-          );
-        },
+        (request: Request) => dispatchAction(action, request),
       ]),
     );
     const replyTypes = [
@@ -727,6 +775,7 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
             status: "notConfigured" as const,
           },
         actions: connectionActions,
+        handleAction: dispatchAction,
       },
       triggerProviders:
         integration.triggers === undefined
@@ -764,24 +813,21 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
             },
           }),
       outputs,
-      requests:
-        integration.triggers === undefined
-          ? []
-          : [
-              {
-                name: `${provider}.events`,
-                handle: (request) => {
-                  const active = slot.active;
-                  const handler =
-                    active?.registration.requests.find(
-                      (candidate) => candidate.name === `${provider}.events`,
-                    ) ?? active?.registration.requests[0];
-                  return active === undefined || handler === undefined
-                    ? Promise.resolve(new Response("Not Found", { status: 404 }))
-                    : this.withLease(active, () => handler.handle(request));
-                },
-              },
-            ],
+      requests: [],
+      ...(integration.triggers === undefined
+        ? {}
+        : {
+            handleRequest: (name, request) => {
+              if (!name.startsWith(`${provider}.`)) return undefined;
+              const active = slot.active;
+              const handler = active?.registration.requests.find(
+                (candidate) => candidate.name === name,
+              );
+              return active === undefined || handler === undefined
+                ? Promise.resolve(new Response("Not Found", { status: 404 }))
+                : this.withLease(active, () => handler.handle(request));
+            },
+          }),
     };
   }
 

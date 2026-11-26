@@ -130,6 +130,9 @@ async function createOwnedApplicationRuntime(
     }
     requests.set(request.name, (incoming) => request.handle(incoming));
   }
+  const dynamicRequestRegistrations = registrations.filter(
+    (registration) => registration.handleRequest !== undefined,
+  );
   return {
     hub: application.hub,
     operations: application.operations,
@@ -249,10 +252,16 @@ async function createOwnedApplicationRuntime(
       if (options.database === null || options.auth === null) {
         return Promise.resolve(Response.json({ error: "database_unavailable" }, { status: 503 }));
       }
-      return (
-        connections.get(provider)?.actions[action]?.(request) ??
-        Promise.resolve(Response.json({ error: "provider_not_configured" }, { status: 409 }))
-      );
+      const connection = connections.get(provider);
+      if (connection === undefined) {
+        return Promise.resolve(
+          Response.json({ error: "provider_not_configured" }, { status: 409 }),
+        );
+      }
+      const direct = connection.actions[action];
+      if (direct !== undefined) return direct(request);
+      if (connection.handleAction !== undefined) return connection.handleAction(action, request);
+      return Promise.resolve(Response.json({ error: "provider_not_configured" }, { status: 409 }));
     },
     webhook: (request) =>
       requests.get("webhook")?.(request) ??
@@ -337,8 +346,15 @@ async function createOwnedApplicationRuntime(
       });
       return { url: portal?.url ?? null };
     },
-    providerRequest: (name, request) =>
-      requests.get(name)?.(request) ?? Promise.resolve(new Response("Not Found", { status: 404 })),
+    providerRequest: (name, request) => {
+      const staticHandler = requests.get(name);
+      if (staticHandler !== undefined) return staticHandler(request);
+      for (const registration of dynamicRequestRegistrations) {
+        const handled = registration.handleRequest?.(name, request);
+        if (handled !== undefined) return handled;
+      }
+      return Promise.resolve(new Response("Not Found", { status: 404 }));
+    },
     stop: () => ownership.close(),
   };
 }

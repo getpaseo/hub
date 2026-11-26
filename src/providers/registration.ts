@@ -50,6 +50,7 @@ export interface ProviderConnectionRegistration {
   name: string;
   status(connections: OrganizationConnectionUsage): unknown;
   actions: Readonly<Record<string, (request: Request) => Promise<Response>>>;
+  handleAction?(action: string, request: Request): Promise<Response>;
 }
 
 export interface ProviderOutputRegistration {
@@ -78,6 +79,7 @@ export interface ProviderRegistration {
   outputs: readonly ProviderOutputRegistration[];
   integrationTools?: IntegrationToolHandlers;
   requests: readonly ProviderRequestRegistration[];
+  handleRequest?(name: string, request: Request): Promise<Response> | undefined;
   attachment?: ProviderAttachmentRegistration;
   slackDelivery?: { status(): SlackDeliveryStatus; retry(): Promise<void> };
 }

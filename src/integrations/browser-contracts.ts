@@ -1,4 +1,5 @@
 import type { ComponentType } from "react";
+import type { z } from "zod";
 
 /**
  * Browser-safe contract types for registered Hub integrations.
@@ -6,6 +7,11 @@ import type { ComponentType } from "react";
  * This module must remain strictly free of Node, database, or server-only imports so
  * client bundles and browser components can import it without pulling server code.
  */
+
+export interface IntegrationToolGrantBase {
+  readonly connection: string;
+  readonly actions: readonly string[];
+}
 
 export type IntegrationQualifierKey = string;
 
@@ -135,7 +141,19 @@ export interface BrowserIntegrationToolField {
   readonly multiline?: boolean;
 }
 
-export interface BrowserIntegrationToolsDefinition {
+export interface BrowserIntegrationTriggersDefinition<
+  TTriggerFilters extends Record<string, unknown> = Record<string, unknown>,
+> {
+  readonly events: readonly IntegrationTriggerEventSpec[];
+  readonly filterSchema: z.ZodType<TTriggerFilters> & { readonly shape: z.ZodRawShape };
+  validateEventFilters?(event: string, filters: TTriggerFilters, ctx: z.RefinementCtx): void;
+}
+
+export interface BrowserIntegrationToolsDefinition<
+  TToolGrant extends IntegrationToolGrantBase = IntegrationToolGrantBase,
+> {
+  readonly grantSchema: z.ZodType<TToolGrant>;
+  normalizeGrant(grant: TToolGrant): TToolGrant;
   readonly actions: readonly { readonly id: string; readonly label: string }[];
   readonly fields: readonly BrowserIntegrationToolField[];
   fromGrant(grant: unknown): IntegrationToolFormDraft;
@@ -151,6 +169,20 @@ export interface BrowserIntegrationSetupDefinition {
   readonly SetupExtension?: ComponentType<IntegrationSetupExtensionProps>;
 }
 
+export interface TypedBrowserIntegrationDefinition<
+  TTriggerFilters extends Record<string, unknown> = Record<string, unknown>,
+  TToolGrant extends IntegrationToolGrantBase = IntegrationToolGrantBase,
+> {
+  readonly id: string;
+  readonly label: string;
+  readonly resourceNoun: string;
+  readonly host?: string;
+  readonly glyph: ComponentType<{ readonly className?: string }>;
+  readonly setup: BrowserIntegrationSetupDefinition;
+  readonly triggers?: BrowserIntegrationTriggersDefinition<TTriggerFilters>;
+  readonly tools?: BrowserIntegrationToolsDefinition<TToolGrant>;
+}
+
 export interface BrowserIntegrationDefinition {
   readonly id: string;
   readonly label: string;
@@ -158,8 +190,60 @@ export interface BrowserIntegrationDefinition {
   readonly host?: string;
   readonly glyph: ComponentType<{ readonly className?: string }>;
   readonly setup: BrowserIntegrationSetupDefinition;
-  readonly triggers?: {
-    readonly events: readonly IntegrationTriggerEventSpec[];
-  };
+  readonly triggers?: BrowserIntegrationTriggersDefinition;
   readonly tools?: BrowserIntegrationToolsDefinition;
+}
+
+/**
+ * Converts a strongly typed browser integration definition into a boundary-validated
+ * `BrowserIntegrationDefinition` without unsafe casts or `any`.
+ */
+export function defineBrowserIntegration<
+  TTriggerFilters extends Record<string, unknown> = Record<string, unknown>,
+  TToolGrant extends IntegrationToolGrantBase = IntegrationToolGrantBase,
+>(
+  definition: TypedBrowserIntegrationDefinition<TTriggerFilters, TToolGrant>,
+): BrowserIntegrationDefinition {
+  const { triggers, tools } = definition;
+
+  const wrappedTriggers: BrowserIntegrationTriggersDefinition | undefined =
+    triggers === undefined
+      ? undefined
+      : {
+          events: triggers.events,
+          filterSchema: triggers.filterSchema,
+          ...(triggers.validateEventFilters === undefined
+            ? {}
+            : {
+                validateEventFilters: (event, filters, ctx) => {
+                  const parsed = triggers.filterSchema.safeParse(filters);
+                  if (!parsed.success) return;
+                  triggers.validateEventFilters!(event, parsed.data, ctx);
+                },
+              }),
+        };
+
+  const wrappedTools: BrowserIntegrationToolsDefinition | undefined =
+    tools === undefined
+      ? undefined
+      : {
+          grantSchema: tools.grantSchema,
+          normalizeGrant: (grant) => tools.normalizeGrant(tools.grantSchema.parse(grant)),
+          actions: tools.actions,
+          fields: tools.fields,
+          fromGrant: (grant) => tools.fromGrant(grant),
+          toGrant: (draft) => tools.toGrant(draft),
+          validateDraft: (draft) => tools.validateDraft(draft),
+        };
+
+  return {
+    id: definition.id,
+    label: definition.label,
+    resourceNoun: definition.resourceNoun,
+    ...(definition.host === undefined ? {} : { host: definition.host }),
+    glyph: definition.glyph,
+    setup: definition.setup,
+    ...(wrappedTriggers === undefined ? {} : { triggers: wrappedTriggers }),
+    ...(wrappedTools === undefined ? {} : { tools: wrappedTools }),
+  };
 }

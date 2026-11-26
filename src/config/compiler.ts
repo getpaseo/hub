@@ -168,7 +168,48 @@ function buildAuthoredStepSchema(registry: IntegrationRegistry) {
 }
 
 function buildAuthoredTriggerSchema(registry: IntegrationRegistry) {
-  return z
+  const registeredIntegrations = registry.withTriggers();
+  const hasRegisteredTriggers = registeredIntegrations.length > 0;
+  const knownFilterKeys = new Set<string>(Object.keys(AuthoredTriggerFilterObjectSchema.shape));
+  for (const integration of registeredIntegrations) {
+    for (const key of Object.keys(integration.triggers!.filterSchema.shape)) {
+      knownFilterKeys.add(key);
+    }
+  }
+  const authoredFilterFieldSchema = hasRegisteredTriggers
+    ? AnyAuthoredTriggerFilterSchema.superRefine((filters, context) => {
+        const unknownKeys = Object.keys(filters).filter((key) => !knownFilterKeys.has(key));
+        if (unknownKeys.length > 0) {
+          context.addIssue({
+            code: "unrecognized_keys",
+            keys: unknownKeys,
+            path: [],
+            message: `Unrecognized key${unknownKeys.length === 1 ? "" : "s"} in object: ${unknownKeys.map((key) => `'${key}'`).join(", ")}`,
+          });
+        }
+      })
+    : AuthoredTriggerFilterSchema;
+
+  const filterSchemasByEvent = new Map<string, z.ZodType<Record<string, unknown>>>();
+  const filterSchemaFor = (event: string): z.ZodType<Record<string, unknown>> => {
+    const existing = filterSchemasByEvent.get(event);
+    if (existing !== undefined) return existing;
+    const triggers = registry.forEvent(event)?.integration.triggers;
+    const base =
+      triggers !== undefined
+        ? AuthoredTriggerFilterSchema.extend(triggers.filterSchema.shape).strict()
+        : AuthoredTriggerFilterSchema;
+    const built =
+      triggers?.validateEventFilters === undefined
+        ? base
+        : base.superRefine((filters, ctx) => {
+            triggers.validateEventFilters!(event, filters, ctx);
+          });
+    filterSchemasByEvent.set(event, built);
+    return built;
+  };
+
+  const baseTriggerSchema = z
     .object({
       name: z.string().min(1),
       on: z.string().min(1),
@@ -176,40 +217,45 @@ function buildAuthoredTriggerSchema(registry: IntegrationRegistry) {
       steps: z.array(buildAuthoredStepSchema(registry)).min(1),
       inputs: z.record(z.string(), AuthoredInputSchema).optional(),
       values: z.record(z.string(), z.string().min(1)).optional(),
-      filters: AnyAuthoredTriggerFilterSchema.optional(),
+      filters: authoredFilterFieldSchema.optional(),
     })
-    .strict()
-    .superRefine((trigger, context) => {
-      if (trigger.filters === undefined) return;
-      const registered = registry.forEvent(trigger.on);
-      const filterSchema =
-        registered?.integration.triggers !== undefined
-          ? AuthoredTriggerFilterSchema.extend(
-              registered.integration.triggers.filterSchema.shape,
-            ).strict()
-          : AuthoredTriggerFilterSchema;
-      const parsed = filterSchema.safeParse(trigger.filters);
-      if (!parsed.success) {
-        for (const issue of parsed.error.issues) {
-          context.addIssue({
-            code: "custom",
-            path: ["filters", ...issue.path],
-            message: issue.message,
-          });
-        }
-        return;
+    .strict();
+
+  if (!hasRegisteredTriggers) return baseTriggerSchema;
+
+  return baseTriggerSchema.superRefine((trigger, context) => {
+    if (trigger.filters === undefined) return;
+    const parsed = filterSchemaFor(trigger.on).safeParse(trigger.filters);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        context.addIssue({
+          code: "custom",
+          path: ["filters", ...issue.path],
+          message: issue.message,
+        });
       }
-      registered?.integration.triggers?.validateEventFilters?.(trigger.on, parsed.data, context);
-    });
+    }
+  });
 }
 
-function buildAuthoredSchema(registry: IntegrationRegistry) {
+function createAuthoredSchema(registry: IntegrationRegistry) {
   return z
     .object({
       environments: z.array(EnvironmentSchema).min(1),
       triggers: z.array(buildAuthoredTriggerSchema(registry)),
     })
     .strict();
+}
+
+type AuthoredSchemaType = ReturnType<typeof createAuthoredSchema>;
+const authoredSchemaCache = new WeakMap<IntegrationRegistry, AuthoredSchemaType>();
+
+function buildAuthoredSchema(registry: IntegrationRegistry): AuthoredSchemaType {
+  const cached = authoredSchemaCache.get(registry);
+  if (cached !== undefined) return cached;
+  const built = createAuthoredSchema(registry);
+  authoredSchemaCache.set(registry, built);
+  return built;
 }
 
 export const WorktreeTargetSchema = z.discriminatedUnion("mode", [
@@ -494,6 +540,48 @@ function buildCompiledStepSchema(registry: IntegrationRegistry): z.ZodType<Compi
 }
 
 function buildCompiledTriggerSchema(registry: IntegrationRegistry): z.ZodType<CompiledTrigger> {
+  const hasRegisteredTriggers = registry.withTriggers().length > 0;
+  if (!hasRegisteredTriggers) {
+    return z
+      .object({
+        name: z.string().regex(IDENTIFIER),
+        sourceFile: z.string().min(1).optional(),
+        on: z.string().regex(EVENT_NAME),
+        maxRuntimeMs: z.number().int().positive().max(MAX_DURATION_MS),
+        steps: z.array(buildCompiledStepSchema(registry)),
+        inputs: z.record(z.string(), CompiledInputSchema),
+        values: z.record(z.string(), z.custom<Expression>(isExpression)),
+        filters: CompiledTriggerFilterSchema.optional(),
+      })
+      .strict();
+  }
+
+  const filterSchemasByEvent = new Map<string, z.ZodType<CompiledTriggerFilter>>();
+  const filterSchemaFor = (event: string): z.ZodType<CompiledTriggerFilter> => {
+    const existing = filterSchemasByEvent.get(event);
+    if (existing !== undefined) return existing;
+    const triggers = registry.forEvent(event)?.integration.triggers;
+    const built: z.ZodType<CompiledTriggerFilter> =
+      triggers !== undefined
+        ? AuthoredTriggerFilterSchema.extend({
+            ...triggers.filterSchema.shape,
+            ...CompiledTriggerFilterExtension,
+          })
+            .strict()
+            .superRefine((filter, filterContext) => {
+              if (filter.resourceId !== undefined && filter.connectionId === undefined) {
+                filterContext.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  path: ["resourceId"],
+                  message: "resourceId requires connectionId",
+                });
+              }
+            })
+        : CompiledTriggerFilterSchema;
+    filterSchemasByEvent.set(event, built);
+    return built;
+  };
+
   return z
     .object({
       name: z.string().regex(IDENTIFIER),
@@ -510,25 +598,7 @@ function buildCompiledTriggerSchema(registry: IntegrationRegistry): z.ZodType<Co
     .strict()
     .superRefine((trigger, context) => {
       if (trigger.filters === undefined) return;
-      const registered = registry.forEvent(trigger.on);
-      const filterSchema =
-        registered?.integration.triggers !== undefined
-          ? AuthoredTriggerFilterSchema.extend({
-              ...registered.integration.triggers.filterSchema.shape,
-              ...CompiledTriggerFilterExtension,
-            })
-              .strict()
-              .superRefine((filter, filterContext) => {
-                if (filter.resourceId !== undefined && filter.connectionId === undefined) {
-                  filterContext.addIssue({
-                    code: z.ZodIssueCode.custom,
-                    path: ["resourceId"],
-                    message: "resourceId requires connectionId",
-                  });
-                }
-              })
-          : CompiledTriggerFilterSchema;
-      const parsed = filterSchema.safeParse(trigger.filters);
+      const parsed = filterSchemaFor(trigger.on).safeParse(trigger.filters);
       if (!parsed.success) {
         for (const issue of parsed.error.issues) {
           context.addIssue({
@@ -541,13 +611,22 @@ function buildCompiledTriggerSchema(registry: IntegrationRegistry): z.ZodType<Co
     });
 }
 
+const compiledHubConfigSchemaCache = new WeakMap<
+  IntegrationRegistry,
+  z.ZodType<CompiledHubConfig>
+>();
+
 function buildCompiledHubConfigSchema(registry: IntegrationRegistry): z.ZodType<CompiledHubConfig> {
-  return z
+  const cached = compiledHubConfigSchemaCache.get(registry);
+  if (cached !== undefined) return cached;
+  const built = z
     .object({
       environments: z.array(CompiledEnvironmentSchema).min(1),
       triggers: z.array(buildCompiledTriggerSchema(registry)),
     })
     .strict();
+  compiledHubConfigSchemaCache.set(registry, built);
+  return built;
 }
 
 export function compileHubConfig(

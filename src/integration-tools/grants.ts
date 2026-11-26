@@ -1,6 +1,9 @@
 import { z } from "zod";
-import type { IntegrationToolGrantBase } from "../integrations/contracts.js";
-import { defaultIntegrationRegistry, type IntegrationRegistry } from "../integrations/registry.js";
+import type { IntegrationToolGrantBase } from "../integrations/browser-contracts.js";
+import {
+  defaultBrowserIntegrationRegistry,
+  type IntegrationSchemaRegistry,
+} from "../integrations/browser-registry.js";
 
 export const integrationProviders = ["slack", "discord"] as const;
 export type IntegrationProvider = (typeof integrationProviders)[number];
@@ -32,16 +35,27 @@ export interface IntegrationToolGrants {
   [provider: string]: IntegrationToolGrant | IntegrationToolGrantBase | undefined;
 }
 
+const grantsSchemaCache = new WeakMap<
+  IntegrationSchemaRegistry,
+  z.ZodType<IntegrationToolGrants>
+>();
+const compiledGrantsSchemaCache = new WeakMap<
+  IntegrationSchemaRegistry,
+  z.ZodType<IntegrationToolGrants>
+>();
+
 export function buildIntegrationToolGrantsSchema(
-  registry: IntegrationRegistry = defaultIntegrationRegistry,
+  registry: IntegrationSchemaRegistry = defaultBrowserIntegrationRegistry,
 ): z.ZodType<IntegrationToolGrants> {
+  const cached = grantsSchemaCache.get(registry);
+  if (cached !== undefined) return cached;
   const registeredShape: Record<string, z.ZodType<IntegrationToolGrantBase | undefined>> = {};
   const allProviders: string[] = [...integrationProviders];
   for (const integration of registry.withTools()) {
     registeredShape[integration.id] = integration.tools!.grantSchema.optional();
     allProviders.push(integration.id);
   }
-  return LegacyIntegrationToolGrantsSchema.extend(registeredShape)
+  const built = LegacyIntegrationToolGrantsSchema.extend(registeredShape)
     .strict()
     .refine(
       (grants) => {
@@ -52,6 +66,8 @@ export function buildIntegrationToolGrantsSchema(
         message: "Select at least one integration.",
       },
     );
+  grantsSchemaCache.set(registry, built);
+  return built;
 }
 
 export const IntegrationToolGrantsSchema: z.ZodType<IntegrationToolGrants> =
@@ -59,7 +75,7 @@ export const IntegrationToolGrantsSchema: z.ZodType<IntegrationToolGrants> =
 
 export function normalizeIntegrationToolGrants(
   grants: IntegrationToolGrants,
-  registry: IntegrationRegistry = defaultIntegrationRegistry,
+  registry: IntegrationSchemaRegistry = defaultBrowserIntegrationRegistry,
 ): IntegrationToolGrants {
   const normalized: IntegrationToolGrants = {};
   for (const provider of integrationProviders) {
@@ -80,11 +96,15 @@ export function normalizeIntegrationToolGrants(
 }
 
 export function buildCompiledIntegrationToolGrantsSchema(
-  registry: IntegrationRegistry = defaultIntegrationRegistry,
+  registry: IntegrationSchemaRegistry = defaultBrowserIntegrationRegistry,
 ): z.ZodType<IntegrationToolGrants> {
-  return buildIntegrationToolGrantsSchema(registry).transform((grants) =>
+  const cached = compiledGrantsSchemaCache.get(registry);
+  if (cached !== undefined) return cached;
+  const built = buildIntegrationToolGrantsSchema(registry).transform((grants) =>
     normalizeIntegrationToolGrants(grants, registry),
   );
+  compiledGrantsSchemaCache.set(registry, built);
+  return built;
 }
 
 export const CompiledIntegrationToolGrantsSchema: z.ZodType<IntegrationToolGrants> =
