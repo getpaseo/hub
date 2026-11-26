@@ -17,6 +17,7 @@ import { parseCompiledHubConfig, type JsonPrimitive, type JsonValue } from "../c
 import { triggerDocumentName, type CompiledProjectConfiguration } from "../configuration/store.js";
 import { logger as defaultLogger } from "../logger.js";
 import { reportFailure } from "../failures/index.js";
+import { nextTerminalNotificationAttempt } from "./terminal-notification-retry.js";
 import { durableExecutionId } from "../daemons/lifecycle.js";
 import { EntitlementDenied } from "../entitlements/catalog.js";
 import { encodeEntitlementDenialFailureReason } from "../entitlements/denial.js";
@@ -49,6 +50,11 @@ import type { Logger } from "pino";
 
 const DEFAULT_WAKEUP_LEASE_MS = 30_000;
 const DEFAULT_WORKER_INTERVAL_MS = 250;
+/**
+ * How long a run waits for an offline daemon before a worker looks at it again. A worker that
+ * holds the daemon's connection claims it on its next tick, so this only bounds re-evaluation.
+ */
+const OFFLINE_DAEMON_RETRY_MS = 30_000;
 
 type AcceptedWorkflowRun = Extract<
   Awaited<ReturnType<Database["findTriggerRunById"]>>,
@@ -74,7 +80,8 @@ export interface DurableWorkflowEngineOptions {
   entitlements: EntitlementsService | null;
   providers?: readonly TriggerProvider[];
   dispatchLaunchMachineIntent?: (intent: LaunchMachineIntent) => Promise<unknown>;
-  canDispatchToDaemon?: (daemonId: string) => boolean;
+  /** The daemons this process holds a connection to. Omitted, every daemon is dispatchable. */
+  dispatchableDaemonIds?: () => readonly string[];
   validateLaunchMachineIntent?: (intent: LaunchMachineIntent) => void;
   configurationRevisionId?: string;
   leaseMs?: number;
@@ -250,19 +257,22 @@ export class DurableWorkflowEngine {
     await this.recoverWorkflowDeadlines(this.now());
     this.kickTerminalNotificationRecovery();
     await database.recoverWorkflowWakeups(this.now());
-    const visited: string[] = [];
     while (!this.stopped) {
-      const wakeup = await database.claimWorkflowWakeup(this.now(), this.leaseMs, visited);
+      const wakeup = await database.claimWorkflowWakeup(
+        this.now(),
+        this.leaseMs,
+        this.options.dispatchableDaemonIds?.() ?? [],
+      );
       if (wakeup === undefined) return;
       try {
-        if ((await this.processWakeup(wakeup)) === "deferred") visited.push(wakeup.triggerRunId);
+        await this.processWakeup(wakeup);
       } catch (error) {
         this.report(error, "workflow.wakeup.process", { triggerRunId: wakeup.triggerRunId });
       }
     }
   }
 
-  private async processWakeup(wakeup: WorkflowWakeupRecord): Promise<"deferred" | void> {
+  private async processWakeup(wakeup: WorkflowWakeupRecord): Promise<void> {
     const database = this.options.database;
     if (database === null) return;
     const prepared = await this.prepareWorkflowWakeup(wakeup);
@@ -329,7 +339,7 @@ export class DurableWorkflowEngine {
     );
     if (preparedIntent === undefined) return;
     const { executionId, intent } = preparedIntent;
-    if (await this.deferUnavailableDispatch(intent, wakeup)) return "deferred";
+    if (await this.deferUnavailableDispatch(intent, wakeup)) return;
     if (await this.failInvalidLaunchIntent(database, run, step, intent)) return;
     const reservation = await this.reserveExecution(run.organizationId);
     const created = await database.createWorkflowStepExecution({
@@ -397,11 +407,14 @@ export class DurableWorkflowEngine {
     intent: LaunchMachineIntent,
     wakeup: WorkflowWakeupRecord,
   ): Promise<boolean> {
-    if (this.options.canDispatchToDaemon?.(intent.environment.daemonId) !== false) return false;
-    await this.options.database!.releaseWorkflowWakeup(
+    const daemonId = intent.environment.daemonId;
+    const dispatchable = this.options.dispatchableDaemonIds?.();
+    if (dispatchable === undefined || dispatchable.includes(daemonId)) return false;
+    const now = this.now();
+    await this.options.database!.deferWorkflowWakeupForDaemon(
       wakeup.triggerRunId,
-      this.now(),
       wakeup.leaseExpiresAt!,
+      { daemonId, releasedAt: now, retryAt: new Date(now.getTime() + OFFLINE_DAEMON_RETRY_MS) },
     );
     return true;
   }
@@ -831,12 +844,41 @@ export class DurableWorkflowEngine {
             this.now(),
             deliveredReactionState,
           );
-        }).catch((error: unknown) => {
-          this.report(error, "workflow.notification.terminal.deliver", { triggerRunId: run.id });
-        }),
+        }).catch((error: unknown) => this.settleFailedTerminalNotification(run, error)),
       );
     }
     await Promise.all(inFlight);
+  }
+
+  /** Logs the failed attempt once, then either schedules the next attempt or abandons. */
+  private async settleFailedTerminalNotification(
+    run: AcceptedTriggerRunRecord,
+    error: unknown,
+  ): Promise<void> {
+    const database = this.options.database;
+    if (database === null) return;
+    const attempts = run.terminalNotificationAttempts;
+    const next = nextTerminalNotificationAttempt(error, attempts, this.now());
+    this.report(
+      error,
+      next.abandon
+        ? "workflow.notification.terminal.abandon"
+        : "workflow.notification.terminal.deliver",
+      {
+        triggerRunId: run.id,
+        attempts,
+        ...(next.abandon ? {} : { retryAt: next.retryAt.toISOString() }),
+      },
+    );
+    try {
+      if (next.abandon) {
+        await database.abandonWorkflowRunTerminalNotification(run.id, this.now());
+      } else {
+        await database.retryWorkflowRunTerminalNotification(run.id, next.retryAt);
+      }
+    } catch (settleError: unknown) {
+      this.report(settleError, "workflow.notification.terminal.settle", { triggerRunId: run.id });
+    }
   }
 
   private async finishPersistedExecution(

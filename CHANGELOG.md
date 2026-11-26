@@ -1,23 +1,61 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 - 2026-11-26
 
-### Added
+Upgrade your Paseo daemons to v0.17.5 before you upgrade Hub. Hub 0.12.0 applies five additive database migrations (0050 to 0054) on start. No environment variable is required.
 
-- `github.pull_request_synchronized` triggers a workflow when new commits are pushed to a pull request, with the pushed head SHA in the agent context.
-- The GitHub `exclude_contains` filter skips an event whose text contains the given string, so a general mention trigger can leave a command such as `@bot review` to the trigger that owns it.
-- `github.pull_request_ready_for_review` triggers a workflow when a draft pull request is marked ready for review, without running on creation or later pushes. GitHub pull request deliveries expose the draft status and head SHA in the agent context for revision checks.
-- Slack agent context includes `slack.trigger_message` with the mention's `ts`, channel id, and thread `ts` (`null` for a root mention), so an agent can address the message it is answering.
+### Highlights
 
-### Changed
+- **Inbound webhooks.** Any external service can start a run by posting to a trigger's webhook URL with a Bearer secret. Choose **Webhook received** in the editor, or use `on: { webhook.received: {} }` in trigger YAML. A new webhook trigger shows its secret and a ready-to-run `curl` example, and the first request returns `202 Accepted`. An optional `Idempotency-Key` returns the same run on retry. ([#223](https://github.com/getpaseo/hub/pull/223), [#241](https://github.com/getpaseo/hub/pull/241))
+- **Scoped Slack and Discord tools for any trigger.** A trigger can give its agent read or post access to specific Slack or Discord channels, in the editor or under `run.tools` in YAML. Hub checks the connection, action, and channel on every call and keeps provider credentials on the server. ([#224](https://github.com/getpaseo/hub/pull/224), [#226](https://github.com/getpaseo/hub/pull/226))
+- **Sign in with Google and GitHub.** Set `PASEO_AUTH_GOOGLE_CLIENT_ID` and `PASEO_AUTH_GOOGLE_CLIENT_SECRET`, or `PASEO_AUTH_GITHUB_CLIENT_ID` and `PASEO_AUTH_GITHUB_CLIENT_SECRET`, to show that provider's button. A Hub with neither pair set behaves as before. ([#242](https://github.com/getpaseo/hub/pull/242))
+- **Open runs in Paseo.** Hub replies and Activity runs have an **Open in Paseo** link that opens the agent in the Paseo app. ([#225](https://github.com/getpaseo/hub/pull/225), [#243](https://github.com/getpaseo/hub/pull/243))
+- **New GitHub events.** `github.pull_request_ready_for_review` runs when a draft is marked ready, and `github.pull_request_synchronized` runs on new pushes to a pull request. The `exclude_contains` filter lets a general mention trigger skip a command that another trigger owns, such as `@bot review`. ([#182](https://github.com/getpaseo/hub/pull/182), [#184](https://github.com/getpaseo/hub/pull/184))
+- **Filterable Activity.** Activity lists every run and every event that no trigger matched. You can filter it by range, provider, status, trigger, daemon, and text, and share a link to the filtered view. Home shows exact run counts that open Activity already filtered. ([#238](https://github.com/getpaseo/hub/pull/238))
+- **Triggers use the daemon's providers and models.** The trigger form lists the providers, models, and modes the daemon reports for the chosen working directory, including plugin and ACP providers. Hub validates a saved agent against that same list. ([#185](https://github.com/getpaseo/hub/pull/185), [#234](https://github.com/getpaseo/hub/pull/234))
 
-- Unhandled provider event receipts expire automatically after seven days on every instance. Receipts routed to a trigger or still referenced by a run or attachment remain available.
+### Improved
+
+- New organizations get a three-step Get started list: connect a daemon, create a trigger, run it. Connecting GitHub, Slack, Discord, or Linear is optional. The Connections page is now **Integrations**. ([#213](https://github.com/getpaseo/hub/pull/213), [#240](https://github.com/getpaseo/hub/pull/240))
+- The trigger editor walks clearer steps, keeps the agent and access steps closed until you pick a working directory, and puts **Run in background** and **Auto-archive after completion** under Advanced. ([#228](https://github.com/getpaseo/hub/pull/228), [#239](https://github.com/getpaseo/hub/pull/239), [#243](https://github.com/getpaseo/hub/pull/243))
+- Connecting GitHub works for an account that already has the App installed. Disconnecting and connecting again no longer requires uninstalling the App. A non-owner who tries to connect is told to ask an owner. ([#212](https://github.com/getpaseo/hub/pull/212), [#230](https://github.com/getpaseo/hub/pull/230))
+- Slack agent context includes `slack.trigger_message`: the mention's channel, `ts`, thread `ts`, and attached files. ([#190](https://github.com/getpaseo/hub/pull/190))
+- Discord `${{ paseo.context }}` keeps the embeds of referenced messages and thread messages, so an embed-only bot notification no longer reaches the agent as an empty message. ([#236](https://github.com/getpaseo/hub/pull/236))
+- The Daemons page shows a new daemon without a reload, and CLI login shows the verification code before you approve. ([#240](https://github.com/getpaseo/hub/pull/240))
+- Instance operators can find an organization by name, ID, or slug and see its details and members. ([#214](https://github.com/getpaseo/hub/pull/214))
+- Unhandled provider event receipts expire after seven days. Receipts used by a trigger, run, or attachment are kept.
+- New Paseo Hub logo and favicon. ([#221](https://github.com/getpaseo/hub/pull/221))
 
 ### Fixed
 
-- Discord `${{ paseo.context }}` keeps the embeds of referenced messages and thread messages: each embed's title, description, URL, author, fields, and footer. An embed-only bot notification no longer reaches the agent as an empty message.
-- Files attached to the Slack message that mentions the bot reach the agent in `slack.trigger_message.attachments`. Before, only files from earlier messages in the thread did.
-- Hub exits promptly on `SIGTERM` or `SIGINT` while daemons are connected. It finishes in-flight requests, closes daemon connections, and shuts the database down cleanly, instead of hanging until the supervisor kills it and leaving the embedded database to recover on the next start.
+- **Shutdown:** Hub exits promptly on `SIGTERM` or `SIGINT` while daemons are connected, and shuts the database down cleanly. Before, it hung until the supervisor killed it, and embedded mode had to recover its database on the next start. ([#233](https://github.com/getpaseo/hub/pull/233))
+- **Startup:** a stalled Discord Gateway no longer keeps Hub from serving HTTP. Discord stays unavailable and other integrations start. ([#227](https://github.com/getpaseo/hub/pull/227))
+- **Database stalls:** when Postgres stops answering, Hub fails only the requests in flight. It no longer returns broken connections to the pool or crashes when a leaked connection closes later. ([#249](https://github.com/getpaseo/hub/pull/249), [#180](https://github.com/getpaseo/hub/pull/180))
+- **Idle CPU:** the workflow worker does little work when nothing is due, and a run waiting for an offline daemon no longer loops four times a second. ([#250](https://github.com/getpaseo/hub/pull/250))
+- **Continuations:** a reply in a thread reaches the same agent after the daemon closed it for being idle. Before, the follow-up failed with `agent_interrupted`. ([#231](https://github.com/getpaseo/hub/pull/231))
+- **Stuck dispatches:** a dispatch no longer stays in `spawning` when the daemon answers slowly but stays connected. ([#235](https://github.com/getpaseo/hub/pull/235))
+- **Background runs:** Hub receives idle updates for background agents and archives their workspaces. ([#229](https://github.com/getpaseo/hub/pull/229))
+- **Plugin providers:** runs on plugin providers that do not support tool policy start instead of failing at agent creation. ([#248](https://github.com/getpaseo/hub/pull/248))
+- **Claude Code:** Hub MCP accepts the MCP 2026-07-28 protocol, so Claude Code runs no longer lose 6 to 22 seconds on a fallback handshake. ([#232](https://github.com/getpaseo/hub/pull/232))
+- **OpenCode:** Hub recognizes the `hub_finish_execution` tool name that OpenCode uses. ([#129](https://github.com/getpaseo/hub/pull/129))
+- **Slack:** Hub reconnects a Socket Mode connection that stopped receiving data without closing. Before, mentions were lost until a restart. ([#186](https://github.com/getpaseo/hub/pull/186))
+- **Slack:** attachment and user lookups work again. ([#188](https://github.com/getpaseo/hub/pull/188))
+- **Slack:** Hub adds the 👀 reaction when a run is accepted, and reactions Slack reports as already done no longer retry forever. ([#172](https://github.com/getpaseo/hub/pull/172), [#187](https://github.com/getpaseo/hub/pull/187))
+- **Discord and Slack filters:** `filters.guild` and the Slack workspace filter match by ID. ([#87](https://github.com/getpaseo/hub/pull/87))
+- **Linear:** triggers saved with the **Everyone** audience fire, and comment threads load their earlier comments. ([#218](https://github.com/getpaseo/hub/pull/218), [#105](https://github.com/getpaseo/hub/pull/105))
+- **Packaging:** the lockfile no longer lists an invalid optional dependency, which broke Nix packaging. ([#149](https://github.com/getpaseo/hub/pull/149))
+- **Completion reactions:** failed Slack, Discord, and GitHub completion reactions now back off (respecting `Retry-After`) and stop retrying after 8 attempts or immediately on permanent errors instead of looping every 30 seconds. ([#252](https://github.com/getpaseo/hub/pull/252))
+- **Embedded mode containers:** embedded mode now uses an OS advisory file lock instead of a PID check, so container restarts, recreates, and backup restores recover cleanly after a crash while still refusing a second Hub on the same data directory. ([#253](https://github.com/getpaseo/hub/pull/253))
+
+### Self-hosting and upgrade notes
+
+- **Upgrade daemons first.** Daemons on Paseo v0.17.4 or later validate trigger models against the working directory. Older daemons validate against their global model list, so a project-only model is rejected on save.
+- **Migrations 0050 to 0054** add a `trigger_webhooks` table, columns, and indexes. They run on start. On a very large `provider_event_receipts`, `trigger_runs`, or `agent_executions` table, you can build the 0052 and 0053 indexes first with `CREATE INDEX CONCURRENTLY IF NOT EXISTS` under the same names to avoid a write lock.
+- **New optional variables:** `PASEO_AUTH_GOOGLE_CLIENT_ID`, `PASEO_AUTH_GOOGLE_CLIENT_SECRET`, `PASEO_AUTH_GITHUB_CLIENT_ID`, `PASEO_AUTH_GITHUB_CLIENT_SECRET`. Hub refuses to start when only one variable of a pair is set. Register `<PASEO_HUB_APP_URL>/api/auth/callback/google` or `/api/auth/callback/github` as the callback. GitHub sign-in needs its own OAuth App, separate from the GitHub App.
+- **GitHub App permissions:** connecting an installation no longer needs the Members organization permission that 0.11.0 asked for.
+- **Embedded mode upgrades from 0.11.0:** stop the old Hub container before starting 0.12.0 (for example using `Recreate`), because the old PID lock and the new kernel lock do not see each other. Embedded mode requires glibc Linux (amd64/arm64), macOS, or Windows (not musl/Alpine or FreeBSD).
+- **Reverse / auth proxies:** if you run Hub behind an auth proxy such as Cloudflare Access, bypass machine-auth paths `/api/*`, `/webhook*`, `/agent-executions/*`, and `/agent-sessions/*`.
+- **Fly:** the repository no longer contains a production `fly.toml`. Copy `fly.example.toml` to `fly.toml` and set `app`, `primary_region`, and `PASEO_HUB_APP_URL` before your first deploy.
 
 ## 0.11.0 - 2026-10-25
 

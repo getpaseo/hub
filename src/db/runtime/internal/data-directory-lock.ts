@@ -1,111 +1,62 @@
-import { randomUUID } from "node:crypto";
-import { open, readFile, unlink } from "node:fs/promises";
+import { closeSync, constants, openSync } from "node:fs";
 import { join } from "node:path";
+import { errorForLog } from "../../../logger.js";
 
 const LOCK_FILE_NAME = ".paseo-hub.lock";
-const OWNER_READ_ATTEMPTS = 10;
-const OWNER_READ_DELAY_MS = 10;
-
-interface LockOwner {
-  pid: number;
-  token: string;
-}
+const IN_USE =
+  "Embedded database directory is already in use by another Paseo Hub process. Embedded mode supports one process per data directory.";
 
 export interface DataDirectoryLock {
   release(): Promise<void>;
 }
 
+/**
+ * PGlite has no lock of its own, so two processes on one data directory corrupt it.
+ *
+ * The guard is an OS advisory lock on `.paseo-hub.lock`: an open-file-description lock on
+ * Linux, `flock` on macOS, and `LockFileEx` on Windows. The kernel releases it when the
+ * holder exits, including after SIGKILL or an OOM kill, so a lock file left on the volume or
+ * restored from a backup never blocks a start. It also holds across containers that share the
+ * volume, because they share the kernel's lock table whatever their PID, hostname, or network.
+ *
+ * The file is never deleted. Deleting it would let a starter that opened the old file and one
+ * that created a new file both hold a lock.
+ */
 export async function acquireDataDirectoryLock(dataDirectory: string): Promise<DataDirectoryLock> {
-  const path = join(dataDirectory, LOCK_FILE_NAME);
-  const owner = { pid: process.pid, token: randomUUID() };
-
-  for (;;) {
-    try {
-      const handle = await open(path, "wx", 0o600);
-      try {
-        await handle.writeFile(JSON.stringify(owner));
-      } finally {
-        await handle.close();
-      }
-      return new OwnedDataDirectoryLock(path, owner);
-    } catch (error) {
-      if (!hasCode(error, "EEXIST")) throw error;
-    }
-
-    const existingOwner = await readLockOwner(path);
-    if (existingOwner !== undefined && processIsRunning(existingOwner.pid)) {
-      throw new Error(
-        `Embedded database directory is already in use by another Paseo Hub process (PID ${existingOwner.pid}): ${dataDirectory}. Embedded mode supports one process per data directory.`,
-      );
-    }
-
-    try {
-      await unlink(path);
-    } catch (error) {
-      if (!hasCode(error, "ENOENT")) throw error;
-    }
-  }
-}
-
-class OwnedDataDirectoryLock implements DataDirectoryLock {
-  constructor(
-    private readonly path: string,
-    private readonly owner: LockOwner,
-  ) {}
-
-  async release(): Promise<void> {
-    const currentOwner = await readLockOwner(this.path);
-    if (currentOwner?.token !== this.owner.token) return;
-    try {
-      await unlink(this.path);
-    } catch (error) {
-      if (!hasCode(error, "ENOENT")) throw error;
-    }
-  }
-}
-
-async function readLockOwner(path: string): Promise<LockOwner | undefined> {
-  for (let attempt = 0; attempt < OWNER_READ_ATTEMPTS; attempt += 1) {
-    try {
-      const owner = parseLockOwner(await readFile(path, "utf8"));
-      if (owner !== undefined) return owner;
-    } catch (error) {
-      if (hasCode(error, "ENOENT")) return undefined;
-      throw error;
-    }
-    await new Promise((resolve) => setTimeout(resolve, OWNER_READ_DELAY_MS));
-  }
-  return undefined;
-}
-
-function parseLockOwner(value: string): LockOwner | undefined {
+  // Loaded here so the native addon is only required by embedded mode.
+  const { tryLock, unlock } = await import("fs-native-extensions");
+  // A numeric descriptor, unlike a FileHandle, is never closed by garbage collection.
+  // LockFileEx needs read or write access; an append-only Windows handle fails with EPERM.
+  const fd = openSync(
+    join(dataDirectory, LOCK_FILE_NAME),
+    constants.O_RDWR | constants.O_CREAT,
+    0o600,
+  );
+  let locked: boolean;
   try {
-    const parsed: unknown = JSON.parse(value);
-    const pid: unknown = Reflect.get(parsed ?? {}, "pid");
-    const token: unknown = Reflect.get(parsed ?? {}, "token");
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      typeof pid === "number" &&
-      typeof token === "string"
-    ) {
-      return { pid, token };
-    }
-  } catch {
-    // A process may have died before finishing its lock record. The caller recovers it as stale.
-  }
-  return undefined;
-}
-
-function processIsRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
+    locked = tryLock(fd);
   } catch (error) {
-    return !hasCode(error, "ESRCH");
+    closeSync(fd);
+    throw error;
   }
-}
+  if (!locked) {
+    closeSync(fd);
+    // Logs keep the message but not the directory path.
+    throw errorForLog(new Error(`${IN_USE} Directory: ${dataDirectory}`), {
+      diagnosticMessage: IN_USE,
+    });
+  }
 
-function hasCode(error: unknown, code: string): boolean {
-  return typeof error === "object" && error !== null && Reflect.get(error, "code") === code;
+  let released = false;
+  return {
+    async release() {
+      if (released) return;
+      released = true;
+      try {
+        unlock(fd);
+      } finally {
+        closeSync(fd);
+      }
+    },
+  };
 }

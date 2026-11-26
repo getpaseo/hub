@@ -69,7 +69,8 @@ export class ProviderEventAcceptanceRepository {
     const resourceIds = [
       ...new Set(candidateResourceIds.flatMap((id) => (id === undefined ? [] : [String(id)]))),
     ];
-    return this.database.transaction(async (transaction) => {
+    return this.runtime.transaction(async (runtimeTransaction) => {
+      const transaction = runtimeTransaction.drizzle();
       const stopSessionId = provider === "linear" ? linearAgentSessionStopId(input) : undefined;
       const { connection, liveConnection } = await findProviderEventConnection(
         transaction,
@@ -200,7 +201,8 @@ export class ProviderEventAcceptanceRepository {
   }
 
   persistManual(input: PersistManualEventInput): Promise<ManualEventPersistence> {
-    return this.database.transaction(async (transaction) => {
+    return this.runtime.transaction(async (runtimeTransaction) => {
+      const transaction = runtimeTransaction.drizzle();
       const existing = await findReceipt(transaction, input, input.organizationId);
       if (existing !== undefined) {
         const route = parseAcceptedRoutes(existing.acceptedRoutes)?.[0];
@@ -271,7 +273,8 @@ export class ProviderEventAcceptanceRepository {
   claimGitHubLifecycleReceipt(
     input: GitHubLifecycleReceiptClaimInput,
   ): Promise<GitHubInstallationSyncClaim> {
-    return this.database.transaction(async (transaction) => {
+    return this.runtime.transaction(async (runtimeTransaction) => {
+      const transaction = runtimeTransaction.drizzle();
       const [connection] = await transaction
         .select()
         .from(schema.githubConnections)

@@ -147,6 +147,20 @@ describe("logger redaction", () => {
     assert.match(output, /"type":"Error"/u);
     assert.doesNotMatch(output, /provider failed/u);
   });
+
+  it("keeps an owned diagnostic message when the owner supplies no scrub values", () => {
+    const stream = new CaptureStream();
+    const logger = createLogger(stream);
+    const error = errorForLog(new Error("untrusted detail /private/path"), {
+      diagnosticMessage: "store is already in use",
+    });
+
+    logger.error({ err: error }, "failure");
+
+    const output = stream.text();
+    assert.match(output, /"message":"store is already in use"/u);
+    assert.doesNotMatch(output, /untrusted detail/u);
+  });
 });
 
 class ProviderTransportError extends Error {}

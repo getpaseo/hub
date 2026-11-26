@@ -1,5 +1,5 @@
 {
-  "id": "f2f0ba07-2229-4571-a0bb-a7890315b9f6",
+  "id": "142ab350-ea11-4ab1-b196-d158284d71c1",
   "prevId": "e6686a5f-c244-4e2d-a72b-ce1f6dd729da",
   "version": "7",
   "dialect": "postgresql",
@@ -356,6 +356,21 @@
           "columns": [
             {
               "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_executions_workflow_step_run_idx": {
+          "name": "agent_executions_workflow_step_run_idx",
+          "columns": [
+            {
+              "expression": "workflow_step_run_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2673,115 +2688,6 @@
       },
       "policies": {},
       "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.linear_trigger_controls": {
-      "name": "linear_trigger_controls",
-      "schema": "",
-      "columns": {
-        "organization_id": {
-          "name": "organization_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "external_id": {
-          "name": "external_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "suppression_reason": {
-          "name": "suppression_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "suppression_occurred_at": {
-          "name": "suppression_occurred_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_provider_event_receipt_id": {
-          "name": "source_provider_event_receipt_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "linear_trigger_controls_receipt_idx": {
-          "name": "linear_trigger_controls_receipt_idx",
-          "columns": [
-            {
-              "expression": "source_provider_event_receipt_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "linear_trigger_controls_project_organization_fk": {
-          "name": "linear_trigger_controls_project_organization_fk",
-          "tableFrom": "linear_trigger_controls",
-          "tableTo": "projects",
-          "columnsFrom": ["project_id", "organization_id"],
-          "columnsTo": ["id", "organization_id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "linear_trigger_controls_project_id_kind_external_id_pk": {
-          "name": "linear_trigger_controls_project_id_kind_external_id_pk",
-          "columns": ["project_id", "kind", "external_id"]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "linear_trigger_controls_kind_check": {
-          "name": "linear_trigger_controls_kind_check",
-          "value": "\"linear_trigger_controls\".\"kind\" in ('comment', 'agent_session')"
-        },
-        "linear_trigger_controls_suppression_check": {
-          "name": "linear_trigger_controls_suppression_check",
-          "value": "(\"linear_trigger_controls\".\"suppression_reason\" is null and \"linear_trigger_controls\".\"suppression_occurred_at\" is null and \"linear_trigger_controls\".\"source_provider_event_receipt_id\" is null)\n        or (\"linear_trigger_controls\".\"kind\" = 'comment' and \"linear_trigger_controls\".\"suppression_reason\" = 'superseded_by_agent_session' and \"linear_trigger_controls\".\"suppression_occurred_at\" is not null and \"linear_trigger_controls\".\"source_provider_event_receipt_id\" is not null)\n        or (\"linear_trigger_controls\".\"kind\" = 'agent_session' and \"linear_trigger_controls\".\"suppression_reason\" = 'stopped_by_user' and \"linear_trigger_controls\".\"suppression_occurred_at\" is not null and \"linear_trigger_controls\".\"source_provider_event_receipt_id\" is not null)"
-        }
-      },
       "isRLSEnabled": false
     },
     "public.machines": {
@@ -5116,24 +5022,6 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
-        },
-        "linear_stop_confirmation_status": {
-          "name": "linear_stop_confirmation_status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "linear_stop_confirmation_claim_id": {
-          "name": "linear_stop_confirmation_claim_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "linear_stop_confirmation_lease_expires_at": {
-          "name": "linear_stop_confirmation_lease_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -5330,10 +5218,6 @@
         "provider_event_receipts_provider_check": {
           "name": "provider_event_receipts_provider_check",
           "value": "\"provider_event_receipts\".\"provider\" in ('github', 'slack', 'discord', 'linear', 'manual', 'schedule', 'webhook')"
-        },
-        "provider_event_receipts_linear_stop_confirmation_check": {
-          "name": "provider_event_receipts_linear_stop_confirmation_check",
-          "value": "(\"provider_event_receipts\".\"linear_stop_confirmation_status\" is null and \"provider_event_receipts\".\"linear_stop_confirmation_claim_id\" is null and \"provider_event_receipts\".\"linear_stop_confirmation_lease_expires_at\" is null)\n        or (\"provider_event_receipts\".\"linear_stop_confirmation_status\" = 'pending' and \"provider_event_receipts\".\"linear_stop_confirmation_claim_id\" is not null and \"provider_event_receipts\".\"linear_stop_confirmation_lease_expires_at\" is not null)\n        or (\"provider_event_receipts\".\"linear_stop_confirmation_status\" = 'confirmed' and \"provider_event_receipts\".\"linear_stop_confirmation_claim_id\" is null and \"provider_event_receipts\".\"linear_stop_confirmation_lease_expires_at\" is null)"
         }
       },
       "isRLSEnabled": false
@@ -6605,6 +6489,12 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "waiting_for_daemon_id": {
+          "name": "waiting_for_daemon_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -6625,6 +6515,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "workflow_wakeups_waiting_daemon_idx": {
+          "name": "workflow_wakeups_waiting_daemon_idx",
+          "columns": [
+            {
+              "expression": "waiting_for_daemon_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"workflow_wakeups\".\"waiting_for_daemon_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
