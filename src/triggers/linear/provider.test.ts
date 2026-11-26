@@ -555,6 +555,36 @@ describe("Linear trigger provider", () => {
     assert.deepEqual(client.createdActivities, []);
   });
 
+  it("treats a missing session field in a persisted trigger context as no session", async () => {
+    const { project, revision, store } = await activeConfiguration();
+    const client = new RecordingHistoryClient({ complete: true, comments: [] });
+    const provider = createLinearTriggerProvider({
+      configurationStoreForProject: () => store,
+      client,
+    });
+    const match = (await provider.match(external(project.id, revision.id)))[0];
+    if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+    const legacyTriggerContext = structuredClone(match.triggerContext);
+    assert.equal(Reflect.deleteProperty(legacyTriggerContext.event.linear, "agent_session"), true);
+
+    assert.equal(
+      await provider.onAgentExecutionCompleted?.(legacyTriggerContext, match.outputContext, {
+        status: "succeeded",
+        outputEmissions: {},
+      }),
+      undefined,
+    );
+    assert.equal(
+      await provider.onAgentExecutionFailed?.(
+        legacyTriggerContext,
+        match.outputContext,
+        "daemon disconnected",
+      ),
+      undefined,
+    );
+    assert.deepEqual(client.createdActivities, []);
+  });
+
   it("materializes only bounded causal activity for prompted agent-session turns", async () => {
     const { project, revision, store } = await activeConfiguration(agentSessionConfiguration());
     const triggerAt = "2026-01-02T00:01:00.000Z";

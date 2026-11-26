@@ -1244,6 +1244,42 @@ describe("durable Hub action acknowledgement state", () => {
       );
       await fixture.lifecycle.stop();
     });
+
+    it("keeps finish_execution pending while a required output retry is live", async () => {
+      const fixture = await dispatchedWorkflowExecution({
+        emitted: false,
+        required: true,
+        failedDeliveries: 1,
+      });
+      const observedAt = new Date(fixture.clock.now());
+      const retry = await fixture.database.beginAgentExecutionOutput(
+        fixture.executionId,
+        "linear.reply",
+        undefined,
+        observedAt,
+      );
+      assert.notEqual(retry, undefined);
+      const token = deriveAgentExecutionCompletionToken("completion-secret", fixture.executionId);
+
+      const pending = await fixture.lifecycle.completeAgentExecutionFromCallback({
+        executionId: fixture.executionId,
+        token,
+      });
+      assert.equal(pending.status, "running");
+
+      await fixture.database.completeAgentExecutionOutput(
+        fixture.executionId,
+        retry!.id,
+        observedAt,
+      );
+      const completed = await fixture.lifecycle.completeAgentExecutionFromCallback({
+        executionId: fixture.executionId,
+        token,
+      });
+      assert.equal(completed.status, "succeeded");
+      await fixture.connection.unsubscribed();
+      await fixture.lifecycle.stop();
+    });
   });
 
   it("ignores unrelated failed or canceled tools when finish_execution completes", async () => {

@@ -51,7 +51,10 @@ export async function migrateLegacyProjectTriggers(
             database,
             project.organizationId,
             configuration,
-            { preservePersistedDaemonBindings: true },
+            {
+              preservePersistedDaemonBindings: true,
+              preservePersistedProviderBindings: true,
+            },
           );
           if (!resolved.success) {
             throw new Error(

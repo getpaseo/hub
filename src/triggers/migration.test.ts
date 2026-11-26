@@ -101,6 +101,33 @@ describe("startup project trigger migration", () => {
     },
   );
 
+  it("preserves a saved provider binding after its Linear connection is disconnected", async () => {
+    const database = createMemoryDatabase({ organizationIds: ["org"] });
+    await enrollMigrationDaemon(database);
+    const connectionId = "00000000-0000-4000-8000-000000000123";
+    const resourceId = "linear-project-id";
+    await activeProject(
+      database,
+      "linear",
+      [workflow("linear", "linear.comment_created", oneStep("linear.reply"))],
+      [{ provider: "linear", connectionId, resourceId, triggerName: "linear" }],
+      TEST_DAEMON_ID,
+      { triggerName: "linear", connectionId, resourceId },
+    );
+
+    await migrateLegacyProjectTriggers(database);
+
+    const trigger = (await database.listOrganizationTriggers("org"))[0]!;
+    assert.equal(trigger.format, "single_run");
+    const revision = await database.findActiveProjectConfiguration(trigger.runtimeProjectId);
+    assert.notEqual(revision, undefined);
+    const filters = parseProjectConfiguration(revision!).triggers[0]?.filters;
+    assert.deepEqual(
+      { connectionId: filters?.connectionId, resourceId: filters?.resourceId },
+      { connectionId, resourceId },
+    );
+  });
+
   it("leaves the legacy project active when its daemon target cannot be compiled", async () => {
     const database = createMemoryDatabase({ organizationIds: ["org"] });
     const project = await activeProject(database, "legacy", [
@@ -274,6 +301,7 @@ async function activeProject(
   workflows: readonly HubBundleFile[],
   routes: readonly import("../db/types.js").ProjectTriggerRoute[] = [],
   daemonId?: string,
+  providerBinding?: { triggerName: string; connectionId: string; resourceId: string | null },
 ): Promise<ProjectRecord> {
   const project = await database.createProject({
     organizationId: "org",
@@ -283,15 +311,28 @@ async function activeProject(
   });
   const files = [{ path: ".paseo/hub.yml", content: hub }, ...workflows];
   const bundle = compileHubBundle(files);
-  const normalizedConfiguration =
-    daemonId === undefined
-      ? bundle.configuration
-      : {
-          ...bundle.configuration,
-          environments: bundle.configuration.environments.map((environment) =>
-            environment.kind === "daemon" ? { ...environment, daemonId } : environment,
-          ),
-        };
+  const normalizedConfiguration = {
+    ...bundle.configuration,
+    environments: bundle.configuration.environments.map((environment) =>
+      environment.kind === "daemon" && daemonId !== undefined
+        ? { ...environment, daemonId }
+        : environment,
+    ),
+    triggers: bundle.configuration.triggers.map((trigger) =>
+      trigger.name === providerBinding?.triggerName
+        ? {
+            ...trigger,
+            filters: {
+              ...trigger.filters,
+              connectionId: providerBinding.connectionId,
+              ...(providerBinding.resourceId === null
+                ? {}
+                : { resourceId: providerBinding.resourceId }),
+            },
+          }
+        : trigger,
+    ),
+  };
   const revision = await database.insertProjectConfigurationRevision({
     projectId: project.id,
     sourceKind: "manual",
@@ -326,7 +367,11 @@ function slackConnection(id: string, teamId: string) {
 }
 
 function workflow(name: string, event: string, body: string): HubBundleFile {
-  const filters = event === "slack.mention" ? "filters: { from_users: [U123] }\n" : "";
+  let filters = "";
+  if (event === "slack.mention") filters = "filters: { from_users: [U123] }\n";
+  else if (event.startsWith("linear.")) {
+    filters = 'filters: { project: linear-project-id, from_users: ["*"] }\n';
+  }
   return {
     path: `.paseo/workflows/${name}.yml`,
     content: `name: ${name}\non: ${event}\nmax_runtime: 2h\n${filters}${body}`,

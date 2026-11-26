@@ -325,7 +325,7 @@ export function createLinearTriggerProvider(
       }
     },
     async onDispatchAccepted(triggerContext, _outputContext, reactionState) {
-      const agentSession = triggerContext.event.linear.agent_session;
+      const agentSession = triggerContext.event.linear.agent_session ?? null;
       if (agentSession === null || options.client === undefined) return reactionState;
       if (linearAgentReactionPhase(reactionState) !== undefined) return reactionState;
       await options.client.createAgentActivity({
@@ -340,7 +340,7 @@ export function createLinearTriggerProvider(
       return { phase: "accepted" };
     },
     async onAgentExecutionCompleted(triggerContext, _outputContext, result, reactionState) {
-      const agentSession = triggerContext.event.linear.agent_session;
+      const agentSession = triggerContext.event.linear.agent_session ?? null;
       if (agentSession === null || options.client === undefined) return reactionState;
       if (linearAgentReactionPhase(reactionState) === "completed") return reactionState;
       // Linear keeps the session `active` (then `stale`) until a response or error
@@ -778,7 +778,7 @@ async function notifyLinearAgentFailure(
   reason: string,
   reactionState: TriggerProviderReactionState | undefined,
 ): Promise<TriggerProviderReactionState | undefined> {
-  const agentSession = triggerContext.event.linear.agent_session;
+  const agentSession = triggerContext.event.linear.agent_session ?? null;
   if (agentSession === null || client === undefined) return reactionState;
   if (linearAgentReactionPhase(reactionState) === "failed") return reactionState;
   // The stop handler already confirmed the stop; an error would contradict it.

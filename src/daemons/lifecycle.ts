@@ -35,6 +35,7 @@ import { OutputExecutorRegistry } from "../execution-capabilities/outputs.js";
 import {
   OUTPUT_DELIVERY_FAILED_REASON,
   failedRequiredOutputDeliveries,
+  missingRequiredOutputs,
   type RequiredOutputDeliveryFailure,
 } from "../execution-capabilities/required-outputs.js";
 import { executionToolPolicy } from "../execution-capabilities/tool-policy.js";
@@ -917,6 +918,9 @@ export class DaemonDispatchLifecycle {
       await this.failUndeliveredExecution(currentExecution, undelivered);
       throw new AgentExecutionCompletionFailure(OUTPUT_DELIVERY_FAILED_REASON);
     }
+    // The capability server may have read an older failed attempt just before a retry began.
+    // Keep the execution live until that current required delivery settles.
+    if (missingRequiredOutputs(currentExecution).length > 0) return currentExecution;
 
     if (currentExecution.launchIntent?.outputSchema !== undefined) {
       validateStructuredOutput(currentExecution.launchIntent.outputSchema, input.output);

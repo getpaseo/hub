@@ -504,6 +504,8 @@ type CompileConfigurationResult =
 interface ResolveCompiledConfigurationOptions {
   /** Startup migration replays an already-authorized durable binding, even if it is now inactive. */
   preservePersistedDaemonBindings?: boolean;
+  /** Startup migration keeps provider routes that were authorized before their connection retired. */
+  preservePersistedProviderBindings?: boolean;
 }
 
 async function resolveCompiledConfiguration(
@@ -546,6 +548,7 @@ async function resolveCompiledConfiguration(
     database,
     organizationId,
     configuration.triggers,
+    options,
   );
   const issues = [...daemonIssues, ...triggerCompilation.issues];
   if (issues.length > 0) {
@@ -598,7 +601,12 @@ export async function resolveTriggerConfigurationForOrganization(
       issues: resolved.issues,
     };
   }
-  const compiled = await compileTriggers(database, organizationId, resolved.configuration.triggers);
+  const compiled = await compileTriggers(
+    database,
+    organizationId,
+    resolved.configuration.triggers,
+    options,
+  );
   if (compiled.issues.length > 0) {
     return {
       success: false,
@@ -659,6 +667,7 @@ async function compileTriggers(
   database: Database,
   organizationId: string,
   triggers: readonly CompiledTrigger[],
+  options: ResolveCompiledConfigurationOptions = {},
 ): Promise<{
   triggers: CompiledTrigger[];
   routes: ProjectTriggerRoute[];
@@ -676,12 +685,15 @@ async function compileTriggers(
       continue;
     }
     const filter = trigger.filters;
-    if (filter?.connectionId !== undefined && filter.resourceId !== undefined) {
+    if (
+      filter?.connectionId !== undefined &&
+      (filter.resourceId !== undefined || options.preservePersistedProviderBindings === true)
+    ) {
       compiled.push(trigger);
       routes.push({
         provider,
         connectionId: filter.connectionId,
-        resourceId: filter.resourceId,
+        resourceId: filter.resourceId ?? null,
         triggerName: trigger.name,
       });
       continue;

@@ -63,13 +63,13 @@ export function migrateLegacyBundle(input: {
         format: "single_run" as const,
         name: trigger.name,
         yaml,
-        compiled:
-          converted.daemonId === undefined
-            ? compiled
-            : {
-                ...compiled,
-                environment: { ...compiled.environment, daemonId: converted.daemonId },
-              },
+        compiled: {
+          ...compiled,
+          ...(converted.daemonId === undefined
+            ? {}
+            : { environment: { ...compiled.environment, daemonId: converted.daemonId } }),
+          events: preservePersistedProviderBinding(compiled.events, trigger.filters),
+        },
         legacySourceFile: sourceFile,
         legacyStepIds: trigger.steps.map(({ id }) => id),
       };
@@ -85,6 +85,21 @@ export function migrateLegacyBundle(input: {
       legacyStepIds: trigger.steps.map(({ id }) => id),
     };
   });
+}
+
+function preservePersistedProviderBinding(
+  events: readonly CompiledTrigger[],
+  filters: CompiledTrigger["filters"],
+): readonly CompiledTrigger[] {
+  if (filters?.connectionId === undefined) return events;
+  return events.map((event) => ({
+    ...event,
+    filters: {
+      ...event.filters,
+      connectionId: filters.connectionId,
+      ...(filters.resourceId === undefined ? {} : { resourceId: filters.resourceId }),
+    },
+  }));
 }
 
 function serializeLegacyTrigger(snapshot: SelfContainedLegacyTrigger): string {
