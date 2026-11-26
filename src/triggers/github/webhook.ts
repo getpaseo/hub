@@ -66,6 +66,17 @@ const VerifiedWebhookSchema = z.object({
 type VerifiedWebhook = z.infer<typeof VerifiedWebhookSchema>;
 
 /**
+ * A verified delivery as GitHub sent it, which is what the queue holds. The payload schema turns
+ * unreadable fields into `undefined`, which is not JSON, so `process` applies it after the queue.
+ */
+interface QueuedWebhook {
+  body: unknown;
+  deliveryId: string;
+  eventType: string;
+  signatureHash: string;
+}
+
+/**
  * @param secret the App's webhook secret, or `undefined` when event triggers are not set up.
  * Without a secret there is nothing to check a signature against, so every delivery is refused
  * rather than trusted — an unconfigured endpoint must not become an unauthenticated one.
@@ -149,18 +160,12 @@ export function createDatabaseUnavailableWebhook(
 async function verifyDelivery(
   request: Request,
   secret: string | undefined,
-): Promise<VerifiedWebhook | Response> {
+): Promise<QueuedWebhook | Response> {
   if (secret === undefined) {
     reportGitHubRejection("webhook_secret_unconfigured", 503);
     return new Response("Service Unavailable", { status: 503 });
   }
-  const verified = await verifyWebhookRequest(request, secret);
-  if (verified instanceof Response) return verified;
-  if (typeof verified.body.installation?.id !== "number") {
-    reportGitHubRejection("installation_id_missing", 400);
-    return new Response("Bad Request", { status: 400 });
-  }
-  return verified;
+  return verifyWebhookRequest(request, secret);
 }
 
 async function processVerifiedWebhook(
@@ -235,7 +240,7 @@ async function processVerifiedWebhook(
 async function verifyWebhookRequest(
   request: Request,
   secret: string,
-): Promise<VerifiedWebhook | Response> {
+): Promise<QueuedWebhook | Response> {
   const signature = request.headers.get("X-Hub-Signature-256") ?? undefined;
 
   if (signature === undefined) {
@@ -290,7 +295,12 @@ async function verifyWebhookRequest(
     );
   }
 
-  return { body: parsedBody.data, deliveryId, eventType, signatureHash };
+  if (typeof parsedBody.data.installation?.id !== "number") {
+    reportGitHubRejection("installation_id_missing", 400, secret, signature);
+    return new Response("Bad Request", { status: 400 });
+  }
+
+  return { body: rawJson, deliveryId, eventType, signatureHash };
 }
 
 /** A refused delivery is an unsigned one (401), an unconfigured endpoint (503), or malformed. */

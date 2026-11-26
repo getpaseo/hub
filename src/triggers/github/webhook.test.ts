@@ -109,6 +109,25 @@ describe("GitHub webhook", () => {
     assert.deepEqual(dropped, ["no_trigger_for_source"]);
   });
 
+  it("drops a delivery whose repository the payload schema cannot read", async () => {
+    const dropped: string[] = [];
+    const github = new GitHubWebhook({
+      accept: async (input) => {
+        dropped.push(input.dropReason ?? "");
+        return { status: "dropped", receiptId: input.deliveryId, reason: input.dropReason! };
+      },
+    });
+    assert.equal(
+      await github.deliver("null-repository", {
+        action: "created",
+        installation: { id: 42 },
+        repository: null,
+      }),
+      200,
+    );
+    assert.deepEqual(dropped, ["no_trigger_for_source"]);
+  });
+
   it("records a durable outcome when a bound delivery has no handler", async () => {
     const dropped: string[] = [];
     const github = new GitHubWebhook({
