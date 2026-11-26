@@ -585,6 +585,9 @@ export const workflowWakeups = pgTable(
   },
   (table) => [
     index("workflow_wakeups_available_lease_idx").on(table.availableAt, table.leaseExpiresAt),
+    index("workflow_wakeups_waiting_daemon_idx")
+      .on(table.waitingForDaemonId)
+      .where(sql`${table.waitingForDaemonId} is not null`),
     foreignKey({
       columns: [table.triggerRunId],
       foreignColumns: [triggerRuns.id],

@@ -6518,6 +6518,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "workflow_wakeups_waiting_daemon_idx": {
+          "name": "workflow_wakeups_waiting_daemon_idx",
+          "columns": [
+            {
+              "expression": "waiting_for_daemon_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"workflow_wakeups\".\"waiting_for_daemon_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {

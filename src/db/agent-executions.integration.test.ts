@@ -489,19 +489,29 @@ describe("agent execution PostgreSQL repository", () => {
     }
   });
 
-  it("finds a workflow step's agent execution through an index", async () => {
+  it.each([
+    {
+      lookup: "a workflow step's agent execution",
+      sql: "select 1 from agent_executions where workflow_step_run_id = $1",
+      params: [randomUUID()],
+      index: /agent_executions_workflow_step_run_idx/,
+    },
+    {
+      lookup: "a wakeup waiting for a connected daemon",
+      sql: "select 1 from workflow_wakeups where waiting_for_daemon_id = any($1::uuid[])",
+      params: [[randomUUID()]],
+      index: /workflow_wakeups_waiting_daemon_idx/,
+    },
+  ])("finds $lookup through an index", async ({ sql, params, index }) => {
     const fixture = await executionFixture(postgres);
     const peer = await createPostgresQueryRuntime(fixture.databaseUrl);
     try {
       const explained = await peer.transaction(async (client) => {
         await client.query("set local enable_seqscan = off");
-        return client.query<{ "QUERY PLAN": string }>(
-          `explain select 1 from agent_executions where workflow_step_run_id = $1`,
-          [randomUUID()],
-        );
+        return client.query<{ "QUERY PLAN": string }>(`explain ${sql}`, params);
       });
       const plan = explained.rows.map((row) => row["QUERY PLAN"]).join("\n");
-      assert.match(plan, /agent_executions_workflow_step_run_idx/);
+      assert.match(plan, index);
     } finally {
       await peer.close();
       await fixture.database.close();
