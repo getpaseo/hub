@@ -5,7 +5,15 @@ import { DatabaseUnavailableError } from "../../errors.js";
 import { reportFailure } from "../../../failures/index.js";
 import { errorForLog } from "../../../logger.js";
 
-const QUERY_DEADLINE_MS = 3_000;
+const ACQUIRE_TIMEOUT_MS = 3_000;
+/** PostgreSQL cancels the statement itself; the connection stays in sync and usable. */
+const STATEMENT_TIMEOUT_MS = 3_000;
+/**
+ * The client gives up only after the server should have cancelled, so reaching it means the
+ * server or network stopped answering. The statement is still pending on that socket, so the
+ * connection is destroyed on release instead of being reused.
+ */
+const CLIENT_DEADLINE_MS = 5_000;
 
 /** @package */
 export function createPool(connectionString: string): PostgresPool {
@@ -16,15 +24,18 @@ export function createPool(connectionString: string): PostgresPool {
 export class PostgresPool extends Pool {
   private readonly scrubValues: string[];
   private readonly queryPhase = new AsyncLocalStorage<{ value: "acquire" | "query" }>();
+  /** The first query failure of each client's current checkout. */
+  private readonly checkoutFailures = new WeakMap<PoolClient, Error>();
 
   constructor(connectionString: string) {
     super({
       connectionString,
-      connectionTimeoutMillis: QUERY_DEADLINE_MS,
-      query_timeout: QUERY_DEADLINE_MS,
-      statement_timeout: QUERY_DEADLINE_MS,
+      connectionTimeoutMillis: ACQUIRE_TIMEOUT_MS,
+      query_timeout: CLIENT_DEADLINE_MS,
+      statement_timeout: STATEMENT_TIMEOUT_MS,
     });
     const idleSince = new WeakMap<PoolClient, number>();
+    const acquiredAt = new WeakMap<PoolClient, number>();
     const url = new URL(connectionString);
     this.scrubValues = [connectionString, url.password, decodeURIComponent(url.password)];
 
@@ -40,11 +51,24 @@ export class PostgresPool extends Pool {
     this.on("connect", (client) => {
       // oxlint-disable-next-line typescript-eslint/unbound-method
       client.query = observe(client.query, (started, args) => (error) => {
-        if (error) this.failure(error, "query", started, queryScrubValues(args));
+        if (!error) return;
+        this.recordCheckoutFailure(client, error);
+        this.failure(error, "query", started, queryScrubValues(args));
+      });
+      // pg-pool listens for errors only while a client is idle. A socket that closes while the
+      // client is checked out would otherwise emit an unhandled 'error' and end the process.
+      client.on("error", (error) => {
+        if (idleSince.has(client)) return;
+        this.failure(error, "checkedOut", acquiredAt.get(client) ?? performance.now());
+        reportFailure(error, { operation: "database.postgres.client", component: "database" });
       });
     });
     this.on("release", (_error, client) => idleSince.set(client, performance.now()));
-    this.on("acquire", (client) => idleSince.delete(client));
+    this.on("acquire", (client) => {
+      idleSince.delete(client);
+      acquiredAt.set(client, performance.now());
+      this.checkoutFailures.delete(client);
+    });
     this.on("error", (error, client) => {
       this.failure(error, "idle", idleSince.get(client) ?? performance.now());
       reportFailure(error, { operation: "database.postgres.pool", component: "database" });
@@ -54,9 +78,27 @@ export class PostgresPool extends Pool {
     this.end = observe(this.end, () => () => this.queryPhase.disable());
   }
 
+  /** Whether a query failed during the client's current checkout. */
+  hasFailed(client: PoolClient): boolean {
+    return this.checkoutFailures.has(client);
+  }
+
+  /**
+   * Return a checked-out client. A client whose query failed may still have that query pending
+   * or its transaction open, so pg-pool destroys it and opens a fresh connection when needed.
+   */
+  release(client: PoolClient): void {
+    client.release(this.checkoutFailures.get(client));
+  }
+
+  private recordCheckoutFailure(client: PoolClient, error: unknown) {
+    if (this.checkoutFailures.has(client)) return;
+    this.checkoutFailures.set(client, error instanceof Error ? error : new Error(String(error)));
+  }
+
   private failure(
     error: unknown,
-    phase: "acquire" | "query" | "idle",
+    phase: "acquire" | "query" | "idle" | "checkedOut",
     started: number,
     scrubValues: readonly string[] = [],
   ) {
@@ -97,9 +139,10 @@ export class PostgresPool extends Pool {
         new Promise<never>((_, reject) => {
           timeout = setTimeout(() => {
             const error = new DatabaseUnavailableError("database query timed out");
+            if (client !== undefined) this.recordCheckoutFailure(client, error);
             this.failure(error, phase.value, started);
             reject(error);
-          }, QUERY_DEADLINE_MS);
+          }, CLIENT_DEADLINE_MS);
         }),
       ]);
     } finally {

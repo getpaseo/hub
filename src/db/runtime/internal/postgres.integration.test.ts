@@ -8,10 +8,11 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { reportFailure, runWithFailureTracking } from "../../../failures/index.js";
 import { createLogger } from "../../../logger.js";
+import type { TransactionHandle } from "../index.js";
 import { createPool, createPostgresRuntime } from "./postgres.js";
 
 const diagnosticSchema = z.object({
-  phase: z.enum(["acquire", "query", "idle"]),
+  phase: z.enum(["acquire", "query", "idle", "checkedOut"]),
   elapsedMs: z.number().nonnegative(),
   pool: z.object({ total: z.number(), idle: z.number(), waiting: z.number() }),
 });
@@ -99,7 +100,7 @@ describe("PostgreSQL failure diagnostics", () => {
     try {
       await pool.query("set statement_timeout = 0");
       await runWithFailureTracking(async () => {
-        await log.rejects(pool.query("select pg_sleep(5)"), /timeout/u);
+        await log.rejects(pool.query("select pg_sleep(10)"), /timeout/u);
       }, log.logger);
       const [record] = log.records();
       assert.ok(record);
@@ -107,7 +108,7 @@ describe("PostgreSQL failure diagnostics", () => {
       assert.match(record.err.message, /timeout/u);
       assert.equal(record.err.code, null);
       assert.equal(record.err.diagnostic.phase, "query");
-      assert.ok(record.err.diagnostic.elapsedMs >= 2900);
+      assert.ok(record.err.diagnostic.elapsedMs >= 4900);
       assert.deepEqual(record.err.diagnostic.pool, { total: 1, idle: 0, waiting: 0 });
     } finally {
       await pool.end();
@@ -178,11 +179,13 @@ describe("PostgreSQL failure diagnostics", () => {
     const log = capture();
     try {
       await runWithFailureTracking(async () => {
+        // Acquisition and the statement each stay inside their own limit; together they pass
+        // the overall deadline before PostgreSQL cancels the statement.
         const failed = log.rejects(
           pool.runQuery(undefined, "select pg_sleep(5)", []),
           /database query timed out/u,
         );
-        await delay(200);
+        await delay(2_500);
         held.release();
         await failed;
       }, log.logger);
@@ -195,6 +198,59 @@ describe("PostgreSQL failure diagnostics", () => {
       await pool.end();
     }
   });
+  it("destroys a connection whose query hit the client deadline", async () => {
+    const { runtime } = await createPostgresRuntime(postgres.getConnectionUri());
+    let pid: string | undefined;
+    try {
+      await assert.rejects(
+        runtime.transaction(async (transaction) => {
+          const backend = await transaction.query<{ pid: number }>(
+            "select pg_backend_pid() as pid",
+          );
+          pid = String(backend.rows[0]!.pid);
+          // A stopped backend answers nothing, so the client gives up with the statement still
+          // on the socket. When the backend resumes, that statement aborts the transaction.
+          await postgres.exec(["kill", "-STOP", pid]);
+          await transaction.query("select 1 / 0");
+        }),
+        /timeout|timed out/u,
+      );
+      await postgres.exec(["kill", "-CONT", pid!]);
+      const next = await runtime.transaction((transaction) =>
+        transaction.query<{ value: number }>("select 1 as value"),
+      );
+      assert.deepEqual(next.rows, [{ value: 1 }]);
+    } finally {
+      if (pid !== undefined) await postgres.exec(["kill", "-CONT", pid]);
+      await runtime.close();
+    }
+  }, 60_000);
+
+  it("reports a checked-out connection that PostgreSQL terminates without crashing", async () => {
+    const { runtime } = await createPostgresRuntime(postgres.getConnectionUri());
+    const admin = createPool(postgres.getConnectionUri());
+    const log = capture();
+    try {
+      const terminateWhileHeld = async (transaction: TransactionHandle) => {
+        const backend = await transaction.query<{ pid: number }>("select pg_backend_pid() as pid");
+        await admin.query("select pg_terminate_backend($1)", [backend.rows[0]!.pid]);
+        await until(() => log.text().includes("database.postgres.client"));
+      };
+      await runWithFailureTracking(async () => {
+        await assert.rejects(runtime.transaction(terminateWhileHeld));
+      }, log.logger);
+      const record = log.records().find((entry) => entry.operation === "database.postgres.client");
+      assert.ok(record);
+      assert.equal(record.err.code, "57P01");
+      assert.equal(record.err.diagnostic.phase, "checkedOut");
+      const next = await runtime.query<{ value: number }>("select 1 as value");
+      assert.deepEqual(next.rows, [{ value: 1 }]);
+    } finally {
+      await runtime.close();
+      await admin.end();
+    }
+  }, 60_000);
+
   it("preserves caller operation and diagnostics through a Drizzle error cause", async () => {
     const { runtime } = await createPostgresRuntime(postgres.getConnectionUri());
     const log = capture();
@@ -222,3 +278,7 @@ describe("PostgreSQL failure diagnostics", () => {
     }
   });
 });
+
+async function until(condition: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 50 && !condition(); attempt += 1) await delay(100);
+}

@@ -32,8 +32,13 @@ interface RuntimeQueryResultHKT extends PgQueryResultHKT {
   type: RuntimeDrizzleResult<this["row"]>;
 }
 
-/** The driver-neutral PostgreSQL-dialect Drizzle surface consumed by repositories. */
-export type DrizzleHandle = PgDatabase<RuntimeQueryResultHKT, typeof schema>;
+/**
+ * The driver-neutral PostgreSQL-dialect Drizzle surface consumed by repositories. It has no
+ * `transaction()`: open transactions with `DatabaseRuntime.transaction` and use its `drizzle()`.
+ * Drizzle's node-postgres transaction sends BEGIN before it starts the code that returns the
+ * connection, so a failed BEGIN keeps that connection out of the pool for good.
+ */
+export type DrizzleHandle = Omit<PgDatabase<RuntimeQueryResultHKT, typeof schema>, "transaction">;
 
 export interface DatabaseRuntime extends QueryHandle {
   transaction<T>(operation: (transaction: TransactionHandle) => Promise<T>): Promise<T>;
