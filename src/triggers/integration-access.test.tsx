@@ -55,6 +55,17 @@ const ALL_CONFIGURED_FORM: TriggerFormValue = {
     slack: { connection: "company-slack", actions: ["post"], channels: "C12345" },
     discord: { connection: "company-discord", actions: ["read"], channels: "1234567890" },
   },
+  integrationTools: {
+    notion: {
+      enabled: true,
+      connection: "company-notion",
+      actions: ["read"],
+      fields: {
+        data_sources: "248104cd-477e-80af-bc30-000bd28de8f9",
+        pages: "",
+      },
+    },
+  },
 };
 
 const INVALID_SLACK_FORM: TriggerFormValue = {
@@ -73,6 +84,7 @@ const CONNECTIONS: TriggerSnapshot["connections"] = [
   { id: "gh-1", provider: "github", slug: "acme-github", label: "Acme GitHub" },
   { id: "sl-1", provider: "slack", slug: "company-slack", label: "Acme Slack" },
   { id: "dc-1", provider: "discord", slug: "company-discord", label: "Acme Discord" },
+  { id: "nt-1", provider: "notion", slug: "company-notion", label: "Acme Notion" },
 ];
 
 describe("integration access model", () => {
@@ -200,9 +212,11 @@ describe("integration access rendering", () => {
     expect(markup).toContain('aria-labelledby="trigger-access-github-heading"');
     expect(markup).toContain('aria-labelledby="trigger-access-slack-heading"');
     expect(markup).toContain('aria-labelledby="trigger-access-discord-heading"');
+    expect(markup).toContain('aria-labelledby="trigger-access-notion-heading"');
     expect(markup).toContain('aria-label="Remove GitHub"');
     expect(markup).toContain('aria-label="Remove Slack"');
     expect(markup).toContain('aria-label="Remove Discord"');
+    expect(markup).toContain('aria-label="Remove Notion"');
     expect(markup).not.toContain("Add integration");
   });
 

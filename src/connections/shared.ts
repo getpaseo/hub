@@ -5,6 +5,7 @@ import type { AuthServer } from "../auth/server.js";
 import { ConnectionAccessDeniedError, ConnectionConflictError } from "../db/errors.js";
 import type {
   ConnectionAccountAccess,
+  ConnectionAttemptPhase,
   ConnectionStartAuthority,
   Database,
   TenantRouteAccess,
@@ -105,11 +106,7 @@ export async function cancelledConnectionResult(input: {
   database: Database;
   request: Request;
   provider: ConnectionProvider;
-  phase:
-    | "github_user_authorization"
-    | "discord_authorization"
-    | "slack_authorization"
-    | "linear_authorization";
+  phase: ConnectionAttemptPhase;
   state: string;
   applicationBaseUrl: string;
 }): Promise<Response> {

@@ -71,7 +71,7 @@ export function integrationAccessProviders(
     ...registry.withTools().map((integration) => ({
       provider: integration.id,
       label: integration.label,
-      summary: `Scoped ${integration.resourceNoun} tools`,
+      summary: `Scoped ${integration.resourceNoun.toLowerCase()} tools`,
       integration,
     })),
   ];
@@ -674,6 +674,7 @@ function RegisteredToolAccessFields({
       },
     });
   const connectionError = errors[`tools.${integration.id}.connection`];
+  const actionsError = errors[`tools.${integration.id}.actions`];
   const connectionDescription = connectionFieldDescription(
     integration.label,
     connections.length,
@@ -743,6 +744,11 @@ function RegisteredToolAccessFields({
             />
           ))}
         </div>
+        {actionsError === undefined ? null : (
+          <p role="alert" className="mt-2 text-sm text-destructive">
+            {actionsError}
+          </p>
+        )}
       </fieldset>
     </div>
   );

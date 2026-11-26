@@ -716,9 +716,13 @@ async function collectTransitiveLocalImports(entryFiles: readonly string[]): Pro
 }
 
 describe("integrations contract & strangler seam", () => {
-  it("enforces strict transitive browser/server isolation and ships empty production registries in PR 1", async () => {
-    assert.deepEqual(defaultIntegrationRegistry.all(), []);
-    assert.deepEqual(defaultBrowserIntegrationRegistry.all(), []);
+  it("enforces strict transitive browser/server isolation and alignment across production registries", async () => {
+    assertIntegrationRegistriesAligned(
+      defaultIntegrationRegistry,
+      defaultBrowserIntegrationRegistry,
+    );
+    assert.equal(defaultIntegrationRegistry.has("notion"), true);
+    assert.equal(defaultBrowserIntegrationRegistry.has("notion"), true);
 
     const browserEntries = [
       "src/integrations/browser-contracts.ts",

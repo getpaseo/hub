@@ -6,12 +6,22 @@ import type {
   Database,
   ReadConnectionAttemptInput,
 } from "../db/types.js";
-import type {
-  BindIntegrationConnectionPayload,
-  IntegrationAppIdentity,
-  IntegrationDefinition,
-  IntegrationOAuthCompletionInput,
+import {
+  ProviderApplicationError,
+  ProviderVerificationError,
+  type BindIntegrationConnectionPayload,
+  type IntegrationAppIdentity,
+  type IntegrationDefinition,
+  type IntegrationOAuthCompletionInput,
+  type ProviderApplicationErrorCode,
+  type ProviderVerificationSubject,
 } from "../integrations/contracts.js";
+export {
+  ProviderApplicationError,
+  ProviderVerificationError,
+  type ProviderApplicationErrorCode,
+  type ProviderVerificationSubject,
+};
 import { defaultIntegrationRegistry, type IntegrationRegistry } from "../integrations/registry.js";
 import type { LinearInstallation } from "../providers/linear/client.js";
 import type { SlackSocketInstallationVerifier } from "../providers/slack/installation.js";
@@ -334,68 +344,6 @@ export interface VerifiedSlackInstallation {
   botUserId: string;
   botAccessToken: string;
   scopes: string[];
-}
-
-export type ProviderApplicationErrorCode =
-  | "forbidden"
-  | "invalidOrigin"
-  | "invalidInput"
-  | "credentialsRejected"
-  | "permissionMissing"
-  | "rateLimited"
-  | "network"
-  | "timeout"
-  | "upstreamUnavailable"
-  | "invalidResponse"
-  | "internal"
-  | "identityConflict"
-  | "configurationConflict"
-  | "managedByEnvironment"
-  | "httpsRequired";
-
-export class ProviderApplicationError extends Error {
-  constructor(
-    readonly code: ProviderApplicationErrorCode,
-    readonly safeContext?: string,
-    options?: ErrorOptions,
-  ) {
-    super(code, options);
-    this.name = "ProviderApplicationError";
-  }
-}
-
-/**
- * Which credential the provider actually objected to. Collapsing "this secret is wrong" into
- * "these credentials are wrong" sends the operator back to the portal to re-copy every field,
- * and collapsing "this belongs to a different app" into either one sends them looking for a
- * typo that is not there.
- */
-export type ProviderVerificationSubject =
-  | "appToken"
-  | "botToken"
-  | "clientSecret"
-  | "privateKey"
-  | "identityMismatch";
-
-export class ProviderVerificationError extends Error {
-  constructor(
-    readonly reason:
-      | "credentialsRejected"
-      | "permissionMissing"
-      | "rateLimited"
-      | "network"
-      | "timeout"
-      | "upstreamUnavailable"
-      | "invalidResponse",
-    readonly safeStatus?: number,
-    options?: ErrorOptions & { subject?: ProviderVerificationSubject },
-  ) {
-    super(reason, options);
-    this.name = "ProviderVerificationError";
-    this.subject = options?.subject;
-  }
-
-  readonly subject: ProviderVerificationSubject | undefined;
 }
 
 /**
