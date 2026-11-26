@@ -162,6 +162,7 @@ export function OrganizationIntegrationsPanel() {
     }
     const browserIntegration = defaultBrowserIntegrationRegistry.get(provider);
     if (
+      providerStatus.status !== "disconnected" &&
       browserIntegration?.setup.supportsOrgConnect?.(providerStatus.identifiers ?? {}) === false
     ) {
       return undefined;

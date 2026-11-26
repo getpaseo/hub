@@ -358,6 +358,8 @@ describe("Notion 5 scoped MCP tools & 6-hop allowlist", () => {
     const chain = makeHopChain(7);
     const hop6Id = "00000000-0000-4000-8000-000000000006";
     const hop7Id = "00000000-0000-4000-8000-000000000007";
+    const blockChildPageId = "00000000-0000-4000-8000-0000000000b1";
+    const columnBlockId = "00000000-0000-4000-8000-0000000000b2";
     const postedComments: unknown[] = [];
     const updatedPages: unknown[] = [];
     const updatedMarkdown: unknown[] = [];
@@ -377,6 +379,20 @@ describe("Notion 5 scoped MCP tools & 6-hop allowlist", () => {
           },
         });
       }
+      if (pathname === `/v1/pages/${blockChildPageId}`) {
+        return jsonResponse({
+          id: blockChildPageId,
+          url: `https://www.notion.so/${blockChildPageId.replaceAll("-", "")}`,
+          parent: { type: "block_id", block_id: columnBlockId },
+          properties: { title: { type: "title", title: [{ plain_text: "Toggle Child" }] } },
+        });
+      }
+      if (pathname === `/v1/blocks/${columnBlockId}`) {
+        return jsonResponse({
+          id: columnBlockId,
+          parent: { type: "page_id", page_id: ROOT_PAGE_GRANTED },
+        });
+      }
       const hopMatch = /^\/v1\/pages\/(00000000-0000-4000-8000-\d{12})$/u.exec(pathname);
       if (!hopMatch) return undefined;
       const page = chain[hopMatch[1]!]!;
@@ -388,35 +404,52 @@ describe("Notion 5 scoped MCP tools & 6-hop allowlist", () => {
       });
     };
 
-    const mockFetch: typeof fetch = async (input, init) => {
-      const url = requestUrl(input);
-      const method = init?.method ?? "GET";
-
-      if (method === "GET") {
-        const pageRes = handlePageGet(url.pathname);
-        if (pageRes !== undefined) return pageRes;
-      }
-      if (url.pathname === `/v1/pages/${hop6Id}/markdown` && method === "GET") {
+    const handleToolReadGet = (pathname: string): Response | undefined => {
+      const pageRes = handlePageGet(pathname);
+      if (pageRes !== undefined) return pageRes;
+      if (pathname === `/v1/pages/${hop6Id}/markdown`) {
         return jsonResponse({
           markdown: "# Hop 6\n\nBody text",
           truncated: false,
           unknown_block_ids: [],
         });
       }
-      if (url.pathname === `/v1/pages/${hop6Id}/markdown` && method === "PATCH") {
-        updatedMarkdown.push(parseBodyRecord(init));
-        return jsonResponse({ markdown: "# Hop 6\n\nUpdated text", warnings: [] });
+      if (pathname === `/v1/pages/${blockChildPageId}/markdown`) {
+        return jsonResponse({
+          markdown: "Inside toggle block",
+          truncated: false,
+          unknown_block_ids: [],
+        });
       }
-      if (url.pathname === `/v1/pages/${hop6Id}` && method === "PATCH") {
-        updatedPages.push(parseBodyRecord(init));
-        return jsonResponse({ id: hop6Id, url: `https://www.notion.so/${hop6Id}` });
-      }
-      if (url.pathname === "/v1/comments" && method === "GET") {
+      if (pathname === "/v1/comments") {
         return jsonResponse({
           results: [{ id: "c-1", discussion_id: "d-1", rich_text: [{ plain_text: "First" }] }],
         });
       }
-      if (url.pathname === "/v1/comments" && method === "POST") {
+      if (pathname === `/v1/data_sources/${DS_GRANTED}`) {
+        return jsonResponse({
+          id: DS_GRANTED,
+          title: [{ plain_text: "Tasks" }],
+          properties: { Status: { type: "status" } },
+        });
+      }
+      return undefined;
+    };
+
+    const handleToolWriteRequest = (
+      pathname: string,
+      method: string,
+      init?: RequestInit,
+    ): Response | undefined => {
+      if (pathname === `/v1/pages/${hop6Id}/markdown` && method === "PATCH") {
+        updatedMarkdown.push(parseBodyRecord(init));
+        return jsonResponse({ markdown: "# Hop 6\n\nUpdated text", warnings: [] });
+      }
+      if (pathname === `/v1/pages/${hop6Id}` && method === "PATCH") {
+        updatedPages.push(parseBodyRecord(init));
+        return jsonResponse({ id: hop6Id, url: `https://www.notion.so/${hop6Id}` });
+      }
+      if (pathname === "/v1/comments" && method === "POST") {
         const body = parseBodyRecord(init);
         postedComments.push(body);
         const discussionId =
@@ -427,14 +460,7 @@ describe("Notion 5 scoped MCP tools & 6-hop allowlist", () => {
           created_time: "2026-11-26T00:00:00.000Z",
         });
       }
-      if (url.pathname === `/v1/data_sources/${DS_GRANTED}` && method === "GET") {
-        return jsonResponse({
-          id: DS_GRANTED,
-          title: [{ plain_text: "Tasks" }],
-          properties: { Status: { type: "status" } },
-        });
-      }
-      if (url.pathname === `/v1/data_sources/${DS_GRANTED}/query` && method === "POST") {
+      if (pathname === `/v1/data_sources/${DS_GRANTED}/query` && method === "POST") {
         return jsonResponse({
           results: [
             {
@@ -447,6 +473,18 @@ describe("Notion 5 scoped MCP tools & 6-hop allowlist", () => {
           has_more: false,
         });
       }
+      return undefined;
+    };
+
+    const mockFetch: typeof fetch = async (input, init) => {
+      const url = requestUrl(input);
+      const method = init?.method ?? "GET";
+      if (method === "GET") {
+        const readRes = handleToolReadGet(url.pathname);
+        if (readRes !== undefined) return readRes;
+      }
+      const writeRes = handleToolWriteRequest(url.pathname, method, init);
+      if (writeRes !== undefined) return writeRes;
       return jsonResponse({ code: "object_not_found" }, 404);
     };
 
@@ -544,6 +582,13 @@ describe("Notion 5 scoped MCP tools & 6-hop allowlist", () => {
       (err: unknown) => err instanceof IntegrationToolError && /outside.*scope/iu.test(err.message),
     );
 
+    // Child page under a block_id on a granted page succeeds via block parent walk
+    const blockChild = z
+      .object({ id: z.string(), markdown: z.string() })
+      .parse((await call("notion_read_page", { page: blockChildPageId }))?.value);
+    assert.equal(blockChild.id, blockChildPageId);
+    assert.equal(blockChild.markdown, "Inside toggle block");
+
     // 3. notion_query_database
     const queried = z.object({ results: z.array(z.unknown()) }).parse(
       (
@@ -573,6 +618,17 @@ describe("Notion 5 scoped MCP tools & 6-hop allowlist", () => {
       markdown: "Looks **good** [Open in Paseo](https://hub.test/1)",
       markdown_version: "v2",
     });
+
+    // discussion_id belonging to another (out-of-scope) page must be rejected before POST /v1/comments
+    await assert.rejects(
+      call("notion_comment", {
+        page: hop6Id,
+        markdown: "Out-of-scope reply",
+        discussion_id: "d-other-page",
+      }),
+      (err: unknown) => err instanceof IntegrationToolError && /discussion/iu.test(err.message),
+    );
+    assert.equal(postedComments.length, 1);
 
     // 5. notion_update_page (properties + markdown patch)
     await call("notion_update_page", {

@@ -1,3 +1,4 @@
+import { connectionReturnUrl } from "../../../connections/result-contract.js";
 import {
   INTEGRATIONS_RETURN_ROUTE,
   callbackConnectionAccess,
@@ -138,7 +139,7 @@ async function parseBotUserResponse(response: Response) {
 
 export async function verifyNotionDirect(
   config: NotionConfig,
-  context: IntegrationVerificationContext,
+  context: Pick<IntegrationVerificationContext, "fetch">,
 ): Promise<
   | {
       readonly identity: NotionIdentity;
@@ -237,8 +238,26 @@ export function createNotionConnectionRuntime(
 
   if (config.mode === "internal") {
     return {
-      async beginConnection() {
-        throw new ConnectionAccessDeniedError();
+      async beginConnection(request, access) {
+        const resolvedAccess =
+          access ??
+          connectionAccess(await manageConnectionAccess(context.auth, context.database, request));
+        const verified = await verifyNotionDirect(config, { fetch: context.fetch });
+        if (verified?.initialConnection === undefined) {
+          throw new ConnectionAccessDeniedError();
+        }
+        await context.database.integrations.bind({
+          provider: "notion",
+          organizationId: resolvedAccess.organizationId,
+          connectedByUserId: resolvedAccess.userId,
+          ...verified.initialConnection,
+        });
+        return {
+          url: connectionReturnUrl(context.callbackOrigin, resolvedAccess.returnRoute, {
+            provider: "notion",
+            result: "notion_connected",
+          }).toString(),
+        };
       },
       actions: {
         disconnect,

@@ -18,6 +18,7 @@ import { callIntegrationTool } from "../../integration-tools/index.js";
 import { ProjectDashboard } from "../../projects/dashboard.js";
 import {
   ProviderApplicationError,
+  activateProviderApplicationsAtStartup,
   createProviderApplicationInventory,
   createProviderApplicationStore,
   createProviderApplicationVerifier,
@@ -52,6 +53,81 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+function createIntegrationTestHarness() {
+  return {
+    async verifyEnvironmentInternal(input: {
+      providerStore: ReturnType<typeof createProviderApplicationStore>;
+      dynamicRuntime: DynamicProviderRuntime;
+      providerVerifier: ReturnType<typeof createProviderApplicationVerifier>;
+      providerInventory: ReturnType<typeof createProviderApplicationInventory>;
+      application: Awaited<ReturnType<typeof createApplicationRuntime>>;
+      database: ReturnType<typeof createDatabase>;
+      organizationId: string;
+      organizationSlug: string;
+      authedRequest: (url: string, method?: string) => Request;
+    }): Promise<void> {
+      await activateProviderApplicationsAtStartup({
+        store: input.providerStore,
+        environment: {
+          registered: {
+            notion: {
+              provider: "notion",
+              mode: "internal",
+              apiToken: "ntn_internal_valid",
+            },
+          },
+        },
+        runtime: input.dynamicRuntime,
+        verifier: input.providerVerifier,
+        inventory: input.providerInventory,
+        callbackOrigin: "https://hub.test",
+        registry: defaultIntegrationRegistry,
+      });
+
+      const envStatusBefore = await input.application.connectionStatus(
+        input.authedRequest(
+          `https://hub.test/connections?organizationSlug=${encodeURIComponent(input.organizationSlug)}`,
+        ),
+      );
+      const envParsedBefore = StatusViewSchema.parse(await envStatusBefore.json());
+      assert.equal(envParsedBefore.notion.status, "disconnected");
+
+      const envConnectRes = await input.application.connectionAction(
+        input.authedRequest(
+          `https://hub.test/connections/start?organizationSlug=${encodeURIComponent(input.organizationSlug)}`,
+          "POST",
+        ),
+        "notion",
+        "start",
+      );
+      assert.equal(envConnectRes.status, 200);
+      const envConnectUrl = z.object({ url: z.string() }).parse(await envConnectRes.json()).url;
+      assert.match(envConnectUrl, /result=notion_connected/u);
+
+      const envStatusAfter = await input.application.connectionStatus(
+        input.authedRequest(
+          `https://hub.test/connections?organizationSlug=${encodeURIComponent(input.organizationSlug)}`,
+        ),
+      );
+      const envParsedAfter = StatusViewSchema.parse(await envStatusAfter.json());
+      assert.equal(envParsedAfter.notion.status, "connected");
+      assert.equal(
+        defaultBrowserIntegrationRegistry
+          .get("notion")
+          ?.setup.supportsOrgConnect?.(envParsedAfter.notion.identifiers ?? {}),
+        false,
+      );
+
+      const envConns = await input.database.integrations.listForOrganization(
+        input.organizationId,
+        "notion",
+      );
+      assert.equal(envConns.length, 1);
+      assert.equal(envConns[0]?.credentials["accessToken"], "ntn_internal_valid");
+    },
+  };
 }
 
 describe("Notion PR 2 embedded Postgres end-to-end", () => {
@@ -651,6 +727,19 @@ describe("Notion PR 2 embedded Postgres end-to-end", () => {
       assert.equal(disconnectOAuth.status, 200);
       await new Promise((resolve) => setTimeout(resolve, 25));
       assert.deepEqual(revokedTokens, ["oauth-token-v2"]);
+
+      // 7. Environment-configured internal Notion activates cleanly and binds on org Connect
+      await createIntegrationTestHarness().verifyEnvironmentInternal({
+        providerStore,
+        dynamicRuntime,
+        providerVerifier,
+        providerInventory,
+        application,
+        database,
+        organizationId: owner.organization_id,
+        organizationSlug: owner.organization_slug,
+        authedRequest,
+      });
     } finally {
       await application.stop();
       await rm(root, { recursive: true, force: true });

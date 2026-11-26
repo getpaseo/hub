@@ -64,6 +64,15 @@ const NotionPatchedPageSchema = z
 
 type NotionPage = z.infer<typeof NotionPageSchema>;
 
+const NotionBlockSchema = z
+  .object({
+    id: z.string().min(1),
+    parent: NotionParentSchema,
+  })
+  .passthrough();
+
+type NotionBlock = z.infer<typeof NotionBlockSchema>;
+
 const NotionMarkdownSchema = z
   .object({
     markdown: z.string(),
@@ -393,12 +402,22 @@ function mapNotionToolError(error: unknown, scopeMessage = NOTION_OUT_OF_SCOPE_M
   throw error;
 }
 
+const MAX_COMMENT_VERIFY_PAGES = 20;
+
 interface ScopedCallState {
   readonly organizationId: string;
   readonly grant: NotionToolGrant;
   readonly pageCache: Map<string, NotionPage>;
+  readonly blockCache: Map<string, NotionBlock>;
   readonly resolvedDbCache: Map<string, string>;
 }
+
+const NotionCommentEntrySchema = z
+  .object({
+    discussion_id: z.string().min(1).optional(),
+    parent: NotionParentSchema.optional(),
+  })
+  .passthrough();
 
 export const notionToolsCapability: IntegrationToolsCapability<NotionConfig, NotionToolGrant> = {
   grantSchema: NotionToolGrantSchema,
@@ -415,6 +434,20 @@ export const notionToolsCapability: IntegrationToolsCapability<NotionConfig, Not
       fetch: context.fetch,
       now: context.now,
     });
+
+    async function fetchBlockCached(state: ScopedCallState, blockId: string): Promise<NotionBlock> {
+      const existing = state.blockCache.get(blockId);
+      if (existing !== undefined) return existing;
+      const raw = await executor.request({
+        organizationId: state.organizationId,
+        connectionSlug: state.grant.connection,
+        method: "GET",
+        path: `/blocks/${blockId}`,
+      });
+      const parsed = NotionBlockSchema.parse(raw);
+      state.blockCache.set(blockId, parsed);
+      return parsed;
+    }
 
     async function fetchPageCached(state: ScopedCallState, pageId: string): Promise<NotionPage> {
       const existing = state.pageCache.get(pageId);
@@ -485,6 +518,40 @@ export const notionToolsCapability: IntegrationToolsCapability<NotionConfig, Not
       return false;
     }
 
+    type ScopeCursor =
+      | { readonly kind: "page"; readonly id: string }
+      | { readonly kind: "block"; readonly id: string };
+
+    async function stepParentScope(
+      state: ScopedCallState,
+      parent: z.infer<typeof NotionParentSchema>,
+    ): Promise<{ readonly matched: boolean; readonly next?: ScopeCursor }> {
+      if (parent.type === "data_source_id") {
+        const matched = await isDataSourceIdGranted(
+          state,
+          parent.data_source_id,
+          parent.database_id,
+        );
+        return { matched };
+      }
+      if (parent.type === "database_id") {
+        const matched = await isDataSourceIdGranted(state, parent.database_id);
+        return { matched };
+      }
+      if (parent.type === "page_id") {
+        const parentPageId = normalizeNotionUuid(parent.page_id) ?? parent.page_id;
+        if ((state.grant.pages ?? []).includes(parentPageId)) {
+          return { matched: true };
+        }
+        return { matched: false, next: { kind: "page", id: parentPageId } };
+      }
+      if (parent.type === "block_id") {
+        const parentBlockId = normalizeNotionUuid(parent.block_id) ?? parent.block_id;
+        return { matched: false, next: { kind: "block", id: parentBlockId } };
+      }
+      return { matched: false };
+    }
+
     async function ensurePageInScope(
       state: ScopedCallState,
       targetPageId: string,
@@ -495,43 +562,32 @@ export const notionToolsCapability: IntegrationToolsCapability<NotionConfig, Not
       }
 
       const visited = new Set<string>();
-      let currentId = targetPageId;
+      let cursor: ScopeCursor = { kind: "page", id: targetPageId };
       let targetPage: NotionPage | undefined;
 
       for (let hop = 0; hop < NOTION_MAX_HOPS; hop += 1) {
-        if (visited.has(currentId)) break;
-        visited.add(currentId);
+        const visitKey = `${cursor.kind}:${cursor.id}`;
+        if (visited.has(visitKey)) break;
+        visited.add(visitKey);
 
-        let page: NotionPage;
+        let parent: z.infer<typeof NotionParentSchema>;
         try {
-          page = await fetchPageCached(state, currentId);
+          if (cursor.kind === "page") {
+            const page = await fetchPageCached(state, cursor.id);
+            targetPage ??= page;
+            parent = page.parent;
+          } else {
+            const block = await fetchBlockCached(state, cursor.id);
+            parent = block.parent;
+          }
         } catch (error) {
           mapNotionToolError(error, NOTION_OUT_OF_SCOPE_MESSAGE);
         }
-        targetPage ??= page;
 
-        const parent = page.parent;
-        if (parent.type === "data_source_id") {
-          if (await isDataSourceIdGranted(state, parent.data_source_id, parent.database_id)) {
-            return targetPage;
-          }
-          break;
-        }
-        if (parent.type === "database_id") {
-          if (await isDataSourceIdGranted(state, parent.database_id)) {
-            return targetPage;
-          }
-          break;
-        }
-        if (parent.type === "page_id") {
-          const parentPageId = normalizeNotionUuid(parent.page_id) ?? parent.page_id;
-          if (grantedPages.includes(parentPageId)) {
-            return targetPage;
-          }
-          currentId = parentPageId;
-          continue;
-        }
-        break;
+        const step = await stepParentScope(state, parent);
+        if (step.matched) return targetPage!;
+        if (step.next === undefined) break;
+        cursor = step.next;
       }
 
       throw new IntegrationToolError(NOTION_OUT_OF_SCOPE_MESSAGE);
@@ -658,10 +714,52 @@ export const notionToolsCapability: IntegrationToolsCapability<NotionConfig, Not
       };
     }
 
+    async function verifyDiscussionBelongsToPage(
+      state: ScopedCallState,
+      pageId: string,
+      discussionId: string,
+    ): Promise<void> {
+      let cursor: string | undefined;
+      for (let pageIndex = 0; pageIndex < MAX_COMMENT_VERIFY_PAGES; pageIndex += 1) {
+        const query = new URLSearchParams({ block_id: pageId });
+        if (cursor !== undefined) query.set("start_cursor", cursor);
+        const listed = NotionCommentsListSchema.parse(
+          await executor.request({
+            organizationId: state.organizationId,
+            connectionSlug: state.grant.connection,
+            method: "GET",
+            path: `/comments?${query.toString()}`,
+          }),
+        );
+        for (const rawEntry of listed.results) {
+          const parsedEntry = NotionCommentEntrySchema.safeParse(rawEntry);
+          if (!parsedEntry.success || parsedEntry.data.discussion_id !== discussionId) {
+            continue;
+          }
+          const parent = parsedEntry.data.parent;
+          if (parent === undefined) return;
+          if (parent.type === "page_id") {
+            const parentPageId = normalizeNotionUuid(parent.page_id) ?? parent.page_id;
+            if (parentPageId === pageId) return;
+          }
+        }
+        if (listed.has_more !== true || !listed.next_cursor) {
+          break;
+        }
+        cursor = listed.next_cursor;
+      }
+      throw new IntegrationToolError(
+        "The specified Notion discussion does not belong to the granted page.",
+      );
+    }
+
     async function executeComment(state: ScopedCallState, args: Record<string, unknown>) {
       const input = CommentArgsSchema.parse(args);
       const pageId = requirePageUuid(input.page);
       await ensurePageInScope(state, pageId);
+      if (input.discussion_id !== undefined) {
+        await verifyDiscussionBelongsToPage(state, pageId, input.discussion_id);
+      }
       const created = NotionCreatedCommentSchema.parse(
         await executor.request({
           organizationId: state.organizationId,
@@ -772,6 +870,7 @@ export const notionToolsCapability: IntegrationToolsCapability<NotionConfig, Not
         organizationId,
         grant,
         pageCache: new Map(),
+        blockCache: new Map(),
         resolvedDbCache: new Map(),
       };
 
