@@ -18,6 +18,17 @@ test("creates a twice-daily schedule, edits weekly recurrence, and preserves it 
   await hub.connectGitHub("owner");
   await hub.seedSlackConnection("owner", "company-slack", "Acme Slack");
   await hub.seedDiscordConnection("Acme", "company-discord");
+  await hub.primaryApplication().query(
+    `insert into integration_connections
+       (provider, organization_id, slug, external_id, display_name, status, credentials, metadata, workspace_id)
+     select 'notion', id, 'company-notion', 'ws-notion-sched:bot-1', 'Acme Notion', 'active',
+            '{"apiToken":"ntn_sched_token"}'::jsonb,
+            '{"mode":"internal","workspaceName":"Acme Notion"}'::jsonb,
+            'ws-notion-sched'
+     from organization
+     where name = 'Acme'
+     limit 1`,
+  );
   const triggers = new OrganizationTriggers(page);
   await test.step("create a twice-daily schedule using normal execution settings", async () => {
     await triggers.open();
@@ -35,6 +46,8 @@ test("creates a twice-daily schedule, edits weekly recurrence, and preserves it 
       "acme-inc/hub",
       "connection: company-slack",
       "connection: company-discord",
+      "connection: company-notion",
+      "248104cd-477e-80af-bc30-000bd28de8f9",
       "CALLOWED",
       "123456789012345678",
     );
