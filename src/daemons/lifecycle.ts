@@ -159,6 +159,7 @@ export class DaemonDispatchLifecycle {
   private readonly reconcilingHubActions = new Map<string, Promise<void>>();
   private readonly daemonRecoveries = new Set<Promise<void>>();
   private readonly executionSubscriptions = new Map<string, () => void>();
+  private readonly releasedRecoverySubscriptions = new WeakSet<() => void>();
   private stopping = false;
 
   constructor(private readonly options: DaemonDispatchLifecycleOptions) {
@@ -1064,6 +1065,7 @@ export class DaemonDispatchLifecycle {
     let released = false;
     const release = () => {
       released = true;
+      this.releasedRecoverySubscriptions.add(release);
       previous?.();
       previous = undefined;
       unsubscribe?.();
@@ -1080,6 +1082,21 @@ export class DaemonDispatchLifecycle {
       );
       previous?.();
       previous = undefined;
+    } catch (error) {
+      if (
+        !released &&
+        previous !== undefined &&
+        !this.releasedRecoverySubscriptions.has(previous)
+      ) {
+        if (this.executionSubscriptions.get(executionId) === release) {
+          this.executionSubscriptions.set(executionId, previous);
+        } else {
+          // A newer recovery still owns this callback as its previous observation.
+          unsubscribe = previous;
+        }
+        previous = undefined;
+      }
+      throw error;
     } finally {
       if (released || unsubscribe === undefined) {
         release();
