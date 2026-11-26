@@ -58,6 +58,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 function createIntegrationTestHarness() {
   return {
     async verifyEnvironmentInternal(input: {
+      auth: ReturnType<typeof createAuthServer>;
       providerStore: ReturnType<typeof createProviderApplicationStore>;
       dynamicRuntime: DynamicProviderRuntime;
       providerVerifier: ReturnType<typeof createProviderApplicationVerifier>;
@@ -85,6 +86,53 @@ function createIntegrationTestHarness() {
         callbackOrigin: "https://hub.test",
         registry: defaultIntegrationRegistry,
       });
+
+      // Sign up a non-operator user who creates and owns a second organization
+      const intruderSignUp = await input.auth.handle(
+        new Request("https://hub.test/api/auth/sign-up/email", {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: "https://hub.test" },
+          body: JSON.stringify({
+            name: "Second Org Admin",
+            email: "intruder@notion.test",
+            password: "intruder-password-1234",
+          }),
+        }),
+      );
+      assert.equal(intruderSignUp.status, 200);
+      const intruderCookie = intruderSignUp.headers
+        .getSetCookie()
+        .map((c) => c.split(";")[0]!)
+        .join("; ");
+      const createOrgRes = await input.auth.handle(
+        new Request("https://hub.test/api/auth/paseo/create-organization", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: "https://hub.test",
+            cookie: intruderCookie,
+          },
+          body: JSON.stringify({ name: "Other Org" }),
+        }),
+      );
+      assert.equal(createOrgRes.status, 201);
+      const otherOrgSlug = z
+        .object({ organizationSlug: z.string() })
+        .parse(await createOrgRes.json()).organizationSlug;
+
+      // Non-operator org admin must NOT be allowed to claim the instance's internal Notion token
+      const hijackRes = await input.application.connectionAction(
+        new Request(
+          `https://hub.test/connections/start?organizationSlug=${encodeURIComponent(otherOrgSlug)}`,
+          {
+            method: "POST",
+            headers: { cookie: intruderCookie, origin: "https://hub.test" },
+          },
+        ),
+        "notion",
+        "start",
+      );
+      assert.equal(hijackRes.status, 403);
 
       const envStatusBefore = await input.application.connectionStatus(
         input.authedRequest(
@@ -144,8 +192,8 @@ describe("Notion PR 2 embedded Postgres end-to-end", () => {
       secret: "notion-pr2-test-secret".padEnd(32, "-"),
       baseURL: "https://hub.test",
       policy: {
-        registrationMode: "invite_only",
-        organizationCreation: "disabled",
+        registrationMode: "open",
+        organizationCreation: "open",
         bootstrap: {
           ownerEmail: "owner@notion.test",
           ownerPassword: "owner-password-1234",
@@ -730,6 +778,7 @@ describe("Notion PR 2 embedded Postgres end-to-end", () => {
 
       // 7. Environment-configured internal Notion activates cleanly and binds on org Connect
       await createIntegrationTestHarness().verifyEnvironmentInternal({
+        auth,
         providerStore,
         dynamicRuntime,
         providerVerifier,

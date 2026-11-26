@@ -238,10 +238,12 @@ export function createNotionConnectionRuntime(
 
   if (config.mode === "internal") {
     return {
-      async beginConnection(request, access) {
-        const resolvedAccess =
-          access ??
-          connectionAccess(await manageConnectionAccess(context.auth, context.database, request));
+      async beginConnection(request) {
+        const managed = await manageConnectionAccess(context.auth, context.database, request);
+        if (!managed.account.isInstanceOperator) {
+          throw new ConnectionAccessDeniedError();
+        }
+        const resolvedAccess = connectionAccess(managed);
         const verified = await verifyNotionDirect(config, { fetch: context.fetch });
         if (verified?.initialConnection === undefined) {
           throw new ConnectionAccessDeniedError();
