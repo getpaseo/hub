@@ -8,13 +8,18 @@ import { ContinuationSchema } from "../continuation.js";
 import { isAlias, isNode, parseDocument, stringify, visit, type Document } from "yaml";
 import { z } from "zod";
 import {
+  buildIntegrationToolGrantsSchema,
   integrationProviders,
-  IntegrationToolGrantsSchema,
   type IntegrationAction,
   type IntegrationProvider,
   type IntegrationToolGrants,
 } from "../../integration-tools/grants.js";
-import { IDENTIFIER, TriggerDocumentSchema, type TriggerDocument } from "./schema.js";
+import type { IntegrationToolFormDraft } from "../../integrations/browser-contracts.js";
+import {
+  defaultBrowserIntegrationRegistry,
+  type BrowserIntegrationRegistry,
+} from "../../integrations/browser-registry.js";
+import { buildTriggerDocumentSchema, IDENTIFIER, type TriggerDocument } from "./schema.js";
 
 import {
   defaultAudience,
@@ -67,6 +72,8 @@ export interface TriggerFormValue {
   githubPermissions: string;
   githubDuration: string;
   tools: Partial<Record<IntegrationProvider, IntegrationToolFormValue>>;
+  /** Tool grant drafts for integrations registered via `src/integrations/`. */
+  integrationTools?: Partial<Record<string, IntegrationToolFormDraft>>;
   prompt: string;
 }
 
@@ -77,8 +84,11 @@ export type TriggerFormProjection =
 const ProviderOptionsSchema = z.record(z.string(), z.unknown());
 const GitHubPermissionsSchema = z.record(z.string(), z.enum(["read", "write", "admin"]));
 
-export function projectTriggerForm(yaml: string): TriggerFormProjection {
-  const parsed = parseEditorDocument(yaml);
+export function projectTriggerForm(
+  yaml: string,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): TriggerFormProjection {
+  const parsed = parseEditorDocument(yaml, registry);
   if (!parsed.success) return { status: "yaml_only", reason: parsed.error };
   const trigger = parsed.data;
   const events = Object.entries(trigger.on);
@@ -86,7 +96,7 @@ export function projectTriggerForm(yaml: string): TriggerFormProjection {
     return { status: "yaml_only", reason: "The form supports exactly one event" };
   }
   const [event, definition] = events[0]!;
-  if (!isEditorEvent(event)) {
+  if (!isEditorEvent(event, registry)) {
     return { status: "yaml_only", reason: `The form does not support the ${event} event` };
   }
   if ("choices" in trigger.run.agent) {
@@ -106,11 +116,11 @@ export function projectTriggerForm(yaml: string): TriggerFormProjection {
         "Edit this trigger in YAML because its background or auto-archive setting uses anchors or aliases",
     };
   }
-  const audience = readAudience(event, definition.filters);
+  const audience = readAudience(event, definition.filters, registry);
   if ("reason" in audience) return { status: "yaml_only", reason: audience.reason };
   return {
     status: "editable",
-    value: toFormValue(trigger, event, definition, trigger.run.agent, audience),
+    value: toFormValue(trigger, event, definition, trigger.run.agent, audience, registry),
   };
 }
 
@@ -128,6 +138,7 @@ const ASSOCIATION_AUDIENCES: readonly {
 function readAudience(
   event: EditorEvent,
   filters: TriggerDocument["on"][string]["filters"],
+  browserRegistry: BrowserIntegrationRegistry,
 ): FormAudience | { reason: string } {
   const associations = filters?.author_associations;
   const named = filters?.from_users;
@@ -146,7 +157,10 @@ function readAudience(
       candidate.associations.length === new Set(associations).size &&
       candidate.associations.every((association) => associations.includes(association)),
   );
-  if (preset === undefined || !eventDefinition(event).audiences.includes(preset.audience)) {
+  if (
+    preset === undefined ||
+    !eventDefinition(event, browserRegistry).audiences.includes(preset.audience)
+  ) {
     return {
       reason: "Edit this trigger in YAML because its author associations are a custom list",
     };
@@ -170,14 +184,21 @@ function toFormValue(
   definition: TriggerDocument["on"][string],
   agent: Extract<TriggerDocument["run"]["agent"], { provider: string }>,
   audience: FormAudience,
+  browserRegistry: BrowserIntegrationRegistry,
 ): TriggerFormValue {
+  const registeredToolEntries = browserRegistry.withTools().flatMap((integration) => {
+    const grant = trigger.run.tools?.[integration.id];
+    return grant === undefined
+      ? []
+      : ([[integration.id, integration.tools!.fromGrant(grant)]] as const);
+  });
   return {
     name: trigger.name,
     enabled: trigger.enabled,
     event,
     connection: definition.connection ?? "",
     ...audience,
-    qualifiers: readQualifiers(event, definition.filters),
+    qualifiers: readQualifiers(event, definition.filters, browserRegistry),
     recurrence: definition.recurrence ?? DEFAULT_RECURRENCE,
     daemon: trigger.run.target.daemon,
     cwd: trigger.run.target.cwd,
@@ -206,16 +227,23 @@ function toFormValue(
           : [[provider, { ...grant, channels: grant.channels.join(", ") }]];
       }),
     ),
+    ...(registeredToolEntries.length === 0
+      ? {}
+      : { integrationTools: Object.fromEntries(registeredToolEntries) }),
     prompt: trigger.run.prompt,
   };
 }
 
 /** Patch only form-owned YAML nodes, retaining comments, ordering, and advanced nodes. */
-export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string {
-  const projection = projectTriggerForm(yaml);
+export function patchTriggerYaml(
+  yaml: string,
+  value: TriggerFormValue,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): string {
+  const projection = projectTriggerForm(yaml, registry);
   if (projection.status !== "editable") throw new Error(projection.reason);
   if (sameFormValue(projection.value, value)) return yaml;
-  validateFormValue(value);
+  validateFormValue(value, registry);
 
   const document = parseDocument(yaml, { compat: ["timestamp"] });
   assertDocument(document);
@@ -228,7 +256,7 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
     document.deleteIn(["on", previousEvent]);
     document.setIn(["on", value.event], definition ?? {});
   }
-  if (eventDefinition(value.event).origin === "hub") {
+  if (eventDefinition(value.event, registry).origin === "hub") {
     deleteIfPresent(document, ["on", value.event, "connection"]);
     deleteIfPresent(document, ["on", value.event, "filters", "from_users"]);
     deleteIfPresent(document, ["on", value.event, "filters", "author_associations"]);
@@ -250,11 +278,12 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   );
   if (value.event === "schedule.tick" || value.event === "webhook.received")
     deleteIfPresent(document, ["on", value.event, "filters"]);
-  const qualifiers = authoredQualifiers(value);
+  const qualifiers = authoredQualifiers(value, registry);
   const ownedKeys = new Set(
-    [...eventDefinition(previousEvent).qualifiers, ...eventDefinition(value.event).qualifiers].map(
-      (qualifier) => qualifier.key,
-    ),
+    [
+      ...eventDefinition(previousEvent, registry).qualifiers,
+      ...eventDefinition(value.event, registry).qualifiers,
+    ].map((qualifier) => qualifier.key),
   );
   for (const key of ownedKeys) {
     setOptional(document, ["on", value.event, "filters", key], qualifiers[key]);
@@ -282,7 +311,7 @@ export function patchTriggerYaml(yaml: string, value: TriggerFormValue): string 
   if (value.autoArchive !== projection.value.autoArchive)
     document.setIn(["run", "auto_archive"], value.autoArchive);
   setOptional(document, ["run", "github"], githubAuthority(value));
-  patchIntegrationToolGrants(document, projection.value, value);
+  patchIntegrationToolGrants(document, projection.value, value, registry);
   setIfChanged(document, ["run", "prompt"], value.prompt);
   return document.toString({ lineWidth: 0 });
 }
@@ -300,14 +329,18 @@ export type TriggerYamlResult =
  * reason rather than throwing is what lets a screen disable the YAML view and say why beside the
  * control, instead of surfacing a stray exception somewhere far from the field that caused it.
  */
-export function mergeTriggerForm(yaml: string, value: TriggerFormValue): TriggerYamlResult {
+export function mergeTriggerForm(
+  yaml: string,
+  value: TriggerFormValue,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): TriggerYamlResult {
   try {
     return {
       status: "ok",
       yaml:
-        projectTriggerForm(yaml).status === "editable"
-          ? patchTriggerYaml(yaml, value)
-          : createTriggerYaml(value),
+        projectTriggerForm(yaml, registry).status === "editable"
+          ? patchTriggerYaml(yaml, value, registry)
+          : createTriggerYaml(value, registry),
     };
   } catch (cause) {
     return { status: "incomplete", reason: incompleteReason(cause) };
@@ -320,13 +353,16 @@ function incompleteReason(cause: unknown): string {
     : "The trigger is invalid";
 }
 
-export function createTriggerYaml(value: TriggerFormValue): string {
-  validateFormValue(value);
+export function createTriggerYaml(
+  value: TriggerFormValue,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): string {
+  validateFormValue(value, registry);
   const agent = splitAgentId(value.agent);
   const providerOptions = parseProviderOptions(value.providerOptions);
   const github = githubAuthority(value);
-  const tools = integrationToolGrants(value);
-  const definition = formEventDefinition(value);
+  const tools = integrationToolGrants(value, registry);
+  const definition = formEventDefinition(value, registry);
   return stringify(
     {
       name: value.name,
@@ -357,13 +393,16 @@ export function createTriggerYaml(value: TriggerFormValue): string {
   );
 }
 
-function formEventDefinition(value: TriggerFormValue): TriggerDocument["on"][string] {
+function formEventDefinition(
+  value: TriggerFormValue,
+  browserRegistry: BrowserIntegrationRegistry,
+): TriggerDocument["on"][string] {
   if (value.event === "schedule.tick")
     return { recurrence: value.recurrence ?? DEFAULT_RECURRENCE };
-  if (eventDefinition(value.event).origin === "hub") return {};
+  if (eventDefinition(value.event, browserRegistry).origin === "hub") return {};
   return {
     connection: value.connection,
-    filters: { ...authoredAudience(value), ...authoredQualifiers(value) },
+    filters: { ...authoredAudience(value), ...authoredQualifiers(value, browserRegistry) },
   };
 }
 
@@ -414,31 +453,43 @@ function parsePermissions(value: string): Record<string, "read" | "write" | "adm
   return permissions.data;
 }
 
-function authoredIntegrationToolGrants(value: TriggerFormValue) {
-  const entries = integrationProviders.flatMap(
-    (
-      provider,
-    ): [IntegrationProvider, NonNullable<IntegrationToolGrants[IntegrationProvider]>][] => {
-      const grant = value.tools[provider];
-      return grant === undefined
-        ? []
-        : [[provider, { ...grant, channels: commaSeparated(grant.channels) }]];
-    },
-  );
+function authoredIntegrationToolGrants(
+  value: TriggerFormValue,
+  browserRegistry: BrowserIntegrationRegistry,
+): Record<string, unknown> | undefined {
+  const entries: [string, unknown][] = [];
+  for (const provider of integrationProviders) {
+    const grant = value.tools[provider];
+    if (grant !== undefined) {
+      entries.push([provider, { ...grant, channels: commaSeparated(grant.channels) }]);
+    }
+  }
+  for (const integration of browserRegistry.withTools()) {
+    const draft = value.integrationTools?.[integration.id];
+    if (draft === undefined || !draft.enabled) continue;
+    const grant = integration.tools!.toGrant(draft);
+    if (grant !== undefined) entries.push([integration.id, grant]);
+  }
   return entries.length === 0 ? undefined : Object.fromEntries(entries);
 }
 
-function integrationToolGrants(value: TriggerFormValue): IntegrationToolGrants | undefined {
-  return IntegrationToolGrantsSchema.optional().parse(authoredIntegrationToolGrants(value));
+function integrationToolGrants(
+  value: TriggerFormValue,
+  registry: BrowserIntegrationRegistry,
+): IntegrationToolGrants | undefined {
+  return buildIntegrationToolGrantsSchema(registry)
+    .optional()
+    .parse(authoredIntegrationToolGrants(value, registry));
 }
 
 function patchIntegrationToolGrants(
   document: Document,
   previous: TriggerFormValue,
   value: TriggerFormValue,
+  registry: BrowserIntegrationRegistry,
 ): void {
-  const before = integrationToolGrants(previous);
-  const after = integrationToolGrants(value);
+  const before = integrationToolGrants(previous, registry);
+  const after = integrationToolGrants(value, registry);
   if (after === undefined) {
     deleteIfPresent(document, ["run", "tools"]);
     return;
@@ -456,6 +507,11 @@ function patchIntegrationToolGrants(
         document.setIn([...path, field], updated[field]);
       }
     }
+  }
+  for (const integration of registry.withTools()) {
+    const path = ["run", "tools", integration.id];
+    const updated = after[integration.id];
+    setOptional(document, path, updated);
   }
 }
 
@@ -495,33 +551,44 @@ const INTEGRATION_TOOL_LABELS: Record<IntegrationProvider, string> = {
   discord: "Discord",
 };
 
-function integrationToolErrors(value: TriggerFormValue): TriggerFieldErrors {
-  const grants = IntegrationToolGrantsSchema.optional().safeParse(
-    authoredIntegrationToolGrants(value),
-  );
-  if (grants.success) return {};
-  return Object.fromEntries(
-    grants.error.issues.map(({ path, message }) => {
+function integrationToolErrors(
+  value: TriggerFormValue,
+  registry: BrowserIntegrationRegistry,
+): TriggerFieldErrors {
+  const errors: TriggerFieldErrors = {};
+  for (const integration of registry.withTools()) {
+    const draft = value.integrationTools?.[integration.id];
+    if (draft === undefined || !draft.enabled) continue;
+    const messages = integration.tools!.validateDraft(draft);
+    if (messages[0] !== undefined) {
+      errors[`tools.${integration.id}.connection`] = messages[0];
+    }
+  }
+  const grants = buildIntegrationToolGrantsSchema(registry)
+    .optional()
+    .safeParse(authoredIntegrationToolGrants(value, registry));
+  if (!grants.success) {
+    for (const { path, message } of grants.error.issues) {
       const [provider, field] = path;
-      const key = "tools." + path.slice(0, 2).join(".");
+      const key: `tools.${string}.${string}` = `tools.${String(provider ?? "")}.${String(field ?? "")}`;
       if (
         field === "connection" &&
         (provider === "slack" || provider === "discord") &&
         (value.tools[provider]?.connection ?? "").trim() === ""
       ) {
-        return [key, `Choose a ${INTEGRATION_TOOL_LABELS[provider]} connection`];
+        errors[key] = `Choose a ${INTEGRATION_TOOL_LABELS[provider]} connection`;
+      } else if (errors[key] === undefined) {
+        errors[key] = message;
       }
-      return [key, message];
-    }),
-  );
+    }
+  }
+  return errors;
 }
 
 /** What is wrong with each field, keyed by the field that has to change. */
 export type TriggerFieldErrors = Partial<
   Record<
-    | keyof TriggerFormValue
-    | `qualifiers.${QualifierKey}`
-    | `tools.${IntegrationProvider}.${keyof IntegrationToolFormValue}`,
+    keyof TriggerFormValue | `qualifiers.${QualifierKey}` | `tools.${string}.${string}`,
     string
   >
 >;
@@ -546,20 +613,23 @@ function githubAccessErrors(value: TriggerFormValue): TriggerFieldErrors {
   return errors;
 }
 
-function triggerFormDocumentErrors(value: TriggerFormValue): TriggerFieldErrors {
+function triggerFormDocumentErrors(
+  value: TriggerFormValue,
+  registry: BrowserIntegrationRegistry,
+): TriggerFieldErrors {
   const errors: TriggerFieldErrors = {};
   const name = value.name.trim();
   if (name.length === 0) errors.name = "Trigger name is required";
   else if (!IDENTIFIER.test(name)) {
     errors.name = "Use lowercase letters, digits, and hyphens, starting with a letter";
   }
-  if (eventDefinition(value.event).origin === "provider") {
+  if (eventDefinition(value.event, registry).origin === "provider") {
     if (value.connection.trim().length === 0) errors.connection = "Connection is required";
     if (value.audience === "specific" && commaSeparated(value.allowedUsers).length === 0) {
       errors.allowedUsers = "Name at least one person";
     }
   }
-  for (const qualifier of eventDefinition(value.event).qualifiers) {
+  for (const qualifier of eventDefinition(value.event, registry).qualifiers) {
     const selection = value.qualifiers[qualifier.key];
     if (qualifier.required && (selection === undefined || selection.trim().length === 0)) {
       errors[`qualifiers.${qualifier.key}`] = `${qualifier.label} is required`;
@@ -577,7 +647,7 @@ function triggerFormDocumentErrors(value: TriggerFormValue): TriggerFieldErrors 
   Object.assign(
     errors,
     githubAccessErrors(value),
-    integrationToolErrors(value),
+    integrationToolErrors(value, registry),
     continuationErrors(value),
   );
   if (value.prompt.trim().length === 0) errors.prompt = "Instructions are required";
@@ -588,8 +658,9 @@ function triggerFormDocumentErrors(value: TriggerFormValue): TriggerFieldErrors 
 export function triggerFormErrors(
   value: TriggerFormValue,
   modes?: readonly { id: string }[],
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
 ): TriggerFieldErrors {
-  const errors = triggerFormDocumentErrors(value);
+  const errors = triggerFormDocumentErrors(value, registry);
   if (errors.agent === undefined && splitAgentId(value.agent).model === undefined) {
     errors.agent = "Choose a provider and model";
   }
@@ -613,8 +684,8 @@ function refused(parse: () => unknown): string | undefined {
   }
 }
 
-function validateFormValue(value: TriggerFormValue): void {
-  const [message] = Object.values(triggerFormDocumentErrors(value));
+function validateFormValue(value: TriggerFormValue, registry: BrowserIntegrationRegistry): void {
+  const [message] = Object.values(triggerFormDocumentErrors(value, registry));
   if (message !== undefined) throw new Error(message);
 }
 
@@ -653,12 +724,13 @@ export function splitAgentId(value: string): { provider: string; model?: string 
 
 function parseEditorDocument(
   yaml: string,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
 ):
   | { success: true; data: TriggerDocument; document: Document }
   | { success: false; error: string } {
   const document = parseDocument(yaml, { compat: ["timestamp"] });
   if (document.errors.length > 0) return { success: false, error: document.errors[0]!.message };
-  const parsed = TriggerDocumentSchema.safeParse(document.toJS());
+  const parsed = buildTriggerDocumentSchema(registry).safeParse(document.toJS());
   if (!parsed.success) {
     const issue = parsed.error.issues[0]!;
     return { success: false, error: `${issue.path.join(".") || "YAML"}: ${issue.message}` };
@@ -700,9 +772,13 @@ function blankToUndefined(value: string): string | undefined {
 }
 
 /** Provider-bound state and qualifier compatibility belong to the form model. */
-export function changeTriggerEvent(value: TriggerFormValue, event: EditorEvent): TriggerFormValue {
-  const previous = eventDefinition(value.event);
-  const next = eventDefinition(event);
+export function changeTriggerEvent(
+  value: TriggerFormValue,
+  event: EditorEvent,
+  browserRegistry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): TriggerFormValue {
+  const previous = eventDefinition(value.event, browserRegistry);
+  const next = eventDefinition(event, browserRegistry);
   const sameProvider = previous.provider === next.provider;
   const qualifiers: QualifierValues = {};
   if (sameProvider) {
@@ -722,7 +798,7 @@ export function changeTriggerEvent(value: TriggerFormValue, event: EditorEvent):
     event,
     qualifiers,
     connection: sameProvider ? value.connection : "",
-    ...nextAudience(value, event, sameProvider),
+    ...nextAudience(value, event, sameProvider, browserRegistry),
   };
 }
 
@@ -734,29 +810,38 @@ function nextAudience(
   value: TriggerFormValue,
   event: EditorEvent,
   sameProvider: boolean,
+  browserRegistry: BrowserIntegrationRegistry,
 ): FormAudience {
-  const chosen = value.audience !== defaultAudience(value.event);
-  if (sameProvider && chosen && eventDefinition(event).audiences.includes(value.audience)) {
+  const chosen = value.audience !== defaultAudience(value.event, browserRegistry);
+  if (
+    sameProvider &&
+    chosen &&
+    eventDefinition(event, browserRegistry).audiences.includes(value.audience)
+  ) {
     return { audience: value.audience, allowedUsers: value.allowedUsers };
   }
-  return { audience: defaultAudience(event), allowedUsers: "" };
+  return { audience: defaultAudience(event, browserRegistry), allowedUsers: "" };
 }
 
 function readQualifiers(
   event: EditorEvent,
   filters: TriggerDocument["on"][string]["filters"],
+  browserRegistry: BrowserIntegrationRegistry,
 ): QualifierValues {
   const values: QualifierValues = {};
-  for (const qualifier of eventDefinition(event).qualifiers) {
+  for (const qualifier of eventDefinition(event, browserRegistry).qualifiers) {
     const value = filters?.[qualifier.key];
-    if (value !== undefined) values[qualifier.key] = value;
+    if (typeof value === "string") values[qualifier.key] = value;
   }
   return values;
 }
 
-function authoredQualifiers(value: TriggerFormValue): QualifierValues {
+function authoredQualifiers(
+  value: TriggerFormValue,
+  browserRegistry: BrowserIntegrationRegistry,
+): QualifierValues {
   const filters: QualifierValues = {};
-  for (const qualifier of eventDefinition(value.event).qualifiers) {
+  for (const qualifier of eventDefinition(value.event, browserRegistry).qualifiers) {
     const selection = value.qualifiers[qualifier.key];
     if (selection !== undefined) filters[qualifier.key] = selection.trim();
   }

@@ -1,5 +1,10 @@
 import { z } from "zod";
 import { withReference } from "../failures/reference.js";
+import {
+  defaultBrowserIntegrationRegistry,
+  INTEGRATION_ID_PATTERN,
+  type BrowserIntegrationRegistry,
+} from "../integrations/browser-registry.js";
 
 /**
  * What a provider sends the browser back with after an install or authorization, and where.
@@ -10,10 +15,12 @@ import { withReference } from "../failures/reference.js";
  * nobody mapped cannot leak through as raw text.
  */
 
-export const CONNECTION_PROVIDERS = ["github", "discord", "slack", "linear"] as const;
-export type ConnectionProvider = (typeof CONNECTION_PROVIDERS)[number];
+export const LEGACY_CONNECTION_PROVIDERS = ["github", "discord", "slack", "linear"] as const;
+export const CONNECTION_PROVIDERS = LEGACY_CONNECTION_PROVIDERS;
+export type LegacyConnectionProvider = (typeof LEGACY_CONNECTION_PROVIDERS)[number];
+export type ConnectionProvider = string;
 
-export const connectionResultSchema = z.enum([
+const STATIC_CONNECTION_RESULTS = [
   "github_connected",
   "discord_connected",
   "slack_connected",
@@ -41,6 +48,13 @@ export const connectionResultSchema = z.enum([
   "connection_unauthenticated",
   /** Hub itself failed; the reference correlates the banner with the operator log. */
   "connection_unavailable",
+] as const;
+
+const DYNAMIC_RESULT_PATTERN = /^[a-z][a-z0-9_-]*_(connected|disconnected|cancelled)$/u;
+
+export const connectionResultSchema = z.union([
+  z.enum(STATIC_CONNECTION_RESULTS),
+  z.string().regex(DYNAMIC_RESULT_PATTERN),
 ]);
 export type ConnectionResult = z.infer<typeof connectionResultSchema>;
 
@@ -90,18 +104,35 @@ export function connectionReturnUrl(
  * A result code this build does not know is still a failed connection, so it is shown as one
  * instead of being echoed or dropped.
  */
-export function readConnectionReturn(url: URL): ConnectionReturn | undefined {
-  const provider = z
-    .enum(CONNECTION_PROVIDERS)
-    .safeParse(url.searchParams.get(RETURN_PARAMS.provider));
+export function readConnectionReturn(
+  url: URL,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): ConnectionReturn | undefined {
+  const rawProvider = url.searchParams.get(RETURN_PARAMS.provider);
+  const isKnownProvider =
+    rawProvider !== null &&
+    (LEGACY_CONNECTION_PROVIDERS.some((provider) => provider === rawProvider) ||
+      registry.has(rawProvider));
   const result = url.searchParams.get(RETURN_PARAMS.result);
-  if (!provider.success || result === null) return undefined;
+  if (!isKnownProvider || result === null) return undefined;
   const reference = url.searchParams.get(RETURN_PARAMS.reference);
+  const parsedResult = isKnownConnectionResult(result, registry)
+    ? result
+    : "connection_unavailable";
   return {
-    provider: provider.data,
-    result: connectionResultSchema.catch("connection_unavailable").parse(result),
+    provider: rawProvider,
+    result: parsedResult,
     ...(reference === null ? {} : { reference }),
   };
+}
+
+function isKnownConnectionResult(
+  value: string,
+  registry: BrowserIntegrationRegistry,
+): value is ConnectionResult {
+  if (STATIC_CONNECTION_RESULTS.some((result) => result === value)) return true;
+  const match = /^([a-z][a-z0-9_-]*)_(connected|disconnected|cancelled)$/u.exec(value);
+  return match !== null && match[1] !== undefined && registry.has(match[1]);
 }
 
 /** Removes a return from a location. Returns whether there was one to remove. */
@@ -111,25 +142,59 @@ export function stripConnectionReturn(url: URL): boolean {
   return present;
 }
 
-const PROVIDER_NAMES: Readonly<Record<ConnectionProvider, string>> = {
+const PROVIDER_NAMES: Readonly<Record<LegacyConnectionProvider, string>> = {
   github: "GitHub",
   discord: "Discord",
   slack: "Slack",
   linear: "Linear",
 };
 
-export function connectionProviderName(provider: ConnectionProvider): string {
-  return PROVIDER_NAMES[provider];
+export function connectionProviderName(
+  provider: ConnectionProvider,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): string {
+  if (
+    provider === "github" ||
+    provider === "discord" ||
+    provider === "slack" ||
+    provider === "linear"
+  ) {
+    return PROVIDER_NAMES[provider];
+  }
+  return registry.get(provider)?.label ?? provider;
+}
+
+export function isValidConnectionProvider(
+  provider: string,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): boolean {
+  return (
+    LEGACY_CONNECTION_PROVIDERS.some((item) => item === provider) ||
+    (INTEGRATION_ID_PATTERN.test(provider) && registry.has(provider))
+  );
 }
 
 /**
  * Every outcome says what happened, whether anything changed, and what to do next. A
  * cancellation is neutral because nothing about it is broken.
  */
-export function connectionReturnCopy(value: ConnectionReturn): ConnectionReturnCopy {
-  const copy = RETURN_COPY[value.result](connectionProviderName(value.provider));
+export function connectionReturnCopy(
+  value: ConnectionReturn,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): ConnectionReturnCopy {
+  const name = connectionProviderName(value.provider, registry);
+  const copy = resolveConnectionReturnCopy(value.result, name);
   if (value.reference === undefined) return copy;
   return { ...copy, message: withReference(copy.message, value.reference) };
+}
+
+function resolveConnectionReturnCopy(result: string, name: string): ConnectionReturnCopy {
+  const mapped = STATIC_RETURN_COPY_MAP.get(result);
+  if (mapped !== undefined) return mapped(name);
+  if (result.endsWith("_connected")) return connected(name);
+  if (result.endsWith("_disconnected")) return disconnected(name);
+  if (result.endsWith("_cancelled")) return cancelled("Authorization", name);
+  return STATIC_RETURN_COPY.connection_unavailable(name);
 }
 
 /**
@@ -140,7 +205,9 @@ function failed(name: string, message: string): ConnectionReturnCopy {
   return { tone: "error", title: `${name} wasn't connected`, message };
 }
 
-const RETURN_COPY: Readonly<Record<ConnectionResult, (name: string) => ConnectionReturnCopy>> = {
+const STATIC_RETURN_COPY: Readonly<
+  Record<(typeof STATIC_CONNECTION_RESULTS)[number], (name: string) => ConnectionReturnCopy>
+> = {
   github_connected: connected,
   discord_connected: connected,
   slack_connected: connected,
@@ -196,6 +263,10 @@ const RETURN_COPY: Readonly<Record<ConnectionResult, (name: string) => Connectio
       `Hub couldn't finish the ${name} connection. Nothing was connected. Start the connection again from this page`,
     ),
 };
+
+const STATIC_RETURN_COPY_MAP = new Map<string, (name: string) => ConnectionReturnCopy>(
+  Object.entries(STATIC_RETURN_COPY),
+);
 
 function connected(name: string): ConnectionReturnCopy {
   return { tone: "success", message: `${name} connected` };

@@ -1,5 +1,10 @@
+import { defaultBrowserIntegrationRegistry } from "../integrations/browser-registry.js";
 import { SLACK_REQUIRED_BOT_SCOPES } from "../providers/slack/client.js";
-import type { Provider, ProviderApplicationIdentity, ProviderApplicationStatus } from "./index.js";
+import type {
+  AnyProviderApplicationIdentity,
+  ApplicationProvider,
+  ProviderApplicationStatus,
+} from "./index.js";
 
 /**
  * Presentation unions spelled here rather than imported from the components, so this module stays
@@ -80,7 +85,7 @@ interface GuideGroupSource extends Omit<GuideGroup, "unavailable"> {
 }
 
 export interface ProviderGuide {
-  provider: Provider;
+  provider: ApplicationProvider;
   transport?: "socket" | "webhook";
   name: string;
   summary: string;
@@ -665,10 +670,15 @@ export const PROVIDER_GUIDES: readonly ProviderGuide[] = [
   LINEAR_GUIDE,
 ];
 
-export function guideFor(provider: Provider): ProviderGuide {
+export function guideFor(provider: ApplicationProvider): ProviderGuide {
   const guide = PROVIDER_GUIDES.find((candidate) => candidate.provider === provider);
-  if (guide === undefined) throw new Error(`unknown provider: ${provider}`);
-  return guide;
+  if (guide !== undefined) return guide;
+  const integration = defaultBrowserIntegrationRegistry.get(provider);
+  const variant =
+    integration?.setup.variants.find((item) => item.id === integration.setup.defaultVariantId) ??
+    integration?.setup.variants[0];
+  if (variant !== undefined) return variant.guide;
+  throw new Error(`unknown provider: ${provider}`);
 }
 
 /**
@@ -745,8 +755,14 @@ export function statusPresentation(status: ProviderApplicationStatus): {
   return STATUS_LABELS[status];
 }
 
-export function identityLabel(identity: ProviderApplicationIdentity): string {
-  if (identity.provider === "github") return `${identity.name} · owned by ${identity.ownerLogin}`;
+export function identityLabel(identity: AnyProviderApplicationIdentity): string {
+  if (
+    identity.provider === "github" &&
+    "ownerLogin" in identity &&
+    identity.ownerLogin !== undefined
+  ) {
+    return `${identity.name} · owned by ${identity.ownerLogin}`;
+  }
   if (identity.provider === "discord") return `${identity.name} · application ${identity.id}`;
   return identity.name;
 }

@@ -2,10 +2,14 @@ import { z } from "zod";
 import type { DatabaseRuntime, QueryRow } from "../../db/runtime/index.js";
 import type { Locks } from "../../db/runtime/locks/index.js";
 import type { Database } from "../../db/types.js";
+import {
+  defaultIntegrationRegistry,
+  type IntegrationRegistry,
+} from "../../integrations/registry.js";
 import type {
-  Provider,
-  ProviderApplicationConfiguration,
-  ProviderApplicationIdentity,
+  AnyProviderApplicationConfiguration,
+  AnyProviderApplicationIdentity,
+  ApplicationProvider,
   ProviderApplicationStore,
   StoredProviderApplication,
 } from "../index.js";
@@ -58,7 +62,21 @@ const configurationSchema = z.discriminatedUnion("provider", [
 /** @package */
 export function parseProviderApplicationConfiguration(
   value: unknown,
-): ProviderApplicationConfiguration {
+  registry: IntegrationRegistry = defaultIntegrationRegistry,
+): AnyProviderApplicationConfiguration {
+  const provider: unknown =
+    typeof value === "object" && value !== null ? Reflect.get(value, "provider") : undefined;
+  if (typeof provider === "string" && !isLegacyProvider(provider)) {
+    const integration = registry.get(provider);
+    if (integration === undefined) {
+      throw new Error(`unknown provider configuration: ${provider}`);
+    }
+    const parsed = integration.connection.configSchema.parse(value);
+    if (typeof parsed !== "object" || parsed === null) {
+      throw new Error(`invalid provider configuration for ${provider}`);
+    }
+    return { ...parsed, provider };
+  }
   const parsed = configurationSchema.parse(value);
   // An absent optional value stays absent rather than becoming present-and-undefined, which is
   // what the rest of the codebase means by optional.
@@ -103,7 +121,9 @@ export function createProviderApplicationStore(
   connections?: Pick<
     Database,
     "completeSlackProviderApplication" | "completeLinearProviderApplication"
-  >,
+  > &
+    Partial<Pick<Database, "integrations">>,
+  registry: IntegrationRegistry = defaultIntegrationRegistry,
 ): ProviderApplicationStore {
   return {
     async read(provider) {
@@ -113,7 +133,7 @@ export function createProviderApplicationStore(
          from runtime_provider_configuration where provider = $1`,
         [provider],
       );
-      return result.rows[0] === undefined ? undefined : parseRow(result.rows[0]);
+      return result.rows[0] === undefined ? undefined : parseRow(result.rows[0], registry);
     },
     async readAll() {
       const result = await database.query<ProviderConfigurationRow>(
@@ -121,7 +141,9 @@ export function createProviderApplicationStore(
                 verified_at, updated_at, updated_by_user_id
          from runtime_provider_configuration order by provider`,
       );
-      return result.rows.map(parseRow);
+      return result.rows
+        .filter((row) => isLegacyProvider(row.provider) || registry.has(row.provider))
+        .map((row) => parseRow(row, registry));
     },
     save(input) {
       return locks.withLock(`provider-configuration:${input.provider}`, () =>
@@ -163,7 +185,7 @@ export function createProviderApplicationStore(
           );
           const saved = result.rows[0];
           if (saved === undefined) throw new Error("provider configuration save returned no row");
-          const parsed = parseRow(saved);
+          const parsed = parseRow(saved, registry);
           await writeProviderActivation(
             transaction,
             input.provider,
@@ -278,11 +300,72 @@ export function createProviderApplicationStore(
           );
           const row = saved.rows[0];
           if (row === undefined) throw new Error("Slack Socket Mode save returned no row");
-          const parsed = parseRow(row);
+          const parsed = parseRow(row, registry);
           await writeProviderActivation(transaction, "slack", input.identity.id, parsed.version);
           return parsed;
         }),
       );
+    },
+    async completeIntegrationInstallation(input) {
+      if (connections?.integrations === undefined) {
+        throw new Error(`${input.provider} application persistence unavailable`);
+      }
+      await connections.integrations.bind({
+        attempt: input.attempt,
+        provider: input.provider,
+        providerApplicationId: input.connection.providerApplicationId,
+        externalId: input.connection.externalId,
+        displayName: input.connection.displayName,
+        ...(input.connection.status === undefined ? {} : { status: input.connection.status }),
+        ...(input.connection.scopes === undefined ? {} : { scopes: input.connection.scopes }),
+        credentials: input.connection.credentials,
+        ...(input.connection.metadata === undefined ? {} : { metadata: input.connection.metadata }),
+        ...(input.connection.workspaceId === undefined
+          ? {}
+          : { workspaceId: input.connection.workspaceId }),
+        providerConfiguration: {
+          configuration: input.configuration,
+          identity: { ...input.identity },
+          expectedVersion: input.expectedVersion,
+          updatedByUserId: input.updatedByUserId,
+        },
+      });
+    },
+    async completeDirectIntegrationApplication(input) {
+      if (connections?.integrations === undefined) {
+        throw new Error(`${input.provider} application persistence unavailable`);
+      }
+      await connections.integrations.bind({
+        organizationId: input.organizationId,
+        connectedByUserId: input.updatedByUserId,
+        provider: input.provider,
+        providerApplicationId: input.connection.providerApplicationId,
+        externalId: input.connection.externalId,
+        displayName: input.connection.displayName,
+        ...(input.connection.status === undefined ? {} : { status: input.connection.status }),
+        ...(input.connection.scopes === undefined ? {} : { scopes: input.connection.scopes }),
+        credentials: input.connection.credentials,
+        ...(input.connection.metadata === undefined ? {} : { metadata: input.connection.metadata }),
+        ...(input.connection.workspaceId === undefined
+          ? {}
+          : { workspaceId: input.connection.workspaceId }),
+        providerConfiguration: {
+          configuration: input.configuration,
+          identity: { ...input.identity },
+          expectedVersion: input.expectedVersion,
+          updatedByUserId: input.updatedByUserId,
+        },
+      });
+      const stored = await database.query<ProviderConfigurationRow>(
+        `select provider, configuration, verified_external_identity, version,
+                verified_at, updated_at, updated_by_user_id
+         from runtime_provider_configuration where provider = $1`,
+        [input.provider],
+      );
+      if (stored.rows[0] === undefined) {
+        throw new Error("integration application save returned no row");
+      }
+      return parseRow(stored.rows[0], registry);
     },
   };
 }
@@ -290,24 +373,33 @@ export function createProviderApplicationStore(
 async function lockProviderActivation(
   locks: Locks,
   transaction: Parameters<Locks["withTxLock"]>[0],
-  provider: Provider,
+  provider: ApplicationProvider,
 ): Promise<void> {
   await locks.withTxLock(transaction, JSON.stringify(["provider-application", provider]));
 }
 
 async function requireCompatibleConnections(
   transaction: Parameters<Locks["withTxLock"]>[0],
-  provider: Provider,
+  provider: ApplicationProvider,
   applicationId: string,
 ): Promise<void> {
-  const table = connectionTable(provider);
-  const conflicts = await transaction.query<{ conflict: boolean }>(
-    `select exists (
-       select 1 from ${table}
-       where provider_application_id is null or provider_application_id <> $1
-     ) as conflict`,
-    [applicationId],
-  );
+  const table = legacyConnectionTable(provider);
+  const conflicts =
+    table !== undefined
+      ? await transaction.query<{ conflict: boolean }>(
+          `select exists (
+             select 1 from ${table}
+             where provider_application_id is null or provider_application_id <> $1
+           ) as conflict`,
+          [applicationId],
+        )
+      : await transaction.query<{ conflict: boolean }>(
+          `select exists (
+             select 1 from integration_connections
+             where provider = $2 and (provider_application_id is null or provider_application_id <> $1)
+           ) as conflict`,
+          [applicationId, provider],
+        );
   if (conflicts.rows[0]?.conflict === true) {
     const error = new Error("provider application identity conflicts with active connections");
     error.name = "ProviderApplicationIdentityConflictError";
@@ -317,7 +409,7 @@ async function requireCompatibleConnections(
 
 async function writeProviderActivation(
   transaction: Parameters<Locks["withTxLock"]>[0],
-  provider: Provider,
+  provider: ApplicationProvider,
   applicationId: string,
   configurationVersion: number,
 ): Promise<void> {
@@ -333,34 +425,54 @@ async function writeProviderActivation(
   );
 }
 
-function connectionTable(provider: Provider): string {
+function legacyConnectionTable(provider: ApplicationProvider): string | undefined {
   if (provider === "github") return "github_connections";
   if (provider === "slack") return "slack_connections";
   if (provider === "linear") return "linear_connections";
-  return "discord_connections";
+  if (provider === "discord") return "discord_connections";
+  return undefined;
 }
 
-function parseRow(row: ProviderConfigurationRow): StoredProviderApplication {
-  const provider = providerSchema(row.provider);
-  const configuration = parseProviderApplicationConfiguration(row.configuration);
-  const identity = identitySchema.parse(row.verified_external_identity);
-  if (configuration.provider !== provider || identity.provider !== provider) {
+function isLegacyProvider(value: string): value is "github" | "slack" | "discord" | "linear" {
+  return value === "github" || value === "slack" || value === "discord" || value === "linear";
+}
+
+function parseRow(
+  row: ProviderConfigurationRow,
+  registry: IntegrationRegistry,
+): StoredProviderApplication {
+  if (isLegacyProvider(row.provider)) {
+    const configuration = parseProviderApplicationConfiguration(row.configuration, registry);
+    const identity = identitySchema.parse(row.verified_external_identity);
+    if (configuration.provider !== row.provider || identity.provider !== row.provider) {
+      throw new Error("stored provider configuration has inconsistent provider identity");
+    }
+    return {
+      provider: row.provider,
+      configuration,
+      identity: identity as AnyProviderApplicationIdentity,
+      version: row.version,
+      verifiedAt: new Date(row.verified_at),
+      updatedAt: new Date(row.updated_at),
+      updatedByUserId: row.updated_by_user_id,
+    };
+  }
+  const integration = registry.get(row.provider);
+  if (integration === undefined) {
+    throw new Error("stored provider configuration has invalid provider");
+  }
+  const configuration = parseProviderApplicationConfiguration(row.configuration, registry);
+  const identity = integration.connection.identitySchema.parse(row.verified_external_identity);
+  if (configuration.provider !== row.provider || identity.provider !== row.provider) {
     throw new Error("stored provider configuration has inconsistent provider identity");
   }
   return {
-    provider,
+    provider: row.provider,
     configuration,
-    identity: identity as ProviderApplicationIdentity,
+    identity,
     version: row.version,
     verifiedAt: new Date(row.verified_at),
     updatedAt: new Date(row.updated_at),
     updatedByUserId: row.updated_by_user_id,
   };
-}
-
-function providerSchema(value: string): Provider {
-  if (value === "github" || value === "slack" || value === "discord" || value === "linear") {
-    return value;
-  }
-  throw new Error("stored provider configuration has invalid provider");
 }

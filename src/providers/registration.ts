@@ -78,6 +78,7 @@ export interface ProviderRegistration {
   outputs: readonly ProviderOutputRegistration[];
   integrationTools?: IntegrationToolHandlers;
   requests: readonly ProviderRequestRegistration[];
+  handleRequest?(name: string, request: Request): Promise<Response> | undefined;
   attachment?: ProviderAttachmentRegistration;
   slackDelivery?: { status(): SlackDeliveryStatus; retry(): Promise<void> };
 }

@@ -1,7 +1,8 @@
 import { respondError } from "../contract/respond.js";
 import { respondWithFailure } from "../failures/index.js";
+import { defaultBrowserIntegrationRegistry } from "../integrations/browser-registry.js";
 import { guideFor } from "./guides.js";
-import { ProviderApplicationError, type Provider } from "./index.js";
+import { ProviderApplicationError, type ApplicationProvider } from "./index.js";
 
 /**
  * Every way saving an app can fail, said the same way twice over: what happened, then the exact
@@ -10,7 +11,7 @@ import { ProviderApplicationError, type Provider } from "./index.js";
  * message names the portal page and field to fix whenever the provider told us which one it was.
  */
 export function providerApplicationSaveFailure(
-  provider: Provider,
+  provider: ApplicationProvider,
   error: unknown,
   scrubValues: readonly string[] = [],
   operation = "provider_application.verify_and_save",
@@ -20,7 +21,7 @@ export function providerApplicationSaveFailure(
   const gateway = discordGatewayDiagnostic(error);
   const report = { operation, component: "provider_applications", provider } as const;
 
-  if ((provider === "slack" || provider === "linear") && code === "httpsRequired") {
+  if (code === "httpsRequired") {
     return respondWithFailure(
       error,
       report,
@@ -113,27 +114,29 @@ export function providerApplicationSaveFailure(
   );
 }
 
-export function providerHost(provider: Provider): string {
+export function providerHost(provider: ApplicationProvider): string {
   if (provider === "github") return "api.github.com";
   if (provider === "slack") return "slack.com";
   if (provider === "linear") return "linear.app";
-  return "discord.com";
+  if (provider === "discord") return "discord.com";
+  return defaultBrowserIntegrationRegistry.get(provider)?.host ?? provider;
 }
 
-export function providerName(provider: Provider): string {
+export function providerName(provider: ApplicationProvider): string {
   if (provider === "github") return "GitHub";
   if (provider === "slack") return "Slack";
   if (provider === "linear") return "Linear";
-  return "Discord";
+  if (provider === "discord") return "Discord";
+  return defaultBrowserIntegrationRegistry.get(provider)?.label ?? provider;
 }
 
 /** GitHub calls it an App, Discord an application, Slack an app. Use each provider's own word. */
-function applicationNoun(provider: Provider): string {
+function applicationNoun(provider: ApplicationProvider): string {
   if (provider === "github") return "App";
   return "application";
 }
 
-function environmentVariables(provider: Provider): string {
+function environmentVariables(provider: ApplicationProvider): string {
   const names = guideFor(provider).environmentVariables;
   if (names.length <= 1) return names.join("");
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
@@ -143,7 +146,7 @@ function environmentVariables(provider: Provider): string {
  * A rejected secret and a secret that belongs to somebody else's app are different problems with
  * different fixes, and the operator only re-copies a value when re-copying is the fix.
  */
-function credentialMessage(provider: Provider, subject: string | undefined): string {
+function credentialMessage(provider: ApplicationProvider, subject: string | undefined): string {
   if (subject === "identityMismatch") return identityMismatchMessage(provider);
   if (provider === "github") {
     if (subject === "privateKey") {
@@ -163,13 +166,17 @@ function credentialMessage(provider: Provider, subject: string | undefined): str
   if (provider === "linear") {
     return "Linear rejected these app credentials. Nothing was saved. Check the Client ID and Client Secret in the Linear application, then continue again.";
   }
-  if (subject === "appToken") {
-    return "Slack rejected the app-level token. Nothing was saved. Open Basic Information → App-Level Tokens, generate one with connections:write, then connect again.";
+  if (provider === "slack") {
+    if (subject === "appToken") {
+      return "Slack rejected the app-level token. Nothing was saved. Open Basic Information → App-Level Tokens, generate one with connections:write, then connect again.";
+    }
+    if (subject === "botToken") {
+      return "Slack rejected the bot token. Nothing was saved. Reinstall the app in that workspace, copy its new bot token, then connect again.";
+    }
+    return "Slack rejected these app credentials. Nothing was saved. Check every value under Basic Information → App Credentials, then continue again.";
   }
-  if (subject === "botToken") {
-    return "Slack rejected the bot token. Nothing was saved. Reinstall the app in that workspace, copy its new bot token, then connect again.";
-  }
-  return "Slack rejected these app credentials. Nothing was saved. Check every value under Basic Information → App Credentials, then continue again.";
+  const name = providerName(provider);
+  return `${name} rejected these credentials. Nothing was saved. Check the values you entered, then try again.`;
 }
 
 function slackPermissionMessage(subject: string | undefined): string {
@@ -179,7 +186,7 @@ function slackPermissionMessage(subject: string | undefined): string {
   return "The bot token is missing permissions Hub needs. Nothing was saved. Reapply the Socket Mode manifest, reinstall the app in the workspace, then connect again.";
 }
 
-function identityMismatchMessage(provider: Provider): string {
+function identityMismatchMessage(provider: ApplicationProvider): string {
   if (provider === "github") {
     return "These credentials belong to a different GitHub App than the App ID you entered. Nothing was saved. Copy the App ID from the same App's settings page, then verify again.";
   }
@@ -189,7 +196,11 @@ function identityMismatchMessage(provider: Provider): string {
   if (provider === "linear") {
     return "The Linear Client ID and Client Secret do not belong to the same application. Nothing was saved. Copy both from one Linear application, then continue again.";
   }
-  return "The app-level token and bot token belong to different Slack apps. Nothing was saved. Copy both tokens from the same app, then connect again.";
+  if (provider === "slack") {
+    return "The app-level token and bot token belong to different Slack apps. Nothing was saved. Copy both tokens from the same app, then connect again.";
+  }
+  const name = providerName(provider);
+  return `These credentials belong to a different ${name} application than expected. Nothing was saved. Check the credentials, then try again.`;
 }
 
 function errorCode(error: unknown): string | undefined {

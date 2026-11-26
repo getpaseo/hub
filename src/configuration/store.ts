@@ -17,6 +17,7 @@ import {
   type HubBundleFile,
 } from "../config/bundle.js";
 import { type PromptPartialBundleFile } from "../config/prompt-partials.js";
+import { defaultIntegrationRegistry, type IntegrationRegistry } from "../integrations/registry.js";
 import type {
   ConnectionProvider,
   Database,
@@ -105,6 +106,7 @@ export class ProjectConfigurationStore {
     private readonly database: Database,
     private readonly projectId: string,
     private readonly daemonAgentValidator?: DaemonAgentConfigurationValidator,
+    private readonly registry: IntegrationRegistry = defaultIntegrationRegistry,
   ) {}
 
   async validateBundle(
@@ -251,7 +253,7 @@ export class ProjectConfigurationStore {
     const revision = await this.database.findActiveProjectConfiguration(this.projectId);
     return revision === undefined
       ? undefined
-      : { revision, configuration: parseProjectConfiguration(revision) };
+      : { revision, configuration: parseProjectConfiguration(revision, this.registry) };
   }
 
   async getRevision(revisionId: string): Promise<StoredProjectConfiguration | undefined> {
@@ -261,7 +263,7 @@ export class ProjectConfigurationStore {
     );
     return revision === undefined
       ? undefined
-      : { revision, configuration: parseProjectConfiguration(revision) };
+      : { revision, configuration: parseProjectConfiguration(revision, this.registry) };
   }
 
   async switchToManual(userId: string): Promise<StoredProjectConfiguration> {
@@ -314,8 +316,9 @@ export async function validateHubBundleForOrganization(
 
 export function parseProjectConfiguration(
   revision: ProjectConfigurationRevisionRecord,
+  registry: IntegrationRegistry = defaultIntegrationRegistry,
 ): CompiledProjectConfiguration {
-  const configuration = parseCompiledHubConfig(revision.normalizedConfiguration);
+  const configuration = parseCompiledHubConfig(revision.normalizedConfiguration, registry);
   // Migrate the newly introduced default at the authored-document boundary. Existing
   // execution launch intents remain untouched and finish with their original contract.
   const document = triggerDocument(revision);
@@ -505,6 +508,7 @@ async function resolveCompiledConfiguration(
   database: Database,
   organizationId: string,
   configuration: CompiledHubConfig,
+  registry: IntegrationRegistry = defaultIntegrationRegistry,
 ): Promise<CompileConfigurationResult> {
   const daemons = (await database.listDaemonsForOrganization(organizationId)).filter(
     ({ status, permissions }) => status === "active" && permissions.includes("hub.execute"),
@@ -539,6 +543,7 @@ async function resolveCompiledConfiguration(
     database,
     organizationId,
     configuration.triggers,
+    registry,
   );
   const issues = [...daemonIssues, ...triggerCompilation.issues];
   if (issues.length > 0) {
@@ -551,7 +556,7 @@ async function resolveCompiledConfiguration(
   };
   return {
     success: true,
-    configuration: toProjectConfiguration(parseCompiledHubConfig(resolvedConfiguration)),
+    configuration: toProjectConfiguration(parseCompiledHubConfig(resolvedConfiguration, registry)),
   };
 }
 
@@ -560,12 +565,13 @@ export async function resolveTriggerConfigurationForOrganization(
   database: Database,
   organizationId: string,
   configuration: CompiledHubConfig,
+  registry: IntegrationRegistry = defaultIntegrationRegistry,
 ): Promise<
   | {
       success: true;
       configuration: CompiledProjectConfiguration;
       routes: readonly {
-        provider: ConnectionProvider;
+        provider: string;
         connectionId: string;
         resourceId: string | null;
         configuredEventName: string;
@@ -577,7 +583,12 @@ export async function resolveTriggerConfigurationForOrganization(
       issues: readonly { path: readonly (string | number)[]; message: string }[];
     }
 > {
-  const resolved = await resolveCompiledConfiguration(database, organizationId, configuration);
+  const resolved = await resolveCompiledConfiguration(
+    database,
+    organizationId,
+    configuration,
+    registry,
+  );
   if (!resolved.success) {
     return {
       success: false,
@@ -585,7 +596,12 @@ export async function resolveTriggerConfigurationForOrganization(
       issues: resolved.issues,
     };
   }
-  const compiled = await compileTriggers(database, organizationId, resolved.configuration.triggers);
+  const compiled = await compileTriggers(
+    database,
+    organizationId,
+    resolved.configuration.triggers,
+    registry,
+  );
   if (compiled.issues.length > 0) {
     return {
       success: false,
@@ -646,6 +662,7 @@ async function compileTriggers(
   database: Database,
   organizationId: string,
   triggers: readonly CompiledTrigger[],
+  registry: IntegrationRegistry = defaultIntegrationRegistry,
 ): Promise<{
   triggers: CompiledTrigger[];
   routes: ProjectTriggerRoute[];
@@ -657,7 +674,7 @@ async function compileTriggers(
   const issues: { path: readonly (string | number)[]; message: string }[] = [];
 
   for (const trigger of triggers) {
-    const provider = providerForEvent(trigger.on);
+    const provider = providerForEvent(trigger.on, registry);
     if (provider === undefined) {
       compiled.push(trigger);
       continue;
@@ -673,13 +690,33 @@ async function compileTriggers(
       });
       continue;
     }
-    const authored = readAuthoredResource(provider, filter);
-    const candidates = connectionCandidates(provider, usage, filter);
+    const registered = registry.get(provider);
+    if (registered !== undefined) {
+      await compileRegisteredTrigger(
+        database,
+        organizationId,
+        usage,
+        trigger,
+        registered,
+        compiled,
+        routes,
+        issues,
+      );
+      continue;
+    }
+
+    if (!isConnectionProvider(provider)) {
+      compiled.push(trigger);
+      continue;
+    }
+    const legacyProvider = provider;
+    const authored = readAuthoredResource(legacyProvider, filter);
+    const candidates = connectionCandidates(legacyProvider, usage, filter);
     const authoredConnection = filter?.connection;
     if (typeof authoredConnection === "string" && candidates.length === 0) {
       issues.push({
         path: triggerFilterPath(trigger, "connection"),
-        message: `"${authoredConnection}" does not match any ${providerLabel(provider)} connection (${formatConnectionCandidates(provider, usage[provider])})`,
+        message: `"${authoredConnection}" does not match any ${providerLabel(legacyProvider)} connection (${formatConnectionCandidates(legacyProvider, usage[legacyProvider])})`,
       });
       continue;
     }
@@ -687,26 +724,26 @@ async function compileTriggers(
       const resolved = await resolveResource(
         database,
         organizationId,
-        provider,
+        legacyProvider,
         authored,
         new Set(candidates.map((connection) => connection.id)),
       );
       if (resolved === undefined) {
         issues.push({
-          path: triggerFilterPath(trigger, resourceField(provider)),
-          message: `"${authored}" does not match any ${resourceLabel(provider)} (${await formatResourceCandidates(
+          path: triggerFilterPath(trigger, resourceField(legacyProvider)),
+          message: `"${authored}" does not match any ${resourceLabel(legacyProvider)} (${await formatResourceCandidates(
             database,
             organizationId,
-            provider,
+            legacyProvider,
             candidates,
           )})`,
         });
         continue;
       }
       const resolvedFilter =
-        provider === "github"
+        legacyProvider === "github"
           ? filter
-          : { ...filter, [resourceField(provider)]: resolved.resourceId };
+          : { ...filter, [resourceField(legacyProvider)]: resolved.resourceId };
       const nextFilter: CompiledTriggerFilter = {
         ...resolvedFilter,
         connectionId: resolved.connectionId,
@@ -714,7 +751,7 @@ async function compileTriggers(
       };
       compiled.push({ ...trigger, filters: nextFilter });
       routes.push({
-        provider,
+        provider: legacyProvider,
         connectionId: resolved.connectionId,
         resourceId: resolved.resourceId,
         triggerName: trigger.name,
@@ -729,7 +766,7 @@ async function compileTriggers(
     compiled.push({ ...trigger, ...(nextFilter === undefined ? {} : { filters: nextFilter }) });
     for (const connection of candidates) {
       routes.push({
-        provider,
+        provider: legacyProvider,
         connectionId: connection.id,
         resourceId: null,
         triggerName: trigger.name,
@@ -739,7 +776,79 @@ async function compileTriggers(
   return { triggers: compiled, routes, issues };
 }
 
-function providerForEvent(eventName: string): ConnectionProvider | undefined {
+async function compileRegisteredTrigger(
+  database: Database,
+  organizationId: string,
+  usage: Awaited<ReturnType<Database["organizationConnectionUsage"]>>,
+  trigger: CompiledTrigger,
+  registered: NonNullable<ReturnType<IntegrationRegistry["get"]>>,
+  compiled: CompiledTrigger[],
+  routes: ProjectTriggerRoute[],
+  issues: { path: readonly (string | number)[]; message: string }[],
+): Promise<void> {
+  const filter = trigger.filters;
+  const providerConnections = (usage.integrations ?? []).filter(
+    (connection) => connection.provider === registered.id,
+  );
+  const authoredConnection = filter?.connection;
+  const candidates =
+    typeof authoredConnection === "string"
+      ? providerConnections.filter((connection) => connection.slug === authoredConnection)
+      : providerConnections;
+  if (typeof authoredConnection === "string" && candidates.length === 0) {
+    issues.push({
+      path: triggerFilterPath(trigger, "connection"),
+      message: `"${authoredConnection}" does not match any ${registered.label} connection (${formatCandidates(
+        providerConnections.map((connection) => `${connection.slug} "${connection.displayName}"`),
+      )})`,
+    });
+    return;
+  }
+  let resolvedResourceId: string | null = null;
+  for (const connection of candidates) {
+    const resourceId =
+      registered.triggers?.resolveResource === undefined
+        ? null
+        : await registered.triggers.resolveResource({
+            organizationId,
+            connection,
+            event: trigger.on,
+            filters: filter ?? {},
+            database,
+          });
+    if (candidates.length === 1 && resourceId !== null) {
+      resolvedResourceId = resourceId;
+    }
+    routes.push({
+      provider: registered.id,
+      connectionId: connection.id,
+      resourceId,
+      triggerName: trigger.name,
+    });
+  }
+  const nextFilter: CompiledTriggerFilter | undefined =
+    typeof authoredConnection === "string" && filter !== undefined
+      ? {
+          ...filter,
+          connectionId: candidates[0]!.id,
+          ...(resolvedResourceId === null ? {} : { resourceId: resolvedResourceId }),
+        }
+      : filter;
+  compiled.push({ ...trigger, ...(nextFilter === undefined ? {} : { filters: nextFilter }) });
+}
+
+function isConnectionProvider(provider: string): provider is ConnectionProvider {
+  return (
+    provider === "github" || provider === "slack" || provider === "discord" || provider === "linear"
+  );
+}
+
+function providerForEvent(
+  eventName: string,
+  registry: IntegrationRegistry = defaultIntegrationRegistry,
+): string | undefined {
+  const registered = registry.forEvent(eventName);
+  if (registered !== undefined) return registered.integration.id;
   const provider = eventName.slice(0, eventName.indexOf("."));
   return provider === "github" ||
     provider === "slack" ||

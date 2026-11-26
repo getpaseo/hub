@@ -2,12 +2,13 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { respondOk, type Result } from "../contract/respond.js";
 import { respondWithFailure } from "../failures/index.js";
-import { handleConnections } from "../server/runtime.js";
+import { INTEGRATION_ID_PATTERN } from "../integrations/browser-registry.js";
+import { handleConnectionAction, handleConnections } from "../server/runtime.js";
 import { connectionOperationRequest } from "./operation-request.server.js";
 import {
-  CONNECTION_PROVIDERS,
   connectionProviderName,
   type ConnectionProvider,
+  type LegacyConnectionProvider,
 } from "./result-contract.js";
 
 export type { ConnectionProvider } from "./result-contract.js";
@@ -40,25 +41,44 @@ const linearStatusSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("requiresReauthorization") }),
   z.object({ status: z.literal("connected") }),
 ]);
-export const connectionStatusSchema = z.object({
-  canManage: z.boolean(),
-  github: githubStatusSchema,
-  discord: discordStatusSchema,
-  slack: slackStatusSchema,
-  linear: linearStatusSchema,
-});
+const genericStatusSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("notConfigured") }),
+  z.object({ status: z.literal("disconnected") }),
+  z.object({ status: z.literal("suspended") }),
+  z.object({ status: z.literal("requiresReauthorization") }),
+  z.object({ status: z.literal("connected") }),
+]);
+export const connectionStatusSchema = z
+  .object({
+    canManage: z.boolean(),
+    github: githubStatusSchema,
+    discord: discordStatusSchema,
+    slack: slackStatusSchema,
+    linear: linearStatusSchema,
+  })
+  .catchall(genericStatusSchema);
 const scopeSchema = z.object({
   organizationSlug: z.string().min(1),
   projectSlug: z.string().min(1).optional(),
 });
 const providerSchema = scopeSchema.extend({
-  provider: z.enum(CONNECTION_PROVIDERS),
+  provider: z.string().regex(INTEGRATION_ID_PATTERN),
 });
 const disconnectSchema = providerSchema.extend({ connectionId: z.string().uuid() });
 const startSchema = z.object({ url: z.string().url() });
 
+export type GenericProviderConnectionStatus = z.infer<typeof genericStatusSchema>;
 export type ConnectionStatus = z.infer<typeof connectionStatusSchema>;
-export type ConnectionDisconnectResult = `${ConnectionProvider}_disconnected`;
+export type ConnectionDisconnectResult = `${string}_disconnected`;
+
+export function connectionStatusFor(
+  status: ConnectionStatus,
+  provider: ConnectionProvider,
+): GenericProviderConnectionStatus {
+  const value: unknown = Reflect.get(status, provider);
+  const parsed = genericStatusSchema.safeParse(value);
+  return parsed.success ? parsed.data : { status: "notConfigured" };
+}
 
 export const connectionStatus = createServerFn({ method: "GET" })
   .validator(scopeSchema)
@@ -89,11 +109,10 @@ export const startConnection = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<Result<{ url: string }>> => {
     const name = connectionProviderName(data.provider);
     try {
-      const operation = CONNECTION_OPERATIONS[data.provider].start;
-      const response = await handleConnections(
-        operationRequest("POST", "/connections/start", data),
-        operation,
-      );
+      const request = operationRequest("POST", "/connections/start", data);
+      const response = isLegacyProvider(data.provider)
+        ? await handleConnections(request, CONNECTION_OPERATIONS[data.provider].start)
+        : await handleConnectionAction(request, data.provider, "start");
       if (response.status === 403) {
         return connectionResponseFailure(
           "connection.start",
@@ -123,11 +142,10 @@ export const disconnectConnection = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<Result<{ result: ConnectionDisconnectResult }>> => {
     const name = connectionProviderName(data.provider);
     try {
-      const operation = CONNECTION_OPERATIONS[data.provider].disconnect;
-      const response = await handleConnections(
-        operationRequest("POST", "/connections/disconnect", data, data.connectionId),
-        operation,
-      );
+      const request = operationRequest("POST", "/connections/disconnect", data, data.connectionId);
+      const response = isLegacyProvider(data.provider)
+        ? await handleConnections(request, CONNECTION_OPERATIONS[data.provider].disconnect)
+        : await handleConnectionAction(request, data.provider, "disconnect");
       if (response.status === 403) {
         return connectionResponseFailure(
           "connection.disconnect",
@@ -151,6 +169,12 @@ export const disconnectConnection = createServerFn({ method: "POST" })
       });
     }
   });
+
+function isLegacyProvider(provider: string): provider is LegacyConnectionProvider {
+  return (
+    provider === "github" || provider === "discord" || provider === "slack" || provider === "linear"
+  );
+}
 
 const CONNECTION_OPERATIONS = {
   github: { start: "githubStart", disconnect: "githubDisconnect" },

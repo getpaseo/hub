@@ -1,7 +1,7 @@
 import type { DatabaseRuntime, QueryRow } from "../../db/runtime/index.js";
 import { linearConnectionRequiresReauthorization } from "../../providers/linear/client.js";
 import { hasRequiredSlackScopes } from "../../providers/slack/client.js";
-import type { Provider, ProviderApplicationInventory } from "../index.js";
+import type { ApplicationProvider, ProviderApplicationInventory } from "../index.js";
 
 interface ConnectionIdentityRow extends QueryRow {
   id: string;
@@ -19,7 +19,8 @@ export function createProviderApplicationInventory(
 ): ProviderApplicationInventory & { organizationSlug(id: string): Promise<string | undefined> } {
   return {
     async connectedIdentities(provider) {
-      const result = await database.query<ConnectionIdentityRow>(connectionIdentityQuery(provider));
+      const query = connectionIdentityQuery(provider);
+      const result = await database.query<ConnectionIdentityRow>(query.sql, query.params);
       return result.rows.map((row) => ({
         id: row.id,
         name: row.name,
@@ -47,7 +48,25 @@ export function createProviderApplicationInventory(
       return value === null || value === undefined ? null : new Date(value);
     },
     async claimLegacyConnections(provider, identity) {
-      const table = connectionTable(provider);
+      const table = legacyConnectionTable(provider);
+      if (table === undefined) {
+        return database.transaction(async (transaction) => {
+          await transaction.query(
+            `update integration_connections set provider_application_id = $1
+             where provider = $2 and provider_application_id is null`,
+            [identity.id, provider],
+          );
+          const ownership = await transaction.query<{ owned: boolean }>(
+            `select exists (select 1 from integration_connections where provider = $2)
+                and not exists (
+                  select 1 from integration_connections
+                  where provider = $2 and (provider_application_id is null or provider_application_id <> $1)
+                ) as owned`,
+            [identity.id, provider],
+          );
+          return ownership.rows[0]?.owned === true;
+        });
+      }
       return database.transaction(async (transaction) => {
         await transaction.query(
           `update ${table} set provider_application_id = $1
@@ -75,36 +94,63 @@ export function createProviderApplicationInventory(
   };
 }
 
-function connectionTable(provider: Provider): string {
+function legacyConnectionTable(provider: ApplicationProvider): string | undefined {
   if (provider === "github") return "github_connections";
   if (provider === "slack") return "slack_connections";
   if (provider === "linear") return "linear_connections";
-  return "discord_connections";
+  if (provider === "discord") return "discord_connections";
+  return undefined;
 }
 
-function connectionIdentityQuery(provider: Provider): string {
+function connectionIdentityQuery(provider: ApplicationProvider): {
+  sql: string;
+  params: readonly unknown[];
+} {
   if (provider === "github") {
-    return `select id::text as id, account_login as name,
+    return {
+      sql: `select id::text as id, account_login as name,
                    provider_application_id as application_id,
                    status = 'suspended' as action_needed, null::jsonb as scopes
-            from github_connections order by connected_at`;
+            from github_connections order by connected_at`,
+      params: [],
+    };
   }
   if (provider === "slack") {
-    return `select id::text as id, team_name as name,
+    return {
+      sql: `select id::text as id, team_name as name,
                    provider_application_id as application_id,
                    false as action_needed, scopes
-            from slack_connections order by connected_at`;
+            from slack_connections order by connected_at`,
+      params: [],
+    };
   }
   if (provider === "linear") {
-    return `select id::text as id, linear_organization_name as name,
+    return {
+      sql: `select id::text as id, linear_organization_name as name,
                    provider_application_id as application_id,
                    false as action_needed, scopes, refresh_token, access_token_expires_at
-            from linear_connections order by connected_at`;
+            from linear_connections order by connected_at`,
+      params: [],
+    };
   }
-  return `select id::text as id, guild_name as name,
+  if (provider === "discord") {
+    return {
+      sql: `select id::text as id, guild_name as name,
+                   provider_application_id as application_id,
+                   false as action_needed, null::jsonb as scopes
+            from discord_connections order by connected_at`,
+      params: [],
+    };
+  }
+  return {
+    sql: `select id::text as id, display_name as name,
                  provider_application_id as application_id,
-                 false as action_needed, null::jsonb as scopes
-          from discord_connections order by connected_at`;
+                 status <> 'active' as action_needed, scopes
+          from integration_connections
+          where provider = $1
+          order by connected_at`,
+    params: [provider],
+  };
 }
 
 function linearConnectionActionNeeded(row: ConnectionIdentityRow): boolean {

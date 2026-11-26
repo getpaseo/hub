@@ -12,6 +12,8 @@ import { formatInvocationRejection } from "../triggers/invocation.js";
 import { displayFailureReason } from "../entitlements/denial.js";
 import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
 import { hasRequiredSlackScopes } from "../providers/slack/client.js";
+import { toPublicConnectionView } from "../db/integrations.js";
+import { defaultIntegrationRegistry, type IntegrationRegistry } from "../integrations/registry.js";
 import { resolveRouteTenant } from "./access.js";
 import { ProjectCommandError } from "./command-error.js";
 
@@ -34,6 +36,7 @@ export class ProjectDashboard {
     private readonly database: Database,
     private readonly auth: AuthServer,
     private readonly now: () => Date = () => new Date(),
+    private readonly registry: IntegrationRegistry = defaultIntegrationRegistry,
   ) {}
 
   async tenantContext(request: Request, scope: ProjectRouteScope) {
@@ -68,7 +71,7 @@ export class ProjectDashboard {
       membership: tenant.membership,
       capabilities: capabilitiesFor(tenant.membership.role),
       projects: projects.map(projectView),
-      connections: connectionUsageView(connections),
+      connections: connectionUsageView(connections, this.now(), this.registry),
       providerActivity,
       daemons: daemons.map(daemonView),
     };
@@ -95,7 +98,7 @@ export class ProjectDashboard {
       projects: projects.map(projectView),
       configuration: configurationView(configuration),
       organizationDaemons: organizationDaemons.map(daemonView),
-      connections: connectionUsageView(connections),
+      connections: connectionUsageView(connections, this.now(), this.registry),
       repositories: repositories.map((repository) => ({
         id: repository.id,
         connectionId: repository.connectionId,
@@ -230,6 +233,8 @@ function daemonView(daemon: Awaited<ReturnType<Database["findDaemonById"]>> & {}
 
 function connectionUsageView(
   connections: Awaited<ReturnType<Database["organizationConnectionUsage"]>>,
+  now: Date,
+  registry: IntegrationRegistry,
 ) {
   return {
     github: connections.github.map((connection) => ({
@@ -257,9 +262,46 @@ function connectionUsageView(
       slug: connection.slug,
       linearOrganizationId: connection.linearOrganizationId,
       linearOrganizationName: connection.linearOrganizationName,
-      requiresReauthorization: linearConnectionRequiresReauthorization(connection),
+      requiresReauthorization: linearConnectionRequiresReauthorization(connection, now),
     })),
+    integrations: (connections.integrations ?? []).map((record) => {
+      const integration = registry.get(record.provider);
+      if (integration !== undefined) {
+        const projected = integration.connection.projectConnection(record, now);
+        return {
+          id: projected.id,
+          provider: projected.provider,
+          slug: projected.slug,
+          externalId: projected.externalId,
+          displayName: projected.displayName,
+          status: projected.status,
+          scopes: [...projected.scopes],
+          workspaceId: projected.workspaceId,
+          metadata: jsonValue(projected.metadata),
+        };
+      }
+      const publicView = toPublicConnectionView(record);
+      return {
+        id: publicView.id,
+        provider: publicView.provider,
+        slug: publicView.slug,
+        externalId: publicView.externalId,
+        displayName: publicView.displayName,
+        status: mapIntegrationStatus(publicView.status),
+        scopes: [...publicView.scopes],
+        workspaceId: publicView.workspaceId,
+        metadata: jsonValue(publicView.metadata),
+      };
+    }),
   };
+}
+
+function mapIntegrationStatus(
+  status: string,
+): "connected" | "suspended" | "requiresReauthorization" {
+  if (status === "suspended") return "suspended";
+  if (status === "requires_reauthorization") return "requiresReauthorization";
+  return "connected";
 }
 
 function configurationView(

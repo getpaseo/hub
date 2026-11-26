@@ -334,9 +334,11 @@ export class ActivityRepository implements ActivityStore {
       `select receipts.id, receipts.provider, receipts.source, receipts.repo,
               receipts.delivery_id, receipts.received_at, receipts.dropped_reason,
               receipts.resource_id,
-              coalesce(github.slug, slack.slug, discord.slug, linear.slug) as connection_slug,
+              coalesce(integration.slug, github.slug, slack.slug, discord.slug, linear.slug) as connection_slug,
               ${PAYLOAD_COLUMNS}
        from provider_event_receipts receipts
+       left join integration_connections integration
+         on integration.provider = receipts.provider and integration.id = receipts.connection_id
        left join github_connections github
          on receipts.provider = 'github' and github.id = receipts.connection_id
        left join slack_connections slack

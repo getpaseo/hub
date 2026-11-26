@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { slugify } from "../slug.js";
+import { ConnectionAccessDeniedError, ConnectionConflictError } from "./errors.js";
 import type { AgentExecutionStatus, MachineStatus } from "./schema.js";
 import { parseCompiledHubConfig, type JsonValue } from "../config/compiler.js";
 import type { LaunchMachineIntent } from "../dispatcher/launch-machine-intent.js";
@@ -40,8 +42,12 @@ import type {
   ConfigurationSyncAttemptRecord,
   AcceptDiscordEventInput,
   AcceptGitHubEventInput,
+  AcceptIntegrationEventInput,
   AcceptLinearEventInput,
   AcceptSlackEventInput,
+  BindIntegrationConnectionInput,
+  IntegrationConnectionRecord,
+  IntegrationStore,
   DurableProviderEvent,
   GitHubInstallationSyncOwner,
   GitHubInstallationSyncClaim,
@@ -271,7 +277,178 @@ class MemoryDatabase implements Database {
   private readonly discordConnections = new Map<string, DiscordConnectionRecord>();
   private readonly slackConnections = new Map<string, SlackConnectionRecord>();
   private readonly linearConnections = new Map<string, LinearConnectionRecord>();
+  private readonly integrationConnections = new Map<string, IntegrationConnectionRecord>();
   private readonly organizationIds: Set<string>;
+
+  readonly integrations: IntegrationStore = {
+    bind: async (input: BindIntegrationConnectionInput) => {
+      if (input.attempt !== undefined) return connectionPersistenceUnavailable();
+      const now = this.now();
+      const existing = [...this.integrationConnections.values()].find(
+        (connection) =>
+          connection.provider === input.provider && connection.externalId === input.externalId,
+      );
+      if (existing !== undefined && existing.organizationId !== input.organizationId) {
+        throw new ConnectionConflictError();
+      }
+      if (existing !== undefined) {
+        const updated: IntegrationConnectionRecord = {
+          ...existing,
+          providerApplicationId: input.providerApplicationId,
+          displayName: input.displayName,
+          status: input.status ?? "active",
+          scopes: [...(input.scopes ?? [])],
+          credentials: { ...input.credentials },
+          metadata: { ...input.metadata },
+          workspaceId: input.workspaceId ?? null,
+          connectedByUserId: input.connectedByUserId,
+          updatedAt: now,
+        };
+        this.integrationConnections.set(updated.id, updated);
+        return updated;
+      }
+      const slug = this.uniqueMemoryConnectionSlug(
+        input.organizationId,
+        input.provider,
+        input.displayName,
+      );
+      const created: IntegrationConnectionRecord = {
+        id: randomUUID(),
+        provider: input.provider,
+        organizationId: input.organizationId,
+        providerApplicationId: input.providerApplicationId,
+        slug,
+        externalId: input.externalId,
+        displayName: input.displayName,
+        status: input.status ?? "active",
+        scopes: [...(input.scopes ?? [])],
+        credentials: { ...input.credentials },
+        metadata: { ...input.metadata },
+        workspaceId: input.workspaceId ?? null,
+        connectedByUserId: input.connectedByUserId,
+        connectedAt: now,
+        updatedAt: now,
+      };
+      this.integrationConnections.set(created.id, created);
+      return created;
+    },
+    disconnect: async (provider, connectionId, access) => {
+      const connection = this.integrationConnections.get(connectionId);
+      if (
+        connection === undefined ||
+        connection.provider !== provider ||
+        connection.organizationId !== access.organizationId
+      ) {
+        throw new ConnectionAccessDeniedError();
+      }
+      for (const [projectId, routes] of this.projectTriggerRoutes) {
+        this.projectTriggerRoutes.set(
+          projectId,
+          routes.filter((route) => route.connectionId !== connectionId),
+        );
+      }
+      for (const [triggerId, routes] of this.organizationTriggerRoutes) {
+        this.organizationTriggerRoutes.set(
+          triggerId,
+          routes.filter((route) => route.connectionId !== connectionId),
+        );
+      }
+      this.integrationConnections.delete(connectionId);
+      return connection;
+    },
+    listForOrganization: async (organizationId, provider) =>
+      [...this.integrationConnections.values()]
+        .filter(
+          (connection) =>
+            connection.organizationId === organizationId &&
+            (provider === undefined || connection.provider === provider),
+        )
+        .toSorted((left, right) => left.displayName.localeCompare(right.displayName)),
+    listByProvider: async (provider) =>
+      [...this.integrationConnections.values()]
+        .filter((connection) => connection.provider === provider)
+        .toSorted((left, right) => left.displayName.localeCompare(right.displayName)),
+    findById: async (connectionId) => this.integrationConnections.get(connectionId),
+    findBySlug: async (organizationId, provider, slug) =>
+      [...this.integrationConnections.values()].find(
+        (connection) =>
+          connection.organizationId === organizationId &&
+          connection.provider === provider &&
+          connection.slug === slug,
+      ),
+    findByExternalIds: async (provider, externalIds) => {
+      const wanted = new Set(externalIds);
+      return [...this.integrationConnections.values()]
+        .filter(
+          (connection) => connection.provider === provider && wanted.has(connection.externalId),
+        )
+        .toSorted((left, right) => left.displayName.localeCompare(right.displayName));
+    },
+    findByWorkspaceId: async (provider, workspaceId) =>
+      [...this.integrationConnections.values()]
+        .filter(
+          (connection) =>
+            connection.provider === provider && connection.workspaceId === workspaceId,
+        )
+        .toSorted((left, right) => left.displayName.localeCompare(right.displayName)),
+    updateStatus: async (connectionId, status) => {
+      const existing = this.integrationConnections.get(connectionId);
+      if (existing === undefined) return;
+      this.integrationConnections.set(connectionId, {
+        ...existing,
+        status,
+        updatedAt: this.now(),
+      });
+    },
+    withRefreshLock: async (connectionId, operation) =>
+      this.withAdvisoryLock(
+        JSON.stringify(["paseo-integration-refresh", connectionId]),
+        async () => {
+          const connection = this.integrationConnections.get(connectionId);
+          return operation(connection, async (patch) => {
+            const current = this.integrationConnections.get(connectionId);
+            if (current === undefined) throw new Error("Integration connection unavailable");
+            this.integrationConnections.set(connectionId, {
+              ...current,
+              ...(patch.credentials === undefined ? {} : { credentials: { ...patch.credentials } }),
+              ...(patch.metadata === undefined ? {} : { metadata: { ...patch.metadata } }),
+              ...(patch.scopes === undefined ? {} : { scopes: [...patch.scopes] }),
+              ...(patch.status === undefined ? {} : { status: patch.status }),
+              ...(patch.displayName === undefined ? {} : { displayName: patch.displayName }),
+              ...(patch.workspaceId === undefined ? {} : { workspaceId: patch.workspaceId }),
+              updatedAt: this.now(),
+            });
+          });
+        },
+      ),
+    acceptEvent: async (input: AcceptIntegrationEventInput) => {
+      let connection: IntegrationConnectionRecord | undefined;
+      if (input.connectionId !== undefined) {
+        connection = this.integrationConnections.get(input.connectionId);
+      } else if (input.externalId !== undefined) {
+        connection = [...this.integrationConnections.values()].find(
+          (candidate) =>
+            candidate.provider === input.provider && candidate.externalId === input.externalId,
+        );
+      }
+      const matched = connection?.provider === input.provider ? connection : undefined;
+      let reason = input.dropReason;
+      if (reason === undefined) {
+        if (matched === undefined) {
+          reason = `${input.provider}_unbound`;
+        } else if (matched.status !== "active") {
+          reason = "configuration_unavailable";
+        }
+      }
+      return this.acceptMemoryEvent(
+        input,
+        matched?.organizationId,
+        matched?.id,
+        input.resourceId ?? null,
+        reason,
+      );
+    },
+  };
 
   constructor(private readonly options: MemoryDatabaseOptions = {}) {
     this.organizationIds = new Set(options.organizationIds);
@@ -3167,6 +3344,9 @@ class MemoryDatabase implements Database {
       linear: Array.from(this.linearConnections.values()).filter(
         (connection) => connection.organizationId === organizationId,
       ),
+      integrations: Array.from(this.integrationConnections.values()).filter(
+        (connection) => connection.organizationId === organizationId,
+      ),
     };
   }
 
@@ -3404,7 +3584,8 @@ class MemoryDatabase implements Database {
       | AcceptGitHubEventInput
       | AcceptDiscordEventInput
       | AcceptSlackEventInput
-      | AcceptLinearEventInput,
+      | AcceptLinearEventInput
+      | AcceptIntegrationEventInput,
     organizationId: string | undefined,
     connectionId: string | undefined,
     resourceId: string | null,
@@ -3576,6 +3757,35 @@ class MemoryDatabase implements Database {
     return machine;
   }
 
+  private uniqueMemoryConnectionSlug(
+    organizationId: string,
+    provider: string,
+    identity: string,
+  ): string {
+    const base = `${slugify(identity, "connection")}-${provider}`;
+    const used = new Set<string>([
+      ...[...this.githubConnections.values()]
+        .filter((connection) => connection.organizationId === organizationId)
+        .map((connection) => connection.slug),
+      ...[...this.slackConnections.values()]
+        .filter((connection) => connection.organizationId === organizationId)
+        .map((connection) => connection.slug),
+      ...[...this.discordConnections.values()]
+        .filter((connection) => connection.organizationId === organizationId)
+        .map((connection) => connection.slug),
+      ...[...this.linearConnections.values()]
+        .filter((connection) => connection.organizationId === organizationId)
+        .map((connection) => connection.slug),
+      ...[...this.integrationConnections.values()]
+        .filter((connection) => connection.organizationId === organizationId)
+        .map((connection) => connection.slug),
+    ]);
+    if (!used.has(base)) return base;
+    let suffix = 2;
+    while (used.has(`${base}-${suffix}`)) suffix += 1;
+    return `${base}-${suffix}`;
+  }
+
   private readAgentExecution(id: string): AgentExecutionRecord {
     const execution = this.agentExecutions.get(id);
 
@@ -3600,8 +3810,10 @@ function providerForInput(
     | AcceptGitHubEventInput
     | AcceptDiscordEventInput
     | AcceptSlackEventInput
-    | AcceptLinearEventInput,
-): "github" | "discord" | "slack" | "linear" {
+    | AcceptLinearEventInput
+    | AcceptIntegrationEventInput,
+): string {
+  if ("provider" in input) return input.provider;
   if ("installationId" in input) return "github";
   if ("guildId" in input) return "discord";
   return "teamId" in input ? "slack" : "linear";

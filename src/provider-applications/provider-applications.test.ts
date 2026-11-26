@@ -8,8 +8,13 @@ import {
   ProviderApplicationError,
   activateProviderApplicationsAtStartup,
   createProviderApplications,
+  isLegacyProviderApplicationConfiguration,
   providerApplicationReturnRoute,
+  type AnyProviderApplicationConfiguration,
+  type AnyProviderApplicationIdentity,
+  type ApplicationProvider,
   type ProviderApplicationConfiguration,
+  type ProviderApplicationEnvironment,
   type ProviderApplicationIdentity,
   type Provider,
   type ProviderApplicationStore,
@@ -704,7 +709,7 @@ function createFixture(
     operator?: boolean;
     connected?: boolean;
     connectionStatus?: "connected" | "actionNeeded";
-    environment?: Partial<Record<Provider, ProviderApplicationConfiguration>>;
+    environment?: ProviderApplicationEnvironment;
     rejectMutation?: boolean;
     eventEvidenceVersion?: number;
   } = {},
@@ -762,7 +767,7 @@ function createFixture(
             : [],
         ),
       claimLegacyConnections: () => Promise.resolve(true),
-      lastEventAt: (_provider, _identity?: ProviderApplicationIdentity, version?: number) =>
+      lastEventAt: (_provider, _identity?: AnyProviderApplicationIdentity, version?: number) =>
         Promise.resolve(
           version === options.eventEvidenceVersion ? new Date("2026-08-14T10:00:00Z") : null,
         ),
@@ -800,7 +805,7 @@ function identityFor(
 
 function connectedInventory(applicationId: string) {
   return {
-    connectedIdentities: (provider: Provider) =>
+    connectedIdentities: (provider: ApplicationProvider) =>
       Promise.resolve(
         provider === "github"
           ? [
@@ -828,7 +833,7 @@ class MemoryStore implements ProviderApplicationStore {
     this.failSlackCompletion = true;
   }
 
-  read(provider: Provider) {
+  read(provider: ApplicationProvider) {
     this.reads += 1;
     return Promise.resolve(this.values.get(provider));
   }
@@ -941,10 +946,10 @@ class BlockingRuntime implements ProviderRuntimeOwner {
   }
 
   prepare(
-    provider: Provider,
-    configuration: ProviderApplicationConfiguration,
+    provider: ApplicationProvider,
+    configuration: AnyProviderApplicationConfiguration,
     _callbackOrigin: string,
-    _identity: ProviderApplicationIdentity,
+    _identity: AnyProviderApplicationIdentity,
     configurationVersion: number,
   ): Promise<ProviderRuntimeCandidate> {
     const candidate = new Candidate(
@@ -1026,7 +1031,7 @@ class Candidate implements ProviderRuntimeCandidate {
   closeCount = 0;
 
   constructor(
-    readonly provider: Provider,
+    readonly provider: ApplicationProvider,
     private readonly owner: BlockingRuntime,
     readonly configurationId: string,
     readonly configurationVersion: number,
@@ -1064,7 +1069,8 @@ class Candidate implements ProviderRuntimeCandidate {
   }
 }
 
-function candidateConfigurationId(configuration: ProviderApplicationConfiguration): string {
+function candidateConfigurationId(configuration: AnyProviderApplicationConfiguration): string {
+  if (!isLegacyProviderApplicationConfiguration(configuration)) return configuration.provider;
   if (configuration.provider === "github" || configuration.provider === "slack") {
     return configuration.appId;
   }

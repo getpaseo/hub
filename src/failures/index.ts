@@ -57,7 +57,7 @@ export function retryAdvice(error: unknown): RetryAdvice {
 export interface FailureContext {
   operation: string;
   component: string;
-  provider?: "github" | "slack" | "discord" | "linear" | "stripe";
+  provider?: string;
   requestId?: string;
   status?: number;
   organizationSlug?: string;

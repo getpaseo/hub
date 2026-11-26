@@ -1,14 +1,8 @@
 import type { QueryClient } from "@tanstack/react-query";
-import type { ConnectionProvider, ConnectionStatus } from "./functions.js";
+import type { ConnectionProvider, GenericProviderConnectionStatus } from "./functions.js";
+import { connectionProviderName } from "./result-contract.js";
 
-export type ProviderConnectionStatus = ConnectionStatus[ConnectionProvider];
-
-const PROVIDER_NAMES = {
-  github: "GitHub",
-  discord: "Discord",
-  slack: "Slack",
-  linear: "Linear",
-} as const;
+export type ProviderConnectionStatus = GenericProviderConnectionStatus;
 
 export function connectionsQueryKey(accountId: string, organizationId: string) {
   return ["connections", accountId, organizationId] as const;
@@ -38,7 +32,7 @@ export function providerBindingDetail(
   status: ProviderConnectionStatus,
 ): string | undefined {
   if (!hasProviderBinding(status)) return undefined;
-  const name = PROVIDER_NAMES[provider];
+  const name = connectionProviderName(provider);
   if (status.status === "suspended") return `${name} suspended`;
   if (status.status === "requiresReauthorization") return `${name} reauthorization required`;
   return name;

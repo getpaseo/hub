@@ -22,21 +22,30 @@ import {
   type IntegrationProvider,
 } from "../integration-tools/grants.js";
 import type {
+  BrowserIntegrationDefinition,
+  IntegrationToolFormDraft,
+} from "../integrations/browser-contracts.js";
+import {
+  defaultBrowserIntegrationRegistry,
+  type BrowserIntegrationRegistry,
+} from "../integrations/browser-registry.js";
+import type {
   IntegrationToolFormValue,
   TriggerFieldErrors,
   TriggerFormValue,
 } from "./configuration/editor.js";
 import type { TriggerSnapshot } from "./functions.js";
 
-export type IntegrationAccessProvider = "github" | IntegrationProvider;
+export type IntegrationAccessProvider = string;
 
 export interface IntegrationAccessDefinition {
   readonly provider: IntegrationAccessProvider;
   readonly label: string;
   readonly summary: string;
+  readonly integration?: BrowserIntegrationDefinition;
 }
 
-export const INTEGRATION_ACCESS_PROVIDERS: readonly IntegrationAccessDefinition[] = [
+const LEGACY_ACCESS_PROVIDERS: readonly IntegrationAccessDefinition[] = [
   {
     provider: "github",
     label: "GitHub",
@@ -54,10 +63,34 @@ export const INTEGRATION_ACCESS_PROVIDERS: readonly IntegrationAccessDefinition[
   },
 ];
 
+export function integrationAccessProviders(
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): readonly IntegrationAccessDefinition[] {
+  return [
+    ...LEGACY_ACCESS_PROVIDERS,
+    ...registry.withTools().map((integration) => ({
+      provider: integration.id,
+      label: integration.label,
+      summary: `Scoped ${integration.resourceNoun} tools`,
+      integration,
+    })),
+  ];
+}
+
+export const INTEGRATION_ACCESS_PROVIDERS: readonly IntegrationAccessDefinition[] =
+  integrationAccessProviders();
+
 const EMPTY_TOOL_GRANT: IntegrationToolFormValue = {
   connection: "",
   actions: [],
   channels: "",
+};
+
+const EMPTY_INTEGRATION_TOOL_DRAFT: IntegrationToolFormDraft = {
+  enabled: true,
+  connection: "",
+  actions: [],
+  fields: {},
 };
 
 const DEFAULT_GITHUB_DURATION = "1h";
@@ -68,12 +101,18 @@ const TOOL_ACTION_LABELS: Record<IntegrationAction, string> = {
 };
 
 /** Integration providers currently added to the trigger form. */
-export function activeIntegrationProviders(form: TriggerFormValue): IntegrationAccessProvider[] {
-  return INTEGRATION_ACCESS_PROVIDERS.flatMap(({ provider }) => {
+export function activeIntegrationProviders(
+  form: TriggerFormValue,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): IntegrationAccessProvider[] {
+  return integrationAccessProviders(registry).flatMap(({ provider }) => {
     if (provider === "github") {
       return (form.githubEnabled ?? form.githubConnection.trim() !== "") ? ["github"] : [];
     }
-    return form.tools[provider] === undefined ? [] : [provider];
+    if (provider === "slack" || provider === "discord") {
+      return form.tools[provider] === undefined ? [] : [provider];
+    }
+    return form.integrationTools?.[provider]?.enabled === true ? [provider] : [];
   });
 }
 
@@ -93,13 +132,27 @@ export function addIntegrationAccess(
       githubDuration: form.githubDuration || DEFAULT_GITHUB_DURATION,
     };
   }
-  const existing = form.tools[provider] ?? EMPTY_TOOL_GRANT;
+  if (provider === "slack" || provider === "discord") {
+    const existing = form.tools[provider] ?? EMPTY_TOOL_GRANT;
+    return {
+      ...form,
+      tools: {
+        ...form.tools,
+        [provider]: {
+          ...existing,
+          connection: existing.connection || autoConnection,
+        },
+      },
+    };
+  }
+  const existing = form.integrationTools?.[provider] ?? EMPTY_INTEGRATION_TOOL_DRAFT;
   return {
     ...form,
-    tools: {
-      ...form.tools,
+    integrationTools: {
+      ...form.integrationTools,
       [provider]: {
         ...existing,
+        enabled: true,
         connection: existing.connection || autoConnection,
       },
     },
@@ -121,13 +174,24 @@ export function removeIntegrationAccess(
       githubDuration: "",
     };
   }
-  const nextTools: TriggerFormValue["tools"] = {};
-  for (const key of integrationProviders) {
-    if (key === provider) continue;
-    const grant = form.tools[key];
-    if (grant !== undefined) nextTools[key] = grant;
+  if (provider === "slack" || provider === "discord") {
+    const nextTools: TriggerFormValue["tools"] = {};
+    for (const key of integrationProviders) {
+      if (key === provider) continue;
+      const grant = form.tools[key];
+      if (grant !== undefined) nextTools[key] = grant;
+    }
+    return { ...form, tools: nextTools };
   }
-  return { ...form, tools: nextTools };
+  const nextIntegrationTools: Partial<Record<string, IntegrationToolFormDraft>> = {};
+  for (const [key, draft] of Object.entries(form.integrationTools ?? {})) {
+    if (key !== provider && draft !== undefined) nextIntegrationTools[key] = draft;
+  }
+  if (Object.keys(nextIntegrationTools).length === 0) {
+    const { integrationTools: _removed, ...rest } = form;
+    return rest;
+  }
+  return { ...form, integrationTools: nextIntegrationTools };
 }
 
 function connectionControlId(provider: IntegrationAccessProvider): string {
@@ -151,15 +215,12 @@ export function IntegrationAccess({
   disabled?: boolean;
   onChange: (value: TriggerFormValue) => void;
 }) {
+  const allProviders = integrationAccessProviders();
   const active = activeIntegrationProviders(form);
   const pendingFocusId = useRef<string | null>(null);
   const activeSet = new Set<IntegrationAccessProvider>(active);
-  const activeProviders = INTEGRATION_ACCESS_PROVIDERS.filter(({ provider }) =>
-    activeSet.has(provider),
-  );
-  const remainingProviders = INTEGRATION_ACCESS_PROVIDERS.filter(
-    ({ provider }) => !activeSet.has(provider),
-  );
+  const activeProviders = allProviders.filter(({ provider }) => activeSet.has(provider));
+  const remainingProviders = allProviders.filter(({ provider }) => !activeSet.has(provider));
 
   useEffect(() => {
     if (remainingProviders.length > 0) return undefined;
@@ -310,27 +371,70 @@ function IntegrationGrantItem({
           Remove
         </Button>
       </div>
-      {definition.provider === "github" ? (
-        <GitHubAccessFields
-          form={form}
-          connections={providerConnections}
-          errors={errors}
-          disabled={disabled}
-          onChange={onChange}
-        />
-      ) : (
-        <ChannelToolAccessFields
-          provider={definition.provider}
-          label={definition.label}
-          form={form}
-          connections={providerConnections}
-          errors={errors}
-          disabled={disabled}
-          onChange={onChange}
-        />
-      )}
+      <AccessFieldsForProvider
+        definition={definition}
+        form={form}
+        connections={providerConnections}
+        errors={errors}
+        disabled={disabled}
+        onChange={onChange}
+      />
     </section>
   );
+}
+
+function AccessFieldsForProvider({
+  definition,
+  form,
+  connections,
+  errors,
+  disabled,
+  onChange,
+}: {
+  definition: IntegrationAccessDefinition;
+  form: TriggerFormValue;
+  connections: TriggerSnapshot["connections"];
+  errors: TriggerFieldErrors;
+  disabled: boolean;
+  onChange: (next: TriggerFormValue) => void;
+}) {
+  if (definition.provider === "github") {
+    return (
+      <GitHubAccessFields
+        form={form}
+        connections={connections}
+        errors={errors}
+        disabled={disabled}
+        onChange={onChange}
+      />
+    );
+  }
+  if (definition.provider === "slack" || definition.provider === "discord") {
+    return (
+      <ChannelToolAccessFields
+        provider={definition.provider}
+        label={definition.label}
+        form={form}
+        connections={connections}
+        errors={errors}
+        disabled={disabled}
+        onChange={onChange}
+      />
+    );
+  }
+  if (definition.integration?.tools !== undefined) {
+    return (
+      <RegisteredToolAccessFields
+        integration={definition.integration}
+        form={form}
+        connections={connections}
+        errors={errors}
+        disabled={disabled}
+        onChange={onChange}
+      />
+    );
+  }
+  return null;
 }
 
 function connectionFieldDescription(
@@ -534,6 +638,111 @@ function ChannelToolAccessFields({
             Select at least one permission
           </p>
         )}
+      </fieldset>
+    </div>
+  );
+}
+
+function RegisteredToolAccessFields({
+  integration,
+  form,
+  connections,
+  errors,
+  disabled,
+  onChange,
+}: {
+  integration: BrowserIntegrationDefinition;
+  form: TriggerFormValue;
+  connections: TriggerSnapshot["connections"];
+  errors: TriggerFieldErrors;
+  disabled: boolean;
+  onChange: (value: TriggerFormValue) => void;
+}) {
+  const tools = integration.tools!;
+  const draft = form.integrationTools?.[integration.id] ?? EMPTY_INTEGRATION_TOOL_DRAFT;
+  const id = `trigger-tools-${integration.id}`;
+  const options = connections.map(({ label: connectionLabel, slug }) => ({
+    label: connectionLabel,
+    value: slug,
+  }));
+  const update = (patch: Partial<IntegrationToolFormDraft>) =>
+    onChange({
+      ...form,
+      integrationTools: {
+        ...form.integrationTools,
+        [integration.id]: { ...draft, enabled: true, ...patch },
+      },
+    });
+  const connectionError = errors[`tools.${integration.id}.connection`];
+  const connectionDescription = connectionFieldDescription(
+    integration.label,
+    connections.length,
+    draft.connection,
+  );
+  return (
+    <div className="grid gap-4">
+      <div className="grid gap-4 md:grid-cols-2">
+        <FormField
+          id={id}
+          label="Connection"
+          required
+          {...(connectionDescription === undefined ? {} : { description: connectionDescription })}
+          {...(connectionError === undefined ? {} : { error: connectionError })}
+        >
+          {(control) => (
+            <Combobox
+              {...control}
+              required
+              disabled={disabled}
+              value={draft.connection}
+              options={options}
+              placeholder={`Select a ${integration.label} connection`}
+              empty={`No ${integration.label} connections found`}
+              onChange={(option) => update({ connection: option.value })}
+            />
+          )}
+        </FormField>
+        {tools.fields.map((field) => {
+          const fieldError = errors[`tools.${integration.id}.${field.key}`];
+          return (
+            <FormField
+              key={field.key}
+              id={`${id}-${field.key}`}
+              label={field.label}
+              kind={field.multiline === true ? "multiline" : "text"}
+              name={`${id}-${field.key}`}
+              placeholder={field.placeholder}
+              value={draft.fields[field.key] ?? ""}
+              disabled={disabled}
+              {...(field.description === undefined ? {} : { description: field.description })}
+              {...(fieldError === undefined ? {} : { error: fieldError })}
+              onChange={(nextValue) =>
+                update({ fields: { ...draft.fields, [field.key]: nextValue } })
+              }
+            />
+          );
+        })}
+      </div>
+      <fieldset className="min-w-0">
+        <legend className="mb-2 text-sm text-foreground">Permissions</legend>
+        <div className="flex flex-wrap gap-x-6 gap-y-2">
+          {tools.actions.map((action) => (
+            <CheckboxField
+              key={action.id}
+              id={`${id}-${action.id}`}
+              label={action.label}
+              checked={draft.actions.includes(action.id)}
+              disabled={disabled}
+              onChange={(checked) =>
+                update({
+                  actions: checked
+                    ? [...draft.actions, action.id]
+                    : draft.actions.filter((item) => item !== action.id),
+                })
+              }
+            />
+          ))}
+        </div>
       </fieldset>
     </div>
   );

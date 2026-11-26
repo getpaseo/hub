@@ -1,5 +1,6 @@
 import { executionLinkUrl } from "../agent-executions/link.js";
 import { integrationProviders } from "../integration-tools/grants.js";
+import { defaultIntegrationRegistry, type IntegrationRegistry } from "../integrations/registry.js";
 import { parseConnectionTemplate } from "../config/connection-template.js";
 import { createHash } from "node:crypto";
 import type { Database, AgentExecutionRecord } from "../db/types.js";
@@ -30,6 +31,7 @@ export class AgentSessions {
     private readonly publicBaseUrl: string,
     private readonly outputs: OutputExecutorRegistry,
     private readonly now: () => number = Date.now,
+    private readonly registry: IntegrationRegistry = defaultIntegrationRegistry,
   ) {}
 
   async dispatch(input: {
@@ -82,6 +84,7 @@ export class AgentSessions {
         input.intent.outputSchema,
         this.outputs.materialize(input.intent.allowOutputs, input.intent.outputContext),
         input.intent.tools,
+        this.registry,
       );
       const compatibility = fingerprint({
         settings: policy?.compatibility,
@@ -220,11 +223,30 @@ export class AgentSessions {
         );
       }
       const grants = input.intent.tools;
-      if (integrationProviders.some((provider) => grants?.[provider]?.actions.includes("post"))) {
+      const legacyOutbound = integrationProviders.some((provider) =>
+        grants?.[provider]?.actions.includes("post"),
+      );
+      const registeredOutbound = this.registry.withTools().filter((integration) => {
+        const grant = grants?.[integration.id];
+        return (
+          grant !== undefined &&
+          grant.actions.some((action) => integration.tools!.outboundLinkActions.includes(action))
+        );
+      });
+      if (legacyOutbound || registeredOutbound.length > 0) {
         const url = executionLinkUrl(this.publicBaseUrl, execution);
         if (url !== undefined) {
+          const hints: string[] = [];
+          if (legacyOutbound) {
+            hints.push(
+              `For Slack use <${url}|Open in Paseo>. For Discord use [Open in Paseo](${url}).`,
+            );
+          }
+          for (const integration of registeredOutbound) {
+            hints.push(integration.tools!.linkFormatHint(url));
+          }
           context.push(
-            `Open in Paseo: ${url}\nWhen sharing a link to this session, use this URL. For Slack use <${url}|Open in Paseo>. For Discord use [Open in Paseo](${url}).`,
+            `Open in Paseo: ${url}\nWhen sharing a link to this session, use this URL. ${hints.join(" ")}`,
           );
         }
       }

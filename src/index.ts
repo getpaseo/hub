@@ -135,6 +135,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
     });
     const providerApplications = createProviderApplications({
       auth,
+      database,
       store: providerStore,
       environment: providerEnvironment,
       runtime: providerRuntime,

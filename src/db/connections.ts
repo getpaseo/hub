@@ -797,7 +797,8 @@ function orExpiredOrConsumed() {
   return sql`${schema.organizationConnectionAttempts.expiresAt} <= clock_timestamp() or ${schema.organizationConnectionAttempts.consumedAt} is not null`;
 }
 
-async function lockAttempt(
+/** @package Shared connection-attempt and locking primitives for `IntegrationConnectionRepository`. */
+export async function lockAttempt(
   transaction: HubTransaction,
   input: ReadConnectionAttemptInput,
 ): Promise<AttemptRow> {
@@ -822,7 +823,8 @@ async function lockAttempt(
   return attempt;
 }
 
-async function lockAccountSession(
+/** @package */
+export async function lockAccountSession(
   transaction: HubTransaction,
   access: ConnectionAccountAccess,
 ): Promise<void> {
@@ -841,7 +843,8 @@ async function lockAccountSession(
     throw new ConnectionAccessDeniedError();
 }
 
-async function lockStartAuthority(
+/** @package */
+export async function lockStartAuthority(
   transaction: HubTransaction,
   access: ConnectionStartAuthority,
 ): Promise<void> {
@@ -861,7 +864,8 @@ async function lockStartAuthority(
   if (membership === undefined) throw new ConnectionAccessDeniedError();
 }
 
-async function lockStoredAuthority(
+/** @package */
+export async function lockStoredAuthority(
   transaction: HubTransaction,
   attempt: AttemptRow,
 ): Promise<void> {
@@ -889,10 +893,11 @@ async function expiredAtDatabaseClock(
   return clock.rows[0]?.expired ?? true;
 }
 
-async function lockExternal(
+/** @package */
+export async function lockExternal(
   locks: Locks,
   transaction: TransactionHandle,
-  provider: ConnectionProvider,
+  provider: string,
   externalId: string,
 ): Promise<void> {
   await locks.withTxLock(
@@ -901,15 +906,17 @@ async function lockExternal(
   );
 }
 
-async function lockProviderApplication(
+/** @package */
+export async function lockProviderApplication(
   locks: Locks,
   transaction: TransactionHandle,
-  provider: ConnectionProvider,
+  provider: string,
 ): Promise<void> {
   await locks.withTxLock(transaction, JSON.stringify(["provider-application", provider]));
 }
 
-async function requireCurrentAttempt(
+/** @package */
+export async function requireCurrentAttempt(
   transaction: HubTransaction,
   attempt: AttemptRow,
   bindingApplicationId?: string,
@@ -937,7 +944,8 @@ async function requireCurrentAttempt(
   }
 }
 
-async function requireConsumableAttempt(
+/** @package */
+export async function requireConsumableAttempt(
   transaction: HubTransaction,
   attempt: AttemptRow,
 ): Promise<void> {
@@ -945,7 +953,7 @@ async function requireConsumableAttempt(
     await requireCurrentAttempt(transaction, attempt);
     return;
   }
-  if (attempt.provider !== "slack" && attempt.provider !== "linear") {
+  if (attempt.provider === "github" || attempt.provider === "discord") {
     throw providerApplicationChanged();
   }
   const provider = attempt.provider;
@@ -1026,9 +1034,10 @@ async function requireLinearActivationCandidate(
   }
 }
 
-async function writeProviderActivation(
+/** @package */
+export async function writeProviderActivation(
   transaction: HubTransaction,
-  provider: ConnectionProvider,
+  provider: string,
   applicationId: string,
   configurationVersion: number,
 ): Promise<void> {
@@ -1045,29 +1054,34 @@ async function writeProviderActivation(
     });
 }
 
-function externalIdentityId(value: unknown): string | undefined {
+/** @package */
+export function externalIdentityId(value: unknown): string | undefined {
   return value !== null && typeof value === "object" && typeof Reflect.get(value, "id") === "string"
     ? String(Reflect.get(value, "id"))
     : undefined;
 }
 
-function providerApplicationChanged(): Error {
+/** @package */
+export function providerApplicationChanged(): Error {
   const error = new Error("provider application changed");
   error.name = "ProviderApplicationChangedError";
   return error;
 }
 
-async function consumeLockedAttempt(transaction: HubTransaction, attemptId: string): Promise<void> {
+/** @package */
+export async function consumeLockedAttempt(
+  transaction: HubTransaction,
+  attemptId: string,
+): Promise<void> {
   await transaction
     .update(schema.organizationConnectionAttempts)
     .set({ consumedAt: sql`clock_timestamp()`, pkceVerifier: null })
     .where(eq(schema.organizationConnectionAttempts.id, attemptId));
 }
 
-function initialConnectionAttemptPhase(provider: ConnectionProvider): ConnectionAttemptPhase {
+function initialConnectionAttemptPhase(provider: string): ConnectionAttemptPhase {
   if (provider === "github") return "github_user_authorization";
-  if (provider === "discord") return "discord_authorization";
-  return provider === "slack" ? "slack_authorization" : "linear_authorization";
+  return `${provider}_authorization`;
 }
 
 function toAttempt(row: AttemptRow): ConnectionAttemptRecord {
@@ -1151,10 +1165,11 @@ function linearConnection(
   };
 }
 
-async function uniqueConnectionSlug(
+/** @package */
+export async function uniqueConnectionSlug(
   transaction: HubTransaction,
   organizationId: string,
-  provider: ConnectionProvider,
+  provider: string,
   identity: string,
 ): Promise<string> {
   const base = `${slugify(identity, "connection")}-${provider}`;
@@ -1167,6 +1182,8 @@ async function uniqueConnectionSlug(
       select slug from discord_connections where organization_id = ${organizationId}
       union all
       select slug from linear_connections where organization_id = ${organizationId}
+      union all
+      select slug from integration_connections where organization_id = ${organizationId}
     ) slugs
     where slug = ${base} or slug like ${`${base}-%`}
     order by slug

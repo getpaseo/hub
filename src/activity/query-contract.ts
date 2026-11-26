@@ -9,6 +9,10 @@
  */
 
 import {
+  defaultBrowserIntegrationRegistry,
+  type BrowserIntegrationRegistry,
+} from "../integrations/browser-registry.js";
+import {
   PROVIDER_EVENT_DROP_REASON_CODES,
   type ProviderEventDropReasonCode,
 } from "../triggers/drop-reason.js";
@@ -19,16 +23,17 @@ export type ActivityView = (typeof ACTIVITY_VIEWS)[number];
 export const ACTIVITY_RANGES = ["24h", "7d", "30d", "all"] as const;
 export type ActivityRange = (typeof ACTIVITY_RANGES)[number];
 
-export const ACTIVITY_PROVIDERS = [
-  "github",
-  "discord",
-  "slack",
-  "linear",
-  "schedule",
-  "webhook",
-  "manual",
-] as const;
-export type ActivityProvider = (typeof ACTIVITY_PROVIDERS)[number];
+const LEGACY_ACTIVITY_PROVIDERS = ["github", "discord", "slack", "linear"] as const;
+const HUB_ACTIVITY_PROVIDERS = ["schedule", "webhook", "manual"] as const;
+
+export function activityProviders(
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): readonly string[] {
+  return [...LEGACY_ACTIVITY_PROVIDERS, ...registry.ids(), ...HUB_ACTIVITY_PROVIDERS];
+}
+
+export const ACTIVITY_PROVIDERS: readonly string[] = activityProviders();
+export type ActivityProvider = string;
 
 export const RUN_STATUSES = ["running", "succeeded", "failed", "timed_out", "rejected"] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
@@ -86,13 +91,16 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
  * The URL as the router hands it over, reduced to what Activity understands. Anything malformed
  * or meaningless for the view is dropped rather than refused: a stale bookmark still opens.
  */
-export function parseActivitySearch(raw: Readonly<Record<string, unknown>>): ActivitySearch {
+export function parseActivitySearch(
+  raw: Readonly<Record<string, unknown>>,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): ActivitySearch {
   const view = raw["view"] === "unmatched" ? "unmatched" : "runs";
   const search: ActivitySearch = {};
   if (view === "unmatched") search.view = "unmatched";
   const range = member(ACTIVITY_RANGES, raw["range"]);
   if (range !== undefined && range !== "7d") search.range = range;
-  const providers = list(ACTIVITY_PROVIDERS, raw["provider"]);
+  const providers = list(activityProviders(registry), raw["provider"]);
   if (providers.length > 0) search.provider = providers.join(",");
   if (view === "runs") {
     const trigger = uuid(raw["trigger"]);
@@ -118,11 +126,14 @@ export function parseActivitySearch(raw: Readonly<Record<string, unknown>>): Act
 }
 
 /** The URL with every default filled in. */
-export function activityQuery(search: ActivitySearch): ActivityQuery {
+export function activityQuery(
+  search: ActivitySearch,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): ActivityQuery {
   return {
     view: search.view ?? "runs",
     range: search.range ?? "7d",
-    providers: list(ACTIVITY_PROVIDERS, search.provider),
+    providers: list(activityProviders(registry), search.provider),
     trigger: search.trigger ?? null,
     daemon: search.daemon ?? null,
     statuses: list(RUN_STATUSES, search.status),
@@ -245,7 +256,7 @@ export function rangeStart(range: ActivityRange, now: Date): Date | null {
   return new Date(now.getTime() - RANGE_DAYS[range] * 86_400_000);
 }
 
-const PROVIDER_LABELS: Readonly<Record<ActivityProvider, string>> = {
+const PROVIDER_LABELS: Readonly<Record<string, string>> = {
   github: "GitHub",
   discord: "Discord",
   slack: "Slack",
@@ -256,11 +267,21 @@ const PROVIDER_LABELS: Readonly<Record<ActivityProvider, string>> = {
 };
 
 export function activityProviderLabel(provider: ActivityProvider): string {
-  return PROVIDER_LABELS[provider];
+  return activityProviderLabelFor(provider, defaultBrowserIntegrationRegistry);
 }
 
-export function isActivityProvider(value: string): value is ActivityProvider {
-  return ACTIVITY_PROVIDERS.some((provider) => provider === value);
+export function activityProviderLabelFor(
+  provider: ActivityProvider,
+  registry: BrowserIntegrationRegistry,
+): string {
+  return PROVIDER_LABELS[provider] ?? registry.get(provider)?.label ?? provider;
+}
+
+export function isActivityProvider(
+  value: string,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): value is ActivityProvider {
+  return activityProviders(registry).some((provider) => provider === value);
 }
 
 function allowsSort(view: ActivityView, sort: ActivitySort): boolean {

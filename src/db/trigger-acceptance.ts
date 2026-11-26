@@ -7,6 +7,7 @@ import { ConnectionRepository, replaceGitHubRepositories } from "./connections.j
 import type {
   AcceptDiscordEventInput,
   AcceptGitHubEventInput,
+  AcceptIntegrationEventInput,
   AcceptLinearEventInput,
   AcceptSlackEventInput,
   GitHubInstallationSyncOwner,
@@ -49,6 +50,113 @@ export class ProviderEventAcceptanceRepository {
 
   acceptLinear(input: AcceptLinearEventInput): Promise<ProviderEventAcceptance> {
     return this.acceptProvider("linear", input.linearOrganizationId, input.projectId, input);
+  }
+
+  acceptIntegration(input: AcceptIntegrationEventInput): Promise<ProviderEventAcceptance> {
+    return this.runtime.transaction(async (runtimeTransaction) => {
+      const transaction = runtimeTransaction.drizzle();
+      const connection = await findIntegrationConnection(transaction, input);
+      if (connection === undefined) {
+        return {
+          status: "dropped",
+          receiptId: input.deliveryId,
+          reason: `${input.provider}_unbound`,
+        };
+      }
+
+      const existing = await findReceipt(transaction, input, connection.organizationId);
+      if (existing !== undefined) return replayProviderReceipt(existing);
+
+      const dropReason =
+        input.dropReason ??
+        (connection.status !== "active" ? "configuration_unavailable" : undefined);
+      const resourceId = input.resourceId ?? null;
+      const receipt = await claimProviderReceipt(transaction, {
+        organizationId: connection.organizationId,
+        provider: input.provider,
+        connectionId: connection.id,
+        resourceId,
+        input: dropReason === undefined ? input : { ...input, dropReason },
+      });
+      if (!receipt.inserted) {
+        const existingReceipt = await findReceipt(transaction, input, connection.organizationId);
+        if (existingReceipt === undefined) throw new Error("provider receipt unavailable");
+        return replayProviderReceipt(existingReceipt);
+      }
+      if (dropReason !== undefined) {
+        return { status: "dropped", receiptId: receipt.id, reason: dropReason };
+      }
+
+      const routes = await transaction
+        .select({
+          projectId: schema.projectTriggerRoutes.projectId,
+          revisionId: schema.projectTriggerRoutes.configurationRevisionId,
+          connectionId: schema.projectTriggerRoutes.connectionId,
+          resourceId: schema.projectTriggerRoutes.resourceId,
+        })
+        .from(schema.projectTriggerRoutes)
+        .innerJoin(
+          schema.projects,
+          and(
+            eq(schema.projects.id, schema.projectTriggerRoutes.projectId),
+            eq(schema.projects.organizationId, connection.organizationId),
+            eq(schema.projects.status, "active"),
+            eq(
+              schema.projects.activeConfigurationRevisionId,
+              schema.projectTriggerRoutes.configurationRevisionId,
+            ),
+          ),
+        )
+        .where(
+          and(
+            eq(schema.projectTriggerRoutes.organizationId, connection.organizationId),
+            eq(schema.projectTriggerRoutes.provider, input.provider),
+            eq(schema.projectTriggerRoutes.connectionId, connection.id),
+            or(
+              isNull(schema.projectTriggerRoutes.resourceId),
+              eq(schema.projectTriggerRoutes.resourceId, resourceId ?? ""),
+            ),
+          ),
+        );
+
+      const selectedRoutes = selectFirstRoutePerProject(routes);
+      if (selectedRoutes.length === 0) {
+        const reason = "no_project_route";
+        await transaction
+          .update(schema.providerEventReceipts)
+          .set({ droppedReason: reason })
+          .where(eq(schema.providerEventReceipts.id, receipt.id));
+        return { status: "dropped", receiptId: receipt.id, reason };
+      }
+
+      const acceptedRoutes: ProviderEventRouteSnapshot[] = selectedRoutes.map((route) => ({
+        projectId: route.projectId,
+        configurationRevisionId: route.revisionId,
+        connectionId: route.connectionId,
+        resourceId: route.resourceId,
+      }));
+      await transaction
+        .update(schema.providerEventReceipts)
+        .set({ acceptedRoutes })
+        .where(eq(schema.providerEventReceipts.id, receipt.id));
+
+      return {
+        status: "accepted",
+        events: acceptedRoutes.map((route) => ({
+          providerEventReceiptId: receipt.id,
+          organizationId: connection.organizationId,
+          projectId: route.projectId,
+          configurationRevisionId: route.configurationRevisionId,
+          deliveryId: input.deliveryId,
+          source: input.source,
+          payload: input.payload,
+          receivedAt: input.receivedAt,
+          connectionId: route.connectionId,
+          resourceId: route.resourceId,
+        })),
+        receiptId: receipt.id,
+      };
+    });
   }
 
   private async acceptProvider(
@@ -611,11 +719,52 @@ async function findConnection(
   return row;
 }
 
+async function findIntegrationConnection(
+  transaction: HubTransaction,
+  input: AcceptIntegrationEventInput,
+) {
+  if (input.connectionId !== undefined) {
+    const [row] = await transaction
+      .select({
+        id: schema.integrationConnections.id,
+        organizationId: schema.integrationConnections.organizationId,
+        status: schema.integrationConnections.status,
+      })
+      .from(schema.integrationConnections)
+      .where(
+        and(
+          eq(schema.integrationConnections.id, input.connectionId),
+          eq(schema.integrationConnections.provider, input.provider),
+        ),
+      )
+      .limit(1);
+    return row;
+  }
+  if (input.externalId !== undefined) {
+    const [row] = await transaction
+      .select({
+        id: schema.integrationConnections.id,
+        organizationId: schema.integrationConnections.organizationId,
+        status: schema.integrationConnections.status,
+      })
+      .from(schema.integrationConnections)
+      .where(
+        and(
+          eq(schema.integrationConnections.provider, input.provider),
+          eq(schema.integrationConnections.externalId, input.externalId),
+        ),
+      )
+      .limit(1);
+    return row;
+  }
+  return undefined;
+}
+
 async function claimProviderReceipt(
   transaction: HubTransaction,
   input: {
     organizationId: string;
-    provider: "github" | "slack" | "discord" | "linear" | "manual";
+    provider: string;
     connectionId: string | null;
     resourceId: string | null;
     input: ProviderEventEvidence;

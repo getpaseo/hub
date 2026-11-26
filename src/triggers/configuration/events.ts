@@ -1,30 +1,39 @@
+import type {
+  IntegrationQualifierDefinition,
+  IntegrationQualifierKey,
+  IntegrationTriggerAudience,
+} from "../../integrations/browser-contracts.js";
+import {
+  defaultBrowserIntegrationRegistry,
+  type BrowserIntegrationRegistry,
+} from "../../integrations/browser-registry.js";
+
 /** The YAML filter keys the form knows how to qualify. */
-export type QualifierKey = "label";
+export type QualifierKey = IntegrationQualifierKey;
 
 /** Draft values for the qualifiers declared by the selected event. */
-export type QualifierValues = Partial<Record<QualifierKey, string>>;
-
-export interface QualifierDefinition {
-  key: QualifierKey;
-  kind: "string";
-  label: string;
-  description: string;
-  required: boolean;
+export interface QualifierValues {
+  label?: string | undefined;
+  [key: string]: string | undefined;
 }
+
+export type QualifierDefinition = IntegrationQualifierDefinition;
 
 /**
  * Who may invoke a trigger, as the form offers it. `members` and `contributors` are GitHub
  * repository associations; `everyone` and `specific` are the allowlist every provider has.
  */
-export type TriggerAudience = "members" | "contributors" | "everyone" | "specific";
+export type TriggerAudience = IntegrationTriggerAudience;
 
-interface EventDefinition {
-  provider: "github" | "slack" | "discord" | "linear" | "manual" | "schedule" | "webhook";
+export interface EventDefinition {
+  provider: string;
   label: string;
   origin: "hub" | "provider";
   qualifiers: readonly QualifierDefinition[];
   /** The audiences the form offers for this event, default first. Empty when Hub is the source. */
   audiences: readonly TriggerAudience[];
+  replyType?: string;
+  audienceHint?: string;
 }
 
 const ALLOWLIST: readonly TriggerAudience[] = ["everyone", "specific"];
@@ -103,22 +112,63 @@ const EVENTS = {
   "linear.comment_created": event("linear", "Linear comment created"),
 };
 
-export type EditorEvent = keyof typeof EVENTS;
-export const EDITOR_EVENTS = Object.keys(EVENTS).filter(isEditorEvent);
+const BUILT_IN_EVENTS = new Map<string, EventDefinition>(Object.entries(EVENTS));
 
-export function isEditorEvent(value: string): value is EditorEvent {
-  return Object.hasOwn(EVENTS, value);
+export type EditorEvent = string;
+
+export function editorEvents(
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): readonly EditorEvent[] {
+  return [
+    ...BUILT_IN_EVENTS.keys(),
+    ...registry
+      .withTriggers()
+      .flatMap((integration) => integration.triggers!.events.map((spec) => spec.id)),
+  ];
 }
 
-export function parseEditorEvent(value: string): EditorEvent {
-  return isEditorEvent(value) ? value : "manual.run";
+export const EDITOR_EVENTS: readonly EditorEvent[] = editorEvents();
+
+export function isEditorEvent(
+  value: string,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): boolean {
+  return BUILT_IN_EVENTS.has(value) || registry.forEvent(value) !== undefined;
 }
 
-export function eventDefinition(eventId: EditorEvent): EventDefinition {
-  return EVENTS[eventId];
+export function parseEditorEvent(
+  value: string,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): EditorEvent {
+  return isEditorEvent(value, registry) ? value : "manual.run";
 }
 
-const PROVIDERS: readonly EventDefinition["provider"][] = [
+export function eventDefinition(
+  eventId: EditorEvent,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): EventDefinition {
+  const builtIn = BUILT_IN_EVENTS.get(eventId);
+  if (builtIn !== undefined) return builtIn;
+  const registered = registry.forEvent(eventId);
+  if (registered !== undefined) {
+    return {
+      provider: registered.integration.id,
+      label: registered.event.label,
+      origin: "provider",
+      qualifiers: registered.event.qualifiers ?? [],
+      audiences: registered.event.audiences ?? ALLOWLIST,
+      ...(registered.event.replyType === undefined
+        ? {}
+        : { replyType: registered.event.replyType }),
+      ...(registered.event.audienceHint === undefined
+        ? {}
+        : { audienceHint: registered.event.audienceHint }),
+    };
+  }
+  return EVENTS["manual.run"];
+}
+
+const PROVIDERS: readonly string[] = [
   "github",
   "slack",
   "discord",
@@ -133,13 +183,35 @@ const PROVIDERS: readonly EventDefinition["provider"][] = [
  * `discord.message` is named for its provider, and only an event from no provider Hub knows
  * counts as manual.
  */
-export function eventProvider(eventId: string): EventDefinition["provider"] {
-  if (isEditorEvent(eventId)) return EVENTS[eventId].provider;
+export function eventProvider(
+  eventId: string,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): string {
+  if (isEditorEvent(eventId, registry)) return eventDefinition(eventId, registry).provider;
   const prefix = eventId.split(".")[0];
+  if (prefix !== undefined && registry.has(prefix)) return prefix;
   return PROVIDERS.find((provider) => provider === prefix) ?? "manual";
 }
 
 /** The audience a new trigger for this event starts with. */
-export function defaultAudience(eventId: EditorEvent): TriggerAudience {
-  return EVENTS[eventId].audiences[0] ?? "everyone";
+export function defaultAudience(
+  eventId: EditorEvent,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): TriggerAudience {
+  return eventDefinition(eventId, registry).audiences[0] ?? "everyone";
+}
+
+export function automaticReplyType(
+  eventId: string,
+  registry: BrowserIntegrationRegistry = defaultBrowserIntegrationRegistry,
+): string | undefined {
+  const registered = registry.forEvent(eventId);
+  if (registered !== undefined) return registered.event.replyType;
+  const provider = eventId.split(".", 1)[0];
+  return provider === "slack" ||
+    provider === "discord" ||
+    provider === "linear" ||
+    provider === "github"
+    ? `${provider}.reply`
+    : undefined;
 }

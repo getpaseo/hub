@@ -24,12 +24,18 @@ import { SummaryPanel, type SummaryRow } from "../components/app/summary-panel.j
 import { TwoLine } from "../components/app/two-line.js";
 import { ProviderGlyph } from "../connections/provider-glyph.js";
 import { useConnectionReturn } from "../connections/result.js";
-import { connectionReturnCopy, type ConnectionReturnCopy } from "../connections/result-contract.js";
+import {
+  connectionProviderName,
+  connectionReturnCopy,
+  type ConnectionReturnCopy,
+} from "../connections/result-contract.js";
 import { Button } from "../components/ui/button.js";
 import { DaemonsPanel } from "../daemons/account-daemons.js";
 import type { Result } from "../contract/respond.js";
+import { defaultBrowserIntegrationRegistry } from "../integrations/browser-registry.js";
 import {
   connectionStatus,
+  connectionStatusFor,
   disconnectConnection,
   startConnection,
   type ConnectionDisconnectResult,
@@ -52,15 +58,19 @@ import {
 } from "./panel-state.js";
 import { archiveProject, activityRunSnapshot, updateProjectSlug } from "./functions.js";
 const INTEGRATIONS_DESCRIPTION = "Where this organization's events come from";
-const CONNECTION_PROVIDERS = ["github", "discord", "slack", "linear"] as const;
-type ConnectionProviderName = (typeof CONNECTION_PROVIDERS)[number];
+const LEGACY_CONNECTION_PROVIDERS = ["github", "discord", "slack", "linear"] as const;
+type ConnectionProviderName = string;
+
+function allConnectionProviders(): readonly ConnectionProviderName[] {
+  return [...LEGACY_CONNECTION_PROVIDERS, ...defaultBrowserIntegrationRegistry.ids()];
+}
 
 function IntegrationsLoading() {
   return (
     <>
       <PageHeader title="Integrations" description={INTEGRATIONS_DESCRIPTION} />
       <Section>
-        {CONNECTION_PROVIDERS.map((provider) => (
+        {allConnectionProviders().map((provider) => (
           <CardSkeleton key={provider} lines={2} />
         ))}
       </Section>
@@ -119,18 +129,16 @@ export function OrganizationIntegrationsPanel() {
     );
   };
   const rows = connectionRows(data);
+  const providers = allConnectionProviders();
   const busy = connect.isPending || disconnect.isPending;
   const connectionActionLabel = (provider: ConnectionProviderName) => {
-    if (
-      (provider === "slack" || provider === "linear") &&
-      status.data[provider].status === "requiresReauthorization"
-    ) {
+    const providerStatus = connectionStatusFor(status.data, provider);
+    if (providerStatus.status === "requiresReauthorization") {
       return "Reauthorize";
     }
     if (
-      provider === "github" &&
       rows.some(
-        (connection) => connection.provider === "github" && connection.status === "suspended",
+        (connection) => connection.provider === provider && connection.status === "suspended",
       )
     ) {
       return "Reconnect";
@@ -139,17 +147,22 @@ export function OrganizationIntegrationsPanel() {
   };
   const providerAction = (provider: ConnectionProviderName): ReactNode => {
     if (!data.capabilities.manageResources) return undefined;
+    const providerStatus = connectionStatusFor(status.data, provider);
     // An app nobody has given Hub credentials for cannot be connected from here, and only an
     // instance operator can change that. Everyone else is told nothing about instance
     // credentials: a state they cannot act on is not news, and a card with only a name on it is
     // the page talking about work they cannot do.
-    if (status.data[provider].status === "notConfigured") {
+    if (providerStatus.status === "notConfigured") {
       if (!isInstanceOperator) return undefined;
       return (
         <Button variant="outline" size="sm" asChild>
           <Link to={"/apps" as never}>Set up the {providerLabel(provider)} app</Link>
         </Button>
       );
+    }
+    const browserIntegration = defaultBrowserIntegrationRegistry.get(provider);
+    if (browserIntegration?.setup.supportsOrgConnect?.({}) === false) {
+      return undefined;
     }
     return (
       <Button disabled={busy} variant="outline" size="sm" onClick={() => connectProvider(provider)}>
@@ -160,15 +173,17 @@ export function OrganizationIntegrationsPanel() {
   // A provider block that can neither be acted on nor list anything says only its own name.
   // That is every provider for someone who cannot connect one, and four of them is the whole
   // page talking about work the reader cannot do.
-  const shown = CONNECTION_PROVIDERS.map((provider) => ({
-    provider,
-    connections: rows.filter((connection) => connection.provider === provider),
-    action: providerAction(provider),
-  })).filter((block) => block.action !== undefined || block.connections.length > 0);
+  const shown = providers
+    .map((provider) => ({
+      provider,
+      connections: rows.filter((connection) => connection.provider === provider),
+      action: providerAction(provider),
+    }))
+    .filter((block) => block.action !== undefined || block.connections.length > 0);
   // Whose problem the empty page is: an instance with no provider apps is the operator's, an
   // organization that has connected nothing is its owners'.
-  const nothingToConnect = CONNECTION_PROVIDERS.every(
-    (provider) => status.data[provider].status === "notConfigured",
+  const nothingToConnect = providers.every(
+    (provider) => connectionStatusFor(status.data, provider).status === "notConfigured",
   )
     ? "No provider apps are set up on this Hub yet. Ask whoever runs it to add one"
     : "An organization owner connects the providers this organization can use";
@@ -742,12 +757,17 @@ function connectionRows(data: OrganizationSnapshot) {
         ? ("requiresReauthorization" as const)
         : ("connected" as const),
     })),
+    ...(data.connections.integrations ?? []).map((connection) => ({
+      provider: connection.provider,
+      id: connection.id,
+      name: connection.slug,
+      externalId: `${connection.displayName} · ${connection.externalId}`,
+      status: connection.status,
+    })),
   ];
 }
 function providerLabel(provider: ConnectionProviderName) {
-  if (provider === "github") return "GitHub";
-  if (provider === "discord") return "Discord";
-  return provider === "slack" ? "Slack" : "Linear";
+  return connectionProviderName(provider);
 }
 
 /** The one connection status a sentence-cased machine value gets wrong. */

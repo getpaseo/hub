@@ -201,6 +201,14 @@ export async function handleProviderRequest(name: string, request: Request): Pro
   return (await getApplication()).providerRequest(name, request);
 }
 
+export async function handleConnectionAction(
+  request: Request,
+  provider: string,
+  action: string,
+): Promise<Response> {
+  return (await getApplication()).connectionAction(request, provider, action);
+}
+
 export async function handleConnections(
   request: Request,
   operation:

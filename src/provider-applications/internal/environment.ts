@@ -1,25 +1,48 @@
 import { readFile } from "node:fs/promises";
-import type { Provider, ProviderApplicationConfiguration } from "../index.js";
+import {
+  defaultIntegrationRegistry,
+  type IntegrationRegistry,
+} from "../../integrations/registry.js";
+import type {
+  DiscordProviderApplicationConfiguration,
+  GitHubProviderApplicationConfiguration,
+  LinearProviderApplicationConfiguration,
+  ProviderApplicationEnvironment,
+  RegisteredProviderApplicationConfiguration,
+  SlackProviderApplicationConfiguration,
+} from "../index.js";
 
 /** @package */
 export async function readProviderApplicationEnvironment(
   environment: Record<string, string | undefined>,
-): Promise<Partial<Record<Provider, ProviderApplicationConfiguration>>> {
+  registry: IntegrationRegistry = defaultIntegrationRegistry,
+): Promise<ProviderApplicationEnvironment> {
   const github = await githubEnvironment(environment);
   const slack = slackEnvironment(environment);
   const discord = discordEnvironment(environment);
   const linear = linearEnvironment(environment);
+  const registered: Record<string, RegisteredProviderApplicationConfiguration> = {};
+  for (const integration of registry.all()) {
+    const config = integration.connection.readEnvironment(environment);
+    if (config !== undefined && typeof config === "object" && config !== null) {
+      registered[integration.id] = {
+        ...config,
+        provider: integration.id,
+      };
+    }
+  }
   return {
     ...(github === undefined ? {} : { github }),
     ...(slack === undefined ? {} : { slack }),
     ...(discord === undefined ? {} : { discord }),
     ...(linear === undefined ? {} : { linear }),
+    ...(Object.keys(registered).length === 0 ? {} : { registered }),
   };
 }
 
 async function githubEnvironment(
   environment: Record<string, string | undefined>,
-): Promise<ProviderApplicationConfiguration | undefined> {
+): Promise<GitHubProviderApplicationConfiguration | undefined> {
   const appId = nonEmpty(environment["GITHUB_APP_ID"]);
   const appSlug = nonEmpty(environment["GITHUB_APP_SLUG"]);
   const clientId = nonEmpty(environment["GITHUB_APP_CLIENT_ID"]);
@@ -54,7 +77,7 @@ async function githubEnvironment(
 
 function slackEnvironment(
   environment: Record<string, string | undefined>,
-): ProviderApplicationConfiguration | undefined {
+): SlackProviderApplicationConfiguration | undefined {
   const transport = nonEmpty(environment["SLACK_TRANSPORT"]);
   const appId = nonEmpty(environment["SLACK_APP_ID"]);
   const appToken = nonEmpty(environment["SLACK_APP_TOKEN"]);
@@ -107,7 +130,7 @@ function slackEnvironment(
 
 function discordEnvironment(
   environment: Record<string, string | undefined>,
-): ProviderApplicationConfiguration | undefined {
+): DiscordProviderApplicationConfiguration | undefined {
   const applicationId = nonEmpty(environment["DISCORD_CLIENT_ID"]);
   const clientSecret = nonEmpty(environment["DISCORD_CLIENT_SECRET"]);
   const botToken = nonEmpty(environment["DISCORD_BOT_TOKEN"]);
@@ -118,7 +141,7 @@ function discordEnvironment(
 
 function linearEnvironment(
   environment: Record<string, string | undefined>,
-): ProviderApplicationConfiguration | undefined {
+): LinearProviderApplicationConfiguration | undefined {
   const clientId = nonEmpty(environment["LINEAR_CLIENT_ID"]);
   const clientSecret = nonEmpty(environment["LINEAR_CLIENT_SECRET"]);
   const webhookSecret = nonEmpty(environment["LINEAR_WEBHOOK_SECRET"]);
