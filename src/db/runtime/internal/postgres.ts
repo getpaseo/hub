@@ -47,31 +47,23 @@ class PostgresRuntime implements DatabaseRuntime {
   }
 
   async transaction<T>(operation: (transaction: TransactionHandle) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
-    const connection = new PostgresTransactionHandle(client, this.pool);
-    try {
+    return this.checkout(async (client) => {
+      const connection = new PostgresTransactionHandle(client, this.pool);
       await connection.query("begin");
       try {
         const result = await operation(connection);
         await connection.query("commit");
         return result;
       } catch (error) {
-        try {
-          await connection.query("rollback");
-        } catch (rollbackError) {
-          reportFailure(rollbackError, {
-            operation: "database.postgres.transaction.rollback",
-            component: "database",
-          });
-        }
+        // A failed query means the connection is destroyed on release, which ends the
+        // transaction server-side. A ROLLBACK would only queue behind a stalled statement.
+        if (!this.pool.hasFailed(client)) await rollback(connection);
         // The rollback value originated in this same generic transaction callback.
         // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
         if (error instanceof TransactionRollback) return error.result as T;
         throw error;
       }
-    } finally {
-      client.release();
-    }
+    });
   }
 
   drizzle() {
@@ -89,12 +81,16 @@ class PostgresRuntime implements DatabaseRuntime {
     await this.pool.end();
   }
 
-  async withConnection<T>(operation: (connection: QueryHandle) => Promise<T>): Promise<T> {
+  withConnection<T>(operation: (connection: QueryHandle) => Promise<T>): Promise<T> {
+    return this.checkout((client) => operation(new PostgresQueryHandle(client, this.pool)));
+  }
+
+  private async checkout<T>(operation: (client: PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
     try {
-      return await operation(new PostgresQueryHandle(client, this.pool));
+      return await operation(client);
     } finally {
-      client.release();
+      this.pool.release(client);
     }
   }
 }
@@ -120,6 +116,17 @@ class PostgresQueryHandle implements TransactionHandle {
 }
 
 class PostgresTransactionHandle extends PostgresQueryHandle {}
+
+async function rollback(connection: PostgresTransactionHandle): Promise<void> {
+  try {
+    await connection.query("rollback");
+  } catch (rollbackError) {
+    reportFailure(rollbackError, {
+      operation: "database.postgres.transaction.rollback",
+      component: "database",
+    });
+  }
+}
 
 async function ensureDatabaseExists(connectionString: string): Promise<void> {
   const targetPool = createPool(connectionString);

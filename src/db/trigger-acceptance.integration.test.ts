@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { createPostgresQueryRuntime } from "./test-utils/runtime.js";
+import { setTimeout as delay } from "node:timers/promises";
+import { createPostgresQueryRuntime, createPostgresTestRuntime } from "./test-utils/runtime.js";
 import { createDatabase } from "./test-utils/runtime.js";
 import { activityQuery } from "../activity/query-contract.js";
 
@@ -18,6 +19,35 @@ describe("trigger acceptance persistence", () => {
 
   afterAll(async () => {
     await postgres.stop();
+  }, 120_000);
+
+  it("closes the connection when a webhook acceptance cannot begin its transaction", async () => {
+    const { runtime, database } = await createPostgresTestRuntime(databaseUrl);
+    const admin = await createPostgresQueryRuntime(databaseUrl);
+    try {
+      // The pool hands out its most recently returned client, so this backend serves the
+      // acceptance below. Stopping it makes BEGIN hit the client deadline, like a stalled host.
+      const backend = await runtime.query<{ pid: number }>("select pg_backend_pid() as pid");
+      const pid = String(backend.rows[0]!.pid);
+      await postgres.exec(["kill", "-STOP", pid]);
+      try {
+        await assert.rejects(
+          database.acceptGitHubEvent({
+            installationId: 1,
+            deliveryId: "stalled-begin",
+            source: "github.issues",
+            payload: {},
+            receivedAt: new Date(),
+          }),
+        );
+      } finally {
+        await postgres.exec(["kill", "-CONT", pid]);
+      }
+      assert.equal(await backendEnds(admin, pid), true);
+    } finally {
+      await admin.close();
+      await database.close();
+    }
   }, 120_000);
 
   it("does not resolve another organization when delivery keys collide", async () => {
@@ -215,4 +245,16 @@ function input(organizationId: string, projectId: string) {
     receivedAt: new Date(),
     payload: { authenticatedBy: { kind: "api-key", keyId: `key-${organizationId}` } },
   } as const;
+}
+
+async function backendEnds(
+  admin: Awaited<ReturnType<typeof createPostgresQueryRuntime>>,
+  pid: string,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const found = await admin.query("select 1 from pg_stat_activity where pid = $1", [pid]);
+    if (found.rowCount === 0) return true;
+    await delay(100);
+  }
+  return false;
 }
