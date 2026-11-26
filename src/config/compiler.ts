@@ -43,6 +43,7 @@ const EVENT_NAME = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$/u;
 const DURATION = /^([1-9][0-9]*)(ms|s|m|h)$/u;
 const MAX_DURATION_MS = 24 * 60 * 60_000;
 const INPUT_NAME = /^[a-z][a-z0-9_-]*$/u;
+const GITHUB_TEAM_REFERENCE = /^[^/\s]+\/[^/\s]+$/u;
 const DYNAMIC_INPUT_REFERENCE = /^\$\{\{\s*paseo\.inputs\.([a-z][a-z0-9_-]*)\s*\}\}$/u;
 const EXPRESSION_START = "${{";
 const EXPRESSION_END = "}}";
@@ -115,6 +116,9 @@ const AuthoredTriggerFilterSchema = z
     assignees: z.array(z.string().min(1)).min(1).optional(),
     channels: z.array(z.string().min(1)).optional(),
     from_users: z.array(z.string().min(1)).optional(),
+    from_teams: z
+      .array(z.string().regex(GITHUB_TEAM_REFERENCE, "must be formatted as organization/team-slug"))
+      .optional(),
     /** GitHub repository associations whose holders may invoke the trigger. */
     author_associations: z.array(GitHubAuthorAssociationSchema).min(1).optional(),
     inputs: z.record(z.string(), InputValueSchema).optional(),
@@ -285,6 +289,7 @@ export type CompiledTriggerFilter = Readonly<
     AuthoredTriggerFilter,
     | "channels"
     | "from_users"
+    | "from_teams"
     | "author_associations"
     | "states"
     | "labels"
@@ -293,6 +298,7 @@ export type CompiledTriggerFilter = Readonly<
   > & {
     channels?: readonly string[] | undefined;
     from_users?: readonly string[] | undefined;
+    from_teams?: readonly string[] | undefined;
     author_associations?: readonly GitHubAuthorAssociation[] | undefined;
     states?: readonly string[] | undefined;
     labels?: readonly string[] | undefined;
@@ -1442,6 +1448,10 @@ function validateAuthoredIds(config: AuthoredHubConfig): void {
 }
 
 function validateTriggerLaunchSecurity(trigger: CompiledTrigger): void {
+  const fromTeams = trigger.filters?.from_teams ?? [];
+  if (fromTeams.length > 0 && !trigger.on.startsWith("github.")) {
+    throw new Error(`trigger ${trigger.name} may use filters.from_teams only for GitHub events`);
+  }
   const associations = trigger.filters?.author_associations;
   if (associations !== undefined && !reportsAuthorAssociation(trigger.on)) {
     throw new Error(
@@ -1459,17 +1469,25 @@ function validateTriggerLaunchSecurity(trigger: CompiledTrigger): void {
     }
     return;
   }
-  if ((trigger.filters?.from_users?.length ?? 0) > 0) return;
-  if (!reportsAuthorAssociation(trigger.on)) {
-    throw new Error(
-      `trigger ${trigger.name} requires a non-empty filters.from_users allowlist for externally sourced events`,
-    );
+  if (
+    (trigger.filters?.from_users?.length ?? 0) > 0 ||
+    fromTeams.length > 0 ||
+    associations !== undefined
+  )
+    return;
+  const allowlist = identityAllowlistDescription(trigger.on);
+  throw new Error(
+    `trigger ${trigger.name} requires a non-empty ${allowlist} allowlist for externally sourced events`,
+  );
+}
+
+function identityAllowlistDescription(event: string): string {
+  if (reportsAuthorAssociation(event)) {
+    return "filters.from_users, filters.from_teams, or filters.author_associations";
   }
-  if (associations === undefined) {
-    throw new Error(
-      `trigger ${trigger.name} requires a non-empty filters.from_users or filters.author_associations allowlist for externally sourced events`,
-    );
-  }
+  return event.startsWith("github.")
+    ? "filters.from_users or filters.from_teams"
+    : "filters.from_users";
 }
 
 function assertIdentifier(value: string, kind: string): void {

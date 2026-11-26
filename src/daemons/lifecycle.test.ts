@@ -359,6 +359,197 @@ describe("durable Hub action acknowledgement state", () => {
     }
   });
 
+  it.each([
+    ["archival", "returns"],
+    ["shutdown", "returns"],
+    ["archival", "rejects"],
+    ["shutdown", "rejects"],
+  ] as const)(
+    "releases a recovered watch when %s finishes before watch setup %s",
+    async (boundary, outcome) => {
+      const fixture = await acknowledgementFixture();
+      const watch = fixture.connection.agents.watch.bind(fixture.connection.agents);
+      let previousUnsubscribed = false;
+      const watchingAgent = vi
+        .spyOn(fixture.connection.agents, "watch")
+        .mockImplementationOnce(async (agentId, listener) => {
+          const unsubscribe = await watch(agentId, listener);
+          return () => {
+            previousUnsubscribed = true;
+            unsubscribe();
+          };
+        });
+      await fixture.lifecycle.recoverPendingHubActions(DAEMON_ID);
+      await fixture.connection.emit(toolCall("finish-call", "hub.finish_execution", "completed"));
+      await fixture.connection.emit(turnCompleted());
+
+      let watching!: () => void;
+      const watchStarted = new Promise<void>((resolve) => {
+        watching = resolve;
+      });
+      let releaseWatch!: () => void;
+      const watchGate = new Promise<void>((resolve) => {
+        releaseWatch = resolve;
+      });
+      let unsubscriptions = 0;
+      const error = new Error("replacement watch setup failed");
+      watchingAgent.mockImplementationOnce(async (agentId, listener) => {
+        const unsubscribe = await watch(agentId, listener);
+        watching();
+        await watchGate;
+        if (outcome === "rejects") {
+          unsubscriptions++;
+          unsubscribe();
+          throw error;
+        }
+        return () => {
+          unsubscriptions++;
+          unsubscribe();
+        };
+      });
+      const recovery = fixture.lifecycle.recoverPendingHubActions(DAEMON_ID);
+      const settled = outcome === "rejects" ? assert.rejects(recovery, error) : recovery;
+
+      try {
+        await watchStarted;
+        assert.equal(fixture.lifecycle.activeExecutionObservationCount(), 1);
+        assert.equal(previousUnsubscribed, false);
+        if (boundary === "archival") {
+          await fixture.connection.emit(agentIdle());
+          assert.deepEqual(fixture.connection.actions, ["archive"]);
+          assert.notEqual(
+            (await fixture.database.findAgentExecutionById(EXECUTION_ID))?.hubActionCompletedAt,
+            null,
+          );
+        } else {
+          await fixture.lifecycle.stop();
+        }
+        releaseWatch();
+        await settled;
+
+        assert.equal(fixture.lifecycle.activeExecutionObservationCount(), 0);
+        assert.equal(previousUnsubscribed, true);
+        assert.equal(unsubscriptions, 1);
+      } finally {
+        releaseWatch();
+        await settled;
+        await fixture.lifecycle.stop();
+      }
+    },
+  );
+
+  it("preserves the existing observer after replacement watch setup fails", async () => {
+    const fixture = await acknowledgementFixture();
+    const watch = fixture.connection.agents.watch.bind(fixture.connection.agents);
+    let unsubscriptions = 0;
+    const watchingAgent = vi
+      .spyOn(fixture.connection.agents, "watch")
+      .mockImplementationOnce(async (agentId, listener) => {
+        const unsubscribe = await watch(agentId, listener);
+        return () => {
+          unsubscriptions++;
+          unsubscribe();
+        };
+      });
+
+    try {
+      await fixture.lifecycle.recoverPendingHubActions(DAEMON_ID);
+      const error = new Error("replacement watch setup failed");
+      for (let attempt = 0; attempt < 2; attempt++) {
+        watchingAgent.mockRejectedValueOnce(error);
+        await assert.rejects(fixture.lifecycle.recoverPendingHubActions(DAEMON_ID), error);
+        assert.equal(fixture.lifecycle.activeExecutionObservationCount(), 1);
+        assert.equal(unsubscriptions, 0);
+      }
+
+      await fixture.connection.emit(toolCall("finish-call", "hub.finish_execution", "completed"));
+      await fixture.connection.emit(turnCompleted());
+      await fixture.connection.emit(agentIdle());
+
+      assert.deepEqual(fixture.connection.actions, ["archive"]);
+      const execution = await fixture.database.findAgentExecutionById(EXECUTION_ID);
+      assert.ok(execution);
+      assert.notEqual(execution.hubActionCompletedAt, null);
+      assert.equal(fixture.lifecycle.activeExecutionObservationCount(), 0);
+      assert.equal(unsubscriptions, 1);
+    } finally {
+      await fixture.lifecycle.stop();
+    }
+  });
+
+  it.each([false, true])(
+    "keeps only a valid observer after overlapping failures (existing watch: %s)",
+    async (existingWatch) => {
+      const fixture = await acknowledgementFixture();
+      if (existingWatch) await fixture.lifecycle.recoverPendingHubActions(DAEMON_ID);
+      let firstStarted!: () => void;
+      const firstWatching = new Promise<void>((resolve) => {
+        firstStarted = resolve;
+      });
+      let secondStarted!: () => void;
+      const secondWatching = new Promise<void>((resolve) => {
+        secondStarted = resolve;
+      });
+      let rejectFirst!: (error: Error) => void;
+      const firstWatch = new Promise<() => void>((_resolve, reject) => {
+        rejectFirst = reject;
+      });
+      let rejectSecond!: (error: Error) => void;
+      const secondWatch = new Promise<() => void>((_resolve, reject) => {
+        rejectSecond = reject;
+      });
+      vi.spyOn(fixture.connection.agents, "watch")
+        .mockImplementationOnce(() => {
+          firstStarted();
+          return firstWatch;
+        })
+        .mockImplementationOnce(() => {
+          secondStarted();
+          return secondWatch;
+        });
+      const error = new Error("watch setup failed");
+      const first = assert.rejects(fixture.lifecycle.recoverPendingHubActions(DAEMON_ID), error);
+      await firstWatching;
+      const second = assert.rejects(fixture.lifecycle.recoverPendingHubActions(DAEMON_ID), error);
+
+      try {
+        await secondWatching;
+        rejectFirst(error);
+        await first;
+        rejectSecond(error);
+        await second;
+        assert.equal(fixture.lifecycle.activeExecutionObservationCount(), existingWatch ? 1 : 0);
+        if (existingWatch) {
+          await fixture.connection.emit(
+            toolCall("finish-call", "hub.finish_execution", "completed"),
+          );
+          await fixture.connection.emit(turnCompleted());
+          await fixture.connection.emit(agentIdle());
+          assert.deepEqual(fixture.connection.actions, ["archive"]);
+          assert.equal(fixture.lifecycle.activeExecutionObservationCount(), 0);
+        }
+      } finally {
+        rejectFirst(error);
+        rejectSecond(error);
+        await Promise.all([first, second]);
+        await fixture.lifecycle.stop();
+      }
+    },
+  );
+
+  it("releases recovery ownership when watch setup fails", async () => {
+    const fixture = await acknowledgementFixture();
+    const error = new Error("watch setup failed");
+    vi.spyOn(fixture.connection.agents, "watch").mockRejectedValueOnce(error);
+
+    try {
+      await assert.rejects(fixture.lifecycle.recoverPendingHubActions(DAEMON_ID), error);
+      assert.equal(fixture.lifecycle.activeExecutionObservationCount(), 0);
+    } finally {
+      await fixture.lifecycle.stop();
+    }
+  });
+
   it("defers workflow-owned terminal provider failure notification to the outbox", async () => {
     const database = createMemoryDatabase();
     let failureHooks = 0;

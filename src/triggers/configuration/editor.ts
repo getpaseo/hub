@@ -89,6 +89,9 @@ export function projectTriggerForm(yaml: string): TriggerFormProjection {
   if (!isEditorEvent(event)) {
     return { status: "yaml_only", reason: `The form does not support the ${event} event` };
   }
+  if ((definition.filters?.from_teams?.length ?? 0) > 0) {
+    return { status: "yaml_only", reason: "GitHub team allowlists can only be edited in YAML." };
+  }
   if ("choices" in trigger.run.agent) {
     return { status: "yaml_only", reason: "Agent choices can only be edited in YAML" };
   }

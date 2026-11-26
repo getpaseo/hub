@@ -4,12 +4,18 @@ import type {
 } from "../../config/index.js";
 import type { NormalizedGitHubEvent } from "../../auth/github-events.js";
 import { classifyGitHubEvent } from "./classification.js";
+import type { GitHubTeamMembershipClient } from "./team-membership.js";
 
 type MatchedTriggerDefinition = Pick<CompiledTrigger, "name" | "on" | "filters">;
 
 export interface MatchedTriggerEvent {
   event: NormalizedGitHubEvent;
   trigger: MatchedTriggerDefinition;
+}
+
+export interface GitHubTriggerMatchOptions {
+  connectionId?: string | null;
+  teamMemberships: GitHubTeamMembershipClient;
 }
 
 export function readGitHubInvocationMessage(event: NormalizedGitHubEvent): string {
@@ -41,87 +47,188 @@ export function matchTriggers(
   config: { triggers: readonly MatchedTriggerDefinition[] },
   event: NormalizedGitHubEvent,
   connectionId?: string | null,
-): MatchedTriggerEvent[] {
+): MatchedTriggerEvent[];
+export function matchTriggers(
+  config: { triggers: readonly MatchedTriggerDefinition[] },
+  event: NormalizedGitHubEvent,
+  options: GitHubTriggerMatchOptions,
+): Promise<MatchedTriggerEvent[]>;
+export function matchTriggers(
+  config: { triggers: readonly MatchedTriggerDefinition[] },
+  event: NormalizedGitHubEvent,
+  input?: string | null | GitHubTriggerMatchOptions,
+): MatchedTriggerEvent[] | Promise<MatchedTriggerEvent[]> {
   const classified = classifyGitHubEvent(event);
   const eventNames = new Set([`github.${event.type}`, classified.semanticEvent]);
+
+  if (typeof input !== "object" || input === null) {
+    return matchTriggersWithoutTeams(config, event, classified, eventNames, input);
+  }
+  return matchTriggersWithTeams(config, event, classified, eventNames, input);
+}
+
+function matchTriggersWithoutTeams(
+  config: { triggers: readonly MatchedTriggerDefinition[] },
+  event: NormalizedGitHubEvent,
+  classified: ReturnType<typeof classifyGitHubEvent>,
+  eventNames: ReadonlySet<string | undefined>,
+  connectionId: string | null | undefined,
+): MatchedTriggerEvent[] {
   const matches: MatchedTriggerEvent[] = [];
 
   for (const trigger of config.triggers) {
     if (
       !eventNames.has(trigger.on) ||
-      !matchesFilter(classified, trigger.filters, event, connectionId)
+      !matchesStaticFilter(classified, trigger.filters, event, connectionId) ||
+      !admitsWithoutTeamLookup(trigger.filters, classified.actor)
     ) {
       continue;
     }
-
     matches.push({ event, trigger });
   }
 
   return matches;
 }
 
-function matchesFilter(
+async function matchTriggersWithTeams(
+  config: { triggers: readonly MatchedTriggerDefinition[] },
+  event: NormalizedGitHubEvent,
+  classified: ReturnType<typeof classifyGitHubEvent>,
+  eventNames: ReadonlySet<string | undefined>,
+  options: GitHubTriggerMatchOptions,
+): Promise<MatchedTriggerEvent[]> {
+  const matches: MatchedTriggerEvent[] = [];
+  const membershipChecks = new Map<string, Promise<boolean>>();
+
+  for (const trigger of config.triggers) {
+    if (!eventNames.has(trigger.on)) continue;
+    if (!matchesStaticFilter(classified, trigger.filters, event, options.connectionId)) continue;
+    if (admitsWithoutTeamLookup(trigger.filters, classified.actor)) {
+      matches.push({ event, trigger });
+      continue;
+    }
+    if (trigger.filters === undefined || classified.actor.length === 0) continue;
+    if (
+      !(await matchesTeamFilter(
+        event,
+        classified.actor,
+        trigger.filters.from_teams,
+        options.teamMemberships,
+        membershipChecks,
+      ))
+    ) {
+      continue;
+    }
+    matches.push({ event, trigger });
+  }
+
+  return matches;
+}
+
+function matchesStaticFilter(
   classified: ReturnType<typeof classifyGitHubEvent>,
   filter: TriggerFilter | undefined,
   event: NormalizedGitHubEvent,
-  connectionId?: string | null,
+  connectionId: string | null | undefined,
 ): boolean {
-  if (filter === undefined) {
-    return false;
-  }
-
-  if (!admitsActor(classified, filter)) {
-    return false;
-  }
-
-  if (filter.connectionId !== undefined && filter.connectionId !== connectionId) {
-    return false;
-  }
-
-  const repo = filter["repo"];
-  if (typeof repo === "string" && repo !== event.repo) {
-    return false;
-  }
-
-  const resourceId = filter["resourceId"];
-  if (typeof resourceId === "string" && resourceId !== String(event.repositoryId)) {
-    return false;
-  }
-
-  if (!matchesText(classified.text, filter)) {
-    return false;
-  }
-
-  const label = readStringFilter(filter, "label");
-  if (label !== undefined && !sameLabel(label, classified.changedLabel)) {
-    return false;
-  }
-
-  const labels = filter.labels;
-  if (
-    labels !== undefined &&
-    !labels.every((labelName) => classified.labels.some((current) => sameLabel(labelName, current)))
-  ) {
-    return false;
-  }
-
-  return true;
+  if (filter === undefined) return false;
+  return (
+    hasIdentityAllowlist(filter) &&
+    matchesAuthorAssociation(classified, filter) &&
+    matchesConnection(filter, connectionId) &&
+    matchesRepository(filter, event) &&
+    matchesText(classified.text, filter) &&
+    matchesLabels(filter, classified)
+  );
 }
 
-/**
- * Who may invoke the trigger. A trigger names people, repository associations, or both; each one
- * it declares narrows the audience, and a trigger that declares neither admits nobody.
- */
-function admitsActor(
+function hasIdentityAllowlist(filter: TriggerFilter): boolean {
+  return (
+    (filter.from_users?.length ?? 0) > 0 ||
+    (filter.from_teams?.length ?? 0) > 0 ||
+    (filter.author_associations?.length ?? 0) > 0
+  );
+}
+
+function matchesConnection(
+  filter: TriggerFilter,
+  connectionId: string | null | undefined,
+): boolean {
+  return filter.connectionId === undefined || filter.connectionId === connectionId;
+}
+
+function matchesRepository(filter: TriggerFilter, event: NormalizedGitHubEvent): boolean {
+  const repo = filter["repo"];
+  if (typeof repo === "string" && repo !== event.repo) return false;
+
+  const resourceId = filter["resourceId"];
+  return typeof resourceId !== "string" || resourceId === String(event.repositoryId);
+}
+
+function matchesLabels(
+  filter: TriggerFilter,
+  classified: ReturnType<typeof classifyGitHubEvent>,
+): boolean {
+  const label = readStringFilter(filter, "label");
+  if (label !== undefined && !sameLabel(label, classified.changedLabel)) return false;
+
+  return (
+    filter.labels === undefined ||
+    filter.labels.every((labelName) =>
+      classified.labels.some((current) => sameLabel(labelName, current)),
+    )
+  );
+}
+
+/** Association-only policies have already passed the static gate; named users and teams are ORed. */
+function admitsWithoutTeamLookup(filter: TriggerFilter | undefined, actor: string): boolean {
+  if (filter === undefined) return false;
+  if (filter.from_users === undefined && filter.from_teams === undefined) {
+    return filter.author_associations !== undefined;
+  }
+  const fromUsers = filter.from_users;
+  return fromUsers?.includes("*") === true || fromUsers?.includes(actor) === true;
+}
+
+async function matchesTeamFilter(
+  event: NormalizedGitHubEvent,
+  actor: string,
+  references: readonly string[] | undefined,
+  teamMemberships: GitHubTeamMembershipClient,
+  membershipChecks: Map<string, Promise<boolean>>,
+): Promise<boolean> {
+  if (references === undefined) return false;
+
+  for (const reference of references) {
+    const team = parseTeamReference(reference);
+    if (team === undefined) continue;
+    const key = [event.installationId, team.organization, team.slug, actor].join("\u0000");
+    let membership = membershipChecks.get(key);
+    if (membership === undefined) {
+      membership = teamMemberships.isActiveMember({
+        installationId: event.installationId,
+        organization: team.organization,
+        teamSlug: team.slug,
+        username: actor,
+      });
+      membershipChecks.set(key, membership);
+    }
+    try {
+      if (await membership) return true;
+    } catch {
+      // Membership checks are authorization decisions. An unavailable client denies the trigger.
+    }
+  }
+
+  return false;
+}
+
+/** A declared repository-association filter narrows either user or team authorization. */
+function matchesAuthorAssociation(
   classified: ReturnType<typeof classifyGitHubEvent>,
   filter: TriggerFilter,
 ): boolean {
-  const users = filter.from_users;
   const associations = filter.author_associations;
-  if (users === undefined && associations === undefined) return false;
-  if (users !== undefined && !users.includes("*") && !users.includes(classified.actor)) {
-    return false;
-  }
   return (
     associations === undefined ||
     (classified.actorAssociation !== undefined &&
@@ -151,4 +258,19 @@ function sameLabel(expected: string, actual: string | undefined): boolean {
     actual !== undefined &&
     expected.localeCompare(actual, undefined, { sensitivity: "accent" }) === 0
   );
+}
+
+function parseTeamReference(value: string): { organization: string; slug: string } | undefined {
+  const parts = value.split("/");
+  const organization = parts.length === 2 ? parts[0] : undefined;
+  const slug = parts.length === 2 ? parts[1] : undefined;
+  if (
+    organization === undefined ||
+    organization.length === 0 ||
+    slug === undefined ||
+    slug.length === 0
+  ) {
+    return undefined;
+  }
+  return { organization, slug };
 }

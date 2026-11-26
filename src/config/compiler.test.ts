@@ -375,6 +375,45 @@ describe("workflow compiler", () => {
       /filters\.from_users/iu,
     );
   });
+  it("supports GitHub team trigger allowlists and rejects invalid team filter uses", () => {
+    const raw = configuration();
+    const trigger = raw.triggers[0]!;
+    const githubTrigger = {
+      ...trigger,
+      on: "github.issue_comment",
+      filters: { from_teams: ["getpaseo/maintainers"] },
+    };
+
+    assert.deepEqual(compileHubConfig({ ...raw, triggers: [githubTrigger] }).triggers[0]?.filters, {
+      from_teams: ["getpaseo/maintainers"],
+    });
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...raw,
+          triggers: [{ ...trigger, on: "slack.mention", filters: githubTrigger.filters }],
+        }),
+      /filters\.from_teams only for GitHub events/iu,
+    );
+    assert.throws(
+      () =>
+        compileHubConfig({
+          ...raw,
+          triggers: [
+            {
+              ...githubTrigger,
+              filters: { from_teams: ["maintainers"] },
+            },
+          ],
+        }),
+      /organization\/team-slug/iu,
+    );
+    assert.throws(
+      () => compileHubConfig({ ...raw, triggers: [{ ...trigger, on: "github.issue_comment" }] }),
+      /filters\.from_users.*filters\.from_teams/iu,
+    );
+  });
+
   it("accepts a GitHub repository association as the audience and keeps it off events that report none", () => {
     const raw = configuration();
     const trigger = raw.triggers[0]!;
@@ -390,7 +429,7 @@ describe("workflow compiler", () => {
           ...raw,
           triggers: [{ ...trigger, on: "github.issue_comment_created", filters: {} }],
         }),
-      /filters\.from_users or filters\.author_associations/iu,
+      /filters\.from_users.*filters\.author_associations/iu,
     );
     assert.throws(
       () =>

@@ -51,6 +51,9 @@ export const TriggerFilterSchema = z
     assignees: z.array(z.string().min(1)).min(1).optional(),
     channels: z.array(z.string().min(1)).optional(),
     from_users: z.array(z.string().min(1)).optional(),
+    from_teams: z
+      .array(z.string().regex(/^[^/\s]+\/[^/\s]+$/u, "must be formatted as organization/team-slug"))
+      .optional(),
     /** GitHub repository associations whose holders may invoke the trigger. */
     author_associations: z.array(GitHubAuthorAssociationSchema).min(1).optional(),
     inputs: z.record(z.string(), InputValueSchema).optional(),

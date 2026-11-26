@@ -159,6 +159,7 @@ export class DaemonDispatchLifecycle {
   private readonly reconcilingHubActions = new Map<string, Promise<void>>();
   private readonly daemonRecoveries = new Set<Promise<void>>();
   private readonly executionSubscriptions = new Map<string, () => void>();
+  private readonly releasedRecoverySubscriptions = new WeakSet<() => void>();
   private stopping = false;
 
   constructor(private readonly options: DaemonDispatchLifecycleOptions) {
@@ -1058,13 +1059,52 @@ export class DaemonDispatchLifecycle {
     daemonId: string,
     connection: DaemonConnection,
   ): Promise<void> {
-    const execution = await this.options.database.findAgentExecutionById(executionId);
-    if (!execution?.daemonAgentId) return;
-    const unsubscribe = await connection.agents.watch(execution.daemonAgentId, (event) =>
-      this.observeSessionEvent(executionId, daemonId, event),
-    );
-    this.executionSubscriptions.get(executionId)?.();
-    this.executionSubscriptions.set(executionId, unsubscribe);
+    if (this.stopping) return;
+    let previous = this.executionSubscriptions.get(executionId);
+    let unsubscribe: (() => void) | undefined;
+    let released = false;
+    const release = () => {
+      released = true;
+      this.releasedRecoverySubscriptions.add(release);
+      previous?.();
+      previous = undefined;
+      unsubscribe?.();
+      unsubscribe = undefined;
+    };
+    // A watch can deliver a snapshot before returning its unsubscribe handle. Own cleanup first
+    // so archival, replacement, or shutdown also releases a watch that is still being established.
+    this.executionSubscriptions.set(executionId, release);
+    try {
+      const execution = await this.options.database.findAgentExecutionById(executionId);
+      if (released || !execution?.daemonAgentId || execution.hubActionCompletedAt !== null) return;
+      unsubscribe = await connection.agents.watch(execution.daemonAgentId, (event) =>
+        this.observeSessionEvent(executionId, daemonId, event),
+      );
+      previous?.();
+      previous = undefined;
+    } catch (error) {
+      if (
+        !released &&
+        previous !== undefined &&
+        !this.releasedRecoverySubscriptions.has(previous)
+      ) {
+        if (this.executionSubscriptions.get(executionId) === release) {
+          this.executionSubscriptions.set(executionId, previous);
+        } else {
+          // A newer recovery still owns this callback as its previous observation.
+          unsubscribe = previous;
+        }
+        previous = undefined;
+      }
+      throw error;
+    } finally {
+      if (released || unsubscribe === undefined) {
+        release();
+        if (this.executionSubscriptions.get(executionId) === release) {
+          this.executionSubscriptions.delete(executionId);
+        }
+      }
+    }
   }
 
   async failPendingExecutionsForDisconnectedMachine(
