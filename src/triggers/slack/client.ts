@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { reportFailure } from "../../failures/index.js";
+import { reportFailure, UpstreamFailure, type FailureKind } from "../../failures/index.js";
 
 const SlackApiResponseSchema = z
   .object({ ok: z.boolean(), error: z.string().optional() })
@@ -103,16 +103,55 @@ export interface SlackBotClient {
   }): Promise<Response>;
 }
 
-/** Carries Slack's error code, which Hub logs; the message is never logged. */
-export class SlackApiError extends Error {
+/**
+ * Slack's answer to a refused call. Hub logs the code; the message is never logged. The code
+ * decides the failure kind, so a revoked token or a channel the bot left is not retried.
+ */
+export class SlackApiError extends UpstreamFailure {
   readonly code: string;
 
-  constructor(error: string | undefined) {
+  constructor(error: string | undefined, options: { retryAfterMs?: number } = {}) {
     const code = error ?? "unknown_error";
-    super(`Slack API ${code}`);
+    super(`Slack API ${code}`, SLACK_ERROR_KINDS.get(code) ?? "internal", options);
     this.name = "SlackApiError";
     this.code = code;
   }
+}
+
+const SLACK_ERROR_KINDS = new Map<string, FailureKind>([
+  ["ratelimited", "rateLimited"],
+  ["invalid_auth", "credentialsRejected"],
+  ["not_authed", "credentialsRejected"],
+  ["account_inactive", "credentialsRejected"],
+  ["token_revoked", "credentialsRejected"],
+  ["token_expired", "credentialsRejected"],
+  ["missing_scope", "permissionMissing"],
+  ["no_permission", "permissionMissing"],
+  ["not_allowed_token_type", "permissionMissing"],
+  ["not_in_channel", "forbidden"],
+  ["is_archived", "forbidden"],
+  ["restricted_action", "forbidden"],
+  ["channel_not_found", "notFound"],
+  ["message_not_found", "notFound"],
+  ["invalid_name", "validation"],
+  ["too_many_reactions", "validation"],
+]);
+
+function workspaceNotConnected(): UpstreamFailure {
+  return new UpstreamFailure("Slack workspace is not connected", "credentialsRejected");
+}
+
+/** Slack answers a rate-limited call with HTTP 429 and the seconds to wait in `Retry-After`. */
+function throwForHttpStatus(response: Response): void {
+  if (response.ok) return;
+  if (response.status === 429) {
+    const seconds = Number(response.headers.get("retry-after"));
+    throw new SlackApiError(
+      "ratelimited",
+      Number.isFinite(seconds) && seconds > 0 ? { retryAfterMs: seconds * 1_000 } : {},
+    );
+  }
+  throw new Error(`Slack API HTTP ${response.status}`);
 }
 
 export function createSlackBotClient(options: {
@@ -130,7 +169,7 @@ export function createSlackBotClient(options: {
     settledErrors: readonly string[] = [],
   ): Promise<void> {
     const token = await options.tokenForWorkspace(organizationId, teamId);
-    if (token === undefined) throw new Error("Slack workspace is not connected");
+    if (token === undefined) throw workspaceNotConnected();
     const response = await request(`https://slack.com/api/${method}`, {
       method: "POST",
       headers: {
@@ -140,7 +179,7 @@ export function createSlackBotClient(options: {
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(options.requestTimeoutMs ?? SLACK_API_TIMEOUT_MS),
     });
-    if (!response.ok) throw new Error(`Slack API HTTP ${response.status}`);
+    throwForHttpStatus(response);
     const result = SlackApiResponseSchema.parse(await response.json());
     if (!result.ok && !settledErrors.includes(result.error ?? "")) {
       throw new SlackApiError(result.error);
@@ -154,7 +193,7 @@ export function createSlackBotClient(options: {
     query: Record<string, string>,
   ): Promise<unknown> {
     const token = await options.tokenForWorkspace(organizationId, teamId);
-    if (token === undefined) throw new Error("Slack workspace is not connected");
+    if (token === undefined) throw workspaceNotConnected();
     const url = new URL(`https://slack.com/api/${method}`);
     for (const [name, value] of Object.entries(query)) url.searchParams.set(name, value);
     const response = await request(url, {
@@ -162,7 +201,7 @@ export function createSlackBotClient(options: {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(options.requestTimeoutMs ?? SLACK_API_TIMEOUT_MS),
     });
-    if (!response.ok) throw new Error(`Slack API HTTP ${response.status}`);
+    throwForHttpStatus(response);
     return response.json();
   }
 
@@ -241,7 +280,7 @@ export function createSlackBotClient(options: {
     fileId: string;
   }): Promise<Response> {
     const token = await options.tokenForWorkspace(input.organizationId, input.teamId);
-    if (token === undefined) throw new Error("Slack workspace is not connected");
+    if (token === undefined) throw workspaceNotConnected();
     const result = SlackFileInfoSchema.parse(
       await queryJson(input.organizationId, input.teamId, "files.info", { file: input.fileId }),
     );

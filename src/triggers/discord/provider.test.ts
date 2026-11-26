@@ -7,6 +7,8 @@ import { MemoryDiscordBotClient } from "./memory-bot.js";
 import { createDiscordTriggerProvider } from "./provider.js";
 import type { NormalizedDiscordMessageEvent } from "./events.js";
 import { isAcceptedTriggerProviderMatch } from "../index.js";
+import { DiscordAPIError, HTTPError } from "discord.js";
+import { retryAdvice } from "../../failures/index.js";
 
 describe("Discord Phase 1 trigger provider", () => {
   it("explains a monthly execution denial in the originating thread", async () => {
@@ -585,6 +587,50 @@ describe("Discord Phase 1 trigger provider", () => {
     );
   });
 
+  it.each([
+    {
+      name: "Missing Permissions",
+      error: discordApiError(403, 50013),
+      retryable: false,
+    },
+    { name: "Unknown Channel", error: discordApiError(404, 10003), retryable: false },
+    { name: "Missing Access", error: discordApiError(403, 50001), retryable: false },
+    {
+      name: "an outage",
+      error: new HTTPError(503, "Service Unavailable", "PUT", "https://discord.com/api", {}),
+      retryable: true,
+    },
+  ])(
+    "tells terminal-notification retry whether Discord's $name can succeed later",
+    async ({ error, retryable }) => {
+      const { project, revision, store } = await activeConfiguration();
+      const provider = createDiscordTriggerProvider({
+        configurationStoreForProject: () => store,
+        bot: new FailingDiscordBotClient({
+          selfUserId: "900",
+          failReactionEmoji: "✅",
+          reactionError: error,
+        }),
+      });
+      const match = (await provider.match(external(project.id, revision.id, event())))[0];
+      if (!isAcceptedTriggerProviderMatch(match)) throw new Error("expected accepted match");
+
+      const thrown = await provider.onAgentExecutionCompleted!(
+        match.triggerContext,
+        match.outputContext,
+        {
+          status: "succeeded",
+        },
+      ).then(
+        () => undefined,
+        (rejection: unknown) => rejection,
+      );
+
+      assert.equal(thrown, error);
+      assert.equal(retryAdvice(thrown).retryable, retryable);
+    },
+  );
+
   it("propagates terminal Discord reaction and notice failures", async () => {
     const { project, revision, store } = await activeConfiguration();
     const reactionBot = new FailingDiscordBotClient({
@@ -638,19 +684,22 @@ class FailingDiscordBotClient extends MemoryDiscordBotClient {
   constructor(
     options: ConstructorParameters<typeof MemoryDiscordBotClient>[0] & {
       failReactionEmoji?: string;
+      reactionError?: Error;
       failMessages?: boolean;
     },
   ) {
     super(options);
     this.failReactionEmoji = options.failReactionEmoji;
+    this.reactionError = options.reactionError ?? new Error("discord reaction failed");
     this.failMessages = options.failMessages ?? false;
   }
 
   private readonly failReactionEmoji: string | undefined;
+  private readonly reactionError: Error;
   private readonly failMessages: boolean;
 
   override async createReaction(input: Parameters<MemoryDiscordBotClient["createReaction"]>[0]) {
-    if (input.emoji === this.failReactionEmoji) throw new Error("discord reaction failed");
+    if (input.emoji === this.failReactionEmoji) throw this.reactionError;
     await super.createReaction(input);
   }
 
@@ -804,4 +853,15 @@ function event(
     attachments: overrides.attachments ?? [],
     referencedMessage: overrides.referencedMessage ?? null,
   };
+}
+
+function discordApiError(status: number, code: number): DiscordAPIError {
+  return new DiscordAPIError(
+    { code, message: "refused" },
+    code,
+    status,
+    "PUT",
+    "https://discord.com/api/v10/channels/200/messages/201/reactions",
+    {},
+  );
 }

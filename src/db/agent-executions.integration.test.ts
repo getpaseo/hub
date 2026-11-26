@@ -15,6 +15,7 @@ import type { DurableProviderEvent } from "../db/types.js";
 import type { RejectedTriggerProviderMatch, TriggerProviderMatch } from "../triggers/index.js";
 import { createDurableWorkflowHandler } from "../workflows/engine.js";
 import { createUnlimitedEntitlementsService } from "../entitlements/test-utils.js";
+import { UpstreamFailure } from "../failures/index.js";
 
 describe("agent execution PostgreSQL repository", () => {
   let postgres: StartedPostgreSqlContainer;
@@ -778,11 +779,11 @@ describe("agent execution PostgreSQL repository", () => {
     }
   });
 
-  it("retries a failed terminal workflow notification and stops after delivery", async () => {
+  it("retries a failed terminal workflow notification after its backoff and stops after delivery", async () => {
     const fixture = await executionFixture(postgres);
     let now = new Date("2026-08-05T12:00:00.000Z");
     const delivered: string[] = [];
-    let failFirst = true;
+    let failure: Error | undefined = new Error("provider unavailable");
     const engines: Array<ReturnType<typeof createDurableWorkflowHandler>["engine"]> = [];
     try {
       const trigger = await insertWorkflowTrigger(
@@ -817,28 +818,35 @@ describe("agent execution PostgreSQL repository", () => {
           leaseMs: 1_000,
           onWorkflowRunTerminal: async (terminalRun) => {
             delivered.push(terminalRun.id);
-            if (failFirst) {
-              failFirst = false;
-              throw new Error("provider unavailable");
-            }
+            const current = failure;
+            failure = undefined;
+            if (current !== undefined) throw current;
           },
         }).engine;
         engines.push(engine);
         return engine;
       };
+      const pass = async () => {
+        const engine = createEngine();
+        await engine.processAvailable();
+        await engine.stop();
+      };
 
-      const firstEngine = createEngine();
-      await firstEngine.processAvailable();
-      await firstEngine.stop();
+      await pass();
       assert.deepEqual(delivered, [run.id]);
       const failedDelivery = await fixture.database.findTriggerRunById(run.id);
       assert.equal(failedDelivery?.outcome, "accepted");
       assert.equal(failedDelivery.terminalNotificationDeliveredAt, null);
+      assert.equal(failedDelivery.terminalNotificationAttempts, 1);
+      assert.ok(failedDelivery.terminalNotificationNextAttemptAt !== null);
+      assert.ok(failedDelivery.terminalNotificationNextAttemptAt > now);
 
       now = new Date("2026-08-05T12:00:01.001Z");
-      const retryEngine = createEngine();
-      await retryEngine.processAvailable();
-      await retryEngine.stop();
+      await pass();
+      assert.deepEqual(delivered, [run.id]);
+
+      now = new Date("2026-08-05T12:00:15.001Z");
+      await pass();
 
       const persisted = await fixture.database.findTriggerRunById(run.id);
 
@@ -848,6 +856,74 @@ describe("agent execution PostgreSQL repository", () => {
           ? persisted.terminalNotificationDeliveredAt !== null
           : false,
         true,
+      );
+    } finally {
+      for (const engine of engines) await engine.stop();
+      await fixture.database.close();
+    }
+  });
+
+  it("abandons a terminal workflow notification that the provider refuses permanently", async () => {
+    const fixture = await executionFixture(postgres);
+    let now = new Date("2026-08-05T12:00:00.000Z");
+    const delivered: string[] = [];
+    const engines: Array<ReturnType<typeof createDurableWorkflowHandler>["engine"]> = [];
+    try {
+      const trigger = await insertWorkflowTrigger(
+        fixture.database,
+        fixture.execution.configurationRevisionId,
+        "postgres-terminal-abandon",
+      );
+      const run = (
+        await fixture.database.createAcceptedTriggerRun({
+          organizationId: trigger.event.organizationId,
+          projectId: trigger.event.projectId,
+          configurationRevisionId: fixture.execution.configurationRevisionId,
+          providerEventReceiptId: trigger.event.providerEventReceiptId,
+          configuredTriggerName: "one-step",
+          prompt: "raw",
+          inputs: {},
+          triggerContext: { provider: "test" },
+          outputContext: { provider: "test" },
+          deadlineAt: new Date("2026-08-05T13:00:00.000Z"),
+          stepIds: ["step-one"],
+          createdAt: now,
+        })
+      ).run;
+      await fixture.database.succeedTriggerRun(run.id);
+
+      const pass = async () => {
+        const engine = createDurableWorkflowHandler({
+          database: fixture.database,
+          entitlements: createUnlimitedEntitlementsService(),
+          providers: [],
+          now: () => now,
+          leaseMs: 1_000,
+          onWorkflowRunTerminal: async (terminalRun) => {
+            delivered.push(terminalRun.id);
+            throw new UpstreamFailure("Slack API not_in_channel", "forbidden");
+          },
+        }).engine;
+        engines.push(engine);
+        await engine.processAvailable();
+        await engine.stop();
+      };
+
+      await pass();
+      for (let hour = 1; hour <= 4; hour += 1) {
+        now = new Date(Date.parse("2026-08-05T12:00:00.000Z") + hour * 3_600_000);
+        await pass();
+      }
+
+      const abandoned = await fixture.database.findTriggerRunById(run.id);
+      assert.deepEqual(delivered, [run.id]);
+      assert.equal(abandoned?.outcome, "accepted");
+      assert.equal(abandoned.terminalNotificationDeliveredAt, null);
+      assert.equal(abandoned.terminalNotificationAttempts, 1);
+      assert.equal(abandoned.terminalNotificationNextAttemptAt, null);
+      assert.deepEqual(
+        abandoned.terminalNotificationAbandonedAt,
+        new Date("2026-08-05T12:00:00.000Z"),
       );
     } finally {
       for (const engine of engines) await engine.stop();

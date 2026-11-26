@@ -34,6 +34,8 @@ import {
 } from "../triggers/github/provider.js";
 import { notifyAgentExecutionCompleted } from "../triggers/lifecycle.js";
 import { runWithFailureTracking } from "../failures/index.js";
+import { createSlackBotClient } from "../triggers/slack/client.js";
+import { createSlackTriggerProvider } from "../triggers/slack/provider.js";
 import { createLogger } from "../logger.js";
 import { assertOneFailure, FailureLogStream } from "../test-utils/failure-logs.js";
 
@@ -318,6 +320,8 @@ describe("durable multi-step workflow engine", () => {
     "missing reaction",
     "transport",
     "429",
+    "403 rate limit",
+    "403 secondary rate limit",
     "500",
     "401",
     "403",
@@ -350,19 +354,19 @@ describe("durable multi-step workflow engine", () => {
             status = 404;
           } else if (unavailable && scenario === "transport") {
             throw new TypeError("fetch failed");
-          } else if (unavailable && ["429", "500", "401", "403"].includes(scenario)) {
-            status = Number(scenario);
+          } else if (unavailable && ["429", "500", "401", "403"].includes(scenario.slice(0, 3))) {
+            status = Number(scenario.slice(0, 3));
           } else {
             status = 201;
           }
           let body: unknown = { id: 2 };
-          if (status >= 400) body = { message: "unavailable" };
+          if (status >= 400) body = { message: githubFailureMessage(scenario) };
           else if (token)
             body = {
               token: "test-token",
               expires_at: new Date(now.getTime() + 3_600_000).toISOString(),
             };
-          return Response.json(body, { status, headers: { "retry-after": "0" } });
+          return Response.json(body, { status, headers: githubFailureHeaders(scenario) });
         },
       });
       const provider = createGitHubTriggerProvider({
@@ -427,17 +431,38 @@ describe("durable multi-step workflow engine", () => {
           fixture.providerEventReceiptId,
         );
         assert.ok(run);
-        const retryable = !scenario.startsWith("missing");
-        if (retryable) {
+        const settled = scenario.startsWith("missing");
+        const permanent = scenario === "401" || scenario === "403";
+        if (permanent) {
+          const abandoned = await fixture.database.findTriggerRunById(run.id);
+          assert.ok(abandoned?.outcome === "accepted");
+          assert.equal(abandoned.terminalNotificationDeliveredAt, null);
+          assert.notEqual(abandoned.terminalNotificationAbandonedAt, null);
+          assert.equal(abandoned.terminalNotificationAttempts, 1);
+          const failedRequests = requests.length;
+          unavailable = false;
+          for (let hour = 0; hour < 4; hour += 1) {
+            now = new Date(now.getTime() + 3_600_000);
+            await drain();
+          }
+          assert.equal(requests.length, failedRequests);
+          assert.deepEqual(
+            logs.records().map((record) => record["operation"]),
+            ["workflow.notification.terminal.abandon"],
+          );
+          return;
+        }
+        if (!settled) {
           const pending = await fixture.database.findTriggerRunById(run.id);
           assert.ok(pending?.outcome === "accepted");
           assert.equal(pending.terminalNotificationDeliveredAt, null);
+          assert.equal(pending.terminalNotificationAbandonedAt, null);
           assert.ok(logs.records().length > 0);
           const failedRequests = requests.length;
           await drain();
           assert.equal(requests.length, failedRequests);
           unavailable = false;
-          now = new Date(now.getTime() + 1_001);
+          now = new Date(now.getTime() + 15_001);
           await drain();
           assert.ok(requests.length > failedRequests);
         }
@@ -448,7 +473,7 @@ describe("durable multi-step workflow engine", () => {
           delivered.reactionState,
           ["missing comment", "missing installation"].includes(scenario) ? null : { reactionId: 2 },
         );
-        if (!retryable) assert.deepEqual(logs.records(), []);
+        if (settled) assert.deepEqual(logs.records(), []);
         const settledRequests = requests.length;
         await engine.stop();
         ({ engine } = start());
@@ -457,7 +482,7 @@ describe("durable multi-step workflow engine", () => {
           await drain();
         }
         assert.equal(requests.length, settledRequests);
-        if (!retryable) assert.deepEqual(logs.records(), []);
+        if (settled) assert.deepEqual(logs.records(), []);
       } finally {
         await engine.stop();
       }
@@ -533,6 +558,10 @@ describe("durable multi-step workflow engine", () => {
 
     now = new Date("2026-08-06T12:00:01.001Z");
     await engine.processAvailable();
+    assert.deepEqual(delivered, [run.id]);
+
+    now = new Date("2026-08-06T12:00:15.001Z");
+    await engine.processAvailable();
     assert.deepEqual(delivered, [run.id, run.id]);
     const completedDelivery = await fixture.database.findTriggerRunById(run.id);
     assert.equal(
@@ -541,6 +570,100 @@ describe("durable multi-step workflow engine", () => {
         : false,
       true,
     );
+  });
+
+  it("waits for Slack's Retry-After on a terminal notification and abandons once the attempt cap is reached", async () => {
+    const delivery = await slackTerminalDelivery(() =>
+      Response.json(
+        { ok: false, error: "ratelimited" },
+        { status: 429, headers: { "retry-after": "120" } },
+      ),
+    );
+    try {
+      await delivery.drain();
+      assert.equal(delivery.checkmarkCalls(), 1);
+
+      await delivery.advance(119_999);
+      assert.equal(delivery.checkmarkCalls(), 1);
+      await delivery.advance(1);
+      assert.equal(delivery.checkmarkCalls(), 2);
+
+      for (let hour = 0; hour < 24; hour += 1) await delivery.advance(3_600_000);
+      assert.equal(delivery.checkmarkCalls(), 8);
+
+      const run = await delivery.run();
+      assert.equal(run.terminalNotificationDeliveredAt, null);
+      assert.notEqual(run.terminalNotificationAbandonedAt, null);
+      assert.equal(run.terminalNotificationAttempts, 8);
+      assert.equal(delivery.abandonmentLogs().length, 1);
+      assert.equal(delivery.abandonmentLogs()[0]!["failureKind"], "rateLimited");
+    } finally {
+      await delivery.stop();
+    }
+  });
+
+  it.each(["not_in_channel", "token_revoked", "missing_scope", "invalid_auth"])(
+    "abandons a terminal notification after one attempt when Slack answers %s",
+    async (code) => {
+      const delivery = await slackTerminalDelivery(() => Response.json({ ok: false, error: code }));
+      try {
+        await delivery.drain();
+        for (let hour = 0; hour < 24; hour += 1) await delivery.advance(3_600_000);
+
+        assert.equal(delivery.checkmarkCalls(), 1);
+        const run = await delivery.run();
+        assert.equal(run.terminalNotificationDeliveredAt, null);
+        assert.notEqual(run.terminalNotificationAbandonedAt, null);
+        assert.equal(run.terminalNotificationAttempts, 1);
+        assert.equal(delivery.abandonmentLogs().length, 1);
+      } finally {
+        await delivery.stop();
+      }
+    },
+  );
+
+  it("abandons a terminal notification after one attempt when the Slack workspace is disconnected", async () => {
+    const delivery = await slackTerminalDelivery(() => Response.json({ ok: true }), {
+      connected: false,
+    });
+    try {
+      await delivery.drain();
+      for (let hour = 0; hour < 24; hour += 1) await delivery.advance(3_600_000);
+
+      const run = await delivery.run();
+      assert.equal(run.terminalNotificationAttempts, 1);
+      assert.notEqual(run.terminalNotificationAbandonedAt, null);
+    } finally {
+      await delivery.stop();
+    }
+  });
+
+  it("backs off a transient Slack failure and delivers the terminal notification later", async () => {
+    let failing = true;
+    const delivery = await slackTerminalDelivery(() =>
+      failing ? new Response("unavailable", { status: 503 }) : Response.json({ ok: true }),
+    );
+    try {
+      await delivery.drain();
+      assert.equal(delivery.checkmarkCalls(), 1);
+
+      await delivery.advance(5_000);
+      assert.equal(delivery.checkmarkCalls(), 1);
+
+      failing = false;
+      await delivery.advance(60_000);
+      assert.equal(delivery.checkmarkCalls(), 2);
+
+      const run = await delivery.run();
+      assert.notEqual(run.terminalNotificationDeliveredAt, null);
+      assert.equal(run.terminalNotificationAbandonedAt, null);
+      assert.equal(delivery.abandonmentLogs().length, 0);
+
+      for (let hour = 0; hour < 4; hour += 1) await delivery.advance(3_600_000);
+      assert.equal(delivery.checkmarkCalls(), 2);
+    } finally {
+      await delivery.stop();
+    }
   });
 
   it("does not lose a terminal notification requested during an empty recovery pass", async () => {
@@ -2277,4 +2400,113 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readUnknownArray(value: unknown): readonly unknown[] | undefined {
   return Array.isArray(value) ? value : undefined;
+}
+
+/**
+ * One accepted run whose terminal notification goes through the real Slack provider and Web API
+ * client. `respond` answers every `reactions.add` call; `reactions.remove` always succeeds.
+ */
+async function slackTerminalDelivery(
+  respond: () => Response,
+  options: { connected?: boolean } = {},
+) {
+  const fixture = await workflowFixture({ rawConfiguration: allSkippedConfiguration() });
+  let now = new Date(Date.now() + 60_000);
+  const slackMethods: string[] = [];
+  const logs = new FailureLogStream();
+  const logger = createLogger(logs);
+  const client = createSlackBotClient({
+    tokenForWorkspace: async () => (options.connected === false ? undefined : "xoxb-test"),
+    fetch: async (input) => {
+      const method = new URL(input instanceof Request ? input.url : input).pathname.slice(
+        "/api/".length,
+      );
+      slackMethods.push(method);
+      return method === "reactions.add" ? respond() : Response.json({ ok: true });
+    },
+  });
+  const provider = createSlackTriggerProvider({
+    configurationStoreForProject: () => {
+      throw new Error("not used for terminal delivery");
+    },
+    botUserIdForWorkspace: async () => "U-BOT",
+    client,
+  });
+  const target = {
+    provider: "slack" as const,
+    organizationId: "org-1",
+    teamId: "T1",
+    channelId: "C1",
+    threadTs: "1.000001",
+    messageTs: "1.000001",
+  };
+  const start = () =>
+    createDurableWorkflowHandler({
+      database: fixture.database,
+      entitlements: fixture.entitlements,
+      providers: [providerMatch(fixture.configuration, fixture.revisionId)],
+      now: () => now,
+      leaseMs: 1_000,
+      logger,
+      dispatchLaunchMachineIntent: async () => {
+        throw new Error("all steps skipped");
+      },
+      onWorkflowRunTerminal: (run) =>
+        notifyAgentExecutionCompleted({
+          provider,
+          triggerContext: { provider: "slack", target },
+          outputContext: target,
+          result: { status: "succeeded" },
+          reactionState: run.outcome === "accepted" ? run.reactionState : null,
+        }),
+    });
+  let { handler, engine } = start();
+  await handler(fixture.trigger("run"));
+  const [created] = await fixture.database.findTriggerRunsByProviderEventReceiptId(
+    fixture.providerEventReceiptId,
+  );
+  assert.ok(created);
+  const drain = async () => {
+    for (let pass = 0; pass < 3; pass += 1) {
+      await engine.processAvailable();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    await engine.stop();
+    ({ engine } = start());
+  };
+  return {
+    drain,
+    async advance(ms: number) {
+      now = new Date(now.getTime() + ms);
+      await drain();
+    },
+    checkmarkCalls: () => slackMethods.filter((method) => method === "reactions.add").length,
+    abandonmentLogs: () =>
+      logs
+        .records()
+        .filter((record) => record["operation"] === "workflow.notification.terminal.abandon"),
+    async run() {
+      const run = await fixture.database.findTriggerRunById(created.id);
+      assert.ok(run?.outcome === "accepted");
+      return run;
+    },
+    stop: () => engine.stop(),
+  };
+}
+
+function githubFailureMessage(scenario: string): string {
+  return scenario === "403 secondary rate limit"
+    ? "You have exceeded a secondary rate limit"
+    : "unavailable";
+}
+
+/** The headers GitHub sends with each failure: a primary limit's reset, or a `Retry-After`. */
+function githubFailureHeaders(scenario: string): Record<string, string> {
+  if (scenario === "403 rate limit") {
+    return {
+      "x-ratelimit-remaining": "0",
+      "x-ratelimit-reset": String(Math.floor(Date.now() / 1_000)),
+    };
+  }
+  return { "retry-after": scenario === "403 secondary rate limit" ? "1" : "0" };
 }

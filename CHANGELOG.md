@@ -17,6 +17,7 @@
 
 - Discord `${{ paseo.context }}` keeps the embeds of referenced messages and thread messages: each embed's title, description, URL, author, fields, and footer. An embed-only bot notification no longer reaches the agent as an empty message.
 - Files attached to the Slack message that mentions the bot reach the agent in `slack.trigger_message.attachments`. Before, only files from earlier messages in the thread did.
+- A completion reaction or notice that Slack, Discord, or GitHub refuses no longer retries every 30 seconds forever. Hub waits at least as long as the provider's `Retry-After`, backs off with jitter between attempts, and stops after eight attempts. It stops at once when the refusal is permanent, such as a revoked token, a missing scope, or a channel the bot is not in. A rate-limited Slack workspace no longer stays rate-limited by Hub's own retries.
 - Hub exits promptly on `SIGTERM` or `SIGINT` while daemons are connected. It finishes in-flight requests, closes daemon connections, and shuts the database down cleanly, instead of hanging until the supervisor kills it and leaving the embedded database to recover on the next start.
 
 ## 0.11.0 - 2026-10-25

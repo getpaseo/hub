@@ -456,6 +456,13 @@ export const triggerRuns = pgTable(
     terminalNotificationLeaseExpiresAt: timestamp("terminal_notification_lease_expires_at", {
       withTimezone: true,
     }),
+    terminalNotificationAttempts: integer("terminal_notification_attempts").notNull().default(0),
+    terminalNotificationNextAttemptAt: timestamp("terminal_notification_next_attempt_at", {
+      withTimezone: true,
+    }),
+    terminalNotificationAbandonedAt: timestamp("terminal_notification_abandoned_at", {
+      withTimezone: true,
+    }),
     rejection: jsonb(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     completedAt: timestamp("completed_at", { withTimezone: true }),

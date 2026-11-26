@@ -1,4 +1,6 @@
+import { RequestError } from "octokit";
 import type { ProjectConfigurationStore } from "../../configuration/store.js";
+import { UpstreamFailure } from "../../failures/index.js";
 import type { JsonValue } from "../../config/compiler.js";
 import {
   type TriggerProvider,
@@ -109,7 +111,7 @@ export function createGitHubReactionClient(
         // GitHub also uses 404 when this installation can no longer access the target.
         // A cosmetic reaction cannot be delivered there; settle it without retrying.
         if (isUnavailableReactionTarget(error)) return null;
-        throw error;
+        throw rateLimitedOr(error);
       }
     },
     async deleteReaction(input) {
@@ -134,7 +136,7 @@ export function createGitHubReactionClient(
         }
       } catch (error) {
         if (isUnavailableReactionTarget(error)) return;
-        throw error;
+        throw rateLimitedOr(error);
       }
     },
   };
@@ -142,6 +144,32 @@ export function createGitHubReactionClient(
 
 function isUnavailableReactionTarget(error: unknown): boolean {
   return typeof error === "object" && error !== null && Reflect.get(error, "status") === 404;
+}
+
+/**
+ * GitHub answers a primary or secondary rate limit with 403 as well as 429, so the status alone
+ * would read it as a permanent refusal. Octokit's throttling has already retried once by now.
+ * The checks match how that plugin recognises a rate limit.
+ */
+function rateLimitedOr(error: unknown): unknown {
+  if (!(error instanceof RequestError)) return error;
+  const headers = error.response?.headers ?? {};
+  const rateLimited =
+    error.status === 429 ||
+    (error.status === 403 &&
+      (/\bsecondary rate\b/iu.test(error.message) || headers["x-ratelimit-remaining"] === "0"));
+  if (!rateLimited) return error;
+  return new UpstreamFailure("GitHub API rate limited", "rateLimited", {
+    cause: error,
+    ...retryAfter(headers),
+  });
+}
+
+function retryAfter(headers: Record<string, unknown>): { retryAfterMs?: number } {
+  const seconds = Number(headers["retry-after"]);
+  if (Number.isFinite(seconds) && seconds > 0) return { retryAfterMs: seconds * 1_000 };
+  const resetMs = Number(headers["x-ratelimit-reset"]) * 1_000 - Date.now();
+  return Number.isFinite(resetMs) && resetMs > 0 ? { retryAfterMs: resetMs } : {};
 }
 
 export type GitHubReactionSubject =

@@ -333,6 +333,9 @@ class MemoryDatabase implements Database {
       terminalNotificationPendingAt: null,
       terminalNotificationDeliveredAt: null,
       terminalNotificationLeaseExpiresAt: null,
+      terminalNotificationAttempts: 0,
+      terminalNotificationNextAttemptAt: null,
+      terminalNotificationAbandonedAt: null,
       createdAt: now,
       completedAt: null,
     };
@@ -1048,8 +1051,11 @@ class MemoryDatabase implements Database {
           run.status !== "running" &&
           run.terminalNotificationPendingAt !== null &&
           run.terminalNotificationDeliveredAt === null &&
+          run.terminalNotificationAbandonedAt === null &&
           (run.terminalNotificationLeaseExpiresAt === null ||
-            run.terminalNotificationLeaseExpiresAt <= now),
+            run.terminalNotificationLeaseExpiresAt <= now) &&
+          (run.terminalNotificationNextAttemptAt === null ||
+            run.terminalNotificationNextAttemptAt <= now),
       )
       .sort((left, right) => {
         const time =
@@ -1061,9 +1067,47 @@ class MemoryDatabase implements Database {
     const updated = {
       ...candidate,
       terminalNotificationLeaseExpiresAt: new Date(now.getTime() + leaseMs),
+      terminalNotificationAttempts: candidate.terminalNotificationAttempts + 1,
     };
     this.triggerRuns.set(updated.id, updated);
     return updated;
+  }
+
+  async retryWorkflowRunTerminalNotification(triggerRunId: string, nextAttemptAt: Date) {
+    const run = this.undeliveredTerminalNotification(triggerRunId);
+    if (run === undefined) return;
+    this.triggerRuns.set(run.id, {
+      ...run,
+      terminalNotificationLeaseExpiresAt: null,
+      terminalNotificationNextAttemptAt: nextAttemptAt,
+    });
+  }
+
+  async abandonWorkflowRunTerminalNotification(triggerRunId: string, abandonedAt: Date) {
+    const run = this.undeliveredTerminalNotification(triggerRunId);
+    if (run === undefined) return;
+    this.triggerRuns.set(run.id, {
+      ...run,
+      terminalNotificationLeaseExpiresAt: null,
+      terminalNotificationNextAttemptAt: null,
+      terminalNotificationAbandonedAt: abandonedAt,
+    });
+  }
+
+  private undeliveredTerminalNotification(
+    triggerRunId: string,
+  ): AcceptedTriggerRunRecord | undefined {
+    const run = this.triggerRuns.get(triggerRunId);
+    if (
+      run === undefined ||
+      run.outcome !== "accepted" ||
+      run.terminalNotificationPendingAt === null ||
+      run.terminalNotificationDeliveredAt !== null ||
+      run.terminalNotificationAbandonedAt !== null
+    ) {
+      return undefined;
+    }
+    return run;
   }
 
   async markWorkflowRunTerminalNotificationDelivered(
