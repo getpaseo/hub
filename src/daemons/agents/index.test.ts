@@ -411,6 +411,7 @@ test("a provider that accepts exact grants launches on the first request", async
 test.each([
   unsupportedPolicyReply,
   { errorCode: "unknown", error: unsupportedPolicy },
+  { errorCode: "unknown", error: "Provider does not support permission.tool_policy" },
   { errorCode: "tool_policy_unsupported", error: "Exact tool policy unsupported" },
 ])(
   "retries once without grants after the daemon reports unsupported policy ($errorCode: $error)",

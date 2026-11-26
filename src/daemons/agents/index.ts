@@ -55,8 +55,12 @@ class DaemonAgentCreateError extends DaemonAgentError {
     if (this.code === "tool_policy_unsupported") return true;
     if (this.code !== "unknown" && this.code !== undefined) return false;
     // Released daemons flatten provider errors to "unknown" on the create status response.
-    const message = `Provider '${provider}' cannot preapprove exact MCP tools for unattended execution`;
-    return this.message === message || this.message.startsWith(`${message}; `);
+    return [
+      // Built-in providers without exact tool grants.
+      `Provider '${provider}' cannot preapprove exact MCP tools for unattended execution`,
+      // Plugin providers that do not declare the permission.tool_policy capability.
+      "Provider does not support permission.tool_policy",
+    ].some((message) => this.message === message || this.message.startsWith(`${message}; `));
   }
 }
 
