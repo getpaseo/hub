@@ -66,13 +66,20 @@ docker kill --signal KILL "$embedded" >/dev/null
 docker start "$embedded" >/dev/null
 wait_healthy "$embedded"
 
-if docker run --name "$intruder" --hostname hub \
+docker run --detach --name "$intruder" --hostname hub \
   --volume "$volume:/data" --env PASEO_HUB_DATA_DIR=/data \
-  "$image" node dist/index.js >/dev/null 2>&1; then
-  echo "a second Hub started on a data directory that another Hub holds" >&2
-  exit 1
-fi
-if ! docker logs "$intruder" 2>&1 | grep --quiet "already in use by another Paseo Hub process"; then
+  "$image" node dist/index.js >/dev/null
+attempt=0
+until [ "$(docker inspect --format '{{.State.Status}}' "$intruder")" = exited ]; do
+  attempt=$((attempt + 1))
+  if [ "$attempt" -ge 30 ]; then
+    echo "a second Hub started on a data directory that another Hub holds" >&2
+    exit 1
+  fi
+  sleep 1
+done
+if [ "$(docker inspect --format '{{.State.ExitCode}}' "$intruder")" -eq 0 ] ||
+  ! docker logs "$intruder" 2>&1 | grep --quiet "already in use by another Paseo Hub process"; then
   docker logs "$intruder"
   exit 1
 fi
