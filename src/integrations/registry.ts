@@ -1,7 +1,9 @@
 import {
+  defaultBrowserIntegrationRegistry,
   INTEGRATION_EVENT_PATTERN,
   INTEGRATION_ID_PATTERN,
   RESERVED_LEGACY_INTEGRATION_IDS,
+  type BrowserIntegrationRegistry,
 } from "./browser-registry.js";
 import type { IntegrationDefinition, IntegrationTriggerEventSpec } from "./contracts.js";
 import { REGISTERED_INTEGRATIONS } from "./server.js";
@@ -96,5 +98,79 @@ function validateIntegration(
   }
 }
 
+/**
+ * Ensures the server and browser integration registries declare the exact same integration IDs,
+ * trigger events, and shared Zod schema objects so editor and server validation cannot drift.
+ */
+export function assertIntegrationRegistriesAligned(
+  serverRegistry: IntegrationRegistry,
+  browserRegistry: BrowserIntegrationRegistry,
+): void {
+  const serverIds = serverRegistry.ids();
+  const browserIds = new Set(browserRegistry.ids());
+  for (const id of serverIds) {
+    if (!browserIds.has(id)) {
+      throw new Error(`Server integration "${id}" is missing from the browser registry.`);
+    }
+  }
+  const serverIdSet = new Set(serverIds);
+  for (const id of browserRegistry.ids()) {
+    if (!serverIdSet.has(id)) {
+      throw new Error(`Browser integration "${id}" is missing from the server registry.`);
+    }
+  }
+  for (const serverDef of serverRegistry.all()) {
+    const browserDef = browserRegistry.get(serverDef.id)!;
+    assertTriggerSchemasAligned(serverDef, browserDef);
+    assertToolSchemasAligned(serverDef, browserDef);
+  }
+}
+
+function assertTriggerSchemasAligned(
+  serverDef: IntegrationDefinition,
+  browserDef: NonNullable<ReturnType<BrowserIntegrationRegistry["get"]>>,
+): void {
+  if ((serverDef.triggers === undefined) !== (browserDef.triggers === undefined)) {
+    throw new Error(
+      `Integration "${serverDef.id}" must declare triggers in both server and browser registries.`,
+    );
+  }
+  if (serverDef.triggers === undefined || browserDef.triggers === undefined) return;
+  const serverEvents = serverDef.triggers.events.map((event) => event.id);
+  const browserEvents = browserDef.triggers.events.map((event) => event.id);
+  if (
+    serverEvents.length !== browserEvents.length ||
+    serverEvents.some((eventId, index) => eventId !== browserEvents[index])
+  ) {
+    throw new Error(
+      `Integration "${serverDef.id}" trigger events differ between server and browser registries.`,
+    );
+  }
+  if (serverDef.triggers.filterSchema !== browserDef.triggers.filterSchema) {
+    throw new Error(
+      `Integration "${serverDef.id}" must share the same filterSchema between server and browser registries.`,
+    );
+  }
+}
+
+function assertToolSchemasAligned(
+  serverDef: IntegrationDefinition,
+  browserDef: NonNullable<ReturnType<BrowserIntegrationRegistry["get"]>>,
+): void {
+  if ((serverDef.tools === undefined) !== (browserDef.tools === undefined)) {
+    throw new Error(
+      `Integration "${serverDef.id}" must declare tools in both server and browser registries.`,
+    );
+  }
+  if (serverDef.tools === undefined || browserDef.tools === undefined) return;
+  if (serverDef.tools.grantSchema !== browserDef.tools.grantSchema) {
+    throw new Error(
+      `Integration "${serverDef.id}" must share the same grantSchema between server and browser registries.`,
+    );
+  }
+}
+
 export const defaultIntegrationRegistry: IntegrationRegistry =
   createIntegrationRegistry(REGISTERED_INTEGRATIONS);
+
+assertIntegrationRegistriesAligned(defaultIntegrationRegistry, defaultBrowserIntegrationRegistry);

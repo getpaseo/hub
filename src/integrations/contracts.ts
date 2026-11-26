@@ -149,8 +149,12 @@ export interface IntegrationRuntimeContext {
   readonly onOAuthInstallation?: (input: IntegrationOAuthCompletionInput) => Promise<void>;
 }
 
+export type IntegrationConnectionActionName = "start" | "disconnect" | "callback";
+
 export interface IntegrationConnectionRuntime {
-  readonly actions: Readonly<Record<string, (request: Request) => Promise<Response>>>;
+  readonly actions?: Partial<
+    Readonly<Record<IntegrationConnectionActionName, (request: Request) => Promise<Response>>>
+  >;
   beginConnection?(
     request: Request,
     access?: ConnectionStartAuthority,

@@ -69,7 +69,11 @@ import {
   type EventActor,
   type IntegrationInboundEvent,
 } from "./contracts.js";
-import { createIntegrationRegistry, defaultIntegrationRegistry } from "./registry.js";
+import {
+  assertIntegrationRegistriesAligned,
+  createIntegrationRegistry,
+  defaultIntegrationRegistry,
+} from "./registry.js";
 
 const ACME_CONFIG_SCHEMA = z.object({
   provider: z.literal("acme"),
@@ -295,7 +299,6 @@ function createAcmeServerIntegration(hooks: AcmeTestHooks) {
             };
           },
           actions: {
-            refresh: async () => Response.json({ refreshed: true, provider: "acme" }),
             callback: async (request) => {
               const url = new URL(request.url);
               const state = url.searchParams.get("state");
@@ -806,6 +809,55 @@ describe("integrations contract & strangler seam", () => {
     assert.throws(
       () => createBrowserIntegrationRegistry([browserAcme, browserAcme]),
       /duplicate browser integration id/iu,
+    );
+
+    // Server and browser registries must agree on IDs, trigger events, and shared Zod schemas.
+    assertIntegrationRegistriesAligned(
+      createIntegrationRegistry([acme]),
+      createBrowserIntegrationRegistry([browserAcme]),
+    );
+    assert.throws(
+      () =>
+        assertIntegrationRegistriesAligned(
+          createIntegrationRegistry([acme]),
+          createBrowserIntegrationRegistry([]),
+        ),
+      /missing from the browser registry/iu,
+    );
+    assert.throws(
+      () =>
+        assertIntegrationRegistriesAligned(
+          createIntegrationRegistry([acme]),
+          createBrowserIntegrationRegistry([
+            {
+              ...browserAcme,
+              triggers: {
+                ...browserAcme.triggers!,
+                filterSchema: z.object({ board: z.string().min(1).optional() }),
+              },
+            },
+          ]),
+        ),
+      /share the same filterSchema/iu,
+    );
+    assert.throws(
+      () =>
+        assertIntegrationRegistriesAligned(
+          createIntegrationRegistry([acme]),
+          createBrowserIntegrationRegistry([
+            {
+              ...browserAcme,
+              tools: {
+                ...browserAcme.tools!,
+                grantSchema: z.strictObject({
+                  connection: z.string().min(1),
+                  actions: z.array(z.string()).min(1),
+                }),
+              },
+            },
+          ]),
+        ),
+      /share the same grantSchema/iu,
     );
   });
 
@@ -1656,14 +1708,6 @@ run:
         "start",
       );
       assert.equal(unauthStart.status, 403);
-
-      const customActionResponse = await application.connectionAction(
-        authedRequest("https://hub.test/connections/refresh", "POST"),
-        "acme",
-        "refresh",
-      );
-      assert.equal(customActionResponse.status, 200);
-      assert.deepEqual(await customActionResponse.json(), { refreshed: true, provider: "acme" });
 
       const disconnectResponse = await application.connectionAction(
         authedRequest(

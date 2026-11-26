@@ -252,16 +252,10 @@ async function createOwnedApplicationRuntime(
       if (options.database === null || options.auth === null) {
         return Promise.resolve(Response.json({ error: "database_unavailable" }, { status: 503 }));
       }
-      const connection = connections.get(provider);
-      if (connection === undefined) {
-        return Promise.resolve(
-          Response.json({ error: "provider_not_configured" }, { status: 409 }),
-        );
-      }
-      const direct = connection.actions[action];
-      if (direct !== undefined) return direct(request);
-      if (connection.handleAction !== undefined) return connection.handleAction(action, request);
-      return Promise.resolve(Response.json({ error: "provider_not_configured" }, { status: 409 }));
+      return (
+        connections.get(provider)?.actions[action]?.(request) ??
+        Promise.resolve(Response.json({ error: "provider_not_configured" }, { status: 409 }))
+      );
     },
     webhook: (request) =>
       requests.get("webhook")?.(request) ??

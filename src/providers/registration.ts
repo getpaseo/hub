@@ -50,7 +50,6 @@ export interface ProviderConnectionRegistration {
   name: string;
   status(connections: OrganizationConnectionUsage): unknown;
   actions: Readonly<Record<string, (request: Request) => Promise<Response>>>;
-  handleAction?(action: string, request: Request): Promise<Response>;
 }
 
 export interface ProviderOutputRegistration {

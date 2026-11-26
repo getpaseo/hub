@@ -452,9 +452,10 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     provider: string,
     connectionRuntime: ReturnType<IntegrationDefinition["connection"]["createRuntime"]>,
   ): Record<string, (request: Request) => Promise<Response>> {
-    const actions: Record<string, (request: Request) => Promise<Response>> = {
-      ...connectionRuntime.actions,
-    };
+    const actions: Record<string, (request: Request) => Promise<Response>> = {};
+    for (const [name, handler] of Object.entries(connectionRuntime.actions ?? {})) {
+      if (handler !== undefined) actions[name] = handler;
+    }
     if (actions["start"] === undefined && connectionRuntime.beginConnection !== undefined) {
       actions["start"] = async (request) => {
         const rejected = this.options.auth.rejectCookieMutation(request);
@@ -775,7 +776,6 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
             status: "notConfigured" as const,
           },
         actions: connectionActions,
-        handleAction: dispatchAction,
       },
       triggerProviders:
         integration.triggers === undefined
