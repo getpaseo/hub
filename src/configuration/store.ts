@@ -501,10 +501,18 @@ type CompileConfigurationResult =
       validationErrors?: unknown;
     };
 
+interface ResolveCompiledConfigurationOptions {
+  /** Startup migration replays an already-authorized durable binding, even if it is now inactive. */
+  preservePersistedDaemonBindings?: boolean;
+  /** Startup migration keeps provider routes that were authorized before their connection retired. */
+  preservePersistedProviderBindings?: boolean;
+}
+
 async function resolveCompiledConfiguration(
   database: Database,
   organizationId: string,
   configuration: CompiledHubConfig,
+  options: ResolveCompiledConfigurationOptions = {},
 ): Promise<CompileConfigurationResult> {
   const daemons = (await database.listDaemonsForOrganization(organizationId)).filter(
     ({ status, permissions }) => status === "active" && permissions.includes("hub.execute"),
@@ -514,16 +522,17 @@ async function resolveCompiledConfiguration(
       environment.kind === "daemon"
         ? {
             environment,
-            daemon: await database.findDaemonBySlugForOrganization(
-              organizationId,
-              environment.daemon,
-            ),
+            daemon:
+              environment.daemonId === undefined
+                ? await database.findDaemonBySlugForOrganization(organizationId, environment.daemon)
+                : daemons.find(({ id }) => id === environment.daemonId),
           }
         : { environment, daemon: undefined },
     ),
   );
   const daemonIssues = resolutions.flatMap(({ environment, daemon }) =>
     environment.kind === "daemon" &&
+    !(options.preservePersistedDaemonBindings === true && environment.daemonId !== undefined) &&
     (daemon === undefined || !daemon.permissions.includes("hub.execute"))
       ? [
           {
@@ -539,6 +548,7 @@ async function resolveCompiledConfiguration(
     database,
     organizationId,
     configuration.triggers,
+    options,
   );
   const issues = [...daemonIssues, ...triggerCompilation.issues];
   if (issues.length > 0) {
@@ -560,6 +570,7 @@ export async function resolveTriggerConfigurationForOrganization(
   database: Database,
   organizationId: string,
   configuration: CompiledHubConfig,
+  options: ResolveCompiledConfigurationOptions = {},
 ): Promise<
   | {
       success: true;
@@ -577,7 +588,12 @@ export async function resolveTriggerConfigurationForOrganization(
       issues: readonly { path: readonly (string | number)[]; message: string }[];
     }
 > {
-  const resolved = await resolveCompiledConfiguration(database, organizationId, configuration);
+  const resolved = await resolveCompiledConfiguration(
+    database,
+    organizationId,
+    configuration,
+    options,
+  );
   if (!resolved.success) {
     return {
       success: false,
@@ -585,7 +601,12 @@ export async function resolveTriggerConfigurationForOrganization(
       issues: resolved.issues,
     };
   }
-  const compiled = await compileTriggers(database, organizationId, resolved.configuration.triggers);
+  const compiled = await compileTriggers(
+    database,
+    organizationId,
+    resolved.configuration.triggers,
+    options,
+  );
   if (compiled.issues.length > 0) {
     return {
       success: false,
@@ -646,6 +667,7 @@ async function compileTriggers(
   database: Database,
   organizationId: string,
   triggers: readonly CompiledTrigger[],
+  options: ResolveCompiledConfigurationOptions = {},
 ): Promise<{
   triggers: CompiledTrigger[];
   routes: ProjectTriggerRoute[];
@@ -663,12 +685,15 @@ async function compileTriggers(
       continue;
     }
     const filter = trigger.filters;
-    if (filter?.connectionId !== undefined && filter.resourceId !== undefined) {
+    if (
+      filter?.connectionId !== undefined &&
+      (filter.resourceId !== undefined || options.preservePersistedProviderBindings === true)
+    ) {
       compiled.push(trigger);
       routes.push({
         provider,
         connectionId: filter.connectionId,
-        resourceId: filter.resourceId,
+        resourceId: filter.resourceId ?? null,
         triggerName: trigger.name,
       });
       continue;
@@ -688,13 +713,13 @@ async function compileTriggers(
         database,
         organizationId,
         provider,
-        authored,
+        authored.value,
         new Set(candidates.map((connection) => connection.id)),
       );
       if (resolved === undefined) {
         issues.push({
-          path: triggerFilterPath(trigger, resourceField(provider)),
-          message: `"${authored}" does not match any ${resourceLabel(provider)} (${await formatResourceCandidates(
+          path: triggerFilterPath(trigger, authored.field),
+          message: `"${authored.value}" does not match any ${resourceLabel(provider, authored.field)} (${await formatResourceCandidates(
             database,
             organizationId,
             provider,
@@ -704,9 +729,7 @@ async function compileTriggers(
         continue;
       }
       const resolvedFilter =
-        provider === "github"
-          ? filter
-          : { ...filter, [resourceField(provider)]: resolved.resourceId };
+        provider === "github" ? filter : { ...filter, [authored.field]: resolved.resourceId };
       const nextFilter: CompiledTriggerFilter = {
         ...resolvedFilter,
         connectionId: resolved.connectionId,
@@ -752,14 +775,11 @@ function providerForEvent(eventName: string): ConnectionProvider | undefined {
 function readAuthoredResource(
   provider: ConnectionProvider,
   filters: CompiledTrigger["filters"] | undefined,
-): string | undefined {
+): { field: ResourceFilterField; value: string } | undefined {
   if (filters === undefined) return undefined;
-  let value: string | undefined;
-  if (provider === "github") value = filters.repo;
-  else if (provider === "slack") value = filters.workspace;
-  else if (provider === "discord") value = filters.guild;
-  else value = filters.project;
-  return typeof value === "string" && value.length > 0 ? value : undefined;
+  const field = resourceField(provider, filters);
+  const value = filters[field];
+  return typeof value === "string" && value.length > 0 ? { field, value } : undefined;
 }
 
 function connectionCandidates(
@@ -818,10 +838,16 @@ function triggerFilterPath(trigger: CompiledTrigger, field: string): readonly (s
   return [trigger.sourceFile ?? ".paseo/workflows", "filters", field];
 }
 
-function resourceField(provider: ConnectionProvider): "repo" | "workspace" | "guild" | "project" {
+type ResourceFilterField = "repo" | "workspace" | "guild" | "project" | "team";
+
+function resourceField(
+  provider: ConnectionProvider,
+  filters?: CompiledTrigger["filters"],
+): ResourceFilterField {
   if (provider === "github") return "repo";
   if (provider === "slack") return "workspace";
-  return provider === "discord" ? "guild" : "project";
+  if (provider === "discord") return "guild";
+  return filters?.project === undefined && filters?.team !== undefined ? "team" : "project";
 }
 
 function providerLabel(provider: ConnectionProvider): string {
@@ -830,9 +856,9 @@ function providerLabel(provider: ConnectionProvider): string {
   return provider === "discord" ? "Discord" : "Linear";
 }
 
-function resourceLabel(provider: ConnectionProvider): string {
+function resourceLabel(provider: ConnectionProvider, field?: ResourceFilterField): string {
   if (provider === "github") return "GitHub repository";
-  if (provider === "linear") return "Linear project";
+  if (provider === "linear") return field === "team" ? "Linear team" : "Linear project";
   return `${providerLabel(provider)} connection`;
 }
 

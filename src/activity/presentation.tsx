@@ -66,7 +66,7 @@ export const RANGE_LABELS: Readonly<Record<ActivityRange, string>> = {
 };
 
 /** Where an unmatched event's reader goes to make the next one match. */
-export type DropReasonNextStep = "create_trigger" | "view_triggers" | "check_integrations";
+export type DropReasonNextStep = "create_trigger" | "view_triggers" | "check_integrations" | "none";
 
 interface DropReasonPresentation {
   /** The pill: a few words, no period. */
@@ -80,8 +80,7 @@ interface DropReasonPresentation {
 
 /**
  * Why an event started no run, said for the reader rather than as the stored code. Only a
- * connection that is unavailable is a warning: the other three are Hub working as configured on
- * an event nobody asked for.
+ * connection that is unavailable is a warning: the other reasons are Hub working as configured.
  */
 export const DROP_REASONS: Readonly<Record<ProviderEventDropReasonCode, DropReasonPresentation>> = {
   no_project_route: {
@@ -111,6 +110,13 @@ export const DROP_REASONS: Readonly<Record<ProviderEventDropReasonCode, DropReas
     title: "Connection or configuration unavailable",
     explanation: "Hub could not read the connection or trigger configuration for this event",
     next: "check_integrations",
+  },
+  agent_session_stopped: {
+    label: "Agent session stopped",
+    tone: "neutral",
+    title: "Stopped the active agent session",
+    explanation: "Linear asked Hub to stop the active work for this agent session",
+    next: "none",
   },
 };
 

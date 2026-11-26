@@ -359,6 +359,7 @@ function NextStep({
   step: DropReasonNextStep;
   organizationSlug: string;
 }) {
+  if (step === "none") return null;
   const params = { organizationSlug };
   if (step === "check_integrations") {
     return (

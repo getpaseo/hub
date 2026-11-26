@@ -386,6 +386,13 @@
       "when": 1795681008319,
       "tag": "0054_terminal_notification_retries",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1795724436202,
+      "tag": "0055_easy_scorpion",
+      "breakpoints": true
     }
   ]
 }

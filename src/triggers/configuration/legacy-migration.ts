@@ -56,26 +56,50 @@ export function migrateLegacyBundle(input: {
         ? dump(trigger, { noRefs: true, lineWidth: -1 })
         : (authoredByPath.get(sourceFile) ?? dump(trigger, { noRefs: true, lineWidth: -1 }));
     const converted = convertSingleRun(trigger, configuration);
-    return converted.success
-      ? {
-          format: "single_run" as const,
-          name: trigger.name,
-          yaml: serializeTriggerDocument(converted.trigger),
-          compiled: compileTriggerDocument(serializeTriggerDocument(converted.trigger)),
-          legacySourceFile: sourceFile,
-          legacyStepIds: trigger.steps.map(({ id }) => id),
-        }
-      : {
-          format: "legacy_multistep" as const,
-          name: trigger.name,
-          yaml: serializeLegacyTrigger({ trigger, environments: configuration.environments }),
-          normalized: { trigger, environments: configuration.environments },
-          legacySourceFile: sourceFile,
-          conversionBlockers: converted.blockers,
-          authoredYaml,
-          legacyStepIds: trigger.steps.map(({ id }) => id),
-        };
+    if (converted.success) {
+      const yaml = serializeTriggerDocument(converted.trigger);
+      const compiled = compileTriggerDocument(yaml);
+      return {
+        format: "single_run" as const,
+        name: trigger.name,
+        yaml,
+        compiled: {
+          ...compiled,
+          ...(converted.daemonId === undefined
+            ? {}
+            : { environment: { ...compiled.environment, daemonId: converted.daemonId } }),
+          events: preservePersistedProviderBinding(compiled.events, trigger.filters),
+        },
+        legacySourceFile: sourceFile,
+        legacyStepIds: trigger.steps.map(({ id }) => id),
+      };
+    }
+    return {
+      format: "legacy_multistep" as const,
+      name: trigger.name,
+      yaml: serializeLegacyTrigger({ trigger, environments: configuration.environments }),
+      normalized: { trigger, environments: configuration.environments },
+      legacySourceFile: sourceFile,
+      conversionBlockers: converted.blockers,
+      authoredYaml,
+      legacyStepIds: trigger.steps.map(({ id }) => id),
+    };
   });
+}
+
+function preservePersistedProviderBinding(
+  events: readonly CompiledTrigger[],
+  filters: CompiledTrigger["filters"],
+): readonly CompiledTrigger[] {
+  if (filters?.connectionId === undefined) return events;
+  return events.map((event) => ({
+    ...event,
+    filters: {
+      ...event.filters,
+      connectionId: filters.connectionId,
+      ...(filters.resourceId === undefined ? {} : { resourceId: filters.resourceId }),
+    },
+  }));
 }
 
 function serializeLegacyTrigger(snapshot: SelfContainedLegacyTrigger): string {
@@ -86,7 +110,7 @@ function serializeLegacyTrigger(snapshot: SelfContainedLegacyTrigger): string {
 }
 
 type SingleRunConversion =
-  | { success: true; trigger: TriggerDocument }
+  | { success: true; trigger: TriggerDocument; daemonId?: string }
   | { success: false; blockers: readonly string[] };
 
 function convertSingleRun(
@@ -111,7 +135,11 @@ function convertSingleRun(
     return { success: false, blockers };
   }
 
-  return { success: true, trigger: singleRunDocument(trigger, step, environment) };
+  return {
+    success: true,
+    trigger: singleRunDocument(trigger, step, environment),
+    ...(environment.daemonId === undefined ? {} : { daemonId: environment.daemonId }),
+  };
 }
 
 function singleRunDocument(
@@ -239,9 +267,12 @@ function authoredFilters(
     guild: rest.guild,
     workspace: rest.workspace,
     project: rest.project,
+    team: rest.team,
     states: rest.states === undefined ? undefined : [...rest.states],
     exclude_labels: rest.exclude_labels === undefined ? undefined : [...rest.exclude_labels],
     assignees: rest.assignees === undefined ? undefined : [...rest.assignees],
+    replies_only: rest.replies_only,
+    thread_with_app: rest.thread_with_app,
     channels: rest.channels === undefined ? undefined : [...rest.channels],
     from_users: rest.from_users === undefined ? undefined : [...rest.from_users],
     inputs: rest.inputs === undefined ? undefined : { ...rest.inputs },

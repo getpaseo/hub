@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { resourceLabel, runSession, sessionLink, sessionVisibility } from "./presentation.js";
+import {
+  DROP_REASONS,
+  resourceLabel,
+  runSession,
+  sessionLink,
+  sessionVisibility,
+} from "./presentation.js";
 
 const agent = (daemonAgentId: string | null) => ({ execution: { id: "execution", daemonAgentId } });
 
@@ -24,6 +30,15 @@ describe("resourceLabel", () => {
     expect(
       (["github", "slack", "discord", "linear", "webhook"] as const).map(resourceLabel),
     ).toEqual(["Repository", "Workspace", "Server", "Project", "Resource"]);
+  });
+});
+
+describe("DROP_REASONS", () => {
+  it("presents a handled Linear Stop without suggesting configuration changes", () => {
+    expect(DROP_REASONS.agent_session_stopped).toMatchObject({
+      label: "Agent session stopped",
+      next: "none",
+    });
   });
 });
 

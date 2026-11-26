@@ -1,5 +1,6 @@
 import { continuationKey } from "../triggers/continuation.js";
 import { DatabaseUnavailableError } from "../db/errors.js";
+import { readLinearTriggerStart } from "../db/linear-trigger-suppression.js";
 import type {
   AgentExecutionRecord,
   Database,
@@ -142,10 +143,16 @@ export class DurableWorkflowEngine {
       trigger,
     );
     if (matches.length === 0) {
-      await this.options.database.markProviderEventDropped(
-        trigger.providerEventReceiptId,
-        dropReason,
-      );
+      // A Stop receipt is also its retry journal. One Linear delivery can route to multiple
+      // projects, so marking the shared receipt dropped after the first successful route would
+      // prevent a failed sibling route from being replayed. Stop handling is idempotent; leave
+      // the accepted routes replayable until the whole webhook handoff succeeds.
+      if (dropReason !== "agent_session_stopped") {
+        await this.options.database.markProviderEventDropped(
+          trigger.providerEventReceiptId,
+          dropReason,
+        );
+      }
       logProviderEventRouting({
         source: trigger.source,
         deliveryId: trigger.deliveryId,
@@ -196,7 +203,7 @@ export class DurableWorkflowEngine {
         // Accepting a trigger reserves nothing: a trigger can skip every step, and multi-step
         // workflows create several executions. Metering happens per execution, at creation time
         // (see processWakeup), so the meter is genuinely per-execution and atomic with the work.
-        const created = await this.options.database!.createAcceptedTriggerRun({
+        const createInput = {
           organizationId: trigger.organizationId,
           projectId: trigger.projectId,
           configurationRevisionId,
@@ -210,7 +217,16 @@ export class DurableWorkflowEngine {
           deadlineAt: runDeadline,
           stepIds: compiledTrigger.steps.map((step) => step.id),
           createdAt,
-        });
+        };
+        const linearTrigger = readLinearTriggerStart(acceptedMatch.triggerContext);
+        const created =
+          linearTrigger === undefined
+            ? await this.options.database!.createAcceptedTriggerRun(createInput)
+            : await this.options.database!.createAcceptedLinearTriggerRun({
+                ...createInput,
+                linearTrigger,
+              });
+        if ("suppressionReason" in created) return;
         if (created.created) await this.deliverWorkflowRunAccepted(created.run);
       }),
     );
@@ -1259,6 +1275,7 @@ async function collectProviderMatches(
   return {
     matches,
     dropReason:
+      reasons.find((reason) => reason === "agent_session_stopped") ??
       reasons.find((reason) => reason === "configuration_unavailable") ??
       reasons.find((reason) => reason === "trigger_filters_rejected") ??
       "no_trigger_for_source",
