@@ -161,7 +161,10 @@ export function OrganizationIntegrationsPanel() {
       );
     }
     const browserIntegration = defaultBrowserIntegrationRegistry.get(provider);
-    if (browserIntegration?.setup.supportsOrgConnect?.({}) === false) {
+    if (
+      browserIntegration?.setup.supportsOrgConnect?.(providerStatus.identifiers ?? {}) === false &&
+      !(isInstanceOperator && providerStatus.status === "disconnected")
+    ) {
       return undefined;
     }
     return (

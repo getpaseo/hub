@@ -324,6 +324,62 @@ export interface IntegrationDefinition {
   readonly auth?: IntegrationAuthCapability;
 }
 
+export type ProviderApplicationErrorCode =
+  | "forbidden"
+  | "invalidOrigin"
+  | "invalidInput"
+  | "credentialsRejected"
+  | "permissionMissing"
+  | "rateLimited"
+  | "network"
+  | "timeout"
+  | "upstreamUnavailable"
+  | "invalidResponse"
+  | "internal"
+  | "identityConflict"
+  | "configurationConflict"
+  | "managedByEnvironment"
+  | "httpsRequired";
+
+export class ProviderApplicationError extends Error {
+  constructor(
+    readonly code: ProviderApplicationErrorCode,
+    readonly safeContext?: string,
+    options?: ErrorOptions,
+  ) {
+    super(code, options);
+    this.name = "ProviderApplicationError";
+  }
+}
+
+export type ProviderVerificationSubject =
+  | "appToken"
+  | "botToken"
+  | "clientSecret"
+  | "privateKey"
+  | "identityMismatch";
+
+export class ProviderVerificationError extends Error {
+  constructor(
+    readonly reason:
+      | "credentialsRejected"
+      | "permissionMissing"
+      | "rateLimited"
+      | "network"
+      | "timeout"
+      | "upstreamUnavailable"
+      | "invalidResponse",
+    readonly safeStatus?: number,
+    options?: ErrorOptions & { subject?: ProviderVerificationSubject },
+  ) {
+    super(reason, options);
+    this.name = "ProviderVerificationError";
+    this.subject = options?.subject;
+  }
+
+  readonly subject: ProviderVerificationSubject | undefined;
+}
+
 /**
  * Converts a strongly typed integration definition into a boundary-validated
  * `IntegrationDefinition` without unsafe casts or `any`.

@@ -415,17 +415,20 @@ export class DynamicProviderRuntime implements ProviderRuntimeOwner {
     const toolHandler = integration.tools?.createHandler(configuration, context);
     const actions = this.buildIntegrationConnectionActions(integration.id, connectionRuntime);
 
+    const identifiers = integration.connection.publicIdentifiers(configuration);
     const registration: ProviderRegistration = {
       configurationSnapshot: { version: configurationVersion, callbackOrigin },
       connection: {
         name: integration.id,
-        status: (connections) =>
-          integration.connection.connectionStatus(
+        status: (connections) => ({
+          ...integration.connection.connectionStatus(
             (connections.integrations ?? []).filter(
               (connection) => connection.provider === integration.id,
             ),
             now(),
           ),
+          identifiers,
+        }),
         actions,
       },
       triggerProviders: triggersRuntime === undefined ? [] : [triggersRuntime.triggerProvider],

@@ -1,4 +1,5 @@
 import type { IntegrationDefinition } from "./contracts.js";
+import { notionIntegration } from "./notion/index.js";
 
 /**
  * Server-side integration registrations.
@@ -7,4 +8,4 @@ import type { IntegrationDefinition } from "./contracts.js";
  * `src/integrations/browser.ts`). Legacy GitHub, Slack, Discord, and Linear remain on their
  * existing static paths until migrated individually.
  */
-export const REGISTERED_INTEGRATIONS: readonly IntegrationDefinition[] = [];
+export const REGISTERED_INTEGRATIONS: readonly IntegrationDefinition[] = [notionIntegration];

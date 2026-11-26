@@ -41,13 +41,29 @@ const linearStatusSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("requiresReauthorization") }),
   z.object({ status: z.literal("connected") }),
 ]);
-const genericStatusSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("notConfigured") }),
-  z.object({ status: z.literal("disconnected") }),
-  z.object({ status: z.literal("suspended") }),
-  z.object({ status: z.literal("requiresReauthorization") }),
-  z.object({ status: z.literal("connected") }),
-]);
+const genericStatusVariants = [
+  z.object({
+    status: z.literal("notConfigured"),
+    identifiers: z.record(z.string(), z.string()).optional(),
+  }),
+  z.object({
+    status: z.literal("disconnected"),
+    identifiers: z.record(z.string(), z.string()).optional(),
+  }),
+  z.object({
+    status: z.literal("suspended"),
+    identifiers: z.record(z.string(), z.string()).optional(),
+  }),
+  z.object({
+    status: z.literal("requiresReauthorization"),
+    identifiers: z.record(z.string(), z.string()).optional(),
+  }),
+  z.object({
+    status: z.literal("connected"),
+    identifiers: z.record(z.string(), z.string()).optional(),
+  }),
+] as const;
+const genericStatusSchema = z.discriminatedUnion("status", genericStatusVariants);
 export const connectionStatusSchema = z
   .object({
     canManage: z.boolean(),

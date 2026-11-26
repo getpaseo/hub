@@ -673,12 +673,24 @@ export class OrganizationTriggers {
       .fill("123456789012345678");
     await discord.getByRole("checkbox", { name: "Read messages", exact: true }).check();
 
+    await this.addIntegrationAccess("Notion");
+    const notion = this.page.getByRole("region", { name: "Notion", exact: true });
+    await expect(notion.getByRole("combobox", { name: "Connection", exact: true })).toBeFocused();
+    await expect(notion.getByRole("combobox", { name: "Connection", exact: true })).toHaveAttribute(
+      "data-value",
+      "company-notion",
+    );
+    await notion
+      .getByRole("textbox", { name: "Databases or data sources", exact: true })
+      .fill("248104cd-477e-80af-bc30-000bd28de8f9");
+    await notion.getByRole("checkbox", { name: "Read pages and databases", exact: true }).check();
+
     await expect(
       this.page.getByRole("button", { name: "Add integration", exact: true }),
     ).toHaveCount(0);
   }
 
-  async addIntegrationAccess(provider: "GitHub" | "Slack" | "Discord") {
+  async addIntegrationAccess(provider: "GitHub" | "Slack" | "Discord" | "Notion") {
     await this.page.getByRole("button", { name: "Add integration", exact: true }).click();
     await this.page.getByRole("menuitem", { name: provider, exact: true }).click();
   }
@@ -708,6 +720,18 @@ export class OrganizationTriggers {
     );
     await expect(
       discord.getByRole("checkbox", { name: "Read messages", exact: true }),
+    ).toBeChecked();
+
+    const notion = this.page.getByRole("region", { name: "Notion", exact: true });
+    await expect(notion.getByRole("combobox", { name: "Connection", exact: true })).toHaveAttribute(
+      "data-value",
+      "company-notion",
+    );
+    await expect(
+      notion.getByRole("textbox", { name: "Databases or data sources", exact: true }),
+    ).toHaveValue("248104cd-477e-80af-bc30-000bd28de8f9");
+    await expect(
+      notion.getByRole("checkbox", { name: "Read pages and databases", exact: true }),
     ).toBeChecked();
   }
 

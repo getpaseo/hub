@@ -556,14 +556,6 @@ function integrationToolErrors(
   registry: BrowserIntegrationRegistry,
 ): TriggerFieldErrors {
   const errors: TriggerFieldErrors = {};
-  for (const integration of registry.withTools()) {
-    const draft = value.integrationTools?.[integration.id];
-    if (draft === undefined || !draft.enabled) continue;
-    const messages = integration.tools!.validateDraft(draft);
-    if (messages[0] !== undefined) {
-      errors[`tools.${integration.id}.connection`] = messages[0];
-    }
-  }
   const grants = buildIntegrationToolGrantsSchema(registry)
     .optional()
     .safeParse(authoredIntegrationToolGrants(value, registry));
@@ -579,6 +571,18 @@ function integrationToolErrors(
         errors[key] = `Choose a ${INTEGRATION_TOOL_LABELS[provider]} connection`;
       } else if (errors[key] === undefined) {
         errors[key] = message;
+      }
+    }
+  }
+  for (const integration of registry.withTools()) {
+    const draft = value.integrationTools?.[integration.id];
+    if (draft === undefined || !draft.enabled) continue;
+    const prefix = `tools.${integration.id}.`;
+    const hasFieldError = Object.keys(errors).some((key) => key.startsWith(prefix));
+    if (!hasFieldError) {
+      const messages = integration.tools!.validateDraft(draft);
+      if (messages[0] !== undefined) {
+        errors[`tools.${integration.id}.connection`] = messages[0];
       }
     }
   }
