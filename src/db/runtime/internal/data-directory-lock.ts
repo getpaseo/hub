@@ -1,4 +1,4 @@
-import { closeSync, openSync } from "node:fs";
+import { closeSync, constants, openSync } from "node:fs";
 import { join } from "node:path";
 import { errorForLog } from "../../../logger.js";
 
@@ -26,7 +26,12 @@ export async function acquireDataDirectoryLock(dataDirectory: string): Promise<D
   // Loaded here so the native addon is only required by embedded mode.
   const { tryLock, unlock } = await import("fs-native-extensions");
   // A numeric descriptor, unlike a FileHandle, is never closed by garbage collection.
-  const fd = openSync(join(dataDirectory, LOCK_FILE_NAME), "a", 0o600);
+  // LockFileEx needs read or write access; an append-only Windows handle fails with EPERM.
+  const fd = openSync(
+    join(dataDirectory, LOCK_FILE_NAME),
+    constants.O_RDWR | constants.O_CREAT,
+    0o600,
+  );
   let locked: boolean;
   try {
     locked = tryLock(fd);
