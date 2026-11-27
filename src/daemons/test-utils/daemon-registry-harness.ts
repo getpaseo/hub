@@ -556,6 +556,7 @@ function daemonRecord(): DaemonRecord {
     registeredByCliCredentialId: null,
     status: "active",
     presence: "connected",
+    connectionId: null,
     connectedAt: now,
     disconnectedAt: null,
     lastSeenAt: now,

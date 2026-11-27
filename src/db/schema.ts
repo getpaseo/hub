@@ -657,6 +657,7 @@ export const daemons = pgTable(
     ),
     status: text().$type<"active" | "revoked">().notNull(),
     presence: text().$type<"offline" | "connected">().default("offline").notNull(),
+    connectionId: text("connection_id"),
     connectedAt: timestamp("connected_at", { withTimezone: true }),
     disconnectedAt: timestamp("disconnected_at", { withTimezone: true }),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).defaultNow().notNull(),

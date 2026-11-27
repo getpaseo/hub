@@ -1,4 +1,5 @@
 import type { QueryHandle } from "../db/runtime/index.js";
+import type { Locks } from "../db/runtime/locks/index.js";
 import { PROVIDER_EVENT_DROP_REASON_CODES } from "../triggers/drop-reason.js";
 import { reportFailure } from "../failures/index.js";
 import { logger } from "../logger.js";
@@ -8,6 +9,7 @@ const BATCH_SIZE = 500;
 const BATCH_DELAY_MS = 250;
 const SWEEP_DELAY_MS = 60 * 60_000;
 const RETRY_DELAY_MS = 60_000;
+const RECEIPT_RETENTION_LOCK_KEY = "receipt-retention:sweep";
 
 /** Owns automatic expiry of finalized, unhandled receipts and its bounded database sweep. */
 export class ReceiptRetention {
@@ -17,7 +19,10 @@ export class ReceiptRetention {
   private active: Promise<void> | undefined;
   private stopped = true;
 
-  constructor(private readonly database: QueryHandle) {}
+  constructor(
+    private readonly database: QueryHandle,
+    private readonly locks: Pick<Locks, "tryWithLock">,
+  ) {}
 
   start(): void {
     if (!this.stopped) return;
@@ -31,8 +36,18 @@ export class ReceiptRetention {
     await this.active;
   }
 
-  /** One bounded step; retained rows also advance the cursor so they cannot stall a sweep. */
+  /** One bounded step; skips without blocking when another machine already holds the sweep lock. */
   async runBatch(now = new Date()) {
+    const locked = await this.locks.tryWithLock(RECEIPT_RETENTION_LOCK_KEY, () =>
+      this.runBatchUnlocked(now),
+    );
+    if (!locked.acquired) {
+      return { scanned: 0, deleted: 0, complete: false, skipped: true };
+    }
+    return { ...locked.value, skipped: false };
+  }
+
+  private async runBatchUnlocked(now: Date) {
     this.cutoff ??= new Date(now.getTime() - RETENTION_MS);
     const result = await this.database.query<{
       scanned: number;
@@ -83,13 +98,19 @@ export class ReceiptRetention {
     try {
       const startedAt = Date.now();
       const batch = await this.runBatch();
-      if (batch.deleted > 0 || batch.complete) {
-        logger.info(
-          { operation: "receipt_retention.cleanup", ...batch, durationMs: Date.now() - startedAt },
-          "receipt retention cleanup",
-        );
+      if (!batch.skipped) {
+        if (batch.deleted > 0 || batch.complete) {
+          logger.info(
+            {
+              operation: "receipt_retention.cleanup",
+              ...batch,
+              durationMs: Date.now() - startedAt,
+            },
+            "receipt retention cleanup",
+          );
+        }
+        delay = batch.complete ? SWEEP_DELAY_MS : BATCH_DELAY_MS;
       }
-      delay = batch.complete ? SWEEP_DELAY_MS : BATCH_DELAY_MS;
     } catch (error) {
       reportFailure(error, {
         operation: "receipt_retention.cleanup",

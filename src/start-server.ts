@@ -2,6 +2,7 @@ import { createStartHandler, defaultStreamHandler } from "@tanstack/react-start/
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import {
+  drainProductionRuntime,
   handleDaemonUpgrade as handleProductionDaemonUpgrade,
   startProductionRuntime as startHubProductionRuntime,
   stopProductionRuntime,
@@ -19,7 +20,7 @@ export function handleDaemonUpgrade(request: IncomingMessage, socket: Duplex, he
   return handleProductionDaemonUpgrade(request, socket, head);
 }
 
-export { stopProductionRuntime };
+export { drainProductionRuntime, stopProductionRuntime };
 
 const fetch = async (request: Request) => {
   if (!hasApplication()) await startProductionRuntime();

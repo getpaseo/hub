@@ -250,6 +250,72 @@ describe("hub server shutdown", () => {
     assert.deepEqual(await response, { status: 200, body: "finished", connection: "close" });
     assert.equal(runtime.stopped, true);
   });
+
+  it("flips /health to 503 immediately, drains workers and daemon sockets (1001) before HTTP/DB close", async () => {
+    const events: string[] = [];
+    const runtime = new FakeRuntime();
+    const drainStarted = deferred();
+    const drainFinished = deferred();
+    const releaseDrain = deferred();
+    const requestStarted = deferred();
+    const finishRequest = deferred();
+
+    const server = createHubServer({
+      fetch: async (request) => {
+        const path = new URL(request.url).pathname;
+        if (path === "/health") return Response.json({ ok: true });
+        requestStarted.resolve();
+        await finishRequest.promise;
+        events.push("http:in-flight-finished");
+        return new Response("finished");
+      },
+      upgrade: runtime.upgrade,
+      drainRuntime: async () => {
+        events.push("drain:start");
+        drainStarted.resolve();
+        await releaseDrain.promise;
+        await runtime.stop();
+        events.push("drain:end");
+        drainFinished.resolve();
+      },
+      stopRuntime: async () => {
+        events.push("db:close");
+      },
+    });
+    servers.push(server);
+    const address = await server.listen(0, "127.0.0.1");
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    // Healthy before shutdown.
+    const healthy = await get(keepAliveAgent(), `${origin}/health`);
+    assert.equal(healthy.status, 200);
+    assert.deepEqual(JSON.parse(healthy.body), { ok: true });
+
+    const daemon = await connectDaemon(origin);
+    const inFlight = get(keepAliveAgent(), `${origin}/work`);
+    await requestStarted.promise;
+
+    const closing = server.close();
+    await drainStarted.promise;
+
+    // Immediately after shutdown begins, /health answers 503 even on a brand-new connection.
+    const drainingHealth = await get(keepAliveAgent(), `${origin}/health`);
+    assert.equal(drainingHealth.status, 503);
+    assert.equal(drainingHealth.connection, "close");
+    assert.deepEqual(JSON.parse(drainingHealth.body), { ok: false, status: "draining" });
+
+    // Background workers stop and daemon sockets close with 1001 BEFORE the in-flight HTTP request finishes.
+    releaseDrain.resolve();
+    assert.equal(await daemon.closeCode, 1001);
+    await drainFinished.promise;
+    assert.deepEqual(events, ["drain:start", "drain:end"]);
+
+    // In-flight HTTP request finishes cleanly while DB is still open, then DB closes last.
+    finishRequest.resolve();
+    await withinMs(closing, 2_000, "server.close()");
+    assert.deepEqual(await inFlight, { status: 200, body: "finished", connection: "close" });
+    assert.deepEqual(events, ["drain:start", "drain:end", "http:in-flight-finished", "db:close"]);
+  });
 });
 
 function deferred(): { promise: Promise<void>; resolve(): void } {

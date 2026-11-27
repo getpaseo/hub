@@ -320,10 +320,11 @@ export class DurableWorkflowEngine {
       context,
       next.id,
       deadlineAt,
+      wakeup,
     );
     if (preparedIntent === undefined) return;
     const { executionId, intent } = preparedIntent;
-    if (await this.deferUnavailableDispatch(intent, wakeup)) return;
+    if (await this.deferUnavailableDaemon(intent.environment.daemonId, wakeup)) return;
     if (await this.failInvalidLaunchIntent(database, run, step, intent)) return;
     const reservation = await this.reserveExecution(run.organizationId);
     const created = await database.createWorkflowStepExecution({
@@ -387,11 +388,42 @@ export class DurableWorkflowEngine {
     await this.finishPersistedExecution(execution);
   }
 
-  private async deferUnavailableDispatch(
-    intent: LaunchMachineIntent,
+  private async deferUnavailableStepBeforeContext(
+    configuration: CompiledProjectConfiguration,
+    step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
+    context: ExpressionContext,
     wakeup: WorkflowWakeupRecord,
   ): Promise<boolean> {
-    const daemonId = intent.environment.daemonId;
+    const daemonId = this.resolvableStepDaemonIdBeforeContext(configuration, step, context);
+    if (daemonId === undefined) return false;
+    return this.deferUnavailableDaemon(daemonId, wakeup);
+  }
+
+  private resolvableStepDaemonIdBeforeContext(
+    configuration: CompiledProjectConfiguration,
+    step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
+    context: ExpressionContext,
+  ): string | undefined {
+    if (this.options.dispatchableDaemonIds === undefined) return undefined;
+    if (templateUsesTriggerContext(step.environment)) return undefined;
+    let environmentName: string;
+    try {
+      environmentName = renderExpressionTemplate(step.environment, context);
+    } catch (error) {
+      if (error instanceof ExpressionEvaluationError) return undefined;
+      throw error;
+    }
+    if (environmentName.length === 0) return undefined;
+    const environment = configuration.environments.find(
+      (candidate) => candidate.name === environmentName,
+    );
+    return environment?.kind === "daemon" ? environment.daemonId : undefined;
+  }
+
+  private async deferUnavailableDaemon(
+    daemonId: string,
+    wakeup: WorkflowWakeupRecord,
+  ): Promise<boolean> {
     const dispatchable = this.options.dispatchableDaemonIds?.();
     if (dispatchable === undefined || dispatchable.includes(daemonId)) return false;
     const now = this.now();
@@ -628,10 +660,14 @@ export class DurableWorkflowEngine {
     context: ExpressionContext,
     stepRunId: string,
     deadlineAt: Date,
+    wakeup: WorkflowWakeupRecord,
   ): Promise<{ executionId: string; intent: LaunchMachineIntent } | undefined> {
     const existing = await this.options.database?.findAgentExecutionByWorkflowStepRunId(stepRunId);
     if (existing?.launchIntent !== null && existing?.launchIntent !== undefined) {
       return { executionId: existing.id, intent: existing.launchIntent };
+    }
+    if (await this.deferUnavailableStepBeforeContext(configuration, step, context, wakeup)) {
+      return undefined;
     }
     const executionId = durableExecutionId({
       triggerRunId: run.id,
@@ -1128,13 +1164,17 @@ function workflowContext(
   };
 }
 
+function templateUsesTriggerContext(template: string): boolean {
+  return expressionPathsInTemplate(template).some(
+    (path) => path.namespace === "paseo" && path.path === "context",
+  );
+}
+
 function stepUsesTriggerContext(
   step: CompiledProjectConfiguration["triggers"][number]["steps"][number],
 ): boolean {
   return step.prompt.some((block) =>
-    expressionPathsInTemplate(block.kind === "text" ? block.value : block.content).some(
-      (path) => path.namespace === "paseo" && path.path === "context",
-    ),
+    templateUsesTriggerContext(block.kind === "text" ? block.value : block.content),
   );
 }
 

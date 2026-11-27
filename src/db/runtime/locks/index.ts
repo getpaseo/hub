@@ -2,8 +2,11 @@ import type { QueryHandle, TransactionHandle } from "../index.js";
 import { EmbeddedLocks } from "./internal/embedded.js";
 import { PostgresLocks } from "./internal/postgres.js";
 
+export type TryLockResult<T> = { acquired: true; value: T } | { acquired: false };
+
 export interface Locks {
   withLock<T>(key: string, operation: () => Promise<T>): Promise<T>;
+  tryWithLock<T>(key: string, operation: () => Promise<T>): Promise<TryLockResult<T>>;
   withTxLock(transaction: TransactionHandle, key: string): Promise<void>;
 }
 

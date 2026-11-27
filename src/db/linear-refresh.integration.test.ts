@@ -41,6 +41,8 @@ describe("Linear token refresh persistence", () => {
           sessionLockCalls += 1;
           return bundle.locks.withLock(key, operation);
         },
+        tryWithLock: <T>(key: string, operation: () => Promise<T>) =>
+          bundle.locks.tryWithLock(key, operation),
         withTxLock: async (transaction: TransactionHandle, key: string): Promise<void> => {
           if (captureExternalLocks && key === LINEAR_EXTERNAL_LOCK_KEY) {
             externalLockKeys.push(key);

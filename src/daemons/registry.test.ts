@@ -32,6 +32,7 @@ function daemonRecord(secret: string): DaemonRecord {
     registeredByCliCredentialId: null,
     status: "active",
     presence: "offline",
+    connectionId: null,
     connectedAt: null,
     disconnectedAt: null,
     lastSeenAt: now,

@@ -1800,11 +1800,43 @@ class PgDatabase implements Database {
     await query(this.pool, `update daemons set last_seen_at = now() where id = $1`, [id]);
   }
 
-  async setDaemonPresence(id: string, presence: "offline" | "connected"): Promise<void> {
+  async setDaemonPresence(
+    id: string,
+    presence: "offline" | "connected",
+    connectionId?: string,
+  ): Promise<void> {
+    if (presence === "connected") {
+      await query(
+        this.pool,
+        `update daemons
+         set presence = 'connected',
+             connection_id = $2,
+             connected_at = now()
+         where id = $1`,
+        [id, connectionId ?? null],
+      );
+      return;
+    }
+    if (connectionId === undefined) {
+      await query(
+        this.pool,
+        `update daemons
+         set presence = 'offline',
+             connection_id = null,
+             disconnected_at = now()
+         where id = $1`,
+        [id],
+      );
+      return;
+    }
     await query(
       this.pool,
-      `update daemons set presence = $2, connected_at = case when $2 = 'connected' then now() else connected_at end, disconnected_at = case when $2 = 'offline' then now() else disconnected_at end where id = $1`,
-      [id, presence],
+      `update daemons
+       set presence = 'offline',
+           connection_id = null,
+           disconnected_at = now()
+       where id = $1 and connection_id = $2`,
+      [id, connectionId],
     );
   }
 
@@ -1820,7 +1852,7 @@ class PgDatabase implements Database {
   async revokeDaemon(id: string): Promise<boolean> {
     const rows = await query(
       this.pool,
-      `update daemons set status = 'revoked', presence = 'offline', disconnected_at = now() where id = $1 and status = 'active' returning id`,
+      `update daemons set status = 'revoked', presence = 'offline', connection_id = null, disconnected_at = now() where id = $1 and status = 'active' returning id`,
       [id],
     );
     return rows.rowCount === 1;
@@ -4749,6 +4781,7 @@ interface DaemonRow extends QueryRow {
   registered_by_cli_credential_id: string | null;
   status: "active" | "revoked";
   presence: "offline" | "connected";
+  connection_id: string | null;
   connected_at: Date | null;
   disconnected_at: Date | null;
   last_seen_at: Date;
@@ -4783,6 +4816,7 @@ function toDaemon(row: DaemonRow): DaemonRecord {
     registeredByCliCredentialId: row.registered_by_cli_credential_id,
     status: row.status,
     presence: row.presence,
+    connectionId: row.connection_id,
     connectedAt: row.connected_at,
     disconnectedAt: row.disconnected_at,
     lastSeenAt: row.last_seen_at,

@@ -1288,21 +1288,24 @@ class MemoryDatabase implements Database {
   }
 
   pendingGitHubInstallationSyncs(owner: GitHubInstallationSyncOwner) {
+    const now = Date.now();
+    const claimed = [...this.githubInstallationSyncs.entries()]
+      .filter(
+        ([, receipt]) =>
+          receipt.providerApplicationId === owner.providerApplicationId &&
+          receipt.retryAt !== null &&
+          receipt.retryAt <= now &&
+          (receipt.connectionId !== null || this.githubConnections.has(receipt.installationId)),
+      )
+      .slice(0, 20);
+    for (const [, receipt] of claimed) receipt.retryAt = now + 30_000;
     return Promise.resolve(
-      [...this.githubInstallationSyncs.entries()]
-        .filter(
-          ([, receipt]) =>
-            receipt.providerApplicationId === owner.providerApplicationId &&
-            receipt.retryAt !== null &&
-            receipt.retryAt <= Date.now() &&
-            (receipt.connectionId !== null || this.githubConnections.has(receipt.installationId)),
-        )
-        .map(([id, receipt]) => ({
-          status: "claimed" as const,
-          installationSyncId: id,
-          installationId: receipt.installationId,
-          removeBinding: receipt.source === "github.installation",
-        })),
+      claimed.map(([id, receipt]) => ({
+        status: "claimed" as const,
+        installationSyncId: id,
+        installationId: receipt.installationId,
+        removeBinding: receipt.source === "github.installation",
+      })),
     );
   }
 
@@ -1749,6 +1752,7 @@ class MemoryDatabase implements Database {
       registeredByCliCredentialId: token.issuedByCliCredentialId ?? null,
       status: "active",
       presence: "offline",
+      connectionId: null,
       connectedAt: null,
       disconnectedAt: null,
       lastSeenAt: input.now,
@@ -1794,14 +1798,24 @@ class MemoryDatabase implements Database {
     const value = this.daemons.get(id);
     if (value) this.daemons.set(id, { ...value, lastSeenAt: new Date() });
   }
-  async setDaemonPresence(id: string, presence: "offline" | "connected") {
+  async setDaemonPresence(id: string, presence: "offline" | "connected", connectionId?: string) {
     const value = this.daemons.get(id);
     if (!value) return;
+    if (presence === "connected") {
+      this.daemons.set(id, {
+        ...value,
+        presence: "connected",
+        connectionId: connectionId ?? null,
+        connectedAt: new Date(),
+      });
+      return;
+    }
+    if (connectionId !== undefined && value.connectionId !== connectionId) return;
     this.daemons.set(id, {
       ...value,
-      presence,
-      connectedAt: presence === "connected" ? new Date() : value.connectedAt,
-      disconnectedAt: presence === "offline" ? new Date() : value.disconnectedAt,
+      presence: "offline",
+      connectionId: null,
+      disconnectedAt: new Date(),
     });
   }
   async setDaemonPermissions(id: string, permissions: string[]) {
@@ -1814,7 +1828,13 @@ class MemoryDatabase implements Database {
   async revokeDaemon(id: string) {
     const value = this.daemons.get(id);
     if (!value || value.status === "revoked") return false;
-    this.daemons.set(id, { ...value, status: "revoked" });
+    this.daemons.set(id, {
+      ...value,
+      status: "revoked",
+      presence: "offline",
+      connectionId: null,
+      disconnectedAt: new Date(),
+    });
     return true;
   }
   async attachAgentToExecution(executionId: string, daemonId: string, agentId: string) {
