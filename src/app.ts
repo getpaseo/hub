@@ -292,9 +292,10 @@ export function createHubApplication(options: HubRuntimeOptions): HubApplication
     },
     async stop() {
       try {
-        await Promise.all(activeSources.map(async (source) => source.stop()));
+        const sources = activeSources;
         activeSources = [];
-        await Promise.all([workflowEngine.stop(), daemonModule?.lifecycle.stop(), daemons?.stop()]);
+        await Promise.all([...sources.map(async (source) => source.stop()), workflowEngine.stop()]);
+        await Promise.all([daemonModule?.lifecycle.stop(), daemons?.stop()]);
       } finally {
         await options.executionAuthority?.stop();
       }

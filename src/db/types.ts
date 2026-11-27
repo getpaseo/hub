@@ -177,6 +177,7 @@ export interface DaemonRecord {
   registeredByCliCredentialId: string | null;
   status: "active" | "revoked";
   presence: "offline" | "connected";
+  connectionId: string | null;
   connectedAt: Date | null;
   disconnectedAt: Date | null;
   lastSeenAt: Date;
@@ -1421,7 +1422,11 @@ export interface Database {
     slug: string,
   ): Promise<DaemonWriteResult>;
   touchDaemon(id: string): Promise<void>;
-  setDaemonPresence(id: string, presence: "offline" | "connected"): Promise<void>;
+  setDaemonPresence(
+    id: string,
+    presence: "offline" | "connected",
+    connectionId?: string,
+  ): Promise<void>;
   setDaemonPermissions(id: string, permissions: string[]): Promise<DaemonRecord | undefined>;
   revokeDaemon(id: string): Promise<boolean>;
   attachAgentToExecution(

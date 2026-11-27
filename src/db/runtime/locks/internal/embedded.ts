@@ -1,5 +1,5 @@
 import type { TransactionHandle } from "../../index.js";
-import type { EmbeddedLockLifecycle } from "../index.js";
+import type { EmbeddedLockLifecycle, TryLockResult } from "../index.js";
 
 export class EmbeddedLocks implements EmbeddedLockLifecycle {
   private readonly tails = new Map<string, Promise<void>>();
@@ -12,6 +12,11 @@ export class EmbeddedLocks implements EmbeddedLockLifecycle {
     } finally {
       release();
     }
+  }
+
+  async tryWithLock<T>(key: string, operation: () => Promise<T>): Promise<TryLockResult<T>> {
+    if (this.tails.has(key)) return { acquired: false };
+    return { acquired: true, value: await this.withLock(key, operation) };
   }
 
   async withTxLock(transaction: TransactionHandle, key: string): Promise<void> {

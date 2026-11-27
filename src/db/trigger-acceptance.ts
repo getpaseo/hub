@@ -1,5 +1,5 @@
 import type { Locks } from "./runtime/locks/index.js";
-import { and, eq, isNull, or, lte, sql, isNotNull } from "drizzle-orm";
+import { and, eq, isNull, or, sql, isNotNull } from "drizzle-orm";
 import { linearConnectionRequiresReauthorization } from "../providers/linear/client.js";
 import type { DatabaseRuntime, DrizzleHandle } from "./runtime/index.js";
 import * as schema from "./schema.js";
@@ -20,20 +20,17 @@ import type {
   ProviderEventRouteSnapshot,
 } from "./types.js";
 
-type HubDatabase = DrizzleHandle;
 type HubTransaction = DrizzleHandle;
 
 const GITHUB_LIFECYCLE = "github_lifecycle";
+const GITHUB_INSTALLATION_SYNC_LEASE_SECONDS = 30;
 
 export class ProviderEventAcceptanceRepository {
-  private readonly database: HubDatabase;
   constructor(
     private readonly runtime: DatabaseRuntime,
     private readonly locks: Locks,
     private readonly connections: ConnectionRepository,
-  ) {
-    this.database = runtime.drizzle();
-  }
+  ) {}
 
   acceptGitHub(input: AcceptGitHubEventInput): Promise<ProviderEventAcceptance> {
     return this.acceptProvider("github", input.installationId, input.repositoryId, input);
@@ -290,7 +287,20 @@ export class ProviderEventAcceptanceRepository {
         JSON.stringify(["provider-application", "github"]),
       );
       const transaction = runtimeTransaction.drizzle();
-      if (!(await githubSyncOwnerActive(transaction, owner))) return;
+      if (!(await githubSyncOwnerActive(transaction, owner))) {
+        await transaction
+          .update(schema.githubInstallationSyncs)
+          .set({
+            retryAt: sql`least(${schema.githubInstallationSyncs.retryAt}, clock_timestamp())`,
+          })
+          .where(
+            and(
+              eq(schema.githubInstallationSyncs.id, claim.installationSyncId),
+              isNotNull(schema.githubInstallationSyncs.retryAt),
+            ),
+          );
+        return;
+      }
       const [receipt] = await transaction
         .select()
         .from(schema.githubInstallationSyncs)
@@ -364,44 +374,50 @@ export class ProviderEventAcceptanceRepository {
   }
 
   async pendingGitHubInstallationSyncs(owner: GitHubInstallationSyncOwner) {
-    if (!(await githubSyncOwnerActive(this.database, owner))) return [];
-    const rows = await this.database
-      .select({
-        installationSyncId: schema.githubInstallationSyncs.id,
-        installationId: schema.githubInstallationSyncs.installationId,
-        source: schema.githubInstallationSyncs.source,
-        kind: schema.githubInstallationSyncs.kind,
-      })
-      .from(schema.githubInstallationSyncs)
-      .leftJoin(
-        schema.githubConnections,
-        eq(schema.githubConnections.installationId, schema.githubInstallationSyncs.installationId),
-      )
-      .where(
-        and(
-          lte(schema.githubInstallationSyncs.retryAt, new Date()),
-          or(
-            eq(schema.githubInstallationSyncs.providerApplicationId, owner.providerApplicationId),
-            and(
-              eq(schema.githubInstallationSyncs.kind, "reconcile"),
-              isNull(schema.githubInstallationSyncs.providerApplicationId),
-              eq(schema.githubConnections.providerApplicationId, owner.providerApplicationId),
-            ),
-          ),
-          or(
-            eq(schema.githubConnections.providerApplicationId, owner.providerApplicationId),
-            isNotNull(schema.githubInstallationSyncs.connectionId),
-          ),
-        ),
-      )
-      .orderBy(schema.githubInstallationSyncs.retryAt)
-      .limit(20);
-    return rows.map((row) => ({
-      status: "claimed" as const,
-      installationSyncId: row.installationSyncId,
-      installationId: row.installationId,
-      removeBinding: row.kind === "reconcile" || row.source === "github.installation",
-    }));
+    return this.runtime.transaction(async (runtimeTransaction) => {
+      const transaction = runtimeTransaction.drizzle();
+      if (!(await githubSyncOwnerActive(transaction, owner))) return [];
+      const claimed = await runtimeTransaction.query<{
+        id: string;
+        installation_id: string | number;
+        source: string | null;
+        kind: "webhook" | "reconcile";
+      }>(
+        `with due as (
+           select s.id
+           from github_installation_syncs s
+           left join github_connections c on c.installation_id = s.installation_id
+           where s.retry_at <= clock_timestamp()
+             and (
+               s.provider_application_id = $1
+               or (
+                 s.kind = 'reconcile'
+                 and s.provider_application_id is null
+                 and c.provider_application_id = $1
+               )
+             )
+             and (
+               c.provider_application_id = $1
+               or s.connection_id is not null
+             )
+           order by s.retry_at
+           limit 20
+           for update of s skip locked
+         )
+         update github_installation_syncs target
+         set retry_at = clock_timestamp() + make_interval(secs => $2)
+         from due
+         where target.id = due.id
+         returning target.id, target.installation_id, target.source, target.kind`,
+        [owner.providerApplicationId, GITHUB_INSTALLATION_SYNC_LEASE_SECONDS],
+      );
+      return claimed.rows.map((row) => ({
+        status: "claimed" as const,
+        installationSyncId: row.id,
+        installationId: Number(row.installation_id),
+        removeBinding: row.kind === "reconcile" || row.source === "github.installation",
+      }));
+    });
   }
 
   async retryGitHubInstallationSync(
@@ -414,7 +430,20 @@ export class ProviderEventAcceptanceRepository {
         JSON.stringify(["provider-application", "github"]),
       );
       const transaction = runtimeTransaction.drizzle();
-      if (!(await githubSyncOwnerActive(transaction, owner))) return;
+      if (!(await githubSyncOwnerActive(transaction, owner))) {
+        await transaction
+          .update(schema.githubInstallationSyncs)
+          .set({
+            retryAt: sql`least(${schema.githubInstallationSyncs.retryAt}, clock_timestamp())`,
+          })
+          .where(
+            and(
+              eq(schema.githubInstallationSyncs.id, installationSyncId),
+              isNotNull(schema.githubInstallationSyncs.retryAt),
+            ),
+          );
+        return;
+      }
       await transaction
         .update(schema.githubInstallationSyncs)
         .set({ retryAt: sql`clock_timestamp() + interval '30 seconds'` })

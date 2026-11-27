@@ -20,7 +20,12 @@ import { installProcessFailureHandlers } from "./failures/process.js";
 import { createHubServer } from "./http/hub-server.js";
 import { loadBuiltStartServer } from "./server/build.js";
 import { createAuthServer } from "./auth/server.js";
-import { startApplication, stopApplication, type ApplicationRuntime } from "./server/runtime.js";
+import {
+  drainApplication,
+  startApplication,
+  stopApplication,
+  type ApplicationRuntime,
+} from "./server/runtime.js";
 import { createApplicationRuntime } from "./application-runtime.js";
 import {
   composeBilling,
@@ -55,6 +60,10 @@ export function startProductionRuntime(): Promise<ApplicationRuntime> {
   return startApplication(createProductionRuntime);
 }
 
+export async function drainProductionRuntime(): Promise<void> {
+  await drainApplication();
+}
+
 export async function stopProductionRuntime(): Promise<void> {
   await stopApplication();
 }
@@ -74,6 +83,7 @@ export async function handleDaemonUpgrade(
 
 async function createProductionRuntime(): Promise<ApplicationRuntime> {
   const resources = new CompositionResources();
+  const background = new CompositionResources();
   try {
     const config = loadRuntimeConfig();
     const { database, runtime, locks } = await createDatabaseHandle();
@@ -164,6 +174,7 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       providerApplications,
       publicBaseUrl: identity.appUrl,
       completionTokenSecret: identity.authSecret,
+      drain: () => background.close(),
       close: () => resources.close(),
     });
     await activateProviderApplicationsAtStartup({
@@ -174,11 +185,12 @@ async function createProductionRuntime(): Promise<ApplicationRuntime> {
       inventory: providerInventory,
       callbackOrigin: identity.appUrl,
     });
-    const receiptRetention = new ReceiptRetention(runtime);
-    resources.own(() => receiptRetention.stop());
+    const receiptRetention = new ReceiptRetention(runtime, locks);
+    background.own(() => receiptRetention.stop());
     receiptRetention.start();
     return application;
   } catch (error) {
+    await background.close().catch(() => undefined);
     await resources.close();
     throw error;
   }
@@ -317,6 +329,7 @@ async function main(): Promise<void> {
         socket,
         handle: () => build.handleDaemonUpgrade(request, socket, head),
       }),
+    drainRuntime: () => build.drainProductionRuntime(),
     stopRuntime: () => build.stopProductionRuntime(),
     ...(config.trustedClientIpHeader === undefined
       ? {}

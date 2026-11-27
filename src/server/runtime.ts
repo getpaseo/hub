@@ -124,6 +124,8 @@ export interface ApplicationRuntime {
   providerRequest(name: string, request: Request): Promise<Response>;
   connectionStatus(request: Request): Promise<Response>;
   connectionAction(request: Request, provider: string, action: string): Promise<Response>;
+  /** Stops background claimers, trigger sources, and daemon sockets while keeping DB open for HTTP drain. */
+  drain?(): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -132,14 +134,28 @@ type ApplicationFactory = () => ApplicationRuntime | Promise<ApplicationRuntime>
 declare global {
   // Vite reloads server modules inside one process. Keep the singleton alive across those reloads.
   var paseoHubApplicationRuntime: Promise<ApplicationRuntime> | undefined;
+  var paseoHubApplicationDraining: boolean | undefined;
 }
 
 export function startApplication(factory: ApplicationFactory): Promise<ApplicationRuntime> {
+  globalThis.paseoHubApplicationDraining = false;
   globalThis.paseoHubApplicationRuntime ??= Promise.resolve().then(factory);
   return globalThis.paseoHubApplicationRuntime;
 }
 
+export function isApplicationDraining(): boolean {
+  return globalThis.paseoHubApplicationDraining === true;
+}
+
+export async function drainApplication(): Promise<void> {
+  globalThis.paseoHubApplicationDraining = true;
+  const active = globalThis.paseoHubApplicationRuntime;
+  if (active === undefined) return;
+  await (await active).drain?.();
+}
+
 export async function stopApplication(): Promise<void> {
+  globalThis.paseoHubApplicationDraining = true;
   const active = globalThis.paseoHubApplicationRuntime;
   globalThis.paseoHubApplicationRuntime = undefined;
   await (await active)?.stop();

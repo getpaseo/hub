@@ -13,7 +13,9 @@ const DEFAULT_DRAIN_TIMEOUT_MS = 5_000;
 export interface HubServerOptions extends FetchRequestOptions {
   fetch: FetchHandler;
   upgrade: (request: IncomingMessage, socket: Duplex, head: Buffer) => Promise<void>;
-  /** Stops the application runtime: daemon sockets, sources, and the database. */
+  /** Stops background claimers, trigger sources, and daemon sockets before HTTP drain. */
+  drainRuntime?: () => Promise<void>;
+  /** Stops the application runtime: closes the database and remaining resources. */
   stopRuntime: () => Promise<void>;
   drainTimeoutMs?: number;
 }
@@ -21,21 +23,23 @@ export interface HubServerOptions extends FetchRequestOptions {
 export interface HubServer {
   listen(port: number, host: string): Promise<AddressInfo>;
   /**
-   * Refuses new work, lets in-flight requests finish, stops the runtime (which closes daemon
-   * sockets and the database), then drops the connections that remain. Resolves once the listener
-   * is closed.
+   * Immediately marks `/health` as draining (`503`) and refuses new work, stops background
+   * claimers/sources and closes daemon WebSockets (`1001`), drains in-flight HTTP requests,
+   * then stops the runtime (closing the database) and drops any remaining connections.
    */
   close(): Promise<void>;
 }
 
 /**
- * The production HTTP server. It owns shutdown order: the runtime is the only thing that closes
- * daemon WebSockets, and the listener cannot finish closing while one is open.
+ * The production HTTP server. It owns shutdown order: flipping `/health` to `503` immediately,
+ * stopping background workers and daemon WebSockets first so daemons reconnect to a healthy peer,
+ * draining in-flight HTTP requests while the database is still open, and closing the database last.
  */
 export function createHubServer(options: HubServerOptions): HubServer {
   const {
     fetch,
     upgrade,
+    drainRuntime,
     stopRuntime,
     drainTimeoutMs = DEFAULT_DRAIN_TIMEOUT_MS,
     ...requestOptions
@@ -49,7 +53,8 @@ export function createHubServer(options: HubServerOptions): HubServer {
   // none is running, which would reopen the database mid-shutdown.
   const server = createServer((request, response) => {
     if (closing !== undefined) {
-      refuse(response);
+      if (isHealthPath(request.url)) refuseHealth(response);
+      else refuse(response);
       return;
     }
     inFlight.add(response);
@@ -58,6 +63,7 @@ export function createHubServer(options: HubServerOptions): HubServer {
   });
   server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     if (closing !== undefined) {
+      socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
     }
@@ -67,8 +73,15 @@ export function createHubServer(options: HubServerOptions): HubServer {
   });
 
   async function shutdown(): Promise<void> {
-    // Stops accepting and closes idle keep-alive connections. The callback waits for every
-    // connection, daemon WebSockets included, so it is awaited last.
+    const errors: unknown[] = [];
+    closeAfterLastResponse(inFlight);
+    try {
+      await drainRuntime?.();
+    } catch (error) {
+      errors.push(error);
+    }
+    // Stops accepting new connections and closes idle keep-alive sockets. The callback waits for
+    // every remaining connection, so it is awaited last.
     const listenerClosed = new Promise<void>((resolve, reject) => {
       server.close((error) => {
         if (error !== undefined) {
@@ -78,15 +91,20 @@ export function createHubServer(options: HubServerOptions): HubServer {
         resolve();
       });
     });
+    server.closeIdleConnections();
     closeAfterLastResponse(inFlight);
     await drain(inFlight, drainTimeoutMs);
     try {
       await stopRuntime();
+    } catch (error) {
+      errors.push(error);
     } finally {
       server.closeAllConnections();
       for (const socket of upgraded) socket.destroy();
       await listenerClosed;
     }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, "hub server shutdown failed");
   }
 
   return {
@@ -120,6 +138,23 @@ function closeAfterLastResponse(responses: Set<ServerResponse>): void {
   const lastBySocket = new Map<Socket, ServerResponse>();
   for (const response of responses) lastBySocket.set(response.req.socket, response);
   for (const response of lastBySocket.values()) response.shouldKeepAlive = false;
+}
+
+function isHealthPath(url: string | undefined): boolean {
+  if (url === undefined) return false;
+  try {
+    return new URL(url, "http://hub.invalid").pathname === "/health";
+  } catch {
+    return false;
+  }
+}
+
+function refuseHealth(response: ServerResponse): void {
+  response.writeHead(503, {
+    connection: "close",
+    "content-type": "application/json; charset=utf-8",
+  });
+  response.end(JSON.stringify({ ok: false, status: "draining" }));
 }
 
 function refuse(response: ServerResponse): void {

@@ -89,6 +89,7 @@ const SHUTDOWN_CLOSE_TIMEOUT_MS = 1_000;
 const PROJECT_LIST_WITHHELD = new Set(["access_denied", "unknown_schema"]);
 interface ActiveSocket {
   agents: DaemonAgents;
+  connectionId: string;
   generation: number;
   socket: WebSocket;
   daemon: DaemonRecord;
@@ -135,6 +136,7 @@ export class ActiveDaemonRegistry implements DaemonConnections {
         () => this.clock.nowDate(),
         (error, operation) => this.report(error, operation, daemon.id),
       ),
+      connectionId: randomUUID(),
       generation: ++this.generation,
       socket,
       daemon,
@@ -162,7 +164,7 @@ export class ActiveDaemonRegistry implements DaemonConnections {
         this.active.delete(daemon.id);
         this.rejectGeneration(daemon.id, active.generation);
         const write = active.presenceReady.then(() =>
-          this.database.setDaemonPresence(daemon.id, "offline"),
+          this.database.setDaemonPresence(daemon.id, "offline", active.connectionId),
         );
         this.presenceWrites.add(write);
         void write.then(
@@ -417,7 +419,7 @@ export class ActiveDaemonRegistry implements DaemonConnections {
     active.ready = true;
     const write = Promise.all([
       this.database.touchDaemon(active.daemon.id),
-      this.database.setDaemonPresence(active.daemon.id, "connected"),
+      this.database.setDaemonPresence(active.daemon.id, "connected", active.connectionId),
     ]).then(
       () => undefined,
       (error: unknown) => this.report(error, "daemon.presence.connected", active.daemon.id),

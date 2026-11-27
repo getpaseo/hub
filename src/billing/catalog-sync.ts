@@ -38,60 +38,68 @@ import type {
  * `restampOrganizationsOnPlan`. That is what makes editing a plan in the Stripe dashboard the
  * whole migration: nothing else has to be run.
  */
+const BILLING_CATALOG_LOCK_KEY = "billing:catalog:sync";
+
 export async function syncBillingCatalog(
   source: StripeCatalogSource,
   database: Database,
   presentations: BillingPlanPresentations = HUB_PLAN_PRESENTATIONS,
 ): Promise<void> {
-  const [products, prices] = await Promise.all([source.listProducts(), source.listPrices()]);
-  const pricesByProduct = groupPricesByProduct(prices);
-  const parsed = products.map((product) => ({
-    product,
-    result: parsePlanMetadata(product.metadata),
-  }));
-  const ambiguousSlugs = duplicateValidSlugs(parsed);
-  for (const { product, result } of parsed) {
-    if (!result.success) {
-      reportFailure(
-        Object.assign(new Error("Billing product metadata rejected"), {
-          code: "invalid_plan_metadata",
-        }),
-        { operation: "billing.catalog.product.validate", component: "billing", provider: "stripe" },
-        { kind: "validation", diagnostic: { productId: product.id } },
+  await database.withAdvisoryLock(BILLING_CATALOG_LOCK_KEY, async () => {
+    const [products, prices] = await Promise.all([source.listProducts(), source.listPrices()]);
+    const pricesByProduct = groupPricesByProduct(prices);
+    const parsed = products.map((product) => ({
+      product,
+      result: parsePlanMetadata(product.metadata),
+    }));
+    const ambiguousSlugs = duplicateValidSlugs(parsed);
+    for (const { product, result } of parsed) {
+      if (!result.success) {
+        reportFailure(
+          Object.assign(new Error("Billing product metadata rejected"), {
+            code: "invalid_plan_metadata",
+          }),
+          {
+            operation: "billing.catalog.product.validate",
+            component: "billing",
+            provider: "stripe",
+          },
+          { kind: "validation", diagnostic: { productId: product.id } },
+        );
+        continue;
+      }
+      if (ambiguousSlugs.has(result.data.slug)) {
+        reportFailure(
+          Object.assign(new Error("Billing product slug is ambiguous"), {
+            code: "configurationConflict",
+          }),
+          {
+            operation: "billing.catalog.product.reconcile",
+            component: "billing",
+            provider: "stripe",
+          },
+          { kind: "conflict", diagnostic: { productId: product.id, planSlug: result.data.slug } },
+        );
+        continue;
+      }
+      const presentation = presentations[result.data.slug];
+      if (presentation === undefined) {
+        reportFailure(
+          Object.assign(new Error("Billing plan has no Hub presentation"), {
+            code: "missing_plan_presentation",
+          }),
+          { operation: "billing.catalog.product.validate", component: "billing" },
+          { kind: "validation", diagnostic: { productId: product.id } },
+        );
+        continue;
+      }
+      const plan = await database.syncBillingPlan(
+        planInput(product, result.data, pricesByProduct.get(product.id) ?? [], presentation),
       );
-      continue;
+      await restampOrganizationsOnPlan(database, plan, result.data.template);
     }
-    if (ambiguousSlugs.has(result.data.slug)) {
-      reportFailure(
-        Object.assign(new Error("Billing product slug is ambiguous"), {
-          code: "configurationConflict",
-        }),
-        {
-          operation: "billing.catalog.product.reconcile",
-          component: "billing",
-          provider: "stripe",
-        },
-        { kind: "conflict", diagnostic: { productId: product.id, planSlug: result.data.slug } },
-      );
-      continue;
-    }
-    const presentation = presentations[result.data.slug];
-    if (presentation === undefined) {
-      reportFailure(
-        Object.assign(new Error("Billing plan has no Hub presentation"), {
-          code: "missing_plan_presentation",
-        }),
-        { operation: "billing.catalog.product.validate", component: "billing" },
-        { kind: "validation", diagnostic: { productId: product.id } },
-      );
-      continue;
-    }
-    const plan = await database.syncBillingPlan(
-      planInput(product, result.data, pricesByProduct.get(product.id) ?? [], presentation),
-    );
-    await restampOrganizationsOnPlan(database, plan, result.data.template);
-  }
-  await database.deactivateBillingPlansExcept(products.map((product) => product.id));
+    await database.deactivateBillingPlansExcept(products.map((product) => product.id));
+  });
 }
 
 /**

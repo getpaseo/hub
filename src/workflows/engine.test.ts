@@ -1765,6 +1765,49 @@ describe("durable multi-step workflow engine", () => {
     const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(steps[0]!.id);
     assert.equal(execution?.launchIntent?.prompt, 'Context: {"ambient":"once"}\nTrigger: run');
   });
+
+  it("defers a wakeup without materializing context when the target daemon is not dispatchable here", async () => {
+    const fixture = await workflowFixture({ rawConfiguration: contextOnlyConfiguration() });
+    const targetDaemonId = fixture.configuration.environments.find(
+      (environment) => environment.kind === "daemon",
+    )!.daemonId!;
+    let dispatchable: string[] = [];
+    let materializations = 0;
+    let dispatched = 0;
+    const provider = {
+      ...providerMatch(fixture.configuration, fixture.revisionId),
+      async materializeContext() {
+        materializations += 1;
+        return { ambient: "once" };
+      },
+    } satisfies import("../triggers/index.js").TriggerProvider;
+    const { handler, engine } = createDurableWorkflowHandler({
+      database: fixture.database,
+      entitlements: fixture.entitlements,
+      providers: [provider],
+      dispatchableDaemonIds: () => dispatchable,
+      dispatchLaunchMachineIntent: async (intent) => {
+        dispatched += 1;
+        const execution = await fixture.database.findAgentExecutionByWorkflowStepRunId(
+          intent.workflowStepRunId!,
+        );
+        if (execution === undefined) throw new Error("workflow execution was not persisted");
+        return { execution };
+      },
+    });
+    await handler(fixture.trigger("run"));
+
+    // Machine A does not hold the target daemon: it must defer without calling materializeContext.
+    await engine.processAvailable();
+    assert.equal(materializations, 0);
+    assert.equal(dispatched, 0);
+
+    // Machine B holds the target daemon: it claims immediately, materializes once, and dispatches.
+    dispatchable = [targetDaemonId];
+    await engine.processAvailable();
+    assert.equal(materializations, 1);
+    assert.equal(dispatched, 1);
+  });
 });
 
 interface Fixture {

@@ -2,7 +2,7 @@ import { basename } from "node:path";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { reportFailure } from "../../../failures/index.js";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
-import type { PoolClient } from "pg";
+import { Client, type PoolClient } from "pg";
 import { createPool, type PostgresPool } from "./pool.js";
 export { createPool } from "./pool.js";
 import * as schema from "../../schema.js";
@@ -22,13 +22,15 @@ import { runtimeFile } from "../../../runtime-files.js";
 
 const MIGRATIONS_FOLDER = runtimeFile("drizzle");
 const DEFAULT_POSTGRES_DATABASE = "postgres";
+const MIGRATION_LOCK_KEY = "paseo-hub:migrations";
+const MIGRATION_CONNECT_TIMEOUT_MS = 10_000;
 
 export async function createPostgresRuntime(
   connectionString: string,
 ): Promise<DatabaseRuntimeBundle> {
   await ensureDatabaseExists(connectionString);
   const pool = createPool(connectionString);
-  const runtime = new PostgresRuntime(pool);
+  const runtime = new PostgresRuntime(pool, connectionString);
   return {
     runtime,
     locks: postgresLocks((operation) => runtime.withConnection(operation)),
@@ -38,7 +40,10 @@ export async function createPostgresRuntime(
 class PostgresRuntime implements DatabaseRuntime {
   private readonly database;
 
-  constructor(private readonly pool: PostgresPool) {
+  constructor(
+    private readonly pool: PostgresPool,
+    private readonly connectionString: string,
+  ) {
     this.database = drizzle(pool, { schema });
   }
 
@@ -74,7 +79,58 @@ class PostgresRuntime implements DatabaseRuntime {
   }
 
   async migrate(): Promise<void> {
-    await migrate(this.database, { migrationsFolder: MIGRATIONS_FOLDER });
+    const scrubValues = connectionScrubValues(this.connectionString);
+    const client = new Client({
+      connectionString: this.connectionString,
+      connectionTimeoutMillis: MIGRATION_CONNECT_TIMEOUT_MS,
+    });
+    client.on("error", (error) => {
+      reportFailure(
+        error,
+        {
+          operation: "database.postgres.migrate.client",
+          component: "database",
+        },
+        { scrubValues },
+      );
+    });
+    await client.connect();
+    let locked = false;
+    try {
+      // Dedicated migration session: never inherit the pool's 3s statement_timeout or 5s
+      // query_timeout, and override any low database/role default so DDL and lock waits complete.
+      await client.query("set statement_timeout = 0");
+      await client.query("select pg_advisory_lock(hashtextextended($1, 0))", [MIGRATION_LOCK_KEY]);
+      locked = true;
+      await migrate(drizzle(client, { schema }), { migrationsFolder: MIGRATIONS_FOLDER });
+    } finally {
+      if (locked) {
+        try {
+          await client.query("select pg_advisory_unlock(hashtextextended($1, 0))", [
+            MIGRATION_LOCK_KEY,
+          ]);
+        } catch (error) {
+          reportFailure(
+            error,
+            {
+              operation: "database.postgres.migrate.unlock",
+              component: "database",
+            },
+            { scrubValues },
+          );
+        }
+      }
+      await client.end().catch((error: unknown) => {
+        reportFailure(
+          error,
+          {
+            operation: "database.postgres.migrate.close",
+            component: "database",
+          },
+          { scrubValues },
+        );
+      });
+    }
   }
 
   async close(): Promise<void> {
@@ -174,4 +230,15 @@ async function query<Row extends QueryRow>(
 function quoteIdentifier(value: string): string {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) throw new Error(`invalid database name: ${value}`);
   return `"${value.replaceAll('"', '""')}"`;
+}
+
+function connectionScrubValues(connectionString: string): string[] {
+  try {
+    const url = new URL(connectionString);
+    return [connectionString, url.password, decodeURIComponent(url.password)].filter(
+      (value) => value.length > 0,
+    );
+  } catch {
+    return [connectionString];
+  }
 }

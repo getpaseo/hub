@@ -57,4 +57,21 @@ async function assertSameKeySerializes(bundle: DatabaseRuntimeBundle): Promise<v
   releaseFirst();
   await Promise.all([first, second]);
   assert.deepEqual(events, ["first:start", "first:end", "second:start", "second:end"]);
+
+  // tryWithLock returns { acquired: false } immediately while another caller holds the key.
+  let holdEntered!: () => void;
+  const enteredHold = new Promise<void>((resolve) => (holdEntered = resolve));
+  let releaseHold!: () => void;
+  const holdGate = new Promise<void>((resolve) => (releaseHold = resolve));
+  const holder = bundle.locks.withLock("try-shared", async () => {
+    holdEntered();
+    await holdGate;
+  });
+  await enteredHold;
+  const skipped = await bundle.locks.tryWithLock("try-shared", async () => "unexpected");
+  assert.deepEqual(skipped, { acquired: false });
+  releaseHold();
+  await holder;
+  const acquired = await bundle.locks.tryWithLock("try-shared", async () => "ok");
+  assert.deepEqual(acquired, { acquired: true, value: "ok" });
 }

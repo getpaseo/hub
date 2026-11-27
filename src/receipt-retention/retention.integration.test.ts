@@ -22,7 +22,7 @@ describe("unhandled receipt retention", () => {
     "%s expires the backlog in bounded batches while preserving young, routed, and referenced receipts",
     async (driver) => {
       const directory = await mkdtemp(join(tmpdir(), "hub-retention-"));
-      const { runtime } =
+      const { runtime, locks } =
         driver === "postgres"
           ? await createPostgresTestRuntime(postgres.getConnectionUri())
           : await embeddedDatabaseRuntime(directory);
@@ -70,7 +70,7 @@ describe("unhandled receipt retention", () => {
         for (const statement of fixture.split(";").filter((sql) => sql.trim())) {
           await runtime.query(statement);
         }
-        const retention = new ReceiptRetention(runtime);
+        const retention = new ReceiptRetention(runtime, locks);
         let deleted = 0;
         let passes = 0;
         for (;;) {

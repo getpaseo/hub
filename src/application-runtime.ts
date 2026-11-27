@@ -46,6 +46,7 @@ export interface ApplicationCompositionOptions {
   completionTokenSecret?: string;
   testTriggerRoutes?: boolean;
   daemonConnections?: DaemonConnections;
+  drain?(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -53,9 +54,12 @@ export async function createApplicationRuntime(
   options: ApplicationCompositionOptions,
 ): Promise<ApplicationRuntime> {
   const resources = new CompositionResources();
+  const background = new CompositionResources();
   resources.own(() => options.close());
+  resources.own(() => background.close());
+  if (options.drain !== undefined) background.own(() => options.drain!());
   try {
-    return await createOwnedApplicationRuntime(options, resources);
+    return await createOwnedApplicationRuntime(options, resources, background);
   } catch (error) {
     await resources.close();
     throw error;
@@ -65,6 +69,7 @@ export async function createApplicationRuntime(
 async function createOwnedApplicationRuntime(
   options: ApplicationCompositionOptions,
   ownership: CompositionResources,
+  background: CompositionResources,
 ): Promise<ApplicationRuntime> {
   const registrations = options.registrations ?? [];
   const connections = new Map(
@@ -120,7 +125,7 @@ async function createOwnedApplicationRuntime(
       ? {}
       : { daemonConnections: options.daemonConnections }),
   });
-  ownership.own(() => application.hub.stop());
+  background.own(() => application.hub.stop());
   await application.hub.start(registrations.flatMap((registration) => registration.sources));
 
   const resources = options.database === null ? null : new OrganizationResources(options.database);
@@ -340,6 +345,7 @@ async function createOwnedApplicationRuntime(
     },
     providerRequest: (name, request) =>
       requests.get(name)?.(request) ?? Promise.resolve(new Response("Not Found", { status: 404 })),
+    drain: () => background.close(),
     stop: () => ownership.close(),
   };
 }
